@@ -1,0 +1,913 @@
+//! The ARMv6-M CPU core: fetch, decode, execute, and the (typed) halt states.
+//!
+//! The executor is the *only* place that interprets semantics. It is written
+//! against `Bus`, so swapping the memory behind the CPU does not change
+//! instruction behavior.
+
+pub mod decode;
+pub mod decode16;
+pub mod decode32;
+pub mod registers;
+
+use crate::error::HaltCause;
+use crate::mem::Bus;
+use decode16::{decode16, AluOp, Inst16, LsImm, LsReg, Shift, ShiftImm};
+use decode32::{decode32, is_thumb2, Inst32, SysReg};
+use registers::{Registers, Xpsr, APSR_FLAGS, XPSR_T};
+
+/// What an executed instruction does with the program counter.
+enum Next {
+    /// Continue at `address`.
+    Advance(u32),
+    /// The machine halted; propagate the cause.
+    Stop(HaltCause),
+}
+
+/// The core CPU state plus its bus.
+pub struct Core<B: Bus> {
+    pub regs: Registers,
+    pub xpsr: Xpsr,
+    /// PRIMASK (interrupt masking). Only bit `i` of `CPSIE/CPSID` touches it
+    /// on ARMv6-M.
+    pub primask: bool,
+    /// CONTROL register: bit0 nPRIV, bit1 SPSEL, bit2 FPCA.
+    pub control: u32,
+    pub cycles: u64,
+    mem: B,
+}
+
+impl<B: Bus> Core<B> {
+    /// Create an uninitialized core over `mem`. Register state is zero until
+    /// `reset_from_vector_table()` or host code sets it.
+    pub fn new(mem: B) -> Self {
+        Self {
+            regs: Registers::default(),
+            xpsr: Xpsr::new(XPSR_T),
+            primask: false,
+            control: 0,
+            cycles: 0,
+            mem,
+        }
+    }
+
+    /// Borrow the bus.
+    pub fn mem(&mut self) -> &mut B {
+        &mut self.mem
+    }
+
+    /// Fetch and execute a single instruction. On success the machine has
+    /// advanced exactly one instruction; on error it has *not*.
+    pub fn step(&mut self) -> Result<(), HaltCause> {
+        let pc = self.regs.pc;
+        let hw = self.mem.read_half(pc).map_err(|_| HaltCause::FetchAbort)?;
+        let next = if is_thumb2(hw) {
+            let lo = self
+                .mem
+                .read_half(pc.wrapping_add(2))
+                .map_err(|_| HaltCause::FetchAbort)?;
+            let inst = decode32(hw, lo).map_err(|e| e.cause)?;
+            self.exec32(pc, inst)?
+        } else {
+            let inst = decode16(hw).map_err(|e| e.cause)?;
+            self.exec(pc, inst)?
+        };
+        match next {
+            Next::Advance(a) => self.regs.pc = a,
+            Next::Stop(cause) => return Err(cause),
+        }
+        self.cycles += 1;
+        Ok(())
+    }
+
+    /// Execute until the machine halts of its own accord, or `budget`
+    /// instructions have been executed (whichever comes first).
+    pub fn run(&mut self, budget: u64) -> Result<(), HaltCause> {
+        for _ in 0..budget {
+            self.step()?;
+        }
+        Err(HaltCause::CycleBudgetExhausted)
+    }
+
+    /// Bootstrap the core from the reset vector table: `sp = [0x0000_0000]`,
+    /// `pc = [0x0000_0004] & ~1`. Returns `NonThumbTarget` if the reset
+    /// vector is not a Thumb address.
+    pub fn reset_from_vector_table(&mut self) -> Result<(), HaltCause> {
+        let sp = self.read_word_halt(0)?;
+        let pc = self.read_word_halt(4)?;
+        if pc & 1 == 0 {
+            return Err(HaltCause::NonThumbTarget);
+        }
+        self.regs.sp = sp;
+        self.regs.msp = sp;
+        self.regs.psp = 0;
+        self.regs.pc = pc & !1;
+        self.xpsr = Xpsr::new(XPSR_T);
+        self.primask = false;
+        self.control = 0;
+        Ok(())
+    }
+
+    /// Point-in-time register snapshot for host tooling (cli, debugger).
+    pub const fn snapshot(&self) -> (Registers, Xpsr, u64) {
+        (self.regs, self.xpsr, self.cycles)
+    }
+
+    fn read_word_halt(&mut self, addr: u32) -> Result<u32, HaltCause> {
+        self.mem
+            .read_word(addr)
+            .map_err(|_| HaltCause::BusFault { address: addr })
+    }
+
+    fn write_word_halt(&mut self, addr: u32, v: u32) -> Result<(), HaltCause> {
+        self.mem
+            .write_word(addr, v)
+            .map_err(|_| HaltCause::BusFault { address: addr })
+    }
+
+    /// Whether the active stack pointer is the process SP (`SPSEL == 1`).
+    const fn sp_is_process(&self) -> bool {
+        self.control & 0x2 != 0
+    }
+
+    /// Read a system register for `mrs`.
+    fn sysreg_read(&self, sys: SysReg) -> Result<u32, HaltCause> {
+        let v = match sys {
+            SysReg::Apsr => self.xpsr.get() & APSR_FLAGS,
+            SysReg::Xpsr => self.xpsr.get() & (APSR_FLAGS | XPSR_T),
+            SysReg::Ipsr => 0,
+            SysReg::Epsr => XPSR_T,
+            SysReg::Msp => {
+                if self.sp_is_process() {
+                    self.regs.msp
+                } else {
+                    self.regs.sp
+                }
+            }
+            SysReg::Psp => {
+                if self.sp_is_process() {
+                    self.regs.sp
+                } else {
+                    self.regs.psp
+                }
+            }
+            SysReg::Primask => u32::from(self.primask),
+            SysReg::Control => self.control,
+            SysReg::Other(_) => {
+                return Err(HaltCause::NotImplemented {
+                    what: "mrs of reserved system register",
+                })
+            }
+        };
+        Ok(v)
+    }
+
+    /// Write a system register for `msr`.
+    fn sysreg_write(&mut self, sys: SysReg, v: u32) -> Result<(), HaltCause> {
+        match sys {
+            SysReg::Apsr => {
+                let cur = self.xpsr.get();
+                self.xpsr.set((cur & !APSR_FLAGS) | (v & APSR_FLAGS));
+            }
+            SysReg::Msp => {
+                if self.sp_is_process() {
+                    self.regs.msp = v;
+                } else {
+                    self.regs.sp = v;
+                }
+            }
+            SysReg::Psp => {
+                if self.sp_is_process() {
+                    self.regs.sp = v;
+                } else {
+                    self.regs.psp = v;
+                }
+            }
+            SysReg::Primask => self.primask = v & 1 != 0,
+            SysReg::Control => {
+                let new = v & 0x7;
+                let want_process = new & 0x2 != 0;
+                let was_process = self.sp_is_process();
+                if want_process != was_process {
+                    let r = &mut self.regs;
+                    if want_process {
+                        r.msp = r.sp;
+                        r.sp = r.psp;
+                    } else {
+                        r.psp = r.sp;
+                        r.sp = r.msp;
+                    }
+                }
+                self.control = new;
+            }
+            SysReg::Xpsr | SysReg::Ipsr | SysReg::Epsr => {
+                return Err(HaltCause::NotImplemented {
+                    what: "msr to xpsr/ipsr/epsr",
+                })
+            }
+            SysReg::Other(_) => {
+                return Err(HaltCause::NotImplemented {
+                    what: "msr of reserved system register",
+                })
+            }
+        }
+        Ok(())
+    }
+
+    /// Evaluate an ARM condition code against the current flags.
+    fn cond_passes(&self, cond: u8) -> bool {
+        let (n, z, c, v) = (self.xpsr.n(), self.xpsr.z(), self.xpsr.c(), self.xpsr.v());
+        match cond {
+            0x0 => z,            // EQ
+            0x1 => !z,           // NE
+            0x2 => c,            // CS/HS
+            0x3 => !c,           // CC/LO
+            0x4 => n,            // MI
+            0x5 => !n,           // PL
+            0x6 => v,            // VS
+            0x7 => !v,           // VC
+            0x8 => c && !z,      // HI
+            0x9 => !c || z,      // LS
+            0xA => n == v,       // GE
+            0xB => n != v,       // LT
+            0xC => !z && n == v, // GT
+            0xD => z || n != v,  // LE
+            _ => unreachable!("cond {cond:#x}"),
+        }
+    }
+
+    /// Execute `inst` at address `pc`. Semantic meaning only; no memory
+    /// acquisition happens here.
+    fn exec(&mut self, pc: u32, inst: Inst16) -> Result<Next, HaltCause> {
+        use Inst16 as I;
+        match inst {
+            I::ShiftImm {
+                rd,
+                rm,
+                kind,
+                amount,
+            } => {
+                let v = self.regs.read(rm);
+                let (res, c) = shift_imm(kind, v, u32::from(amount));
+                self.write_shift_flags(res, c);
+                self.regs.write(rd, res);
+                Ok(Next::Advance(pc + 2))
+            }
+            I::ShiftReg { rd, rn, rm, kind } => {
+                let v = self.regs.read(rn);
+                let count = self.regs.read(rm) & 0xFF;
+                let (res, c) = shift_reg(kind, v, count);
+                self.write_shift_flags(res, c);
+                self.regs.write(rd, res);
+                Ok(Next::Advance(pc + 2))
+            }
+            I::AddReg { rd, rn, rm } => {
+                let (res, c, v) = add_flags(self.regs.read(rn), self.regs.read(rm), false);
+                self.regs.write(rd, res);
+                self.set_nzcv(res, c, v);
+                Ok(Next::Advance(pc + 2))
+            }
+            I::SubReg { rd, rn, rm } => {
+                let (res, c, v) = sub_flags(self.regs.read(rn), self.regs.read(rm), false);
+                self.regs.write(rd, res);
+                self.set_nzcv(res, c, v);
+                Ok(Next::Advance(pc + 2))
+            }
+            I::AddImm3 { rd, rn, imm } => {
+                let (res, c, v) = add_flags(self.regs.read(rn), u32::from(imm), false);
+                self.regs.write(rd, res);
+                self.set_nzcv(res, c, v);
+                Ok(Next::Advance(pc + 2))
+            }
+            I::SubImm3 { rd, rn, imm } => {
+                let (res, c, v) = sub_flags(self.regs.read(rn), u32::from(imm), false);
+                self.regs.write(rd, res);
+                self.set_nzcv(res, c, v);
+                Ok(Next::Advance(pc + 2))
+            }
+            I::MovImm { rd, imm } => {
+                let res = u32::from(imm);
+                self.regs.write(rd, res);
+                self.set_nz(res, false);
+                Ok(Next::Advance(pc + 2))
+            }
+            I::CmpImm { rn, imm } => {
+                let (res, c, v) = sub_flags(self.regs.read(rn), u32::from(imm), false);
+                self.set_nzcv(res, c, v);
+                Ok(Next::Advance(pc + 2))
+            }
+            I::AddImm8 { rd, imm } => {
+                let (res, c, v) = add_flags(self.regs.read(rd), u32::from(imm), false);
+                self.regs.write(rd, res);
+                self.set_nzcv(res, c, v);
+                Ok(Next::Advance(pc + 2))
+            }
+            I::SubImm8 { rd, imm } => {
+                let (res, c, v) = sub_flags(self.regs.read(rd), u32::from(imm), false);
+                self.regs.write(rd, res);
+                self.set_nzcv(res, c, v);
+                Ok(Next::Advance(pc + 2))
+            }
+            I::Alu { rd, rm, op } => {
+                self.exec_alu(rd, rm, op);
+                Ok(Next::Advance(pc + 2))
+            }
+            I::AddSpImm8 { imm } => {
+                self.regs.sp = self.regs.sp.wrapping_add(imm as u32);
+                Ok(Next::Advance(pc + 2))
+            }
+            I::SubSpImm8 { imm } => {
+                self.regs.sp = self.regs.sp.wrapping_sub(imm as u32);
+                Ok(Next::Advance(pc + 2))
+            }
+            I::SpecialAdd { rd, rm } => {
+                let b = self.regs.read(rm);
+                if rd == 15 {
+                    return Ok(Self::check_branch(pc + 4 + b));
+                }
+                self.regs.write(rd, self.regs.read(rd) + b);
+                Ok(Next::Advance(pc + 2))
+            }
+            I::SpecialCmp { rn, rm } => {
+                let (res, c, v) = sub_flags(self.regs.read(rn), self.regs.read(rm), false);
+                self.set_nzcv(res, c, v);
+                Ok(Next::Advance(pc + 2))
+            }
+            I::SpecialMov { rd, rm } => {
+                let b = self.regs.read(rm);
+                if rd == 15 {
+                    return Ok(Self::check_branch(b));
+                }
+                self.regs.write(rd, b);
+                Ok(Next::Advance(pc + 2))
+            }
+            I::Bx { rm } => Ok(Self::check_branch(self.regs.read(rm))),
+            I::Blx { rm } => {
+                let target = self.regs.read(rm);
+                self.regs.lr = (pc + 2) | 1;
+                Ok(Self::check_branch(target))
+            }
+            I::LdrLiteral { rt, imm } => {
+                let addr = ((pc + 4) & !3) + imm as u32;
+                let v = self.read_word_halt(addr)?;
+                self.write_rt(rt, v, addr, pc)
+            }
+            I::LsReg { rt, rn, rm, kind } => {
+                let addr = self.regs.read(rn).wrapping_add(self.regs.read(rm));
+                self.exec_ls(addr, rt, kind.into(), pc)
+            }
+            I::LsImm { rt, rn, imm, kind } => {
+                let addr = self.regs.read(rn).wrapping_add(imm as u32);
+                self.exec_ls(addr, rt, kind.into(), pc)
+            }
+            I::LsSp { rt, imm, is_load } => {
+                let addr = self.regs.sp.wrapping_add(imm as u32);
+                self.exec_ls(addr, rt, LsAccess::Word { load: is_load }, pc)
+            }
+            I::AddrPc { rd, imm } => {
+                let v = ((pc + 4) & !3) + imm as u32;
+                self.regs.write(rd, v);
+                Ok(Next::Advance(pc + 2))
+            }
+            I::AddrSp { rd, imm } => {
+                self.regs.write(rd, self.regs.sp.wrapping_add(imm as u32));
+                Ok(Next::Advance(pc + 2))
+            }
+            I::BranchCond { cond, off } => {
+                if self.cond_passes(cond) {
+                    Ok(Next::Advance(pc.wrapping_add(4).wrapping_add_signed(off)))
+                } else {
+                    Ok(Next::Advance(pc + 2))
+                }
+            }
+            I::Branch { off } => Ok(Next::Advance(pc.wrapping_add(4).wrapping_add_signed(off))),
+            I::Svc { imm } => Ok(Next::Stop(HaltCause::Svc(imm))),
+            I::Bkpt { .. } => Ok(Next::Stop(HaltCause::Breakpoint)),
+            I::Hint { .. } => Ok(Next::Advance(pc + 2)),
+            I::Cps { disable, im } => {
+                // Only the `i` bit (bit1) has an architectural effect on
+                // ARMv6-M: it controls PRIMASK. `f`/`a` are aliases that do
+                // not exist on the M0.
+                if im & 0b010 != 0 {
+                    self.primask = disable;
+                }
+                Ok(Next::Advance(pc + 2))
+            }
+            I::Push { regs, include_lr } => {
+                let count = regs.count_ones() + u32::from(include_lr);
+                let mut addr = self.regs.sp.wrapping_sub(4 * count);
+                for r in 0..8 {
+                    if regs & (1 << r) != 0 {
+                        let v = self.regs.read(r);
+                        self.write_word_halt(addr, v)?;
+                        addr = addr.wrapping_add(4);
+                    }
+                }
+                if include_lr {
+                    self.write_word_halt(addr, self.regs.lr)?;
+                }
+                self.regs.sp = self.regs.sp.wrapping_sub(4 * count);
+                Ok(Next::Advance(pc + 2))
+            }
+            I::Pop { regs, load_pc } => {
+                let mut addr = self.regs.sp;
+                for r in 0..8 {
+                    if regs & (1 << r) != 0 {
+                        let v = self.read_word_halt(addr)?;
+                        self.regs.write(r, v);
+                        addr = addr.wrapping_add(4);
+                    }
+                }
+                let pc_word = if load_pc {
+                    Some(self.read_word_halt(addr)?)
+                } else {
+                    None
+                };
+                let count = regs.count_ones() + u32::from(load_pc);
+                self.regs.sp = self.regs.sp.wrapping_add(4 * count);
+                if let Some(target) = pc_word {
+                    return Ok(Self::check_branch(target));
+                }
+                Ok(Next::Advance(pc + 2))
+            }
+            I::LdmStm { is_load, rn, regs } => {
+                let base = self.regs.read(rn);
+                let mut addr = base;
+                if is_load {
+                    for r in 0..8 {
+                        if regs & (1 << r) != 0 {
+                            let v = self.read_word_halt(addr)?;
+                            self.regs.write(r, v);
+                            addr = addr.wrapping_add(4);
+                        }
+                    }
+                    // Writeback; if rn was loaded, the loaded value wins.
+                    if regs & (1 << rn) == 0 {
+                        self.regs
+                            .write(rn, base.wrapping_add(4 * regs.count_ones()));
+                    }
+                } else {
+                    for r in 0..8 {
+                        if regs & (1 << r) != 0 {
+                            let v = self.regs.read(r);
+                            self.write_word_halt(addr, v)?;
+                            addr = addr.wrapping_add(4);
+                        }
+                    }
+                    self.regs
+                        .write(rn, base.wrapping_add(4 * regs.count_ones()));
+                }
+                Ok(Next::Advance(pc + 2))
+            }
+        }
+    }
+
+    /// Execute a 32-bit ARMv6-M instruction. Every 32-bit instruction is
+    /// exactly 4 bytes, so a non-branching one simply advances `pc + 4`.
+    fn exec32(&mut self, pc: u32, inst: Inst32) -> Result<Next, HaltCause> {
+        use Inst32 as I;
+        match inst {
+            I::Bl { off } => {
+                self.regs.lr = (pc.wrapping_add(4)) | 1;
+                Ok(Next::Advance(pc.wrapping_add(4).wrapping_add_signed(off)))
+            }
+            I::Mrs { rd, sys } => {
+                if rd == 15 {
+                    return Err(HaltCause::NotImplemented { what: "mrs to pc" });
+                }
+                let v = self.sysreg_read(sys)?;
+                self.regs.write(rd, v);
+                Ok(Next::Advance(pc + 4))
+            }
+            I::Msr { rn, sys } => {
+                let v = self.regs.read(rn);
+                self.sysreg_write(sys, v)?;
+                Ok(Next::Advance(pc + 4))
+            }
+            I::Barrier { .. } => Ok(Next::Advance(pc + 4)),
+        }
+    }
+
+    fn exec_alu(&mut self, rd: u8, rm: u8, op: AluOp) {
+        let a = self.regs.read(rd);
+        let b = self.regs.read(rm);
+        match op {
+            AluOp::And => {
+                let res = a & b;
+                self.regs.write(rd, res);
+                self.set_nz(res, false);
+            }
+            AluOp::Eor => {
+                let res = a ^ b;
+                self.regs.write(rd, res);
+                self.set_nz(res, false);
+            }
+            AluOp::Lsl => {
+                let (res, c) = shift_reg(Shift::Lsl, a, b & 0xFF);
+                self.regs.write(rd, res);
+                self.write_shift_flags(res, c);
+            }
+            AluOp::Lsr => {
+                let (res, c) = shift_reg(Shift::Lsr, a, b & 0xFF);
+                self.regs.write(rd, res);
+                self.write_shift_flags(res, c);
+            }
+            AluOp::Asr => {
+                let (res, c) = shift_reg(Shift::Asr, a, b & 0xFF);
+                self.regs.write(rd, res);
+                self.write_shift_flags(res, c);
+            }
+            AluOp::Adc => {
+                let (res, c, v) = add_flags(a, b, self.xpsr.c());
+                self.regs.write(rd, res);
+                self.set_nzcv(res, c, v);
+            }
+            AluOp::Sbc => {
+                let (res, c, v) = sub_flags(a, b, !self.xpsr.c());
+                self.regs.write(rd, res);
+                self.set_nzcv(res, c, v);
+            }
+            AluOp::Ror => {
+                let (res, c) = shift_reg(Shift::Ror, a, b & 0xFF);
+                self.regs.write(rd, res);
+                self.write_shift_flags(res, c);
+            }
+            AluOp::Tst => {
+                let res = a & b;
+                self.set_nz(res, false);
+            }
+            AluOp::Neg => {
+                let (res, c, v) = sub_flags(0, a, false);
+                self.regs.write(rd, res);
+                self.set_nzcv(res, c, v);
+            }
+            AluOp::Cmp => {
+                let (res, c, v) = sub_flags(a, b, false);
+                self.set_nzcv(res, c, v);
+            }
+            AluOp::Cmn => {
+                let (res, c, v) = add_flags(a, b, false);
+                self.set_nzcv(res, c, v);
+            }
+            AluOp::Orr => {
+                let res = a | b;
+                self.regs.write(rd, res);
+                self.set_nz(res, false);
+            }
+            AluOp::Mul => {
+                let res = a.wrapping_mul(b);
+                self.regs.write(rd, res);
+                self.set_nzcv(res, false, false);
+            }
+            AluOp::Bic => {
+                let res = a & !b;
+                self.regs.write(rd, res);
+                self.set_nz(res, false);
+            }
+            AluOp::Mvn => {
+                let res = !a;
+                self.regs.write(rd, res);
+                self.set_nz(res, false);
+            }
+        }
+    }
+
+    /// A load or store with a fully-computed `addr`.
+    fn exec_ls(&mut self, addr: u32, rt: u8, access: LsAccess, pc: u32) -> Result<Next, HaltCause> {
+        let is_load = matches!(
+            access,
+            LsAccess::Word { load: true }
+                | LsAccess::Half { load: true }
+                | LsAccess::Byte { load: true }
+                | LsAccess::SextByte
+                | LsAccess::SextHalf
+        );
+        if is_load {
+            let v = match access {
+                LsAccess::Word { load: _ } => self.read_word_halt(addr)?,
+                LsAccess::Half { load: true } => {
+                    let hw = self
+                        .mem
+                        .read_half(addr)
+                        .map_err(|_| HaltCause::BusFault { address: addr })?;
+                    u32::from(hw)
+                }
+                LsAccess::Byte { load: true } => {
+                    let b = self
+                        .mem
+                        .read(addr)
+                        .map_err(|_| HaltCause::BusFault { address: addr })?;
+                    u32::from(b)
+                }
+                LsAccess::SextByte => {
+                    let b = self
+                        .mem
+                        .read(addr)
+                        .map_err(|_| HaltCause::BusFault { address: addr })?;
+                    (b as i8) as u32
+                }
+                LsAccess::SextHalf => {
+                    let hw = self
+                        .mem
+                        .read_half(addr)
+                        .map_err(|_| HaltCause::BusFault { address: addr })?;
+                    (hw as i16) as u32
+                }
+                _ => unreachable!(),
+            };
+            self.write_rt(rt, v, addr, pc)
+        } else {
+            match access {
+                LsAccess::Word { load: false } => {
+                    let v = self.regs.read(rt);
+                    self.mem
+                        .write_word(addr, v)
+                        .map_err(|_| HaltCause::BusFault { address: addr })?;
+                }
+                LsAccess::Half { load: false } => {
+                    let v = self.regs.read(rt) as u16;
+                    self.mem
+                        .write_half(addr, v)
+                        .map_err(|_| HaltCause::BusFault { address: addr })?;
+                }
+                LsAccess::Byte { load: false } => {
+                    let v = self.regs.read(rt) as u8;
+                    self.mem
+                        .write(addr, v)
+                        .map_err(|_| HaltCause::BusFault { address: addr })?;
+                }
+                _ => unreachable!(),
+            }
+            Ok(Next::Advance(pc + 2))
+        }
+    }
+
+    /// Write a loaded value to `rt`. If `rt == 15` the load is a branch
+    /// (Thumb bit checked).
+    fn write_rt(&mut self, rt: u8, v: u32, addr: u32, pc: u32) -> Result<Next, HaltCause> {
+        let _ = addr;
+        if rt == 15 {
+            return Ok(Self::check_branch(v));
+        }
+        self.regs.write(rt, v);
+        Ok(Next::Advance(pc + 2))
+    }
+
+    /// Turn a Thumb target into a `Next`, or a `NonThumbTarget` stop.
+    fn check_branch(target: u32) -> Next {
+        if target & 1 == 0 {
+            return Next::Stop(HaltCause::NonThumbTarget);
+        }
+        Next::Advance(target & !1)
+    }
+
+    fn set_nz(&mut self, res: u32, v: bool) {
+        self.xpsr
+            .set_nzcv(res >> 31 == 1, res == 0, self.xpsr.c(), v);
+    }
+
+    fn set_nzcv(&mut self, res: u32, c: bool, v: bool) {
+        self.xpsr.set_nzcv(res >> 31 == 1, res == 0, c, v);
+    }
+
+    fn write_shift_flags(&mut self, res: u32, c: Option<bool>) {
+        let c = c.unwrap_or_else(|| self.xpsr.c());
+        self.xpsr.set_nzcv(res >> 31 == 1, res == 0, c, false);
+    }
+}
+
+/// A fully-resolved load/store (word/half/byte × load/store, plus
+/// sign-extending loads).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LsAccess {
+    Word { load: bool },
+    Half { load: bool },
+    Byte { load: bool },
+    SextByte,
+    SextHalf,
+}
+
+impl From<LsReg> for LsAccess {
+    fn from(k: LsReg) -> Self {
+        match k {
+            LsReg::Str => Self::Word { load: false },
+            LsReg::Strh => Self::Half { load: false },
+            LsReg::Strb => Self::Byte { load: false },
+            LsReg::Ldr => Self::Word { load: true },
+            LsReg::Ldrh => Self::Half { load: true },
+            LsReg::Ldrb => Self::Byte { load: true },
+            LsReg::Ldrsb => Self::SextByte,
+            LsReg::Ldrsh => Self::SextHalf,
+        }
+    }
+}
+
+impl From<LsImm> for LsAccess {
+    fn from(k: LsImm) -> Self {
+        match k {
+            LsImm::Str => Self::Word { load: false },
+            LsImm::Ldr => Self::Word { load: true },
+            LsImm::Strb => Self::Byte { load: false },
+            LsImm::Ldrb => Self::Byte { load: true },
+            LsImm::Strh => Self::Half { load: false },
+            LsImm::Ldrh => Self::Half { load: true },
+        }
+    }
+}
+
+/// `a + b + carry_in`, returning `(result, carry_out, overflow)`.
+fn add_flags(a: u32, b: u32, carry_in: bool) -> (u32, bool, bool) {
+    let sum = (u64::from(a)) + (u64::from(b)) + u64::from(carry_in);
+    let res = sum as u32;
+    let carry = sum >> 32 != 0;
+    let overflow = ((a ^ res) & (b ^ res)) & 0x8000_0000 != 0;
+    (res, carry, overflow)
+}
+
+/// `a - b - borrow_in`, returning `(result, carry_out, overflow)`.
+/// `carry_out` is the C flag: borrow complements it (C=1 means no borrow).
+fn sub_flags(a: u32, b: u32, borrow_in: bool) -> (u32, bool, bool) {
+    let res = a.wrapping_sub(b).wrapping_sub(u32::from(borrow_in));
+    // C = 1 if the subtraction didn't need a borrow at the top.
+    let carry = u64::from(a) >= u64::from(b) + u64::from(borrow_in);
+    let overflow = ((a ^ b) & (a ^ res)) & 0x8000_0000 != 0;
+    (res, carry, overflow)
+}
+
+/// Shift `v` by an immediate 5-bit `amount` (LSL/LSR/ASR #n). Returns
+/// `(result, new_carry)`. A `None` carry means the flag is unchanged (shift by
+/// zero).
+const fn shift_imm(kind: ShiftImm, v: u32, amount: u32) -> (u32, Option<bool>) {
+    let amount = amount & 0x1F;
+    shift_by_count(kind, v, amount)
+}
+
+/// Shift `v` by a register `count` (LSL/LSR/ASR/ROR by register).
+fn shift_reg(kind: Shift, v: u32, count: u32) -> (u32, Option<bool>) {
+    match kind {
+        Shift::Ror => {
+            let n = count & 0x1F;
+            if n == 0 {
+                (v, None)
+            } else {
+                let carry = (v >> (n - 1)) & 1 != 0;
+                (v.rotate_right(n), Some(carry))
+            }
+        }
+        Shift::Lsl | Shift::Lsr | Shift::Asr => {
+            let kind = match kind {
+                Shift::Lsl => ShiftImm::Lsl,
+                Shift::Lsr => ShiftImm::Lsr,
+                Shift::Asr => ShiftImm::Asr,
+                Shift::Ror => unreachable!(),
+            };
+            shift_by_count(kind, v, count)
+        }
+    }
+}
+
+/// Shift by an arbitrary count (may exceed 31 for register shifts).
+const fn shift_by_count(kind: ShiftImm, v: u32, count: u32) -> (u32, Option<bool>) {
+    match kind {
+        ShiftImm::Lsl => {
+            if count == 0 {
+                (v, None)
+            } else if count < 32 {
+                let carry = (v >> (32 - count)) & 1 != 0;
+                (v << count, Some(carry))
+            } else if count == 32 {
+                (0, Some(v & 1 != 0))
+            } else {
+                (0, Some(false))
+            }
+        }
+        ShiftImm::Lsr => {
+            if count == 0 {
+                (v, None)
+            } else if count < 32 {
+                let carry = (v >> (count - 1)) & 1 != 0;
+                (v >> count, Some(carry))
+            } else if count == 32 {
+                (0, Some(v >> 31 & 1 != 0))
+            } else {
+                (0, Some(false))
+            }
+        }
+        ShiftImm::Asr => {
+            if count == 0 {
+                (v, None)
+            } else if count < 32 {
+                let carry = (v >> (count - 1)) & 1 != 0;
+                (((v as i32) >> count) as u32, Some(carry))
+            } else {
+                // Arithmetic shift of >=32: sign-fill; C = sign bit.
+                let sign = v >> 31 & 1 != 0;
+                (if sign { u32::MAX } else { 0 }, Some(sign))
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn add_flags_basic() {
+        let (r, c, v) = add_flags(0xFFFF_FFFF, 1, false);
+        assert_eq!(r, 0);
+        assert!(c);
+        assert!(!v);
+    }
+
+    #[test]
+    fn add_flags_overflow() {
+        let (_, _, v) = add_flags(0x7FFF_FFFF, 1, false);
+        assert!(v);
+    }
+
+    #[test]
+    fn sub_flags_borrow() {
+        let (r, c, v) = sub_flags(0, 1, false);
+        assert_eq!(r, u32::MAX);
+        assert!(!c);
+        assert!(!v);
+    }
+
+    #[test]
+    fn sub_flags_no_borrow() {
+        let (r, c, _) = sub_flags(5, 3, false);
+        assert_eq!(r, 2);
+        assert!(c);
+    }
+
+    #[test]
+    fn lsl_flags() {
+        let (r, c) = shift_imm(ShiftImm::Lsl, 0x0000_0001, 31);
+        assert_eq!(r, 0x8000_0000);
+        assert_eq!(c, Some(false));
+    }
+
+    fn core() -> Core<crate::mem::flat::FlatMemory> {
+        Core::new(crate::mem::flat::FlatMemory::with_layout(
+            &[0x2000_0000],
+            &[0x1000],
+        ))
+    }
+
+    #[test]
+    fn cond_codes_against_flags() {
+        let mut c = core();
+        // N=1, Z=0, C=0, V=1.
+        c.xpsr.set_nzcv(true, false, false, true);
+        assert!(c.cond_passes(0x4)); // MI
+        assert!(!c.cond_passes(0x5)); // PL
+        assert!(!c.cond_passes(0x0)); // EQ
+        assert!(c.cond_passes(0x1)); // NE
+        assert!(!c.cond_passes(0x8)); // HI needs C && !Z
+        assert!(c.cond_passes(0x9)); // LS is !C || Z
+        assert!(c.cond_passes(0xA)); // GE: N == V
+        assert!(!c.cond_passes(0xB)); // LT
+    }
+
+    #[test]
+    fn sysreg_sp_bank_switch() {
+        let mut c = core();
+        c.regs.sp = 0x100;
+        c.regs.msp = 0x100;
+        c.regs.psp = 0x200;
+        // CONTROL.SPSEL = 1 -> process SP becomes active.
+        c.sysreg_write(SysReg::Control, 0x2).unwrap();
+        assert_eq!(c.regs.sp, 0x200);
+        assert_eq!(c.regs.msp, 0x100);
+        assert_eq!(c.sysreg_read(SysReg::Msp).unwrap(), 0x100);
+        assert_eq!(c.sysreg_read(SysReg::Psp).unwrap(), 0x200);
+        // Writing PSP while process SP is active updates the live pointer.
+        c.sysreg_write(SysReg::Psp, 0x300).unwrap();
+        assert_eq!(c.regs.sp, 0x300);
+        // Back to main SP; the process pointer is preserved.
+        c.sysreg_write(SysReg::Control, 0x0).unwrap();
+        assert_eq!(c.regs.sp, 0x100);
+        assert_eq!(c.sysreg_read(SysReg::Psp).unwrap(), 0x300);
+    }
+
+    #[test]
+    fn sysreg_primask_and_control() {
+        let mut c = core();
+        c.sysreg_write(SysReg::Primask, 1).unwrap();
+        assert!(c.primask);
+        assert_eq!(c.sysreg_read(SysReg::Primask).unwrap(), 1);
+        assert_eq!(c.sysreg_read(SysReg::Control).unwrap(), 0);
+        // MSR CONTROL preserves the nPRIV/FPCA bits we model.
+        c.sysreg_write(SysReg::Control, 0x5).unwrap();
+        assert_eq!(c.sysreg_read(SysReg::Control).unwrap(), 0x5);
+        // Reserved sysreg reads/writes are typed errors, not silent.
+        assert!(matches!(
+            c.sysreg_read(SysReg::Other(0x7f)),
+            Err(HaltCause::NotImplemented { .. })
+        ));
+        assert!(matches!(
+            c.sysreg_write(SysReg::Other(0x7f), 0),
+            Err(HaltCause::NotImplemented { .. })
+        ));
+    }
+}
