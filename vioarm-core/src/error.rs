@@ -56,6 +56,24 @@ impl fmt::Display for HaltCause {
     }
 }
 
+/// An ARMv6-M exception the core can take and return from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Exception {
+    /// Exception number 3: the only fault ARMv6-M software can reach without
+    /// a peripheral-provided interrupt.
+    HardFault,
+}
+
+impl Exception {
+    /// The exception number used for IPSR and as the vector-table index.
+    #[must_use]
+    pub const fn number(self) -> u8 {
+        match self {
+            Self::HardFault => 3,
+        }
+    }
+}
+
 /// An access to the memory system that cannot be satisfied.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum BusError {

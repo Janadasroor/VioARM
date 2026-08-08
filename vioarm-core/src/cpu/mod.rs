@@ -9,11 +9,26 @@ pub mod decode16;
 pub mod decode32;
 pub mod registers;
 
-use crate::error::HaltCause;
+use crate::error::{Exception, HaltCause};
 use crate::mem::Bus;
 use decode16::{decode16, AluOp, Inst16, LsImm, LsReg, Shift, ShiftImm};
 use decode32::{decode32, is_thumb2, Inst32, SysReg};
 use registers::{Registers, Xpsr, APSR_FLAGS, XPSR_T};
+
+/// `LR` value loaded on exception entry, causing `bx lr`/`pop {pc}` to return
+/// to Handler mode (re-entering the handler that was interrupted).
+const EXC_RETURN_HANDLER: u32 = 0xFFFF_FFF1;
+/// Return to Thread mode, restoring the main stack pointer.
+const EXC_RETURN_THREAD_MSP: u32 = 0xFFFF_FFF9;
+/// Return to Thread mode, restoring the process stack pointer.
+const EXC_RETURN_THREAD_PSP: u32 = 0xFFFF_FFFD;
+
+/// xPSR `ALIGN` bit (bit 9): set on the stacked xPSR when the interrupted
+/// stack was 8-byte-aligned by an exception-entry adjustment.
+const XPSR_ALIGN: u32 = 1 << 9;
+
+/// The eight-word ARMv6-M exception frame, in bytes.
+const FRAME_BYTES: u32 = 32;
 
 /// What an executed instruction does with the program counter.
 enum Next {
@@ -32,6 +47,8 @@ pub struct Core<B: Bus> {
     pub primask: bool,
     /// CONTROL register: bit0 nPRIV, bit1 SPSEL, bit2 FPCA.
     pub control: u32,
+    /// Current exception number: 0 in Thread mode, non-zero in Handler mode.
+    pub ipsr: u8,
     pub cycles: u64,
     mem: B,
 }
@@ -45,6 +62,7 @@ impl<B: Bus> Core<B> {
             xpsr: Xpsr::new(XPSR_T),
             primask: false,
             control: 0,
+            ipsr: 0,
             cycles: 0,
             mem,
         }
@@ -56,7 +74,8 @@ impl<B: Bus> Core<B> {
     }
 
     /// Fetch and execute a single instruction. On success the machine has
-    /// advanced exactly one instruction; on error it has *not*.
+    /// advanced exactly one instruction (or taken an exception); on error it
+    /// has *not*.
     pub fn step(&mut self) -> Result<(), HaltCause> {
         let pc = self.regs.pc;
         let hw = self.mem.read_half(pc).map_err(|_| HaltCause::FetchAbort)?;
@@ -65,11 +84,15 @@ impl<B: Bus> Core<B> {
                 .mem
                 .read_half(pc.wrapping_add(2))
                 .map_err(|_| HaltCause::FetchAbort)?;
-            let inst = decode32(hw, lo).map_err(|e| e.cause)?;
-            self.exec32(pc, inst)?
+            match decode32(hw, lo) {
+                Ok(inst) => self.exec32(pc, inst)?,
+                Err(_) => return self.hardfault_on_undefined(pc, 4),
+            }
         } else {
-            let inst = decode16(hw).map_err(|e| e.cause)?;
-            self.exec(pc, inst)?
+            match decode16(hw) {
+                Ok(inst) => self.exec(pc, inst)?,
+                Err(_) => return self.hardfault_on_undefined(pc, 2),
+            }
         };
         match next {
             Next::Advance(a) => self.regs.pc = a,
@@ -104,6 +127,7 @@ impl<B: Bus> Core<B> {
         self.xpsr = Xpsr::new(XPSR_T);
         self.primask = false;
         self.control = 0;
+        self.ipsr = 0;
         Ok(())
     }
 
@@ -125,8 +149,10 @@ impl<B: Bus> Core<B> {
     }
 
     /// Whether the active stack pointer is the process SP (`SPSEL == 1`).
+    /// In Handler mode the active SP is always the main stack pointer, so
+    /// `SPSEL` is only consulted for thread-mode accesses.
     const fn sp_is_process(&self) -> bool {
-        self.control & 0x2 != 0
+        self.ipsr == 0 && self.control & 0x2 != 0
     }
 
     /// Read a system register for `mrs`.
@@ -134,7 +160,7 @@ impl<B: Bus> Core<B> {
         let v = match sys {
             SysReg::Apsr => self.xpsr.get() & APSR_FLAGS,
             SysReg::Xpsr => self.xpsr.get() & (APSR_FLAGS | XPSR_T),
-            SysReg::Ipsr => 0,
+            SysReg::Ipsr => u32::from(self.ipsr),
             SysReg::Epsr => XPSR_T,
             SysReg::Msp => {
                 if self.sp_is_process() {
@@ -322,7 +348,7 @@ impl<B: Bus> Core<B> {
             I::SpecialAdd { rd, rm } => {
                 let b = self.regs.read(rm);
                 if rd == 15 {
-                    return Ok(Self::check_branch(pc + 4 + b));
+                    return self.branch(pc.wrapping_add(4).wrapping_add(b));
                 }
                 self.regs.write(rd, self.regs.read(rd) + b);
                 Ok(Next::Advance(pc + 2))
@@ -335,12 +361,12 @@ impl<B: Bus> Core<B> {
             I::SpecialMov { rd, rm } => {
                 let b = self.regs.read(rm);
                 if rd == 15 {
-                    return Ok(Self::check_branch(b));
+                    return self.branch(b);
                 }
                 self.regs.write(rd, b);
                 Ok(Next::Advance(pc + 2))
             }
-            I::Bx { rm } => Ok(Self::check_branch(self.regs.read(rm))),
+            I::Bx { rm } => self.branch(self.regs.read(rm)),
             I::Blx { rm } => {
                 let target = self.regs.read(rm);
                 self.regs.lr = (pc + 2) | 1;
@@ -425,7 +451,7 @@ impl<B: Bus> Core<B> {
                 let count = regs.count_ones() + u32::from(load_pc);
                 self.regs.sp = self.regs.sp.wrapping_add(4 * count);
                 if let Some(target) = pc_word {
-                    return Ok(Self::check_branch(target));
+                    return self.branch(target);
                 }
                 Ok(Next::Advance(pc + 2))
             }
@@ -642,11 +668,11 @@ impl<B: Bus> Core<B> {
     }
 
     /// Write a loaded value to `rt`. If `rt == 15` the load is a branch
-    /// (Thumb bit checked).
+    /// (Thumb bit checked, EXC_RETURN honored).
     fn write_rt(&mut self, rt: u8, v: u32, addr: u32, pc: u32) -> Result<Next, HaltCause> {
         let _ = addr;
         if rt == 15 {
-            return Ok(Self::check_branch(v));
+            return self.branch(v);
         }
         self.regs.write(rt, v);
         Ok(Next::Advance(pc + 2))
@@ -658,6 +684,135 @@ impl<B: Bus> Core<B> {
             return Next::Stop(HaltCause::NonThumbTarget);
         }
         Next::Advance(target & !1)
+    }
+
+    /// Take a branch to `target`, unless it is an `EXC_RETURN` while a
+    /// handler is active, in which case perform the exception return.
+    fn branch(&mut self, target: u32) -> Result<Next, HaltCause> {
+        if self.ipsr != 0 && is_exc_return(target) {
+            return self.exception_return(target);
+        }
+        Ok(Self::check_branch(target))
+    }
+
+    /// Raise a HardFault for an undecodable instruction at `pc`. The stacked
+    /// return address is the following instruction so the handler can skip
+    /// the bad opcode and continue.
+    fn hardfault_on_undefined(&mut self, pc: u32, size: u32) -> Result<(), HaltCause> {
+        self.take_exception(Exception::HardFault, pc.wrapping_add(size))?;
+        self.cycles += 1;
+        Ok(())
+    }
+
+    /// Enter Handler mode for `ex`, pushing the eight-word frame onto the
+    /// interrupted thread's stack and switching to the main stack pointer.
+    /// `return_pc` is where execution resumes on exception return.
+    fn take_exception(&mut self, ex: Exception, return_pc: u32) -> Result<(), HaltCause> {
+        // ARMv6-M faults do not nest in the set we model; taking one while a
+        // handler is already active is a double fault, which halts.
+        if self.ipsr != 0 {
+            return Err(HaltCause::UnhandledException);
+        }
+        let vector_addr = u32::from(ex.number()) * 4;
+        let vector = match self.read_word_halt(vector_addr) {
+            Ok(v) => v,
+            Err(_) => return Err(HaltCause::UnhandledException),
+        };
+        if vector & 1 == 0 {
+            return Err(HaltCause::NonThumbTarget);
+        }
+        // The frame is pushed onto the stack the thread was using; the handler
+        // then runs on the main stack pointer.
+        let use_process = self.sp_is_process();
+        let mut sp = self.regs.sp;
+        let mut sxpsr = self.xpsr.get() & (APSR_FLAGS | XPSR_T);
+        if sp & 0x4 != 0 {
+            sp = sp.wrapping_sub(4);
+            sxpsr |= XPSR_ALIGN;
+        }
+        let frame = sp.wrapping_sub(FRAME_BYTES);
+        for (i, r) in [0u8, 1, 2, 3, 12].into_iter().enumerate() {
+            self.write_word_halt(frame.wrapping_add((i as u32) * 4), self.regs.read(r))?;
+        }
+        self.write_word_halt(frame.wrapping_add(20), self.regs.lr)?;
+        self.write_word_halt(frame.wrapping_add(24), return_pc | 1)?;
+        self.write_word_halt(frame.wrapping_add(28), sxpsr)?;
+        self.regs.lr = if use_process {
+            EXC_RETURN_THREAD_PSP
+        } else {
+            EXC_RETURN_THREAD_MSP
+        };
+        if use_process {
+            self.regs.psp = frame;
+            self.regs.sp = self.regs.msp;
+        } else {
+            self.regs.msp = frame;
+            self.regs.sp = frame;
+        }
+        self.regs.pc = vector & !1;
+        self.ipsr = ex.number();
+        Ok(())
+    }
+
+    /// Unstack the eight-word frame and leave Handler mode, as directed by an
+    /// `EXC_RETURN` value loaded into the PC. Returns the branch to the
+    /// restored program counter.
+    fn exception_return(&mut self, value: u32) -> Result<Next, HaltCause> {
+        let to_handler = value == EXC_RETURN_HANDLER;
+        let to_process = value == EXC_RETURN_THREAD_PSP;
+        let to_main = value == EXC_RETURN_THREAD_MSP;
+        if !(to_handler || to_process || to_main) {
+            return Err(HaltCause::UnhandledException);
+        }
+        // In Handler mode the live stack pointer is the main SP; process
+        // returns unstack the frame from the banked process SP.
+        let frame = if to_process {
+            self.regs.psp
+        } else {
+            self.regs.sp
+        };
+        let r0 = self.read_word_halt(frame.wrapping_add(0))?;
+        let r1 = self.read_word_halt(frame.wrapping_add(4))?;
+        let r2 = self.read_word_halt(frame.wrapping_add(8))?;
+        let r3 = self.read_word_halt(frame.wrapping_add(12))?;
+        let r12 = self.read_word_halt(frame.wrapping_add(16))?;
+        let lr = self.read_word_halt(frame.wrapping_add(20))?;
+        let pc_ret = self.read_word_halt(frame.wrapping_add(24))?;
+        let sxpsr = self.read_word_halt(frame.wrapping_add(28))?;
+        if pc_ret & 1 == 0 {
+            return Err(HaltCause::NonThumbTarget);
+        }
+        // A return-to-process hands the thread the handler's final main SP,
+        // captured before the registers below switch the active pointer.
+        let handler_msp = self.regs.sp;
+        let align = sxpsr & XPSR_ALIGN != 0;
+        let sp = frame
+            .wrapping_add(FRAME_BYTES)
+            .wrapping_add(u32::from(align) * 4);
+        self.regs.write(0, r0);
+        self.regs.write(1, r1);
+        self.regs.write(2, r2);
+        self.regs.write(3, r3);
+        self.regs.write(12, r12);
+        self.regs.lr = lr;
+        self.regs.pc = pc_ret & !1;
+        self.xpsr.set(sxpsr & (APSR_FLAGS | XPSR_T));
+        if to_process {
+            self.regs.msp = handler_msp;
+            self.regs.psp = sp;
+            self.regs.sp = sp;
+            self.control |= 0x2;
+            self.ipsr = 0;
+        } else if to_main {
+            self.regs.sp = sp;
+            self.regs.msp = sp;
+            self.control &= !0x2;
+            self.ipsr = 0;
+        } else {
+            self.regs.sp = sp;
+            self.regs.msp = sp;
+        }
+        Ok(Next::Advance(self.regs.pc))
     }
 
     fn set_nz(&mut self, res: u32, v: bool) {
@@ -673,6 +828,14 @@ impl<B: Bus> Core<B> {
         let c = c.unwrap_or_else(|| self.xpsr.c());
         self.xpsr.set_nzcv(res >> 31 == 1, res == 0, c, false);
     }
+}
+
+/// Whether `v` is one of the ARMv6-M `EXC_RETURN` values.
+const fn is_exc_return(v: u32) -> bool {
+    matches!(
+        v,
+        EXC_RETURN_HANDLER | EXC_RETURN_THREAD_MSP | EXC_RETURN_THREAD_PSP
+    )
 }
 
 /// A fully-resolved load/store (word/half/byte × load/store, plus

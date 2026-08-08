@@ -27,6 +27,23 @@ fn boot(code: &[u8]) -> Machine {
     m
 }
 
+/// Boot with a full vector table: SP at 0, reset at +4, NMI at +8, and a
+/// HardFault vector at +12 pointing at `hardfault`.
+fn boot_with_vectors(reset: &[u8], hardfault: &[u8], code_addr: u32, hf_addr: u32) -> Machine {
+    let mut m = Machine::new(FlatMemory::with_layout(&[FLASH, RAM], &[0x10000, 0x10000]));
+    m.load_image(&load_flat(code_addr, reset));
+    m.load_image(&load_flat(hf_addr, hardfault));
+    {
+        let mem = m.core.mem();
+        mem.write_word(FLASH, INIT_SP).unwrap();
+        mem.write_word(FLASH + 4, code_addr | 1).unwrap();
+        mem.write_word(FLASH + 8, 0).unwrap();
+        mem.write_word(FLASH + 12, hf_addr | 1).unwrap();
+    }
+    m.reset().expect("reset from vector table");
+    m
+}
+
 /// `movs r0, #7; subs r0, r0, #3; muls r0, r0, r0; bx lr`
 /// (bytes: 07 20 | c0 1e | 40 43 | 70 47).
 const MOV_SUB_MUL: &[u8] = &[0x07, 0x20, 0xc0, 0x1e, 0x40, 0x43, 0x70, 0x47];
@@ -168,4 +185,121 @@ fn loop_bl_push_pop_ldm_stm() {
     // The two stored words are in memory.
     assert_eq!(m.core.mem().read_word(RAM).unwrap(), 0xaa);
     assert_eq!(m.core.mem().read_word(RAM + 4).unwrap(), 0xbb);
+}
+
+/// Thread code shared by the exception tests: two setup moves, an undefined
+/// `0xBFFF` (reserved HINT), then `movs r2, #0x22; bkpt`.
+const EXC_THREAD: &[u8] = &[0x20, 0x00, 0x01, 0x21, 0xff, 0xbf, 0x22, 0x22, 0x00, 0xbe];
+/// A `HardFault` handler that sets RAM to `marker` and returns with `bx lr`.
+fn marker_handler(marker: u8) -> Vec<u8> {
+    vec![
+        0x20, 0x20, 0x00, 0x06, // movs r0, #0x20; lsls r0, r0, #24 -> r0 = RAM
+        marker, 0x23, 0x03, 0x60, // movs r3, #marker; str r3, [r0]
+        0x70, 0x47, // bx lr
+    ]
+}
+
+/// An undefined instruction raises a `HardFault`: the frame is pushed, the
+/// handler runs, and `bx lr` (`EXC_RETURN`) restores the thread which resumes
+/// one instruction after the faulting opcode.
+#[test]
+fn hardfault_handler_runs_and_returns() {
+    const CODE: u32 = 0x40;
+    const HF: u32 = 0x100;
+    let mut m = boot_with_vectors(EXC_THREAD, &marker_handler(0x7a), CODE, HF);
+    let err = m.run(16);
+    assert_eq!(err, Err(HaltCause::Breakpoint));
+    let (regs, _, cycles) = m.core.snapshot();
+    // Handler ran, visible through its RAM store...
+    assert_eq!(m.core.mem().read_word(RAM).unwrap(), 0x7a);
+    // ...and the thread's registers are restored from the frame, clobbered
+    // caller-saved registers (r0, r3) and all.
+    assert_eq!(regs.r[0], 0);
+    assert_eq!(regs.r[1], 1);
+    assert_eq!(regs.r[2], 0x22);
+    assert_eq!(regs.r[3], 0);
+    assert_eq!(regs.sp, INIT_SP);
+    assert_eq!(cycles, 9);
+}
+
+/// A misaligned thread SP is 8-byte-aligned on exception entry; the stacked
+/// xPSR records the adjustment (ALIGN bit) and the original SP is restored on
+/// return.
+#[test]
+fn hard_fault_aligns_misaligned_stack() {
+    const CODE: u32 = 0x40;
+    const HF: u32 = 0x100;
+    // `sub sp, #4` (26 b1); restore checks the stacked xPSR.
+    let thread = &[
+        0x81, 0xb0, // sub sp, #4
+        0xff, 0xbf, 0x22, 0x22, 0x00, 0xbe,
+    ];
+    let handler = &[
+        0x20, 0x21, // movs r1, #0x20
+        0x09, 0x06, // lsls r1, r1, #24 -> r1 = RAM
+        0x07, 0x98, // ldr r0, [sp, #28] (stacked xPSR)
+        0x08, 0x60, // str r0, [r1]
+        0x70, 0x47, // bx lr
+    ];
+    let mut m = boot_with_vectors(thread, handler, CODE, HF);
+    let err = m.run(12);
+    assert_eq!(err, Err(HaltCause::Breakpoint));
+    let (regs, _, cycles) = m.core.snapshot();
+    // The stacked xPSR carries Thumb plus the ALIGN bit.
+    assert_eq!(m.core.mem().read_word(RAM).unwrap(), (1 << 24) | (1 << 9));
+    // The thread's SP is restored to its pre-excerpt value.
+    assert_eq!(regs.sp, INIT_SP - 4);
+    assert_eq!(regs.r[2], 0x22);
+    assert_eq!(cycles, 8);
+}
+
+/// An exception taken from a process-stack thread pushes its frame on the
+/// process SP, runs on the main SP, and returns through the PSP `EXC_RETURN`.
+#[test]
+fn exception_from_process_stack_returns_via_psp() {
+    const CODE: u32 = 0x40;
+    const HF: u32 = 0x100;
+    const PSP: u32 = 0x2000_6000;
+    const MSP: u32 = 0x2000_7000;
+    let mut m = boot_with_vectors(EXC_THREAD, &marker_handler(0x5a), CODE, HF);
+    // Run the thread on the process stack: active SP becomes the PSP, and the
+    // main stack is banked for the handler.
+    m.core.control = 0x2;
+    m.core.regs.sp = PSP;
+    m.core.regs.psp = PSP;
+    m.core.regs.msp = MSP;
+    let err = m.run(16);
+    assert_eq!(err, Err(HaltCause::Breakpoint));
+    let (regs, _, cycles) = m.core.snapshot();
+    assert_eq!(m.core.mem().read_word(RAM).unwrap(), 0x5a);
+    // The handler ran on, and preserved, the banked main SP.
+    assert_eq!(regs.msp, MSP);
+    assert_eq!(regs.sp, PSP);
+    assert_eq!(regs.r[2], 0x22);
+    assert_eq!(cycles, 9);
+}
+
+/// An undefined instruction with no `HardFault` vector configured halts with a
+/// typed cause rather than silently continuing.
+#[test]
+fn undefined_instruction_without_handler_halts() {
+    let mut m = boot(&[0xff, 0xbf]);
+    let err = m.run(4);
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
+}
+
+/// Exception return through `pop {pc}` as well as `bx lr`.
+#[test]
+fn handler_returns_via_pop_pc() {
+    const CODE: u32 = 0x40;
+    const HF: u32 = 0x100;
+    let mut handler = marker_handler(0x5a);
+    handler.extend_from_slice(&[0x00, 0xb5, 0x00, 0xbd]); // push {lr}; pop {pc}
+    let mut m = boot_with_vectors(EXC_THREAD, &handler, CODE, HF);
+    let err = m.run(16);
+    assert_eq!(err, Err(HaltCause::Breakpoint));
+    let (regs, _, _) = m.core.snapshot();
+    assert_eq!(m.core.mem().read_word(RAM).unwrap(), 0x5a);
+    assert_eq!(regs.r[2], 0x22);
+    assert_eq!(regs.sp, INIT_SP);
 }
