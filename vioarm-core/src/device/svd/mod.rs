@@ -59,20 +59,61 @@ pub struct PeripheralDef {
     pub registers: &'static [RegisterDef],
 }
 
+/// A window into the register file's storage, keyed by register offset.
+///
+/// A [`Behavior`] gets one of these on every access so it can read or write
+/// registers *other* than the one the bus touched — GPIO's `BSRR`/`BRR` set
+/// and reset `ODR`, and `IDR` is synthesized from `CRL`/`CRH`/`ODR` plus the
+/// host-driven input level.
+#[derive(Debug)]
+pub struct Registers<'a> {
+    def: &'static PeripheralDef,
+    words: &'a mut [u32],
+}
+
+impl<'a> Registers<'a> {
+    fn new(def: &'static PeripheralDef, words: &'a mut [u32]) -> Self {
+        Self { def, words }
+    }
+
+    fn index(&self, offset: u16) -> usize {
+        self.def
+            .registers
+            .iter()
+            .position(|r| r.offset == offset)
+            .unwrap_or_else(|| panic!("no register at offset 0x{offset:x}"))
+    }
+
+    /// The stored word at register `offset`.
+    #[must_use]
+    pub fn get(&self, offset: u16) -> u32 {
+        self.words[self.index(offset)]
+    }
+
+    /// Replace the stored word at register `offset`.
+    pub fn set(&mut self, offset: u16, value: u32) {
+        let i = self.index(offset);
+        self.words[i] = value;
+    }
+}
+
 /// Per-register side effects the SVD cannot express.
 ///
-/// Each method is a pure transform of the value the [`RegisterFile`] holds, so
-/// a behavior can synthesize or mask register state without touching the
-/// layout the tables describe. The trait is `Send` so any behavior can be
-/// boxed onto the bus.
+/// A behavior transforms a register value on read or write and can reach the
+/// rest of the register file through a [`Registers`] view. The trait is `Send`
+/// so any behavior can be boxed onto the bus.
 pub trait Behavior: Send {
     /// Transform a register value after firmware writes to it.
-    fn on_write(&mut self, _offset: u16, value: u32) -> u32 {
+    ///
+    /// For a write-only register (one-shot, like `BSRR`), `value` carries only
+    /// the byte actually written, shifted into place — never the stale word it
+    /// landed on — so side effects never re-fire. The return value is stored.
+    fn on_write(&mut self, _view: &mut Registers<'_>, _offset: u16, value: u32) -> u32 {
         value
     }
 
     /// Transform a register value before firmware reads it.
-    fn on_read(&mut self, _offset: u16, value: u32) -> u32 {
+    fn on_read(&mut self, _view: &mut Registers<'_>, _offset: u16, value: u32) -> u32 {
         value
     }
 
@@ -83,6 +124,12 @@ pub trait Behavior: Send {
 
     /// Clear the latched `lines` the NVIC is taking.
     fn acknowledge(&mut self, _lines: u32) {}
+
+    /// Restore post-reset behavior state, after the register words reload.
+    fn reset(&mut self) {}
+
+    /// Host stimulus: set the externally-visible input level to `value`.
+    fn drive_inputs(&mut self, _value: u32) {}
 }
 
 /// A byte-addressable peripheral driven entirely by a [`PeripheralDef`].
@@ -120,10 +167,13 @@ impl<B: Behavior> Peripheral for RegisterFile<B> {
 
     fn read(&mut self, addr: u32) -> Result<u8, BusError> {
         let off = self.offset_in_window(addr)?;
-        let (reg, idx) = self.reg_at(off)?;
-        let word = match reg.access {
-            Access::WriteOnly => 0,
-            _ => self.behavior.on_read(reg.offset, self.regs[idx]),
+        let (reg, _idx) = self.reg_at(off)?;
+        let word = if reg.access == Access::WriteOnly {
+            0
+        } else {
+            let mut view = Registers::new(self.def, &mut self.regs);
+            let value = view.get(reg.offset);
+            self.behavior.on_read(&mut view, reg.offset, value)
         };
         let shift = Self::byte_shift(reg, off);
         #[allow(clippy::cast_possible_truncation)]
@@ -132,14 +182,22 @@ impl<B: Behavior> Peripheral for RegisterFile<B> {
 
     fn write(&mut self, addr: u32, val: u8) -> Result<(), BusError> {
         let off = self.offset_in_window(addr)?;
-        let (reg, idx) = self.reg_at(off)?;
+        let (reg, _idx) = self.reg_at(off)?;
         if reg.access == Access::ReadOnly {
             return Ok(());
         }
         let shift = Self::byte_shift(reg, off);
-        let mask = !(0xFFu32 << shift);
-        let merged = (self.regs[idx] & mask) | (u32::from(val) << shift);
-        self.regs[idx] = self.behavior.on_write(reg.offset, merged);
+        let mut view = Registers::new(self.def, &mut self.regs);
+        let incoming = if reg.access == Access::WriteOnly {
+            // One-shot write-only registers (BSRR/BRR) only see the byte
+            // actually written, or a stale upper word would re-fire old bits.
+            u32::from(val) << shift
+        } else {
+            let mask = 0xFFu32 << shift;
+            (view.get(reg.offset) & !mask) | (u32::from(val) << shift)
+        };
+        let word = self.behavior.on_write(&mut view, reg.offset, incoming);
+        view.set(reg.offset, word);
         Ok(())
     }
 
@@ -147,10 +205,15 @@ impl<B: Behavior> Peripheral for RegisterFile<B> {
         for (idx, reg) in self.def.registers.iter().enumerate() {
             self.regs[idx] = reg.reset;
         }
+        self.behavior.reset();
     }
 
     fn name(&self) -> &'static str {
         self.def.name
+    }
+
+    fn drive_inputs(&mut self, value: u32) {
+        self.behavior.drive_inputs(value);
     }
 }
 
@@ -169,6 +232,23 @@ impl<B: Behavior> InterruptSource for RegisterFile<B> {
 }
 
 impl<B: Behavior> RegisterFile<B> {
+    /// The raw stored word at register `offset`, for host inspection. Bypasses
+    /// the behavior so it observes the true latch (say, the GPIO output
+    /// register) rather than a synthesized read.
+    ///
+    /// # Panics
+    /// Panics if `offset` is not one of the table's registers.
+    #[must_use]
+    pub fn word(&self, offset: u16) -> u32 {
+        let idx = self
+            .def
+            .registers
+            .iter()
+            .position(|r| r.offset == offset)
+            .unwrap_or_else(|| panic!("no register at offset 0x{offset:x}"));
+        self.regs[idx]
+    }
+
     const fn offset_in_window(&self, addr: u32) -> Result<u32, BusError> {
         if self.ranges[0].contains(addr) {
             Ok(addr - self.ranges[0].base)
@@ -338,6 +418,30 @@ mod tests {
         assert_eq!(apb2.offset, 0x18);
         let apb1 = rcc.registers.iter().find(|r| r.name == "APB1ENR").unwrap();
         assert_eq!(apb1.offset, 0x1C);
+    }
+
+    #[test]
+    fn generated_gpio_matches_silicon_layout() {
+        let gpio = super::stm32f103::peripheral("GPIOA").unwrap();
+        let expect = [
+            ("CRL", 0x00, Access::ReadWrite, 0x4444_4444),
+            ("CRH", 0x04, Access::ReadWrite, 0x4444_4444),
+            ("IDR", 0x08, Access::ReadOnly, 0x0000_0000),
+            ("ODR", 0x0C, Access::ReadWrite, 0x0000_0000),
+            ("BSRR", 0x10, Access::WriteOnly, 0x0000_0000),
+            ("BRR", 0x14, Access::WriteOnly, 0x0000_0000),
+            ("LCKR", 0x18, Access::ReadWrite, 0x0000_0000),
+        ];
+        for (name, offset, access, reset) in expect {
+            let r = gpio
+                .registers
+                .iter()
+                .find(|r| r.name == name)
+                .unwrap_or_else(|| panic!("GPIOA:{name} present"));
+            assert_eq!(r.offset, offset, "GPIOA:{name} offset");
+            assert_eq!(r.access, access, "GPIOA:{name} access");
+            assert_eq!(r.reset, reset, "GPIOA:{name} reset");
+        }
     }
 
     #[test]

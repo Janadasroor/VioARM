@@ -1,84 +1,51 @@
-//! The STM32F1 general-purpose I/O port (`GPIOx`, `0x4001_0800` +).
+//! The STM32F1 general-purpose I/O port (`GPIOx`, `0x4001_0800` +), driven by
+//! the SVD-generated register tables.
 //!
-//! Real register layout: `CRL`/`CRH` hold a 4-bit config nibble per pin
-//! (`MODE[1:0] | CNF[1:0]`, `MODE == 0` means input), `ODR` is the output
-//! latch, `IDR` reads the pin levels, and `BSRR`/`BRR` set/reset outputs with a
-//! single write. Input pins reflect host-injected levels; output pins read
-//! back their own latch, matching silicon.
+//! Register layout and resets come from the SVD: `CRL`/`CRH` hold a 4-bit
+//! config nibble per pin (`MODE[1:0] | CNF[1:0]`, `MODE == 0` means input,
+//! resetting to all-float-input `0x4444_4444`). The two things a table cannot
+//! express live in [`GpioBehavior`]: `BSRR`/`BRR` writes set/reset `ODR` (a
+//! cross-register side effect), and read-only `IDR` is synthesized from the
+//! config nibbles, the output latch, and the host-injected input level.
 
-use crate::device::Peripheral;
+use crate::device::svd::stm32f103;
+use crate::device::svd::{Behavior, RegisterFile, Registers};
+use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
 use crate::mem::bus::Region;
 
-// Word indices into the 4-byte-aligned register file.
-const W_CRL: u32 = 0;
-const W_CRH: u32 = 1;
-const W_IDR: u32 = 2;
-const W_ODR: u32 = 3;
-const W_BSRR: u32 = 4;
-const W_BRR: u32 = 5;
-const W_LCKR: u32 = 6;
+/// Register offsets within the port, per the SVD.
+const CRL: u16 = 0x00;
+const CRH: u16 = 0x04;
+const IDR: u16 = 0x08;
+const ODR: u16 = 0x0C;
+const BSRR: u16 = 0x10;
+const BRR: u16 = 0x14;
 
-/// Register offsets, used by tests to address the file directly.
-#[cfg(test)]
-const BSRR: u32 = 0x10;
-#[cfg(test)]
-const IDR: u32 = 0x08;
-#[cfg(test)]
-const ODR: u32 = 0x0C;
-
-const WINDOW_LEN: u32 = 0x1C;
-
-/// A 16-pin STM32F1 GPIO port.
-#[derive(Debug, Clone)]
-pub struct Gpio {
-    ranges: [Region; 1],
-    name: &'static str,
-    crl: u32,
-    crh: u32,
-    odr: u32,
+/// The cross-register side effects the SVD cannot express.
+#[derive(Clone, Copy, Debug, Default)]
+struct GpioBehavior {
     input: u32,
-    lckr: u32,
 }
 
-impl Gpio {
-    /// A new port mapped at `base`, reported as `name`.
-    #[must_use]
-    pub const fn at(base: u32, name: &'static str) -> Self {
-        Self {
-            ranges: [Region::new(base, WINDOW_LEN)],
-            name,
-            crl: 0,
-            crh: 0,
-            odr: 0,
-            input: 0,
-            lckr: 0,
-        }
-    }
-
-    /// The current output latch, for host inspection.
-    #[must_use]
-    pub const fn output(&self) -> u32 {
-        self.odr
-    }
-
+impl GpioBehavior {
     /// Pin `p` (0..=15) config nibble: `MODE` in bits 0..1, `CNF` in 2..3.
-    const fn config(&self, p: u32) -> u32 {
-        let reg = if p < 8 { self.crl } else { self.crh };
-        (reg >> (4 * (p & 7))) & 0xF
+    fn config(view: &Registers<'_>, p: u32) -> u32 {
+        let reg = if p < 8 { CRL } else { CRH };
+        (view.get(reg) >> (4 * (p & 7))) & 0xF
     }
 
     /// The level firmware observes on `IDR`: output pins read their own
     /// latch, input pins read the host-driven level.
-    const fn idr(&self) -> u32 {
+    fn idr(self, view: &Registers<'_>) -> u32 {
         let mut v = 0;
         let mut p = 0;
         while p < 16 {
             // `MODE == 0` (the low two config bits clear) means input.
-            let src = if self.config(p).trailing_zeros() >= 2 {
+            let src = if Self::config(view, p).trailing_zeros() >= 2 {
                 self.input
             } else {
-                self.odr
+                view.get(ODR)
             };
             if (src >> p) & 1 != 0 {
                 v |= 1 << p;
@@ -89,69 +56,33 @@ impl Gpio {
     }
 }
 
-impl Peripheral for Gpio {
-    fn ranges(&self) -> &[Region] {
-        &self.ranges
-    }
-
-    fn read(&mut self, addr: u32) -> Result<u8, BusError> {
-        if !self.ranges[0].contains(addr) {
-            return Err(BusError::Reserved);
-        }
-        let off = addr - self.ranges[0].base;
-        let word = match off >> 2 {
-            W_CRL => self.crl,
-            W_CRH => self.crh,
-            W_IDR => self.idr(),
-            W_ODR => self.odr,
-            // Write-only on silicon; reads are ignored there too.
-            W_BSRR | W_BRR => 0,
-            W_LCKR => self.lckr,
-            _ => return Err(BusError::Reserved),
-        };
-        #[allow(clippy::cast_possible_truncation)]
-        Ok((word >> (8 * (off & 3))) as u8)
-    }
-
-    fn write(&mut self, addr: u32, val: u8) -> Result<(), BusError> {
-        if !self.ranges[0].contains(addr) {
-            return Err(BusError::Reserved);
-        }
-        let off = addr - self.ranges[0].base;
-        let shift = 8 * (off & 3);
-        let mask = 0xFFu32 << shift;
-        let bits = u32::from(val) << shift;
-        match off >> 2 {
-            W_CRL => self.crl = (self.crl & !mask) | bits,
-            W_CRH => self.crh = (self.crh & !mask) | bits,
-            W_ODR => self.odr = (self.odr & !mask) | bits,
-            W_BSRR => {
-                // Byte `b` sets pins `8b..8b+7` and resets pins `8b+16..8b+23`.
-                if shift < 16 {
-                    self.odr |= bits;
-                } else {
-                    self.odr &= !(bits >> 16);
-                }
+impl Behavior for GpioBehavior {
+    fn on_write(&mut self, view: &mut Registers<'_>, offset: u16, value: u32) -> u32 {
+        match offset {
+            BSRR => {
+                // Set bits 0..15 (a set wins if a bit is also reset), reset
+                // bits 16..31.
+                let odr = view.get(ODR);
+                let set = value & 0xFFFF;
+                let reset = (value >> 16) & 0xFFFF;
+                view.set(ODR, (odr | set) & !reset);
             }
-            W_BRR => self.odr &= !bits,
-            W_LCKR => self.lckr = (self.lckr & !mask) | bits,
-            // IDR is host-driven; firmware writes are consumed without fault.
-            W_IDR => {}
-            _ => return Err(BusError::Reserved),
+            BRR => view.set(ODR, view.get(ODR) & !value),
+            _ => {}
         }
-        Ok(())
+        value
+    }
+
+    fn on_read(&mut self, view: &mut Registers<'_>, offset: u16, value: u32) -> u32 {
+        if offset == IDR {
+            self.idr(view)
+        } else {
+            value
+        }
     }
 
     fn reset(&mut self) {
-        self.crl = 0;
-        self.crh = 0;
-        self.odr = 0;
         self.input = 0;
-        self.lckr = 0;
-    }
-
-    fn name(&self) -> &'static str {
-        self.name
     }
 
     fn drive_inputs(&mut self, value: u32) {
@@ -159,7 +90,78 @@ impl Peripheral for Gpio {
     }
 }
 
-impl crate::device::InterruptSource for Gpio {}
+/// A 16-pin STM32F1 GPIO port.
+#[derive(Debug)]
+pub struct Gpio {
+    inner: RegisterFile<GpioBehavior>,
+    name: &'static str,
+}
+
+impl Gpio {
+    /// A new port at the generated peripheral whose base is `base`, reported
+    /// as `name`.
+    ///
+    /// # Panics
+    /// Panics if the generated device tables do not contain a peripheral at
+    /// `base` (a build-time invariant enforced by conformance tests).
+    #[must_use]
+    pub fn at(base: u32, name: &'static str) -> Self {
+        let def = stm32f103::PERIPHERALS
+            .iter()
+            .find(|p| p.base == base)
+            .expect("generated tables contain a peripheral at base");
+        Self {
+            inner: RegisterFile::new(def),
+            name,
+        }
+    }
+
+    /// The current output latch, for host inspection.
+    #[must_use]
+    pub fn output(&self) -> u32 {
+        self.inner.word(ODR)
+    }
+}
+
+impl Peripheral for Gpio {
+    fn ranges(&self) -> &[Region] {
+        self.inner.ranges()
+    }
+
+    fn read(&mut self, addr: u32) -> Result<u8, BusError> {
+        self.inner.read(addr)
+    }
+
+    fn write(&mut self, addr: u32, val: u8) -> Result<(), BusError> {
+        self.inner.write(addr, val)
+    }
+
+    fn reset(&mut self) {
+        self.inner.reset();
+    }
+
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn drive_inputs(&mut self, value: u32) {
+        self.inner.drive_inputs(value);
+    }
+}
+
+impl InterruptSource for Gpio {
+    fn exception_number(&self) -> Option<u8> {
+        self.inner.exception_number()
+    }
+
+    fn pending(&self) -> u32 {
+        self.inner.pending()
+    }
+
+    fn acknowledge(&mut self, lines: u32) {
+        self.inner.acknowledge(lines);
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -195,16 +197,16 @@ mod tests {
     #[test]
     fn bsrr_sets_and_resets_in_one_write() {
         let mut g = Gpio::at(BASE, "gpioa");
-        write_word(&mut g, BASE + BSRR, 0x0000_000F); // set pins 0..3
+        write_word(&mut g, BASE + u32::from(BSRR), 0x0000_000F); // set pins 0..3
         assert_eq!(g.output() & 0xF, 0xF);
-        write_word(&mut g, BASE + BSRR, 0x0000_0001 << 16); // reset pin 0
+        write_word(&mut g, BASE + u32::from(BSRR), 0x0000_0001 << 16); // reset pin 0
         assert_eq!(g.output() & 0xF, 0xE);
     }
 
     #[test]
     fn brr_resets_outputs() {
         let mut g = Gpio::at(BASE, "gpioa");
-        write_word(&mut g, BASE + BSRR, 0x0000_00FF);
+        write_word(&mut g, BASE + u32::from(BSRR), 0x0000_00FF);
         write_word(&mut g, BASE + 0x14, 0x0000_0081); // BRR pins 0, 7
         assert_eq!(g.output() & 0xFF, 0x7E);
     }
@@ -215,27 +217,27 @@ mod tests {
         // Pin 0 output push-pull, pin 1 input float.
         crh_set(&mut g, 8, 0b0011); // PA8 output
         crh_set(&mut g, 9, 0b0100); // PA9 input float
-        write_word(&mut g, BASE + BSRR, 1 << 8); // PA8 high
+        write_word(&mut g, BASE + u32::from(BSRR), 1 << 8); // PA8 high
         g.drive_inputs(1 << 9); // PA9 held high by host
-        assert_eq!(read_word(&mut g, BASE + IDR) & 0x0300, 0x0300);
+        assert_eq!(read_word(&mut g, BASE + u32::from(IDR)) & 0x0300, 0x0300);
     }
 
     #[test]
     fn firmware_writes_to_idr_are_ignored() {
         let mut g = Gpio::at(BASE, "gpioa");
-        write_word(&mut g, BASE + IDR, 0xFFFF_FFFF);
-        assert_eq!(read_word(&mut g, BASE + IDR), 0);
+        write_word(&mut g, BASE + u32::from(IDR), 0xFFFF_FFFF);
+        assert_eq!(read_word(&mut g, BASE + u32::from(IDR)), 0);
     }
 
     #[test]
     fn reset_clears_all_registers() {
         let mut g = Gpio::at(BASE, "gpioa");
-        write_word(&mut g, BASE + BSRR, 0xFFFF_FFFF);
-        write_word(&mut g, BASE + ODR, 0xFFFF_FFFF);
+        write_word(&mut g, BASE + u32::from(BSRR), 0xFFFF_FFFF);
+        write_word(&mut g, BASE + u32::from(ODR), 0xFFFF_FFFF);
         g.drive_inputs(0xFFFF_FFFF);
         g.reset();
-        assert_eq!(read_word(&mut g, BASE + ODR), 0);
-        assert_eq!(read_word(&mut g, BASE + IDR), 0);
+        assert_eq!(read_word(&mut g, BASE + u32::from(ODR)), 0);
+        assert_eq!(read_word(&mut g, BASE + u32::from(IDR)), 0);
     }
 
     #[test]

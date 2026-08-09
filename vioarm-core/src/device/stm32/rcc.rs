@@ -9,7 +9,7 @@
 //! peripherals is not enforced here — see the `stm32` module docs.
 
 use crate::device::svd::stm32f103;
-use crate::device::svd::{Behavior, RegisterFile};
+use crate::device::svd::{Behavior, RegisterFile, Registers};
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
 use crate::mem::bus::Region;
@@ -31,7 +31,7 @@ const CR_OFFSET: u16 = 0x00;
 struct RccBehavior;
 
 impl Behavior for RccBehavior {
-    fn on_read(&mut self, offset: u16, value: u32) -> u32 {
+    fn on_read(&mut self, _view: &mut Registers<'_>, offset: u16, value: u32) -> u32 {
         if offset == CR_OFFSET {
             // HSI is always on and ready; PLL locks as soon as it is requested.
             let pll = if value & PLLON != 0 { PLLRDY } else { 0 };
