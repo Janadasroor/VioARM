@@ -132,6 +132,14 @@ fn run(tool: &Path, args: &[&str]) -> Result<String, String> {
 
 /// Compile `source` and return `(.text bytes, symbol -> offset within .text)`.
 fn build_firmware(source: &str) -> Result<(Vec<u8>, HashMap<String, u32>), String> {
+    build_firmware_with_includes(source, &[])
+}
+
+/// Like [`build_firmware`], but adds `includes` as `-I` search paths.
+fn build_firmware_with_includes(
+    source: &str,
+    includes: &[&str],
+) -> Result<(Vec<u8>, HashMap<String, u32>), String> {
     let clang = which("clang").ok_or_else(|| "clang not found on PATH".to_string())?;
     let objcopy = which("llvm-objcopy")
         .or_else(|| which("objcopy"))
@@ -148,22 +156,24 @@ fn build_firmware(source: &str) -> Result<(Vec<u8>, HashMap<String, u32>), Strin
 
     let src = src.to_str().ok_or("temp path not UTF-8")?;
     let obj = obj.to_str().ok_or("temp path not UTF-8")?;
-    run(
-        &clang,
-        &[
-            "--target=thumbv6m-none-eabi",
-            "-mcpu=cortex-m0",
-            "-mthumb",
-            "-ffreestanding",
-            "-nostdlib",
-            "-O0",
-            "-g0",
-            "-c",
-            src,
-            "-o",
-            obj,
-        ],
-    )?;
+    let mut args = vec![
+        "--target=thumbv6m-none-eabi",
+        "-mcpu=cortex-m0",
+        "-mthumb",
+        "-ffreestanding",
+        "-nostdlib",
+        "-O0",
+        "-g0",
+        "-c",
+        src,
+        "-o",
+        obj,
+    ];
+    for inc in includes {
+        args.push("-I");
+        args.push(inc);
+    }
+    run(&clang, &args)?;
 
     let listing = run(&nm, &["-n", obj])?;
     let mut symbols = HashMap::new();
@@ -305,4 +315,130 @@ fn virtual_board_io_round_trips() {
         tx.extend(device.drain_output());
     }
     assert_eq!(tx, b"Hi!\n");
+}
+
+/// Real CMSIS-style firmware against the STM32F103 device header from the
+/// Keil pack: clock gates, GPIO config via `BSRR`, `USART1` transmit plus an
+/// interrupt-driven receive, and a counting `TIM2` — all exercised through
+/// the real peripheral registers.
+const STM32_F103_FIRMWARE: &str = r#"
+#include "stm32f10x.h"
+
+#define OUT_SNAPSHOT 0x20000000u
+#define RX_SNAPSHOT  0x20000004u
+#define TIM_SNAPSHOT 0x20000008u
+
+static volatile unsigned g_rx;
+
+void USART1_IRQHandler(void) {
+    if (USART1->SR & USART_SR_RXNE) {
+        g_rx = USART1->DR;
+    }
+}
+
+void reset(void) {
+    /* 1. Clock gates: GPIOA + AFIO + USART1 on APB2, TIM2 on APB1. */
+    RCC->APB2ENR |= RCC_APB2ENR_IOPAEN | RCC_APB2ENR_AFIOEN | RCC_APB2ENR_USART1EN;
+    RCC->APB1ENR |= RCC_APB1ENR_TIM2EN;
+
+    /* 2. PA9 = USART1_TX (alternate push-pull 50 MHz), PA10 = USART1_RX. */
+    GPIOA->CRH = (GPIOA->CRH & ~(0xFu << (1 * 4))) | (0xBu << (1 * 4));
+    GPIOA->CRH = (GPIOA->CRH & ~(0xFu << (2 * 4))) | (0x4u << (2 * 4));
+    GPIOA->BSRR = GPIO_Pin_0; /* drive PA0 high */
+
+    /* 3. USART1 at 8 MHz HSI / 9600 baud: BRR = 8e6 / 9600 = 833. */
+    USART1->BRR = 0x341;
+    USART1->CR1 = USART_CR1_UE | USART_CR1_TE | USART_CR1_RE;
+
+    /* 4. TIM2 free-runs (PSC 0, 32-bit ARR). */
+    TIM2->ARR = 0xFFFFFFFFu;
+    TIM2->PSC = 0;
+    TIM2->EGR = TIM_EGR_UG;
+    TIM2->CR1 = TIM_CR1_CEN;
+
+    /* 5. Arm the RX interrupt (IRQ 37, exception vector 53). */
+    NVIC->ISER[1] = 1u << (USART1_IRQn - 32);
+    USART1->CR1 |= USART_CR1_RXNEIE;
+
+    /* 6. Transmit a line. */
+    {
+        const char *s = "ok!\n";
+        while (*s) {
+            while (!(USART1->SR & USART_SR_TXE)) { }
+            USART1->DR = *s++;
+        }
+    }
+
+    /* 7. Wait for the host-injected byte to arrive through the IRQ. */
+    while (!g_rx) { }
+
+    *(volatile unsigned *)OUT_SNAPSHOT = GPIOA->ODR;
+    *(volatile unsigned *)RX_SNAPSHOT = g_rx;
+    *(volatile unsigned *)TIM_SNAPSHOT = TIM2->CNT;
+    __asm__ volatile("bkpt #0");
+}
+"#;
+
+/// On the STM32F103 board, firmware compiled against the real device header
+/// enables clocks, drives GPIO, transmits over `USART1`, receives a byte
+/// through its IRQ, and lets `TIM2` free-run — all through real registers.
+#[test]
+fn stm32f103_firmware_uses_real_peripherals() {
+    let include = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../packs/Keil.STM32F1xx_DFP/Device/Include");
+    if !include.is_dir() {
+        eprintln!(
+            "skipping stm32f103 test: pack include dir {} not found",
+            include.display()
+        );
+        return;
+    }
+    let include = include
+        .to_str()
+        .expect("pack include path is not UTF-8")
+        .to_owned();
+    let (code, symbols) = match build_firmware_with_includes(STM32_F103_FIRMWARE, &[&include]) {
+        Ok(image) => image,
+        Err(why) => {
+            eprintln!("skipping stm32f103 test: {why}");
+            return;
+        }
+    };
+    let entry = *symbols.get("reset").expect("no reset symbol");
+    let irq = *symbols
+        .get("USART1_IRQHandler")
+        .expect("no USART1_IRQHandler symbol");
+    assert!(!code.is_empty(), "compiled .text must not be empty");
+
+    let mut m = Machine::new(board::stm32f103());
+    m.load_image(&load_flat(CODE_BASE, &code));
+    {
+        let mem = m.core.mem();
+        mem.write_word(FLASH, INIT_SP).unwrap();
+        mem.write_word(FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+        // Vector 53 = USART1 IRQ 37 at FLASH + 53 * 4.
+        mem.write_word(FLASH + 53 * 4, (CODE_BASE + irq) | 1)
+            .unwrap();
+    }
+    m.reset().expect("reset from vector table");
+    // Host stimulus: one byte arrives on the USART1 RX line while the
+    // firmware boots. (The GPIO/EXTI devices consume the same channel.)
+    for device in m.core.mem().devices_mut() {
+        device.drive_inputs(0x5A);
+    }
+    let err = m.run(200_000);
+    assert_eq!(err, Err(HaltCause::Breakpoint));
+    // GPIO: PA0 was driven high through BSRR and read back on ODR.
+    assert_eq!(m.core.mem().read_word(board::RAM).unwrap(), 0x1);
+    // USART1: the interrupt handler latched the received byte.
+    assert_eq!(m.core.mem().read_word(board::RAM + 4).unwrap(), 0x5A);
+    // TIM2: the free-running counter advanced past zero.
+    let tim_cnt = m.core.mem().read_word(board::RAM + 8).unwrap();
+    assert!(tim_cnt > 0, "TIM2 never counted: {tim_cnt}");
+    // USART1 TX: the transmitted line reached the host channel.
+    let mut tx = Vec::new();
+    for device in m.core.mem().devices_mut() {
+        tx.extend(device.drain_output());
+    }
+    assert_eq!(tx, b"ok!\n");
 }

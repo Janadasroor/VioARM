@@ -374,7 +374,10 @@ impl<B: Bus> Core<B> {
             }
             I::LdrLiteral { rt, imm } => {
                 let addr = ((pc + 4) & !3) + imm as u32;
-                let v = self.read_word_halt(addr)?;
+                let v = match self.mem.read_word(addr) {
+                    Ok(v) => v,
+                    Err(_) => return self.data_fault(addr, pc),
+                };
                 self.write_rt(rt, v, addr, pc)
             }
             I::LsReg { rt, rn, rm, kind } => {
@@ -609,35 +612,26 @@ impl<B: Bus> Core<B> {
         );
         if is_load {
             let v = match access {
-                LsAccess::Word { load: _ } => self.read_word_halt(addr)?,
-                LsAccess::Half { load: true } => {
-                    let hw = self
-                        .mem
-                        .read_half(addr)
-                        .map_err(|_| HaltCause::BusFault { address: addr })?;
-                    u32::from(hw)
-                }
-                LsAccess::Byte { load: true } => {
-                    let b = self
-                        .mem
-                        .read(addr)
-                        .map_err(|_| HaltCause::BusFault { address: addr })?;
-                    u32::from(b)
-                }
-                LsAccess::SextByte => {
-                    let b = self
-                        .mem
-                        .read(addr)
-                        .map_err(|_| HaltCause::BusFault { address: addr })?;
-                    (b as i8) as u32
-                }
-                LsAccess::SextHalf => {
-                    let hw = self
-                        .mem
-                        .read_half(addr)
-                        .map_err(|_| HaltCause::BusFault { address: addr })?;
-                    (hw as i16) as u32
-                }
+                LsAccess::Word { load: _ } => match self.mem.read_word(addr) {
+                    Ok(v) => v,
+                    Err(_) => return self.data_fault(addr, pc),
+                },
+                LsAccess::Half { load: true } => match self.mem.read_half(addr) {
+                    Ok(hw) => u32::from(hw),
+                    Err(_) => return self.data_fault(addr, pc),
+                },
+                LsAccess::Byte { load: true } => match self.mem.read(addr) {
+                    Ok(b) => u32::from(b),
+                    Err(_) => return self.data_fault(addr, pc),
+                },
+                LsAccess::SextByte => match self.mem.read(addr) {
+                    Ok(b) => (b as i8) as u32,
+                    Err(_) => return self.data_fault(addr, pc),
+                },
+                LsAccess::SextHalf => match self.mem.read_half(addr) {
+                    Ok(hw) => (hw as i16) as u32,
+                    Err(_) => return self.data_fault(addr, pc),
+                },
                 _ => unreachable!(),
             };
             self.write_rt(rt, v, addr, pc)
@@ -645,21 +639,24 @@ impl<B: Bus> Core<B> {
             match access {
                 LsAccess::Word { load: false } => {
                     let v = self.regs.read(rt);
-                    self.mem
-                        .write_word(addr, v)
-                        .map_err(|_| HaltCause::BusFault { address: addr })?;
+                    match self.mem.write_word(addr, v) {
+                        Ok(()) => {}
+                        Err(_) => return self.data_fault(addr, pc),
+                    }
                 }
                 LsAccess::Half { load: false } => {
                     let v = self.regs.read(rt) as u16;
-                    self.mem
-                        .write_half(addr, v)
-                        .map_err(|_| HaltCause::BusFault { address: addr })?;
+                    match self.mem.write_half(addr, v) {
+                        Ok(()) => {}
+                        Err(_) => return self.data_fault(addr, pc),
+                    }
                 }
                 LsAccess::Byte { load: false } => {
                     let v = self.regs.read(rt) as u8;
-                    self.mem
-                        .write(addr, v)
-                        .map_err(|_| HaltCause::BusFault { address: addr })?;
+                    match self.mem.write(addr, v) {
+                        Ok(()) => {}
+                        Err(_) => return self.data_fault(addr, pc),
+                    }
                 }
                 _ => unreachable!(),
             }
@@ -702,6 +699,16 @@ impl<B: Bus> Core<B> {
         self.take_exception(Exception::HardFault, pc.wrapping_add(size))?;
         self.cycles += 1;
         Ok(())
+    }
+
+    /// Escalate a faulting data access at `addr` (from instruction at `pc`)
+    /// to a HardFault, per ARMv6-M (no separate bus-fault exception exists).
+    /// The stacked return address is the faulting instruction so the handler
+    /// can fix the cause and retry it. Continues into the handler.
+    fn data_fault(&mut self, addr: u32, pc: u32) -> Result<Next, HaltCause> {
+        let _ = addr;
+        self.take_exception(Exception::HardFault, pc)?;
+        Ok(Next::Advance(self.regs.pc))
     }
 
     /// Enter Handler mode for `ex`, pushing the eight-word frame onto the
@@ -766,7 +773,7 @@ impl<B: Bus> Core<B> {
         let ex = match n {
             3 => Exception::HardFault,
             15 => Exception::SysTick,
-            16..=47 => Exception::Irq(n - 16),
+            16..=79 => Exception::Irq(n - 16),
             _ => return Err(HaltCause::UnhandledException),
         };
         self.take_exception(ex, self.regs.pc)

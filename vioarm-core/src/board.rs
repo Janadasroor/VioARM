@@ -7,8 +7,17 @@
 //! - `0x4000_0000` GPIO
 //! - `0x4000_1000` UART (transmit)
 //! - `0xE000_E000` NVIC / `0xE000_E010` `SysTick`
+//!
+//! A second board, [`stm32f103`], models a Blue-Pill-class STM32F103 with its
+//! real peripheral map.
 
 use crate::device::gpio::Gpio;
+use crate::device::stm32::afio::Afio;
+use crate::device::stm32::exti::Exti;
+use crate::device::stm32::gpio::Gpio as StmGpio;
+use crate::device::stm32::rcc::Rcc;
+use crate::device::stm32::timer::Timer;
+use crate::device::stm32::usart::Usart1;
 use crate::device::systick::SysTick;
 use crate::device::uart::UartTx;
 use crate::mem::flat::FlatMemory;
@@ -38,6 +47,38 @@ pub fn virtual_board() -> BoardMemory {
     let mut mem = SystemMemory::new(backing);
     mem.attach(Box::new(Gpio::at(GPIO_BASE)));
     mem.attach(Box::new(UartTx::at(UART_BASE)));
+    mem.attach(Box::new(SysTick::new()));
+    mem
+}
+
+/// STM32F103 (Blue Pill class) flash base — the `0x0800_0000` alias is not yet
+/// modeled; firmware is loaded at the `0x0000_0000` boot alias.
+pub const STM32_F103_FLASH: u32 = FLASH;
+/// STM32F103 flash size in bytes (medium density).
+pub const STM32_F103_FLASH_LEN: u32 = 0x0001_0000;
+/// STM32F103 RAM size in bytes.
+pub const STM32_F103_RAM_LEN: u32 = 0x0000_5000;
+
+/// A Blue-Pill-class STM32F103 board: the M0 core with the STM32F1 peripheral
+/// set mapped at its real addresses (from `STM32F103xx.svd`).
+///
+/// Firmware boots from the flash alias at `0x0000_0000`; peripherals are
+/// ungated (see the `stm32` module docs).
+#[must_use]
+pub fn stm32f103() -> BoardMemory {
+    use crate::device::stm32;
+    let backing =
+        FlatMemory::with_layout(&[FLASH, RAM], &[STM32_F103_FLASH_LEN, STM32_F103_RAM_LEN]);
+    let mut mem = SystemMemory::new(backing);
+    mem.attach(Box::new(Rcc::new()));
+    mem.attach(Box::new(StmGpio::at(stm32::GPIOA, "gpioa")));
+    mem.attach(Box::new(StmGpio::at(stm32::GPIOB, "gpiob")));
+    mem.attach(Box::new(StmGpio::at(stm32::GPIOC, "gpioc")));
+    mem.attach(Box::new(Usart1::new()));
+    mem.attach(Box::new(Timer::tim2()));
+    mem.attach(Box::new(Timer::tim3()));
+    mem.attach(Box::new(Exti::new()));
+    mem.attach(Box::new(Afio::new()));
     mem.attach(Box::new(SysTick::new()));
     mem
 }

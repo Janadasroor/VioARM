@@ -151,7 +151,7 @@ impl<M: Bus> SystemMemory<M> {
                 continue;
             };
             if n >= 16 && device.pending() != 0 {
-                self.nvic.latch(1 << u32::from(n - 16));
+                self.nvic.latch(1u64 << u32::from(n - 16));
             }
         }
     }
