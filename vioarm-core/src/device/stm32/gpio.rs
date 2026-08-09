@@ -57,20 +57,28 @@ impl GpioBehavior {
 }
 
 impl Behavior for GpioBehavior {
-    fn on_write(&mut self, view: &mut Registers<&mut [u32]>, offset: u16, value: u32) -> u32 {
+    fn on_write(
+        &mut self,
+        view: &mut Registers<&mut [u32]>,
+        offset: u16,
+        val: u8,
+        shift: u32,
+    ) -> u32 {
         match offset {
             BSRR => {
-                // Set bits 0..15 (a set wins if a bit is also reset), reset
-                // bits 16..31.
+                // A byte in the low half sets pins `shift..shift+7`; in the
+                // high half it resets pins `shift-16..shift-9`.
                 let odr = view.get(ODR);
-                let set = value & 0xFFFF;
-                let reset = (value >> 16) & 0xFFFF;
-                view.set(ODR, (odr | set) & !reset);
+                if shift < 16 {
+                    view.set(ODR, odr | (u32::from(val) << shift));
+                } else {
+                    view.set(ODR, odr & !(u32::from(val) << (shift - 16)));
+                }
             }
-            BRR => view.set(ODR, view.get(ODR) & !value),
+            BRR => view.set(ODR, view.get(ODR) & !(u32::from(val) << shift)),
             _ => {}
         }
-        value
+        view.merged(offset, val, shift)
     }
 
     fn on_read(&mut self, view: &Registers<&[u32]>, offset: u16, value: u32) -> u32 {
@@ -85,7 +93,7 @@ impl Behavior for GpioBehavior {
         self.input = 0;
     }
 
-    fn drive_inputs(&mut self, value: u32) {
+    fn drive_inputs(&mut self, _view: &mut Registers<&mut [u32]>, value: u32) {
         self.input = value;
     }
 }

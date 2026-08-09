@@ -102,6 +102,15 @@ impl Registers<&mut [u32]> {
         let i = self.index(offset);
         self.words[i] = value;
     }
+
+    /// The stored word at `offset` with byte `val` merged into lane `shift` —
+    /// the byte-lane read-modify-write a plain register write stores.
+    #[must_use]
+    pub fn merged(&self, offset: u16, val: u8, shift: u32) -> u32 {
+        let current = self.get(offset);
+        let mask = 0xFFu32 << shift;
+        (current & !mask) | (u32::from(val) << shift)
+    }
 }
 
 /// Per-register side effects the SVD cannot express.
@@ -111,13 +120,20 @@ impl Registers<&mut [u32]> {
 /// simulated time. The trait is `Send` so any behavior can be boxed onto the
 /// bus.
 pub trait Behavior: Send {
-    /// Transform a register value after firmware writes to it.
+    /// The word to store after firmware writes byte `val` at lane `shift`.
     ///
-    /// For a write-only register (one-shot, like `BSRR`), `value` carries only
-    /// the byte actually written, shifted into place — never the stale word it
-    /// landed on — so side effects never re-fire. The return value is stored.
-    fn on_write(&mut self, _view: &mut Registers<&mut [u32]>, _offset: u16, value: u32) -> u32 {
-        value
+    /// The default does a byte-lane read-modify-write, so a plain register
+    /// needs no hook. The byte and its lane are passed rather than a merged
+    /// word so one-shot semantics — `BSRR`/`BRR` set/reset, write-1-to-clear —
+    /// never re-fire stale bits from an earlier access.
+    fn on_write(
+        &mut self,
+        view: &mut Registers<&mut [u32]>,
+        offset: u16,
+        val: u8,
+        shift: u32,
+    ) -> u32 {
+        view.merged(offset, val, shift)
     }
 
     /// Transform a register value before firmware reads it.
@@ -142,8 +158,14 @@ pub trait Behavior: Send {
     fn reset(&mut self) {}
 
     /// Host stimulus: set the externally-visible input level to `value`.
-    fn drive_inputs(&mut self, _value: u32) {}
+    fn drive_inputs(&mut self, _view: &mut Registers<&mut [u32]>, _value: u32) {}
 }
+
+/// A behavior with no side effects: every register is a pure latch.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoBehavior;
+
+impl Behavior for NoBehavior {}
 
 /// A byte-addressable peripheral driven entirely by a [`PeripheralDef`].
 ///
@@ -202,15 +224,7 @@ impl<B: Behavior> Peripheral for RegisterFile<B> {
         }
         let shift = Self::byte_shift(reg, off);
         let mut view = Registers::new(self.def, &mut self.regs[..]);
-        let incoming = if reg.access == Access::WriteOnly {
-            // One-shot write-only registers (BSRR/BRR) only see the byte
-            // actually written, or a stale upper word would re-fire old bits.
-            u32::from(val) << shift
-        } else {
-            let mask = 0xFFu32 << shift;
-            (view.get(reg.offset) & !mask) | (u32::from(val) << shift)
-        };
-        let word = self.behavior.on_write(&mut view, reg.offset, incoming);
+        let word = self.behavior.on_write(&mut view, reg.offset, val, shift);
         view.set(reg.offset, word);
         Ok(())
     }
@@ -232,7 +246,8 @@ impl<B: Behavior> Peripheral for RegisterFile<B> {
     }
 
     fn drive_inputs(&mut self, value: u32) {
-        self.behavior.drive_inputs(value);
+        let mut view = Registers::new(self.def, &mut self.regs[..]);
+        self.behavior.drive_inputs(&mut view, value);
     }
 }
 
@@ -267,6 +282,18 @@ impl<B: Behavior> RegisterFile<B> {
             .position(|r| r.offset == offset)
             .unwrap_or_else(|| panic!("no register at offset 0x{offset:x}"));
         self.regs[idx]
+    }
+
+    /// The exception number for the named interrupt line, if the table lists
+    /// it. Some SVDs group several lines under one peripheral (EXTI lists
+    /// `TAMPER`, `EXTI0`, ...); this picks the one the behavior actually wires.
+    #[must_use]
+    pub fn irq_exception(&self, name: &str) -> Option<u8> {
+        self.def
+            .irqs
+            .iter()
+            .find(|irq| irq.name == name)
+            .map(|irq| 16 + irq.number)
     }
 
     const fn offset_in_window(&self, addr: u32) -> Result<u32, BusError> {
@@ -491,6 +518,34 @@ mod tests {
             .unwrap_or_else(|| panic!("TIM2 has an IRQ"));
         assert_eq!(irq.number, 28);
         assert_eq!(16 + irq.number, 44, "TIM2 update exception number");
+    }
+
+    #[test]
+    fn generated_exti_matches_silicon_layout() {
+        let exti = super::stm32f103::peripheral("EXTI").unwrap();
+        let expect = [
+            ("IMR", 0x00),
+            ("EMR", 0x04),
+            ("RTSR", 0x08),
+            ("FTSR", 0x0C),
+            ("SWIER", 0x10),
+            ("PR", 0x14),
+        ];
+        for (name, offset) in expect {
+            let r = exti
+                .registers
+                .iter()
+                .find(|r| r.name == name)
+                .unwrap_or_else(|| panic!("EXTI:{name} present"));
+            assert_eq!(r.offset, offset, "EXTI:{name} offset");
+            assert_eq!(r.access, Access::ReadWrite, "EXTI:{name} access");
+        }
+        // The SVD groups TAMPER + EXTI lines under one peripheral; the first
+        // IRQ is TAMPER, but the model wires only EXTI line 0.
+        assert_eq!(exti.irqs.first().map(|irq| irq.number), Some(2));
+        let exti0 = exti.irqs.iter().find(|irq| irq.name == "EXTI0").unwrap();
+        assert_eq!(exti0.number, 6);
+        assert_eq!(16 + exti0.number, 22, "EXTI0 exception number");
     }
 
     #[test]

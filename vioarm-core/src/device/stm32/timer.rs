@@ -50,24 +50,27 @@ impl TimerBehavior {
 }
 
 impl Behavior for TimerBehavior {
-    fn on_write(&mut self, view: &mut Registers<&mut [u32]>, offset: u16, value: u32) -> u32 {
-        if offset == EGR {
+    fn on_write(
+        &mut self,
+        view: &mut Registers<&mut [u32]>,
+        offset: u16,
+        val: u8,
+        shift: u32,
+    ) -> u32 {
+        if offset == EGR && (u32::from(val) << shift) & UG != 0 {
             // Any write with UG set forces a software update event: reload the
             // counter and prescaler, and set the update flag like a real
             // overflow would.
-            if value & UG != 0 {
-                view.set(CNT, 0);
-                self.psc_phase = 0;
-                view.set(SR, view.get(SR) | UIF);
-            }
-            value
-        } else {
-            match offset {
-                // TIM3's counter and auto-reload are 16-bit on silicon even
-                // though the SVD describes 32-bit register words.
-                CNT | ARR => value & self.width_mask,
-                _ => value,
-            }
+            view.set(CNT, 0);
+            self.psc_phase = 0;
+            view.set(SR, view.get(SR) | UIF);
+        }
+        let word = view.merged(offset, val, shift);
+        match offset {
+            // TIM3's counter and auto-reload are 16-bit on silicon even
+            // though the SVD describes 32-bit register words.
+            CNT | ARR => word & self.width_mask,
+            _ => word,
         }
     }
 

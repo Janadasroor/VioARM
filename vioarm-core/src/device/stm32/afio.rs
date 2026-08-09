@@ -1,49 +1,36 @@
-//! The STM32F1 alternate-function I/O unit (`AFIO`, `0x4001_0000`).
+//! The STM32F1 alternate-function I/O unit (`AFIO`, `0x4001_0000`), driven by
+//! the SVD-generated register tables.
 //!
-//! Latches the real register file (`EVCR`, `MAPR`, `EXTICR1..4`, `MAPR2`) so
+//! Every register is a pure latch, so [`NoBehavior`] needs no hooks: the whole
+//! device is the register file the table describes. `EVCR`, `MAPR`,
+//! `EXTICR1..4`, and `MAPR2` (with the reserved `0x18` gap) all roundtrip so
 //! firmware that configures pin remapping or EXTI routing does not fault.
 //! Remapping is accepted but not acted on — the board's fixed pin functions
 //! are correct for the default mapping the e2e firmware uses.
 
-use crate::device::Peripheral;
+use crate::device::svd::stm32f103;
+use crate::device::svd::{NoBehavior, RegisterFile};
+use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
 use crate::mem::bus::Region;
 
-const BASE: u32 = 0x4001_0000;
-const WINDOW_LEN: u32 = 0x20;
-
-#[cfg(test)]
-const MAPR: u32 = 0x04;
-
-const REGS: usize = 7;
-
-const fn reg_of(off: u32) -> Option<usize> {
-    match off >> 2 {
-        0 => Some(0),
-        1 => Some(1),
-        2 => Some(2),
-        3 => Some(3),
-        4 => Some(4),
-        5 => Some(5),
-        7 => Some(6), // MAPR2 sits at 0x1C; 0x18 is reserved.
-        _ => None,
-    }
-}
-
 /// The `AFIO` register file.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Afio {
-    ranges: [Region; 1],
-    regs: [u32; REGS],
+    inner: RegisterFile<NoBehavior>,
 }
 
 impl Afio {
     /// A new `AFIO` at its STM32F1 base address.
+    ///
+    /// # Panics
+    /// Panics if the generated device tables do not contain the `AFIO`
+    /// peripheral (a build-time invariant enforced by conformance tests).
     #[must_use]
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
+        let def = stm32f103::peripheral("AFIO").expect("generated tables contain AFIO");
         Self {
-            ranges: [Region::new(BASE, WINDOW_LEN)],
-            regs: [0; REGS],
+            inner: RegisterFile::new(def, NoBehavior),
         }
     }
 }
@@ -56,37 +43,19 @@ impl Default for Afio {
 
 impl Peripheral for Afio {
     fn ranges(&self) -> &[Region] {
-        &self.ranges
+        self.inner.ranges()
     }
 
     fn read(&mut self, addr: u32) -> Result<u8, BusError> {
-        if !self.ranges[0].contains(addr) {
-            return Err(BusError::Reserved);
-        }
-        let off = addr - BASE;
-        let Some(idx) = reg_of(off) else {
-            return Err(BusError::Reserved);
-        };
-        #[allow(clippy::cast_possible_truncation)]
-        Ok((self.regs[idx] >> (8 * (off & 3))) as u8)
+        self.inner.read(addr)
     }
 
     fn write(&mut self, addr: u32, val: u8) -> Result<(), BusError> {
-        if !self.ranges[0].contains(addr) {
-            return Err(BusError::Reserved);
-        }
-        let off = addr - BASE;
-        let Some(idx) = reg_of(off) else {
-            return Err(BusError::Reserved);
-        };
-        let shift = 8 * (off & 3);
-        let mask = 0xFFu32 << shift;
-        self.regs[idx] = (self.regs[idx] & !mask) | (u32::from(val) << shift);
-        Ok(())
+        self.inner.write(addr, val)
     }
 
     fn reset(&mut self) {
-        self.regs = [0; REGS];
+        self.inner.reset();
     }
 
     fn name(&self) -> &'static str {
@@ -94,13 +63,29 @@ impl Peripheral for Afio {
     }
 }
 
-impl crate::device::InterruptSource for Afio {}
+impl InterruptSource for Afio {
+    fn exception_number(&self) -> Option<u8> {
+        self.inner.exception_number()
+    }
+
+    fn pending(&self) -> u32 {
+        self.inner.pending()
+    }
+
+    fn acknowledge(&mut self, lines: u32) {
+        self.inner.acknowledge(lines);
+    }
+}
 
 #[cfg(test)]
 mod tests {
-    use super::{Afio, BASE, MAPR};
+    use super::{Afio, NoBehavior, RegisterFile};
+    use crate::device::svd::stm32f103;
     use crate::device::Peripheral;
     use crate::error::BusError;
+
+    const BASE: u32 = 0x4001_0000;
+    const MAPR: u32 = 0x04;
 
     #[allow(clippy::cast_possible_truncation)]
     fn write_word(a: &mut Afio, addr: u32, val: u32) {
@@ -128,5 +113,29 @@ mod tests {
     fn addresses_outside_the_window_are_reserved() {
         let mut a = Afio::new();
         assert!(matches!(a.read(BASE + 0x20), Err(BusError::Reserved)));
+    }
+
+    #[test]
+    fn table_matches_silicon_layout() {
+        let def = stm32f103::peripheral("AFIO").unwrap();
+        let expect = [
+            ("EVCR", 0x00),
+            ("MAPR", 0x04),
+            ("EXTICR1", 0x08),
+            ("EXTICR2", 0x0C),
+            ("EXTICR3", 0x10),
+            ("EXTICR4", 0x14),
+            ("MAPR2", 0x1C),
+        ];
+        for (name, offset) in expect {
+            let r = def
+                .registers
+                .iter()
+                .find(|r| r.name == name)
+                .unwrap_or_else(|| panic!("AFIO:{name} present"));
+            assert_eq!(r.offset, offset, "AFIO:{name} offset");
+        }
+        let rf = RegisterFile::<NoBehavior>::new(def, NoBehavior);
+        assert_eq!(rf.irq_exception("AFIO_IRQn"), None);
     }
 }
