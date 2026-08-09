@@ -1,0 +1,383 @@
+//! SVD-driven register tables and the table-driven `RegisterFile` runtime.
+//!
+//! [`vioarm-svd`] generates [`stm32f103`] from a CMSIS pack; this module holds
+//! the descriptor types that table plugs into, plus a generic [`RegisterFile`]
+//! peripheral that derives its whole address map from a [`PeripheralDef`].
+//! Anything the SVD cannot express — read-to-clear flags, write-one-to-clear,
+//! timer overflow, set/reset splits — is a hand-written [`Behavior`] hook.
+//!
+//! [`vioarm-svd`]: ../../../../../vioarm-svd/src/main.rs
+
+use crate::device::{InterruptSource, Peripheral};
+use crate::error::BusError;
+use crate::mem::bus::Region;
+
+pub mod stm32f103;
+
+/// The register access vocabulary used by the supported SVD files.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Access {
+    ReadWrite,
+    ReadOnly,
+    WriteOnly,
+}
+
+/// A single bit field within a register.
+#[derive(Clone, Copy, Debug)]
+pub struct FieldDef {
+    pub name: &'static str,
+    pub offset: u8,
+    pub width: u8,
+    pub access: Access,
+}
+
+/// A single register within a peripheral.
+#[derive(Clone, Copy, Debug)]
+pub struct RegisterDef {
+    pub name: &'static str,
+    pub offset: u16,
+    pub width: u8,
+    pub access: Access,
+    pub reset: u32,
+    pub fields: &'static [FieldDef],
+}
+
+/// An interrupt line a peripheral can raise.
+#[derive(Clone, Copy, Debug)]
+pub struct IrqDef {
+    pub number: u8,
+    pub name: &'static str,
+}
+
+/// One memory-mapped peripheral, exactly as the SVD describes it.
+#[derive(Clone, Copy, Debug)]
+pub struct PeripheralDef {
+    pub name: &'static str,
+    pub base: u32,
+    pub window: u32,
+    pub irqs: &'static [IrqDef],
+    pub registers: &'static [RegisterDef],
+}
+
+/// Per-register side effects the SVD cannot express.
+///
+/// Each method is a pure transform of the value the [`RegisterFile`] holds, so
+/// a behavior can synthesize or mask register state without touching the
+/// layout the tables describe. The trait is `Send` so any behavior can be
+/// boxed onto the bus.
+pub trait Behavior: Send {
+    /// Transform a register value after firmware writes to it.
+    fn on_write(&mut self, _offset: u16, value: u32) -> u32 {
+        value
+    }
+
+    /// Transform a register value before firmware reads it.
+    fn on_read(&mut self, _offset: u16, value: u32) -> u32 {
+        value
+    }
+
+    /// Interrupt lines latched pending right now.
+    fn pending(&self) -> u32 {
+        0
+    }
+
+    /// Clear the latched `lines` the NVIC is taking.
+    fn acknowledge(&mut self, _lines: u32) {}
+}
+
+/// A byte-addressable peripheral driven entirely by a [`PeripheralDef`].
+///
+/// Register bytes are read and written with byte-lane read-modify-write, so a
+/// Cortex-M word store lands in the right lanes; `reset()` reloads the SVD
+/// reset values; and reads of addresses inside the window but between
+/// registers are `Reserved`, like gaps in the silicon address map.
+#[derive(Debug)]
+pub struct RegisterFile<B: Behavior> {
+    ranges: [Region; 1],
+    def: &'static PeripheralDef,
+    regs: Box<[u32]>,
+    behavior: B,
+}
+
+impl<B: Behavior + Default> RegisterFile<B> {
+    /// A new register file at `def.base`, loaded with `def`'s reset values.
+    #[must_use]
+    pub fn new(def: &'static PeripheralDef) -> Self {
+        let regs = def.registers.iter().map(|r| r.reset).collect();
+        Self {
+            ranges: [Region::new(def.base, def.window)],
+            def,
+            regs,
+            behavior: B::default(),
+        }
+    }
+}
+
+impl<B: Behavior> Peripheral for RegisterFile<B> {
+    fn ranges(&self) -> &[Region] {
+        &self.ranges
+    }
+
+    fn read(&mut self, addr: u32) -> Result<u8, BusError> {
+        let off = self.offset_in_window(addr)?;
+        let (reg, idx) = self.reg_at(off)?;
+        let word = match reg.access {
+            Access::WriteOnly => 0,
+            _ => self.behavior.on_read(reg.offset, self.regs[idx]),
+        };
+        let shift = Self::byte_shift(reg, off);
+        #[allow(clippy::cast_possible_truncation)]
+        Ok(((word >> shift) & 0xFF) as u8)
+    }
+
+    fn write(&mut self, addr: u32, val: u8) -> Result<(), BusError> {
+        let off = self.offset_in_window(addr)?;
+        let (reg, idx) = self.reg_at(off)?;
+        if reg.access == Access::ReadOnly {
+            return Ok(());
+        }
+        let shift = Self::byte_shift(reg, off);
+        let mask = !(0xFFu32 << shift);
+        let merged = (self.regs[idx] & mask) | (u32::from(val) << shift);
+        self.regs[idx] = self.behavior.on_write(reg.offset, merged);
+        Ok(())
+    }
+
+    fn reset(&mut self) {
+        for (idx, reg) in self.def.registers.iter().enumerate() {
+            self.regs[idx] = reg.reset;
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        self.def.name
+    }
+}
+
+impl<B: Behavior> InterruptSource for RegisterFile<B> {
+    fn exception_number(&self) -> Option<u8> {
+        self.def.irqs.first().map(|irq| 16 + irq.number)
+    }
+
+    fn pending(&self) -> u32 {
+        self.behavior.pending()
+    }
+
+    fn acknowledge(&mut self, lines: u32) {
+        self.behavior.acknowledge(lines);
+    }
+}
+
+impl<B: Behavior> RegisterFile<B> {
+    const fn offset_in_window(&self, addr: u32) -> Result<u32, BusError> {
+        if self.ranges[0].contains(addr) {
+            Ok(addr - self.ranges[0].base)
+        } else {
+            Err(BusError::Reserved)
+        }
+    }
+
+    fn reg_at(&self, off: u32) -> Result<(&'static RegisterDef, usize), BusError> {
+        let idx = self
+            .def
+            .registers
+            .iter()
+            .position(|r| {
+                let len = u32::from(r.width) / 8;
+                off >= u32::from(r.offset) && off < u32::from(r.offset) + len
+            })
+            .ok_or(BusError::Reserved)?;
+        Ok((&self.def.registers[idx], idx))
+    }
+
+    fn byte_shift(reg: &RegisterDef, off: u32) -> u32 {
+        8 * (off - u32::from(reg.offset))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Access, Behavior, FieldDef, IrqDef, PeripheralDef, RegisterDef, RegisterFile};
+    use crate::device::InterruptSource;
+    use crate::device::Peripheral;
+    use crate::error::BusError;
+
+    /// A tiny two-register device with one read-write and one read-only word.
+    const TINY: PeripheralDef = PeripheralDef {
+        name: "TINY",
+        base: 0x4000_0000,
+        window: 0x10,
+        irqs: &[IrqDef {
+            number: 2,
+            name: "TINY_IRQ",
+        }],
+        registers: &[
+            RegisterDef {
+                name: "CTRL",
+                offset: 0x00,
+                width: 32,
+                access: Access::ReadWrite,
+                reset: 0x0000_0000,
+                fields: &[FieldDef {
+                    name: "EN",
+                    offset: 0,
+                    width: 1,
+                    access: Access::ReadWrite,
+                }],
+            },
+            RegisterDef {
+                name: "STATUS",
+                offset: 0x04,
+                width: 32,
+                access: Access::ReadOnly,
+                reset: 0x0000_0042,
+                fields: &[],
+            },
+        ],
+    };
+
+    #[derive(Default)]
+    struct Noop;
+
+    impl Behavior for Noop {}
+
+    #[allow(clippy::cast_possible_truncation)]
+    fn write_word<B: Behavior + Default>(rf: &mut RegisterFile<B>, off: u32, val: u32) {
+        for (i, b) in val.to_le_bytes().iter().enumerate() {
+            rf.write(rf.ranges()[0].base + off + i as u32, *b).unwrap();
+        }
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
+    fn read_word<B: Behavior + Default>(rf: &mut RegisterFile<B>, off: u32) -> u32 {
+        let base = rf.ranges()[0].base;
+        let mut bytes = [0u8; 4];
+        for (i, b) in bytes.iter_mut().enumerate() {
+            *b = rf.read(base + off + i as u32).unwrap();
+        }
+        u32::from_le_bytes(bytes)
+    }
+
+    #[test]
+    fn register_bytes_roundtrip() {
+        let mut rf = RegisterFile::<Noop>::new(&TINY);
+        write_word(&mut rf, 0x00, 0xDEAD_BEEF);
+        assert_eq!(read_word(&mut rf, 0x00), 0xDEAD_BEEF);
+    }
+
+    #[test]
+    fn byte_lane_writes_preserve_other_lanes() {
+        let mut rf = RegisterFile::<Noop>::new(&TINY);
+        let base = rf.ranges()[0].base;
+        write_word(&mut rf, 0x00, 0xFFFF_FFFF);
+        rf.write(base, 0xAB).unwrap();
+        assert_eq!(read_word(&mut rf, 0x00), 0xFFFF_FFAB);
+        rf.write(base + 0x02, 0xCD).unwrap();
+        assert_eq!(read_word(&mut rf, 0x00), 0xFFCD_FFAB);
+    }
+
+    #[test]
+    fn read_only_registers_reject_writes() {
+        let mut rf = RegisterFile::<Noop>::new(&TINY);
+        write_word(&mut rf, 0x04, 0xFFFF_FFFF);
+        assert_eq!(read_word(&mut rf, 0x04), 0x0000_0042);
+    }
+
+    #[test]
+    fn reset_reloads_svd_values() {
+        let mut rf = RegisterFile::<Noop>::new(&TINY);
+        write_word(&mut rf, 0x00, 0xFFFF_FFFF);
+        rf.reset();
+        assert_eq!(read_word(&mut rf, 0x00), 0x0000_0000);
+        assert_eq!(read_word(&mut rf, 0x04), 0x0000_0042);
+    }
+
+    #[test]
+    fn gaps_between_registers_are_reserved() {
+        let mut rf = RegisterFile::<Noop>::new(&TINY);
+        assert!(matches!(rf.read(0x4000_0008), Err(BusError::Reserved)));
+        assert!(matches!(rf.read(0x4000_1000), Err(BusError::Reserved)));
+    }
+
+    #[test]
+    fn first_irq_maps_to_an_exception_number() {
+        let rf = RegisterFile::<Noop>::new(&TINY);
+        assert_eq!(rf.exception_number(), Some(16 + 2));
+        assert_eq!(rf.pending(), 0);
+    }
+
+    #[test]
+    fn generated_stm32f103_matches_hand_typed_constants() {
+        use crate::device::stm32;
+        let cases = [
+            ("RCC", stm32::RCC),
+            ("AFIO", stm32::AFIO),
+            ("EXTI", stm32::EXTI),
+            ("TIM2", stm32::TIM2),
+            ("TIM3", stm32::TIM3),
+            ("USART1", stm32::USART1),
+            ("GPIOA", stm32::GPIOA),
+            ("GPIOB", stm32::GPIOB),
+            ("GPIOC", stm32::GPIOC),
+        ];
+        for (name, base) in cases {
+            let def = super::stm32f103::peripheral(name)
+                .unwrap_or_else(|| panic!("generated tables contain {name}"));
+            assert_eq!(def.base, base, "base address of {name}");
+        }
+    }
+
+    #[test]
+    fn generated_rcc_matches_hand_typed_offsets() {
+        let rcc = super::stm32f103::peripheral("RCC").unwrap();
+        let cr = rcc.registers.iter().find(|r| r.name == "CR").unwrap();
+        assert_eq!(cr.offset, 0x00);
+        assert_eq!(cr.reset, 0x0000_0083);
+        assert!(cr.fields.iter().any(|f| f.name == "HSION" && f.offset == 0));
+        let apb2 = rcc.registers.iter().find(|r| r.name == "APB2ENR").unwrap();
+        assert_eq!(apb2.offset, 0x18);
+        let apb1 = rcc.registers.iter().find(|r| r.name == "APB1ENR").unwrap();
+        assert_eq!(apb1.offset, 0x1C);
+    }
+
+    #[test]
+    fn generated_table_is_internally_consistent() {
+        for p in super::stm32f103::PERIPHERALS {
+            let mut spans: Vec<(u32, u32)> = Vec::new();
+            for r in p.registers {
+                let start = u32::from(r.offset);
+                let end = start + u32::from(r.width) / 8;
+                assert!(
+                    end <= p.window,
+                    "{}:{} (offset 0x{:x}) exceeds window 0x{:x}",
+                    p.name,
+                    r.name,
+                    r.offset,
+                    p.window
+                );
+                assert!(end > start, "{}:{} is zero-width", p.name, r.name);
+                for (prev_start, prev_end) in &spans {
+                    // Input/output variants of a capture-compare register are
+                    // the same physical word and may repeat the span exactly.
+                    let exact_alias = start == *prev_start && end == *prev_end;
+                    assert!(
+                        exact_alias || end <= *prev_start || start >= *prev_end,
+                        "{}:{} partially overlaps a previous register",
+                        p.name,
+                        r.name
+                    );
+                }
+                spans.push((start, end));
+                for f in r.fields {
+                    assert!(
+                        u32::from(f.offset) + u32::from(f.width) <= u32::from(r.width),
+                        "{}:{}:{} exceeds register width",
+                        p.name,
+                        r.name,
+                        f.name
+                    );
+                }
+            }
+        }
+    }
+}

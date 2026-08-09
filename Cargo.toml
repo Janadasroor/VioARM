@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["vioarm-core", "vioarm-cli"]
+members = ["vioarm-core", "vioarm-cli", "vioarm-svd"]
 
 [workspace.package]
 version = "0.1.0"
