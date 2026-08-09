@@ -30,14 +30,14 @@ struct GpioBehavior {
 
 impl GpioBehavior {
     /// Pin `p` (0..=15) config nibble: `MODE` in bits 0..1, `CNF` in 2..3.
-    fn config(view: &Registers<'_>, p: u32) -> u32 {
+    fn config(view: &Registers<&[u32]>, p: u32) -> u32 {
         let reg = if p < 8 { CRL } else { CRH };
         (view.get(reg) >> (4 * (p & 7))) & 0xF
     }
 
     /// The level firmware observes on `IDR`: output pins read their own
     /// latch, input pins read the host-driven level.
-    fn idr(self, view: &Registers<'_>) -> u32 {
+    fn idr(self, view: &Registers<&[u32]>) -> u32 {
         let mut v = 0;
         let mut p = 0;
         while p < 16 {
@@ -57,7 +57,7 @@ impl GpioBehavior {
 }
 
 impl Behavior for GpioBehavior {
-    fn on_write(&mut self, view: &mut Registers<'_>, offset: u16, value: u32) -> u32 {
+    fn on_write(&mut self, view: &mut Registers<&mut [u32]>, offset: u16, value: u32) -> u32 {
         match offset {
             BSRR => {
                 // Set bits 0..15 (a set wins if a bit is also reset), reset
@@ -73,7 +73,7 @@ impl Behavior for GpioBehavior {
         value
     }
 
-    fn on_read(&mut self, view: &mut Registers<'_>, offset: u16, value: u32) -> u32 {
+    fn on_read(&mut self, view: &Registers<&[u32]>, offset: u16, value: u32) -> u32 {
         if offset == IDR {
             self.idr(view)
         } else {
@@ -111,7 +111,7 @@ impl Gpio {
             .find(|p| p.base == base)
             .expect("generated tables contain a peripheral at base");
         Self {
-            inner: RegisterFile::new(def),
+            inner: RegisterFile::new(def, GpioBehavior::default()),
             name,
         }
     }

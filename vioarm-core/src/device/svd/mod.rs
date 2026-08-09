@@ -11,6 +11,7 @@
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
 use crate::mem::bus::Region;
+use core::ops::Deref;
 
 pub mod stm32f103;
 
@@ -64,15 +65,19 @@ pub struct PeripheralDef {
 /// A [`Behavior`] gets one of these on every access so it can read or write
 /// registers *other* than the one the bus touched — GPIO's `BSRR`/`BRR` set
 /// and reset `ODR`, and `IDR` is synthesized from `CRL`/`CRH`/`ODR` plus the
-/// host-driven input level.
+/// host-driven input level. The storage type `W` is generic over mutability:
+/// reads borrow the words immutably, writes and ticks mutably.
 #[derive(Debug)]
-pub struct Registers<'a> {
+pub struct Registers<W> {
     def: &'static PeripheralDef,
-    words: &'a mut [u32],
+    words: W,
 }
 
-impl<'a> Registers<'a> {
-    fn new(def: &'static PeripheralDef, words: &'a mut [u32]) -> Self {
+impl<W> Registers<W>
+where
+    W: Deref<Target = [u32]>,
+{
+    const fn new(def: &'static PeripheralDef, words: W) -> Self {
         Self { def, words }
     }
 
@@ -89,7 +94,9 @@ impl<'a> Registers<'a> {
     pub fn get(&self, offset: u16) -> u32 {
         self.words[self.index(offset)]
     }
+}
 
+impl Registers<&mut [u32]> {
     /// Replace the stored word at register `offset`.
     pub fn set(&mut self, offset: u16, value: u32) {
         let i = self.index(offset);
@@ -99,26 +106,32 @@ impl<'a> Registers<'a> {
 
 /// Per-register side effects the SVD cannot express.
 ///
-/// A behavior transforms a register value on read or write and can reach the
-/// rest of the register file through a [`Registers`] view. The trait is `Send`
-/// so any behavior can be boxed onto the bus.
+/// A behavior transforms a register value on read or write, can reach the rest
+/// of the register file through a [`Registers`] view, and can advance in
+/// simulated time. The trait is `Send` so any behavior can be boxed onto the
+/// bus.
 pub trait Behavior: Send {
     /// Transform a register value after firmware writes to it.
     ///
     /// For a write-only register (one-shot, like `BSRR`), `value` carries only
     /// the byte actually written, shifted into place — never the stale word it
     /// landed on — so side effects never re-fire. The return value is stored.
-    fn on_write(&mut self, _view: &mut Registers<'_>, _offset: u16, value: u32) -> u32 {
+    fn on_write(&mut self, _view: &mut Registers<&mut [u32]>, _offset: u16, value: u32) -> u32 {
         value
     }
 
     /// Transform a register value before firmware reads it.
-    fn on_read(&mut self, _view: &mut Registers<'_>, _offset: u16, value: u32) -> u32 {
+    fn on_read(&mut self, _view: &Registers<&[u32]>, _offset: u16, value: u32) -> u32 {
         value
     }
 
+    /// Advance simulated time by `delta` cycles. The register file is mutable
+    /// so a behavior can run hardware the tables only describe (timer counters,
+    /// prescaler phases, analog settle delays).
+    fn tick(&mut self, _view: &mut Registers<&mut [u32]>, _delta: u64) {}
+
     /// Interrupt lines latched pending right now.
-    fn pending(&self) -> u32 {
+    fn pending(&self, _view: &Registers<&[u32]>) -> u32 {
         0
     }
 
@@ -146,16 +159,17 @@ pub struct RegisterFile<B: Behavior> {
     behavior: B,
 }
 
-impl<B: Behavior + Default> RegisterFile<B> {
-    /// A new register file at `def.base`, loaded with `def`'s reset values.
+impl<B: Behavior> RegisterFile<B> {
+    /// A new register file at `def.base`, loaded with `def`'s reset values,
+    /// running `behavior`.
     #[must_use]
-    pub fn new(def: &'static PeripheralDef) -> Self {
+    pub fn new(def: &'static PeripheralDef, behavior: B) -> Self {
         let regs = def.registers.iter().map(|r| r.reset).collect();
         Self {
             ranges: [Region::new(def.base, def.window)],
             def,
             regs,
-            behavior: B::default(),
+            behavior,
         }
     }
 }
@@ -171,9 +185,9 @@ impl<B: Behavior> Peripheral for RegisterFile<B> {
         let word = if reg.access == Access::WriteOnly {
             0
         } else {
-            let mut view = Registers::new(self.def, &mut self.regs);
+            let view = Registers::new(self.def, &self.regs[..]);
             let value = view.get(reg.offset);
-            self.behavior.on_read(&mut view, reg.offset, value)
+            self.behavior.on_read(&view, reg.offset, value)
         };
         let shift = Self::byte_shift(reg, off);
         #[allow(clippy::cast_possible_truncation)]
@@ -187,7 +201,7 @@ impl<B: Behavior> Peripheral for RegisterFile<B> {
             return Ok(());
         }
         let shift = Self::byte_shift(reg, off);
-        let mut view = Registers::new(self.def, &mut self.regs);
+        let mut view = Registers::new(self.def, &mut self.regs[..]);
         let incoming = if reg.access == Access::WriteOnly {
             // One-shot write-only registers (BSRR/BRR) only see the byte
             // actually written, or a stale upper word would re-fire old bits.
@@ -208,6 +222,11 @@ impl<B: Behavior> Peripheral for RegisterFile<B> {
         self.behavior.reset();
     }
 
+    fn tick(&mut self, delta: u64) {
+        let mut view = Registers::new(self.def, &mut self.regs[..]);
+        self.behavior.tick(&mut view, delta);
+    }
+
     fn name(&self) -> &'static str {
         self.def.name
     }
@@ -223,7 +242,8 @@ impl<B: Behavior> InterruptSource for RegisterFile<B> {
     }
 
     fn pending(&self) -> u32 {
-        self.behavior.pending()
+        let view = Registers::new(self.def, &self.regs[..]);
+        self.behavior.pending(&view)
     }
 
     fn acknowledge(&mut self, lines: u32) {
@@ -322,14 +342,14 @@ mod tests {
     impl Behavior for Noop {}
 
     #[allow(clippy::cast_possible_truncation)]
-    fn write_word<B: Behavior + Default>(rf: &mut RegisterFile<B>, off: u32, val: u32) {
+    fn write_word<B: Behavior>(rf: &mut RegisterFile<B>, off: u32, val: u32) {
         for (i, b) in val.to_le_bytes().iter().enumerate() {
             rf.write(rf.ranges()[0].base + off + i as u32, *b).unwrap();
         }
     }
 
     #[allow(clippy::cast_possible_truncation)]
-    fn read_word<B: Behavior + Default>(rf: &mut RegisterFile<B>, off: u32) -> u32 {
+    fn read_word<B: Behavior>(rf: &mut RegisterFile<B>, off: u32) -> u32 {
         let base = rf.ranges()[0].base;
         let mut bytes = [0u8; 4];
         for (i, b) in bytes.iter_mut().enumerate() {
@@ -340,14 +360,14 @@ mod tests {
 
     #[test]
     fn register_bytes_roundtrip() {
-        let mut rf = RegisterFile::<Noop>::new(&TINY);
+        let mut rf = RegisterFile::<Noop>::new(&TINY, Noop);
         write_word(&mut rf, 0x00, 0xDEAD_BEEF);
         assert_eq!(read_word(&mut rf, 0x00), 0xDEAD_BEEF);
     }
 
     #[test]
     fn byte_lane_writes_preserve_other_lanes() {
-        let mut rf = RegisterFile::<Noop>::new(&TINY);
+        let mut rf = RegisterFile::<Noop>::new(&TINY, Noop);
         let base = rf.ranges()[0].base;
         write_word(&mut rf, 0x00, 0xFFFF_FFFF);
         rf.write(base, 0xAB).unwrap();
@@ -358,14 +378,14 @@ mod tests {
 
     #[test]
     fn read_only_registers_reject_writes() {
-        let mut rf = RegisterFile::<Noop>::new(&TINY);
+        let mut rf = RegisterFile::<Noop>::new(&TINY, Noop);
         write_word(&mut rf, 0x04, 0xFFFF_FFFF);
         assert_eq!(read_word(&mut rf, 0x04), 0x0000_0042);
     }
 
     #[test]
     fn reset_reloads_svd_values() {
-        let mut rf = RegisterFile::<Noop>::new(&TINY);
+        let mut rf = RegisterFile::<Noop>::new(&TINY, Noop);
         write_word(&mut rf, 0x00, 0xFFFF_FFFF);
         rf.reset();
         assert_eq!(read_word(&mut rf, 0x00), 0x0000_0000);
@@ -374,14 +394,14 @@ mod tests {
 
     #[test]
     fn gaps_between_registers_are_reserved() {
-        let mut rf = RegisterFile::<Noop>::new(&TINY);
+        let mut rf = RegisterFile::<Noop>::new(&TINY, Noop);
         assert!(matches!(rf.read(0x4000_0008), Err(BusError::Reserved)));
         assert!(matches!(rf.read(0x4000_1000), Err(BusError::Reserved)));
     }
 
     #[test]
     fn first_irq_maps_to_an_exception_number() {
-        let rf = RegisterFile::<Noop>::new(&TINY);
+        let rf = RegisterFile::<Noop>::new(&TINY, Noop);
         assert_eq!(rf.exception_number(), Some(16 + 2));
         assert_eq!(rf.pending(), 0);
     }
@@ -442,6 +462,35 @@ mod tests {
             assert_eq!(r.access, access, "GPIOA:{name} access");
             assert_eq!(r.reset, reset, "GPIOA:{name} reset");
         }
+    }
+
+    #[test]
+    fn generated_tim2_matches_silicon_layout() {
+        let tim2 = super::stm32f103::peripheral("TIM2").unwrap();
+        let expect = [
+            ("CR1", 0x00, Access::ReadWrite),
+            ("DIER", 0x0C, Access::ReadWrite),
+            ("SR", 0x10, Access::ReadWrite),
+            ("EGR", 0x14, Access::WriteOnly),
+            ("CNT", 0x24, Access::ReadWrite),
+            ("PSC", 0x28, Access::ReadWrite),
+            ("ARR", 0x2C, Access::ReadWrite),
+        ];
+        for (name, offset, access) in expect {
+            let r = tim2
+                .registers
+                .iter()
+                .find(|r| r.name == name)
+                .unwrap_or_else(|| panic!("TIM2:{name} present"));
+            assert_eq!(r.offset, offset, "TIM2:{name} offset");
+            assert_eq!(r.access, access, "TIM2:{name} access");
+        }
+        let irq = tim2
+            .irqs
+            .first()
+            .unwrap_or_else(|| panic!("TIM2 has an IRQ"));
+        assert_eq!(irq.number, 28);
+        assert_eq!(16 + irq.number, 44, "TIM2 update exception number");
     }
 
     #[test]
