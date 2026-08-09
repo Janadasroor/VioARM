@@ -3,7 +3,7 @@
 //! declared regions is `Reserved`.
 
 use crate::error::BusError;
-use crate::mem::bus::{Bus, Region};
+use crate::mem::bus::{Bus, PeripheralBus, Region};
 
 /// A single owned bank of bytes.
 #[derive(Debug)]
@@ -76,4 +76,12 @@ impl Bus for FlatMemory {
         b.bytes[off] = val;
         Ok(())
     }
+}
+
+impl PeripheralBus for FlatMemory {
+    fn next_exception(&mut self, _primask: bool, _current_ipsr: u8) -> Option<u8> {
+        None
+    }
+
+    fn acknowledge_exception(&mut self, _n: u8) {}
 }

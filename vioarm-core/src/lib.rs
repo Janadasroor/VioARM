@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod board;
 pub mod cpu;
 pub mod device;
 pub mod error;

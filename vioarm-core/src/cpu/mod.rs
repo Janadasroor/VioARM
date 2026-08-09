@@ -74,8 +74,8 @@ impl<B: Bus> Core<B> {
     }
 
     /// Fetch and execute a single instruction. On success the machine has
-    /// advanced exactly one instruction (or taken an exception); on error it
-    /// has *not*.
+    /// advanced exactly one instruction; on error it has *not*. Interrupts
+    /// are taken by the `Machine`, not here.
     pub fn step(&mut self) -> Result<(), HaltCause> {
         let pc = self.regs.pc;
         let hw = self.mem.read_half(pc).map_err(|_| HaltCause::FetchAbort)?;
@@ -705,12 +705,15 @@ impl<B: Bus> Core<B> {
     }
 
     /// Enter Handler mode for `ex`, pushing the eight-word frame onto the
-    /// interrupted thread's stack and switching to the main stack pointer.
+    /// interrupted context's stack and switching to the main stack pointer.
     /// `return_pc` is where execution resumes on exception return.
     fn take_exception(&mut self, ex: Exception, return_pc: u32) -> Result<(), HaltCause> {
-        // ARMv6-M faults do not nest in the set we model; taking one while a
-        // handler is already active is a double fault, which halts.
-        if self.ipsr != 0 {
+        // ARMv6-M faults do not nest in the set we model: taking a HardFault
+        // while a handler is already active is a double fault, which halts.
+        // Interrupts preempt legitimately and are always legal here; the
+        // interrupt controller only offers exceptions that outrank the
+        // currently running one.
+        if ex == Exception::HardFault && self.ipsr != 0 {
             return Err(HaltCause::UnhandledException);
         }
         let vector_addr = u32::from(ex.number()) * 4;
@@ -721,11 +724,11 @@ impl<B: Bus> Core<B> {
         if vector & 1 == 0 {
             return Err(HaltCause::NonThumbTarget);
         }
-        // The frame is pushed onto the stack the thread was using; the handler
-        // then runs on the main stack pointer.
+        // The frame is pushed onto the stack the interrupted context was
+        // using; the handler then runs on the main stack pointer.
         let use_process = self.sp_is_process();
         let mut sp = self.regs.sp;
-        let mut sxpsr = self.xpsr.get() & (APSR_FLAGS | XPSR_T);
+        let mut sxpsr = self.xpsr.get() & (APSR_FLAGS | XPSR_T) | u32::from(self.ipsr);
         if sp & 0x4 != 0 {
             sp = sp.wrapping_sub(4);
             sxpsr |= XPSR_ALIGN;
@@ -737,7 +740,9 @@ impl<B: Bus> Core<B> {
         self.write_word_halt(frame.wrapping_add(20), self.regs.lr)?;
         self.write_word_halt(frame.wrapping_add(24), return_pc | 1)?;
         self.write_word_halt(frame.wrapping_add(28), sxpsr)?;
-        self.regs.lr = if use_process {
+        self.regs.lr = if self.ipsr != 0 {
+            EXC_RETURN_HANDLER
+        } else if use_process {
             EXC_RETURN_THREAD_PSP
         } else {
             EXC_RETURN_THREAD_MSP
@@ -752,6 +757,19 @@ impl<B: Bus> Core<B> {
         self.regs.pc = vector & !1;
         self.ipsr = ex.number();
         Ok(())
+    }
+
+    /// Enter Handler mode for exception number `n`, as decided by the
+    /// machine's interrupt controller. The return address is the instruction
+    /// the core is currently pointing at (the next one to execute on return).
+    pub fn enter_exception(&mut self, n: u8) -> Result<(), HaltCause> {
+        let ex = match n {
+            3 => Exception::HardFault,
+            15 => Exception::SysTick,
+            16..=47 => Exception::Irq(n - 16),
+            _ => return Err(HaltCause::UnhandledException),
+        };
+        self.take_exception(ex, self.regs.pc)
     }
 
     /// Unstack the eight-word frame and leave Handler mode, as directed by an
@@ -809,8 +827,11 @@ impl<B: Bus> Core<B> {
             self.control &= !0x2;
             self.ipsr = 0;
         } else {
+            // Return into the interrupted handler: IPSR comes from the
+            // stacked xPSR's IPSR field.
             self.regs.sp = sp;
             self.regs.msp = sp;
+            self.ipsr = (sxpsr & 0xFF) as u8;
         }
         Ok(Next::Advance(self.regs.pc))
     }

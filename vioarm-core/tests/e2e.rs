@@ -3,8 +3,10 @@
 //! All instruction byte sequences are verified against
 //! `llvm-mc -triple=thumbv6m-none-eabi`.
 
+use std::fmt::Write as _;
+
 use vioarm_core::error::HaltCause;
-use vioarm_core::loader::load_flat;
+use vioarm_core::loader::{load_flat, load_hex};
 use vioarm_core::machine::Machine;
 use vioarm_core::mem::bus::Bus;
 use vioarm_core::mem::flat::FlatMemory;
@@ -15,7 +17,7 @@ const ENTRY: u32 = 0x0000_0010;
 const INIT_SP: u32 = 0x2000_8000;
 
 /// Boot `code` at ENTRY, with a reset vector table above it.
-fn boot(code: &[u8]) -> Machine {
+fn boot(code: &[u8]) -> Machine<FlatMemory> {
     let mut m = Machine::new(FlatMemory::with_layout(&[FLASH, RAM], &[0x10000, 0x10000]));
     m.load_image(&load_flat(ENTRY, code));
     {
@@ -28,8 +30,13 @@ fn boot(code: &[u8]) -> Machine {
 }
 
 /// Boot with a full vector table: SP at 0, reset at +4, NMI at +8, and a
-/// HardFault vector at +12 pointing at `hardfault`.
-fn boot_with_vectors(reset: &[u8], hardfault: &[u8], code_addr: u32, hf_addr: u32) -> Machine {
+/// `HardFault` vector at +12 pointing at `hardfault`.
+fn boot_with_vectors(
+    reset: &[u8],
+    hardfault: &[u8],
+    code_addr: u32,
+    hf_addr: u32,
+) -> Machine<FlatMemory> {
     let mut m = Machine::new(FlatMemory::with_layout(&[FLASH, RAM], &[0x10000, 0x10000]));
     m.load_image(&load_flat(code_addr, reset));
     m.load_image(&load_flat(hf_addr, hardfault));
@@ -47,6 +54,57 @@ fn boot_with_vectors(reset: &[u8], hardfault: &[u8], code_addr: u32, hf_addr: u3
 /// `movs r0, #7; subs r0, r0, #3; muls r0, r0, r0; bx lr`
 /// (bytes: 07 20 | c0 1e | 40 43 | 70 47).
 const MOV_SUB_MUL: &[u8] = &[0x07, 0x20, 0xc0, 0x1e, 0x40, 0x43, 0x70, 0x47];
+
+/// Encode a chunk as an Intel HEX data record with a correct checksum.
+#[allow(clippy::cast_possible_truncation)]
+fn hex_record(addr: u16, data: &[u8]) -> String {
+    let mut line = format!(":{:02X}{:04X}00", data.len(), addr);
+    let mut sum = data.len() as u8 + (addr >> 8) as u8 + addr as u8;
+    for &b in data {
+        let _ = write!(line, "{b:02X}");
+        sum = sum.wrapping_add(b);
+    }
+    let _ = write!(line, "{:02X}", 0u8.wrapping_sub(sum));
+    line.push('\n');
+    line
+}
+
+/// A complete Intel HEX image: vector table + code, plus an EOF record.
+#[allow(clippy::cast_possible_truncation)]
+fn hex_image(code: &[u8]) -> Vec<u8> {
+    let mut vt = Vec::new();
+    vt.extend_from_slice(&INIT_SP.to_le_bytes());
+    vt.extend_from_slice(&(ENTRY | 1).to_le_bytes());
+    vt.extend_from_slice(&[0u8; 8]);
+    let mut out = hex_record(0, &vt);
+    let mut off = 0;
+    while off < code.len() {
+        let chunk = &code[off..(off + 16).min(code.len())];
+        out.push_str(&hex_record(ENTRY as u16 + off as u16, chunk));
+        off += chunk.len();
+    }
+    out.push_str(&hex_record(0, &[])); // EOF record (type 00, length 0)
+    out.into_bytes()
+}
+
+/// A firmware image delivered as Intel HEX boots, runs, and computes the same
+/// result as the raw-binary path.
+#[test]
+fn hex_loaded_image_boots_and_runs() {
+    let img = load_hex(&hex_image(MOV_SUB_MUL)).unwrap();
+    assert_eq!(img.segments.len(), 2, "vector table and code stay separate");
+    assert!(img.entry.is_none());
+
+    let mut m = Machine::new(FlatMemory::with_layout(&[FLASH, RAM], &[0x10000, 0x10000]));
+    m.load_image(&img);
+    m.reset().expect("reset from vector table");
+    let err = m.run(10);
+    assert_eq!(err, Err(HaltCause::FetchAbort));
+    let (regs, xpsr, cycles) = m.core.snapshot();
+    assert_eq!(cycles, 4);
+    assert_eq!(regs.r[0], 16);
+    assert!(xpsr.is_thumb());
+}
 
 #[test]
 fn mov_sub_mul_arithmetic() {

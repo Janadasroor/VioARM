@@ -62,6 +62,11 @@ pub enum Exception {
     /// Exception number 3: the only fault ARMv6-M software can reach without
     /// a peripheral-provided interrupt.
     HardFault,
+    /// Exception number 15: the system tick, driven by the `SysTick`
+    /// peripheral.
+    SysTick,
+    /// An external interrupt: exception number `16 + n` for IRQ `n` (0..=31).
+    Irq(u8),
 }
 
 impl Exception {
@@ -70,6 +75,8 @@ impl Exception {
     pub const fn number(self) -> u8 {
         match self {
             Self::HardFault => 3,
+            Self::SysTick => 15,
+            Self::Irq(n) => 16 + n,
         }
     }
 }
@@ -103,4 +110,30 @@ pub enum ImageError {
     NoLoadableSegments,
     SegmentOutOfMemory,
     UnsupportedBss,
+    /// A record that is not valid Intel HEX syntax (bad characters, missing
+    /// `:`, wrong length).
+    HexSyntax,
+    /// A record whose checksum does not sum to zero mod 256.
+    HexChecksum,
+    /// A data record whose address overflows 32 bits once its bytes are
+    /// placed.
+    HexAddressOverflow,
+}
+
+impl fmt::Display for ImageError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(why) => write!(f, "I/O error: {why}"),
+            Self::Truncated => f.write_str("truncated image"),
+            Self::BadMagic => f.write_str("bad magic number"),
+            Self::UnsupportedElfClass => f.write_str("unsupported ELF class"),
+            Self::UnsupportedMachine => f.write_str("unsupported ELF machine"),
+            Self::NoLoadableSegments => f.write_str("no loadable segments"),
+            Self::SegmentOutOfMemory => f.write_str("segment does not fit in memory"),
+            Self::UnsupportedBss => f.write_str(".bss zero-padding not supported"),
+            Self::HexSyntax => f.write_str("malformed Intel HEX record"),
+            Self::HexChecksum => f.write_str("Intel HEX checksum mismatch"),
+            Self::HexAddressOverflow => f.write_str("Intel HEX address overflow"),
+        }
+    }
 }
