@@ -137,7 +137,10 @@ pub trait Behavior: Send {
     }
 
     /// Transform a register value before firmware reads it.
-    fn on_read(&mut self, _view: &Registers<&[u32]>, _offset: u16, value: u32) -> u32 {
+    ///
+    /// The view is mutable because reads have side effects on silicon: USART
+    /// reading `DR` acknowledges `RXNE`.
+    fn on_read(&mut self, _view: &mut Registers<&mut [u32]>, _offset: u16, value: u32) -> u32 {
         value
     }
 
@@ -159,6 +162,11 @@ pub trait Behavior: Send {
 
     /// Host stimulus: set the externally-visible input level to `value`.
     fn drive_inputs(&mut self, _view: &mut Registers<&mut [u32]>, _value: u32) {}
+
+    /// Bytes firmware wrote out, for the host to drain (a captured TX line).
+    fn drain_output(&mut self) -> Vec<u8> {
+        Vec::new()
+    }
 }
 
 /// A behavior with no side effects: every register is a pure latch.
@@ -207,9 +215,9 @@ impl<B: Behavior> Peripheral for RegisterFile<B> {
         let word = if reg.access == Access::WriteOnly {
             0
         } else {
-            let view = Registers::new(self.def, &self.regs[..]);
+            let mut view = Registers::new(self.def, &mut self.regs[..]);
             let value = view.get(reg.offset);
-            self.behavior.on_read(&view, reg.offset, value)
+            self.behavior.on_read(&mut view, reg.offset, value)
         };
         let shift = Self::byte_shift(reg, off);
         #[allow(clippy::cast_possible_truncation)]
@@ -248,6 +256,10 @@ impl<B: Behavior> Peripheral for RegisterFile<B> {
     fn drive_inputs(&mut self, value: u32) {
         let mut view = Registers::new(self.def, &mut self.regs[..]);
         self.behavior.drive_inputs(&mut view, value);
+    }
+
+    fn drain_output(&mut self) -> Vec<u8> {
+        self.behavior.drain_output()
     }
 }
 
@@ -546,6 +558,36 @@ mod tests {
         let exti0 = exti.irqs.iter().find(|irq| irq.name == "EXTI0").unwrap();
         assert_eq!(exti0.number, 6);
         assert_eq!(16 + exti0.number, 22, "EXTI0 exception number");
+    }
+
+    #[test]
+    fn generated_usart1_matches_silicon_layout() {
+        let usart1 = super::stm32f103::peripheral("USART1").unwrap();
+        let expect = [
+            ("SR", 0x00, Access::ReadWrite, 0x0000_00c0),
+            ("DR", 0x04, Access::ReadWrite, 0x0000_0000),
+            ("BRR", 0x08, Access::ReadWrite, 0x0000_0000),
+            ("CR1", 0x0C, Access::ReadWrite, 0x0000_0000),
+            ("CR2", 0x10, Access::ReadWrite, 0x0000_0000),
+            ("CR3", 0x14, Access::ReadWrite, 0x0000_0000),
+            ("GTPR", 0x18, Access::ReadWrite, 0x0000_0000),
+        ];
+        for (name, offset, access, reset) in expect {
+            let r = usart1
+                .registers
+                .iter()
+                .find(|r| r.name == name)
+                .unwrap_or_else(|| panic!("USART1:{name} present"));
+            assert_eq!(r.offset, offset, "USART1:{name} offset");
+            assert_eq!(r.access, access, "USART1:{name} access");
+            assert_eq!(r.reset, reset, "USART1:{name} reset");
+        }
+        let irq = usart1
+            .irqs
+            .first()
+            .unwrap_or_else(|| panic!("USART1 has an IRQ"));
+        assert_eq!(irq.number, 37);
+        assert_eq!(16 + irq.number, 53, "USART1 exception number");
     }
 
     #[test]

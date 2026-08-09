@@ -31,7 +31,7 @@ const CR_OFFSET: u16 = 0x00;
 struct RccBehavior;
 
 impl Behavior for RccBehavior {
-    fn on_read(&mut self, _view: &Registers<&[u32]>, offset: u16, value: u32) -> u32 {
+    fn on_read(&mut self, _view: &mut Registers<&mut [u32]>, offset: u16, value: u32) -> u32 {
         if offset == CR_OFFSET {
             // HSI is always on and ready; PLL locks as soon as it is requested.
             let pll = if value & PLLON != 0 { PLLRDY } else { 0 };
