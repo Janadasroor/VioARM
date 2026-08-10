@@ -176,6 +176,16 @@ pub enum Inst32 {
         index: bool,
         writeback: bool,
     },
+    /// ARMv7-M load/store multiple: `STMIA`/`LDMIA`/`STMDB`/`LDMDB
+    /// rn{!}, {list}`. `regs` is the 16-bit register mask; `writeback` is the
+    /// `!`, `dec_before` selects the decrement-before (DB) forms over IA.
+    LdmStm {
+        is_load: bool,
+        rn: u8,
+        regs: u16,
+        writeback: bool,
+        dec_before: bool,
+    },
 }
 
 /// True when `hw` is the first halfword of a 32-bit ARMv6-M instruction.
@@ -260,6 +270,7 @@ pub fn decode32_v7m(hi: u16, lo: u16) -> Result<Inst32, DecodeError> {
         .or_else(|| decode_bl(hi, lo))
         .or_else(|| decode_movwide(hi, lo))
         .or_else(|| decode_mem(hi, lo))
+        .or_else(|| decode_ldm_stm(hi, lo))
         .or_else(|| decode_dp_plain(hi, lo))
         .or_else(|| decode_dp_modified(hi, lo))
         .or_else(|| decode_dp_reg(hi, lo))
@@ -499,6 +510,49 @@ fn decode_mem(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
         // not a valid form of these encodings.
         err()
     }
+}
+
+/// decode the ARMv7-M load/store multiple family: `STMIA`, `LDMIA`,
+/// `STMDB`, `LDMDB`, from the `1110 1000 10wX rn` (IA) and
+/// `1110 1001 00wX rn` (DB) first-halfword spaces, where `X` is the load bit
+/// and `w` the write-back. The second halfword is the 16-bit register list.
+fn decode_ldm_stm(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
+    let (is_load, dec_before) = match hi & 0xFFD0 {
+        0xE880 => (false, false),
+        0xE890 => (true, false),
+        0xE900 => (false, true),
+        0xE910 => (true, true),
+        _ => return None,
+    };
+    let writeback = hi & 0x20 != 0;
+    let rn = (hi & 0xF) as u8;
+    let list = lo;
+    let err = || Some(Err(err_for(hi)));
+    if list == 0 {
+        // An empty register list is UNPREDICTABLE.
+        return err();
+    }
+    if !is_load {
+        // STM with a PC base, or storing to PC, is UNPREDICTABLE.
+        if rn == 15 || list & 0x8000 != 0 {
+            return err();
+        }
+    } else if rn == 15 {
+        // LDM with a PC base is UNDEFINED on M-profile.
+        return err();
+    } else if writeback && list & (1u16 << rn) != 0 && u16::from(rn) != list.trailing_zeros() as u16
+    {
+        // A write-back with rn in the list is UNPREDICTABLE unless rn is the
+        // lowest-numbered register in the list (the loaded value wins).
+        return err();
+    }
+    Some(Ok(Inst32::LdmStm {
+        is_load,
+        rn,
+        regs: list,
+        writeback,
+        dec_before,
+    }))
 }
 
 /// Map the ARMv7-M data-processing opcode field, plus the `Rd`/`Rn` aliases
@@ -1234,5 +1288,79 @@ mod tests {
                 sys: SysReg::Other(0x7f)
             })
         );
+    }
+
+    #[test]
+    fn v7m_ldm_stm() {
+        // push.w {r0-r3, lr} -> e92d 400f (STMDB sp!, write-back).
+        assert_eq!(
+            v7m_bytes([0x2d, 0xe9, 0x0f, 0x40]),
+            Ok(Inst32::LdmStm {
+                is_load: false,
+                rn: 13,
+                regs: 0x400F,
+                writeback: true,
+                dec_before: true
+            })
+        );
+        // pop.w {r0-r3, pc} -> e8bd 800f (LDMIA sp!, write-back).
+        assert_eq!(
+            v7m_bytes([0xbd, 0xe8, 0x0f, 0x80]),
+            Ok(Inst32::LdmStm {
+                is_load: true,
+                rn: 13,
+                regs: 0x800F,
+                writeback: true,
+                dec_before: false
+            })
+        );
+        // stmia r0, {r1, r2} (no write-back) -> e880 0006.
+        assert_eq!(
+            v7m_bytes([0x80, 0xe8, 0x06, 0x00]),
+            Ok(Inst32::LdmStm {
+                is_load: false,
+                rn: 0,
+                regs: 0x0006,
+                writeback: false,
+                dec_before: false
+            })
+        );
+        // ldmdb r2!, {r3, r4, r5} -> e932 0038.
+        assert_eq!(
+            v7m_bytes([0x32, 0xe9, 0x38, 0x00]),
+            Ok(Inst32::LdmStm {
+                is_load: true,
+                rn: 2,
+                regs: 0x0038,
+                writeback: true,
+                dec_before: true
+            })
+        );
+        // ldmia r0!, {r0, r1} (rn in the list, but the lowest) -> e8b0 0003.
+        assert_eq!(
+            v7m_bytes([0xb0, 0xe8, 0x03, 0x00]),
+            Ok(Inst32::LdmStm {
+                is_load: true,
+                rn: 0,
+                regs: 0x0003,
+                writeback: true,
+                dec_before: false
+            })
+        );
+    }
+
+    #[test]
+    fn v7m_ldm_stm_undefined() {
+        // STMIA through the PC base is UNPREDICTABLE.
+        assert!(v7m_bytes([0x8f, 0xe8, 0x0f, 0x00]).is_err());
+        // STM storing PC is UNPREDICTABLE.
+        assert!(v7m_bytes([0x80, 0xe8, 0x0f, 0x80]).is_err());
+        // LDM with a PC base is UNDEFINED.
+        assert!(v7m_bytes([0x9f, 0xe8, 0x0f, 0x00]).is_err());
+        // An empty register list is UNPREDICTABLE.
+        assert!(v7m_bytes([0x80, 0xe8, 0x00, 0x00]).is_err());
+        // Write-back with rn not the lowest register in the list is
+        // UNPREDICTABLE (ldmia r1!, {r0, r1, r2}).
+        assert!(v7m_bytes([0xb1, 0xe8, 0x07, 0x00]).is_err());
     }
 }

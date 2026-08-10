@@ -700,6 +700,57 @@ impl<B: PeripheralBus> Core<B> {
                 }
                 Ok(next)
             }
+            I::LdmStm {
+                is_load,
+                rn,
+                regs,
+                writeback,
+                dec_before,
+            } => {
+                let base = self.regs.read(rn);
+                let words = regs.count_ones();
+                // DB stores the lowest-numbered register at `base - 4n`; IA
+                // at `base`. Either way registers land at ascending addresses.
+                let wb_addr = if dec_before {
+                    base.wrapping_sub(4 * words)
+                } else {
+                    base.wrapping_add(4 * words)
+                };
+                let mut addr = if dec_before { wb_addr } else { base };
+                if is_load {
+                    let mut pc_target = None;
+                    for r in 0..16 {
+                        if regs & (1u16 << r) != 0 {
+                            let v = self.read_word_halt(addr)?;
+                            if r == 15 {
+                                pc_target = Some(v);
+                            } else {
+                                self.regs.write(r, v);
+                            }
+                            addr = addr.wrapping_add(4);
+                        }
+                    }
+                    // A loaded rn wins over the write-back address.
+                    if writeback && regs & (1u16 << rn) == 0 {
+                        self.regs.write(rn, wb_addr);
+                    }
+                    if let Some(target) = pc_target {
+                        return self.branch(target);
+                    }
+                } else {
+                    for r in 0..16 {
+                        if regs & (1u16 << r) != 0 {
+                            let v = self.regs.read(r);
+                            self.write_word_halt(addr, v)?;
+                            addr = addr.wrapping_add(4);
+                        }
+                    }
+                    if writeback {
+                        self.regs.write(rn, wb_addr);
+                    }
+                }
+                Ok(Next::Advance(pc + 4))
+            }
         }
     }
 
@@ -1503,6 +1554,66 @@ mod tests {
         assert_eq!(c.regs.read(5), 0x1234_ABCD);
         assert_eq!(c.regs.read(2), 0x2000_0400);
         assert_eq!(c.regs.pc, 0x2000_0008);
+    }
+
+    #[test]
+    fn mem_ldm_stm_push_pop() {
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.sp = 0x2000_1000;
+        c.regs.write(0, 0x1111_1111);
+        c.regs.write(1, 0x2222_2222);
+        c.regs.write(2, 0x3333_3333);
+        c.regs.lr = 0xFFFF_FFF5;
+        // push.w {r0-r2, lr} e92d 4007: STMDB sp!, {r0-r2, lr}.
+        load_inst(&mut c, 0x2000_0000, &[0x2d, 0xe9, 0x07, 0x40]);
+        c.step().unwrap();
+        assert_eq!(c.regs.sp, 0x2000_0FF0);
+        assert_eq!(c.mem().read_word(0x2000_0FF0).unwrap(), 0x1111_1111);
+        assert_eq!(c.mem().read_word(0x2000_0FF4).unwrap(), 0x2222_2222);
+        assert_eq!(c.mem().read_word(0x2000_0FF8).unwrap(), 0x3333_3333);
+        assert_eq!(c.mem().read_word(0x2000_0FFC).unwrap(), 0xFFFF_FFF5);
+    }
+
+    #[test]
+    fn mem_ldm_stm_load_writeback_and_pc() {
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0004;
+        c.regs.sp = 0x2000_0800;
+        c.mem().write_word(0x2000_0800, 0xCAFE_F00D).unwrap();
+        c.mem().write_word(0x2000_0804, 0x2000_0008 | 1).unwrap();
+        // pop.w {r0, pc} e8bd 8001: the loaded pc (with its Thumb bit) wins.
+        load_inst(&mut c, 0x2000_0004, &[0xbd, 0xe8, 0x01, 0x80]);
+        c.step().unwrap();
+        assert_eq!(c.regs.read(0), 0xCAFE_F00D);
+        assert_eq!(c.regs.sp, 0x2000_0808);
+        assert_eq!(c.regs.pc, 0x2000_0008);
+
+        // ldmdb r2!, {r3, r4}: rn loaded last, rn in the list is the lowest.
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(2, 0x2000_0400);
+        c.mem().write_word(0x2000_03F8, 0xAAA0).unwrap();
+        c.mem().write_word(0x2000_03FC, 0xBBB0).unwrap();
+        load_inst(&mut c, 0x2000_0000, &[0x32, 0xe9, 0x18, 0x00]);
+        c.step().unwrap();
+        assert_eq!(c.regs.read(3), 0xAAA0);
+        assert_eq!(c.regs.read(4), 0xBBB0);
+        assert_eq!(c.regs.read(2), 0x2000_03F8);
+    }
+
+    #[test]
+    fn mem_ldm_stm_ia_no_writeback() {
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(0, 0x2000_0200);
+        c.regs.write(1, 0xC0FF_EE00);
+        c.regs.write(2, 0x00FF_00FF);
+        // stmia r0, {r1, r2} e880 0006: no write-back.
+        load_inst(&mut c, 0x2000_0000, &[0x80, 0xe8, 0x06, 0x00]);
+        c.step().unwrap();
+        assert_eq!(c.regs.read(0), 0x2000_0200);
+        assert_eq!(c.mem().read_word(0x2000_0200).unwrap(), 0xC0FF_EE00);
+        assert_eq!(c.mem().read_word(0x2000_0204).unwrap(), 0x00FF_00FF);
     }
 
     #[test]
