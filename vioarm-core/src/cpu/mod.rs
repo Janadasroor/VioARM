@@ -13,7 +13,7 @@ use crate::error::{Exception, HaltCause};
 use crate::mem::PeripheralBus;
 use decode16::{decode16, AluOp, Inst16, LsImm, LsReg, Shift, ShiftImm};
 use decode32::{
-    decode32, decode32_v7m, is_thumb2, is_thumb2_v7m, thumb_expand_imm, DpOp, Inst32, MemOp,
+    decode32, decode32_v7m, is_thumb2, is_thumb2_v7m, thumb_expand_imm, DpOp, Inst32, MemOp, MulOp,
     ShiftType, SysReg,
 };
 use registers::{Registers, Xpsr, APSR_FLAGS, XPSR_T};
@@ -812,6 +812,61 @@ impl<B: PeripheralBus> Core<B> {
                     u32::wrapping_div(num, den)
                 };
                 self.regs.write(rd, result);
+                Ok(Next::Advance(pc + 4))
+            }
+            #[allow(
+                clippy::cast_possible_wrap,
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss
+            )]
+            I::Mul { op, rd, rn, rm, ra } => {
+                match op {
+                    MulOp::Mul | MulOp::Mla | MulOp::Mls => {
+                        if rd == 15 {
+                            return Err(HaltCause::NotImplemented {
+                                what: "multiply writes to pc",
+                            });
+                        }
+                        // The 32-bit multiply leaves the low word of the
+                        // product; there is no flag setting on ARMv7-M.
+                        let n = self.regs.read(rn);
+                        let m = self.regs.read(rm);
+                        let product = n.wrapping_mul(m);
+                        let result = match op {
+                            MulOp::Mul => product,
+                            MulOp::Mla => product.wrapping_add(self.regs.read(ra)),
+                            MulOp::Mls => self.regs.read(ra).wrapping_sub(product),
+                            MulOp::Smull | MulOp::Umull | MulOp::Smlal | MulOp::Umlal => {
+                                unreachable!()
+                            }
+                        };
+                        self.regs.write(rd, result);
+                    }
+                    MulOp::Smull | MulOp::Umull | MulOp::Smlal | MulOp::Umlal => {
+                        if rd == 15 || ra == 15 {
+                            return Err(HaltCause::NotImplemented {
+                                what: "long multiply writes to pc",
+                            });
+                        }
+                        let n = self.regs.read(rn);
+                        let m = self.regs.read(rm);
+                        let product = if matches!(op, MulOp::Smull | MulOp::Smlal) {
+                            i64::from(n as i32).wrapping_mul(i64::from(m as i32))
+                        } else {
+                            i64::from(n).wrapping_mul(i64::from(m))
+                        };
+                        let accumulator = if matches!(op, MulOp::Smlal | MulOp::Umlal) {
+                            (i64::from(self.regs.read(ra)) << 32) | i64::from(self.regs.read(rd))
+                        } else {
+                            0
+                        };
+                        let total = product.wrapping_add(accumulator);
+                        let lo = total as u32;
+                        let hi = (total >> 32) as u32;
+                        self.regs.write(rd, lo);
+                        self.regs.write(ra, hi);
+                    }
+                }
                 Ok(Next::Advance(pc + 4))
             }
         }
@@ -1845,5 +1900,106 @@ mod tests {
         load_inst(&mut c, 0x2000_0000, &[0x90, 0xfb, 0xf1, 0xf0]);
         c.step().unwrap();
         assert_eq!(c.regs.r[0], 0);
+    }
+
+    #[test]
+    fn multiply_ops() {
+        // mul r4, r5, r6 (fb05 f406): 10 * 5 = 50, flags untouched.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.xpsr.set_nzcv(true, true, true, true);
+        c.regs.write(5, 10);
+        c.regs.write(6, 5);
+        load_inst(&mut c, 0x2000_0000, &[0x05, 0xfb, 0x06, 0xf4]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[4], 50);
+        assert_eq!(c.regs.pc, 0x2000_0004);
+        assert!(c.xpsr.n() && c.xpsr.z() && c.xpsr.c() && c.xpsr.v());
+
+        // mla r0, r1, r2, r3 (fb01 3002): 10 * 20 + 100 = 300.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 10);
+        c.regs.write(2, 20);
+        c.regs.write(3, 100);
+        load_inst(&mut c, 0x2000_0000, &[0x01, 0xfb, 0x02, 0x30]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 300);
+
+        // mls r5, r6, r7, r8 (fb06 8517): 100 - 7 * 6 = 58.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(6, 7);
+        c.regs.write(7, 6);
+        c.regs.write(8, 100);
+        load_inst(&mut c, 0x2000_0000, &[0x06, 0xfb, 0x17, 0x85]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[5], 58);
+
+        // A 32-bit multiply truncates to the low word and writes nothing else.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(5, 0x8000_0001);
+        c.regs.write(6, 2);
+        load_inst(&mut c, 0x2000_0000, &[0x05, 0xfb, 0x06, 0xf4]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[4], 2);
+    }
+
+    #[test]
+    fn long_multiply_ops() {
+        // smull r0, r1, r2, r3 (fb82 1003): -7 * 5 = -35 -> r1:r0.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(2, 0xFFFF_FFF9);
+        c.regs.write(3, 5);
+        load_inst(&mut c, 0x2000_0000, &[0x82, 0xfb, 0x03, 0x10]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0xFFFF_FFDD);
+        assert_eq!(c.regs.r[1], 0xFFFF_FFFF);
+
+        // umull r0, r1, r9, r2 (fba9 1002): 0x10000 * 0x10000 = 2^32 -> r1 = 1.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(9, 0x0001_0000);
+        c.regs.write(2, 0x0001_0000);
+        load_inst(&mut c, 0x2000_0000, &[0xa9, 0xfb, 0x02, 0x10]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0);
+        assert_eq!(c.regs.r[1], 1);
+
+        // smlal r2, r1, r3, r4 (fbc3 1204): acc r1:r2 = 0x1_0000_0010,
+        // product -5 * 4 = -20 -> total = 0xFFFF_FFFC, r1 cleared.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(3, 0xFFFF_FFFB);
+        c.regs.write(4, 4);
+        c.regs.write(1, 1);
+        c.regs.write(2, 16);
+        load_inst(&mut c, 0x2000_0000, &[0xc3, 0xfb, 0x04, 0x12]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[2], 0xFFFF_FFFC);
+        assert_eq!(c.regs.r[1], 0);
+
+        // umlal r2, r1, r3, r4 (fbe3 1204): acc r1:r2 = 0x2_0000_0064,
+        // product 1000 * 10 = 10000 -> total = 0x2_0000_2774.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(3, 1000);
+        c.regs.write(4, 10);
+        c.regs.write(1, 2);
+        c.regs.write(2, 100);
+        load_inst(&mut c, 0x2000_0000, &[0xe3, 0xfb, 0x04, 0x12]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[2], 0x0000_2774);
+        assert_eq!(c.regs.r[1], 2);
+
+        // Writing the low result register (a PC) is rejected.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(2, 3);
+        c.regs.write(3, 4);
+        load_inst(&mut c, 0x2000_0000, &[0xa2, 0xfb, 0x03, 0x1f]);
+        assert!(matches!(c.step(), Err(HaltCause::NotImplemented { .. })));
     }
 }

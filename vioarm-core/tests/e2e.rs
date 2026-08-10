@@ -513,3 +513,35 @@ fn divide_on_armv7m() {
     assert_eq!(regs.r[4], 0);
     assert_eq!(regs.r[0], 100);
 }
+
+/// ARMv7-M: the multiply family. `mul`/`mla`/`mls` write the low 32 bits,
+/// and the long forms split the 64-bit product across `RdHi:RdLo`; at these
+/// magnitudes the high words stay zero and no flags move.
+#[test]
+fn multiply_on_armv7m() {
+    // movs r0, #7 ; movs r1, #6 ; movs r2, #0
+    // mul r3, r0, r1 ; mls r4, r0, r1, r3 ; mla r5, r0, r1, r2
+    // smull r6, r7, r0, r1 ; umull r8, r9, r0, r1 ; bkpt
+    let mut m = boot_v7m(&[
+        0x07, 0x20, 0x06, 0x21, 0x00, 0x22, 0x00, 0xfb, 0x01, 0xf3, 0x00, 0xfb, 0x11, 0x34, 0x00,
+        0xfb, 0x01, 0x25, 0x80, 0xfb, 0x01, 0x76, 0xa0, 0xfb, 0x01, 0x98, 0x00, 0xbe,
+    ]);
+    let err = m.run(10);
+    assert_eq!(err, Err(HaltCause::Breakpoint));
+    let (regs, xpsr, cycles) = m.core.snapshot();
+    // Eight instructions retire before the stopping bkpt.
+    assert_eq!(cycles, 8);
+    // mul/mla/mls agree on 7 * 6 = 42.
+    assert_eq!(regs.r[3], 42);
+    assert_eq!(regs.r[5], 42);
+    assert_eq!(regs.r[4], 0); // 42 - 42
+                              // The long products split into all-zero high words at this magnitude.
+    assert_eq!(regs.r[6], 42);
+    assert_eq!(regs.r[7], 0);
+    assert_eq!(regs.r[8], 42);
+    assert_eq!(regs.r[9], 0);
+    // The Z flag remains set from `movs r2, #0`: no multiply touched the
+    // flags, not even the 42 results below.
+    assert!(xpsr.z() && !xpsr.n() && !xpsr.c() && !xpsr.v());
+    assert_eq!(regs.sp, INIT_SP);
+}

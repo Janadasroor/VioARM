@@ -8,9 +8,9 @@
 //! ARMv7-M (Cortex-M3/M4) adds the full Thumb-2 set; this file carries the
 //! data-processing group (`MOVW`/`MOVT`, shifted-register operations, and the
 //! `ThumbExpandImm` plus raw-12-bit immediate forms), the single-data-transfer
-//! family (all `LDR`/`STR` immediate sizes and the signed loads), verified
-//! against `clang --target=thumbv7m`. Encoding ground truth lives in the test
-//! suite.
+//! family (all `LDR`/`STR` immediate sizes and the signed loads), and the
+//! divide and multiply families, verified against `clang --target=thumbv7m`.
+//! Encoding ground truth lives in the test suite.
 
 use super::decode::DecodeError;
 use crate::error::HaltCause;
@@ -201,6 +201,40 @@ pub enum Inst32 {
         rn: u8,
         rm: u8,
     },
+    /// ARMv7-M multiply family. `MUL` writes the low 32 bits of `Rn * Rm`;
+    /// `MLA`/`MLS` add/subtract `Ra`, and the long forms write the 64-bit
+    /// product (or accumulator, for the *AL forms) to `Ra:Rd`. Flags are
+    /// never affected, so `MUL` and `MLA` need no `S` bit.
+    Mul {
+        op: MulOp,
+        rd: u8,
+        rn: u8,
+        rm: u8,
+        /// `MLA`/`MLS` accumulator, or the `RdHi` half of a long multiply.
+        /// For `MUL` this is the all-ones encoding sentinel.
+        ra: u8,
+    },
+}
+
+/// ARMv7-M multiply-family opcode. The long forms read their `RdHi:RdLo`
+/// pair as the accumulator and write the 64-bit result back to the same pair;
+/// the plain forms keep the low 32 bits of the product.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MulOp {
+    /// `MUL Rd, Rn, Rm`: `Rd = Rn * Rm`.
+    Mul,
+    /// `MLA Rd, Rn, Rm, Ra`: `Rd = Rn * Rm + Ra`.
+    Mla,
+    /// `MLS Rd, Rn, Rm, Ra`: `Rd = Ra - Rn * Rm`.
+    Mls,
+    /// `SMULL RdLo, RdHi, Rn, Rm`: signed 64-bit product.
+    Smull,
+    /// `UMULL RdLo, RdHi, Rn, Rm`: unsigned 64-bit product.
+    Umull,
+    /// `SMLAL RdLo, RdHi, Rn, Rm`: signed accumulate.
+    Smlal,
+    /// `UMLAL RdLo, RdHi, Rn, Rm`: unsigned accumulate.
+    Umlal,
 }
 
 /// True when `hw` is the first halfword of a 32-bit ARMv6-M instruction.
@@ -291,6 +325,7 @@ pub fn decode32_v7m(hi: u16, lo: u16) -> Result<Inst32, DecodeError> {
         .or_else(|| decode_dp_modified(hi, lo))
         .or_else(|| decode_dp_reg(hi, lo))
         .or_else(|| decode_div(hi, lo))
+        .or_else(|| decode_mul(hi, lo))
         .unwrap_or_else(|| Err(err_for(hi)))
 }
 
@@ -731,6 +766,36 @@ const fn decode_div(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
         rn,
         rm,
     }))
+}
+
+/// decode the ARMv7-M multiply and long-multiply family.
+///
+/// `MUL`/`MLA`/`MLS` all start `1111 1011 0000 Rn` (Rn in the first
+/// halfword's low nibble); the second halfword packs `Ra:Rd:sel:Rm`, where
+/// `Ra == 1111` marks `MUL`, and `sel` bit 4 picks `MLS` over `MLA`. The long
+/// forms `SMULL`/`UMULL`/`SMLAL`/`UMLAL` use the `1000`/`1010`/`1100`/`1110`
+/// prefixes and pack `RdHi:RdLo:0000:Rm`. All seven ignore the flags.
+const fn decode_mul(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
+    let rn = (hi & 0xF) as u8;
+    let rd = ((lo >> 8) & 0xF) as u8;
+    let ra = ((lo >> 12) & 0xF) as u8;
+    let rm = (lo & 0xF) as u8;
+    let (op, is_long) = match hi & 0xFFF0 {
+        0xFB00 => match lo & 0x00F0 {
+            0x0000 => (if ra == 0xF { MulOp::Mul } else { MulOp::Mla }, false),
+            0x0010 => (MulOp::Mls, false),
+            _ => return Some(Err(err_for(hi))),
+        },
+        0xFB80 => (MulOp::Smull, true),
+        0xFBA0 => (MulOp::Umull, true),
+        0xFBC0 => (MulOp::Smlal, true),
+        0xFBE0 => (MulOp::Umlal, true),
+        _ => return None,
+    };
+    if is_long && lo & 0x00F0 != 0 {
+        return Some(Err(err_for(hi)));
+    }
+    Some(Ok(Inst32::Mul { op, rd, rn, rm, ra }))
 }
 
 #[cfg(test)]
@@ -1485,5 +1550,92 @@ mod tests {
         assert!(v7m_bytes([0x90, 0xfb, 0xe0, 0xf0]).is_err());
         assert!(decode32_bytes([0x90, 0xfb, 0xf1, 0xf0]).is_err());
         assert!(decode32_bytes([0xb4, 0xfb, 0xf5, 0xf2]).is_err());
+    }
+
+    #[test]
+    fn v7m_multiply() {
+        // mul r3, r9, r8 -> fb09 f308: the `Ra` field is all ones, which is
+        // the `MUL` marker over `MLA`.
+        assert_eq!(
+            v7m_bytes([0x09, 0xfb, 0x08, 0xf3]),
+            Ok(Inst32::Mul {
+                op: MulOp::Mul,
+                rd: 3,
+                rn: 9,
+                rm: 8,
+                ra: 0xF,
+            })
+        );
+        // mla r0, r1, r2, r3 -> fb01 3002: `Ra` in the second halfword top.
+        assert_eq!(
+            v7m_bytes([0x01, 0xfb, 0x02, 0x30]),
+            Ok(Inst32::Mul {
+                op: MulOp::Mla,
+                rd: 0,
+                rn: 1,
+                rm: 2,
+                ra: 3,
+            })
+        );
+        // mls r1, r2, r3, r4 -> fb02 4113: bit 4 of the lo selects `MLS`.
+        assert_eq!(
+            v7m_bytes([0x02, 0xfb, 0x13, 0x41]),
+            Ok(Inst32::Mul {
+                op: MulOp::Mls,
+                rd: 1,
+                rn: 2,
+                rm: 3,
+                ra: 4,
+            })
+        );
+        // smull r0, r1, r2, r3 -> fb82 1003, with RdHi:RdLo in the lo.
+        assert_eq!(
+            v7m_bytes([0x82, 0xfb, 0x03, 0x10]),
+            Ok(Inst32::Mul {
+                op: MulOp::Smull,
+                rd: 0,
+                rn: 2,
+                rm: 3,
+                ra: 1,
+            })
+        );
+        // umull r0, r1, r2, r3 -> fba2 1003.
+        assert_eq!(
+            v7m_bytes([0xa2, 0xfb, 0x03, 0x10]),
+            Ok(Inst32::Mul {
+                op: MulOp::Umull,
+                rd: 0,
+                rn: 2,
+                rm: 3,
+                ra: 1,
+            })
+        );
+        // smlal r2, r3, r4, r5 -> fbc4 3205, accumulating into r3:r2.
+        assert_eq!(
+            v7m_bytes([0xc4, 0xfb, 0x05, 0x32]),
+            Ok(Inst32::Mul {
+                op: MulOp::Smlal,
+                rd: 2,
+                rn: 4,
+                rm: 5,
+                ra: 3,
+            })
+        );
+        // umlal r2, r3, r4, r5 -> fbe4 3205.
+        assert_eq!(
+            v7m_bytes([0xe4, 0xfb, 0x05, 0x32]),
+            Ok(Inst32::Mul {
+                op: MulOp::Umlal,
+                rd: 2,
+                rn: 4,
+                rm: 5,
+                ra: 3,
+            })
+        );
+        // A malformed selector is UNDEFINED, and ARMv6-M never decodes the
+        // multiply space even when the second halfword looks plausible.
+        assert!(v7m_bytes([0x00, 0xfb, 0x20, 0xf0]).is_err());
+        assert!(decode32_bytes([0x01, 0xfb, 0x02, 0x30]).is_err());
+        assert!(decode32_bytes([0x82, 0xfb, 0x03, 0x10]).is_err());
     }
 }
