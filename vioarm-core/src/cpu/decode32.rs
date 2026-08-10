@@ -9,8 +9,9 @@
 //! data-processing group (`MOVW`/`MOVT`, shifted-register operations, and the
 //! `ThumbExpandImm` plus raw-12-bit immediate forms), the single-data-transfer
 //! family (all `LDR`/`STR` immediate sizes and the signed loads), and the
-//! divide and multiply families, verified against `clang --target=thumbv7m`.
-//! Encoding ground truth lives in the test suite.
+//! divide, multiply, and unary (`REV`/`REV16`/`REVSH`/`RBIT`/`CLZ`) families,
+//! verified against `clang --target=thumbv7m`. Encoding ground truth lives in
+//! the test suite.
 
 use super::decode::DecodeError;
 use crate::error::HaltCause;
@@ -214,6 +215,13 @@ pub enum Inst32 {
         /// For `MUL` this is the all-ones encoding sentinel.
         ra: u8,
     },
+    /// ARMv7-M unary register data-processing: `REV`/`REV16`/`REVSH`,
+    /// `RBIT`, and `CLZ`. Flags are not affected.
+    Unary {
+        op: UnaryOp,
+        rd: u8,
+        rm: u8,
+    },
 }
 
 /// ARMv7-M multiply-family opcode. The long forms read their `RdHi:RdLo`
@@ -235,6 +243,22 @@ pub enum MulOp {
     Smlal,
     /// `UMLAL RdLo, RdHi, Rn, Rm`: unsigned accumulate.
     Umlal,
+}
+
+/// ARMv7-M unary register-only data-processing opcode, from the `1111 1010`
+/// misc group. Each reads `Rm` and writes `Rd`; the flags are never touched.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnaryOp {
+    /// `REV Rd, Rm`: reverse the byte order of a word.
+    Rev,
+    /// `REV16 Rd, Rm`: reverse the byte order of each halfword.
+    Rev16,
+    /// `REVSH Rd, Rm`: reverse the low halfword's bytes and sign-extend.
+    Revsh,
+    /// `RBIT Rd, Rm`: reverse the bit order of a word.
+    Rbit,
+    /// `CLZ Rd, Rm`: count leading zeros (`32` when `Rm == 0`).
+    Clz,
 }
 
 /// True when `hw` is the first halfword of a 32-bit ARMv6-M instruction.
@@ -326,6 +350,7 @@ pub fn decode32_v7m(hi: u16, lo: u16) -> Result<Inst32, DecodeError> {
         .or_else(|| decode_dp_reg(hi, lo))
         .or_else(|| decode_div(hi, lo))
         .or_else(|| decode_mul(hi, lo))
+        .or_else(|| decode_unary(hi, lo))
         .unwrap_or_else(|| Err(err_for(hi)))
 }
 
@@ -796,6 +821,29 @@ const fn decode_mul(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
         return Some(Err(err_for(hi)));
     }
     Some(Ok(Inst32::Mul { op, rd, rn, rm, ra }))
+}
+
+/// decode the ARMv7-M unary data-processing family: `REV`, `REV16`, `REVSH`,
+/// `RBIT`, and `CLZ`.
+///
+/// All five live in the `1111 1010` misc zone with `1111 Rd <sel> Rm` second
+/// halfwords; the two halfwords' selector nibbles (`10` then `00`/`01`/`10`/
+/// `11` and `10`/`11`) uniquely pick the opcode. The first halfword's low
+/// nibble is an ignored/`UNPREDICTABLE` `Rn` field.
+const fn decode_unary(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
+    let op = match (hi & 0xFFF0, lo & 0xF0F0) {
+        (0xFA80, 0xF080) => UnaryOp::Rev,
+        (0xFA80, 0xF090) => UnaryOp::Rev16,
+        (0xFA90, 0xF0B0) => UnaryOp::Revsh,
+        (0xFA90, 0xF0A0) => UnaryOp::Rbit,
+        (0xFAB0, 0xF080) => UnaryOp::Clz,
+        _ => return None,
+    };
+    Some(Ok(Inst32::Unary {
+        op,
+        rd: ((lo >> 8) & 0xF) as u8,
+        rm: (lo & 0xF) as u8,
+    }))
 }
 
 #[cfg(test)]
@@ -1637,5 +1685,66 @@ mod tests {
         assert!(v7m_bytes([0x00, 0xfb, 0x20, 0xf0]).is_err());
         assert!(decode32_bytes([0x01, 0xfb, 0x02, 0x30]).is_err());
         assert!(decode32_bytes([0x82, 0xfb, 0x03, 0x10]).is_err());
+    }
+
+    #[test]
+    fn v7m_unary() {
+        // rev r0, r1 -> fa80 f081; rev16 r2, r3 -> fa80 f293.
+        assert_eq!(
+            v7m_bytes([0x80, 0xfa, 0x81, 0xf0]),
+            Ok(Inst32::Unary {
+                op: UnaryOp::Rev,
+                rd: 0,
+                rm: 1,
+            })
+        );
+        assert_eq!(
+            v7m_bytes([0x80, 0xfa, 0x93, 0xf2]),
+            Ok(Inst32::Unary {
+                op: UnaryOp::Rev16,
+                rd: 2,
+                rm: 3,
+            })
+        );
+        // revsh r4, r5 -> fa90 f4b5; rbit r6, r7 -> fa90 f6a7.
+        assert_eq!(
+            v7m_bytes([0x90, 0xfa, 0xb5, 0xf4]),
+            Ok(Inst32::Unary {
+                op: UnaryOp::Revsh,
+                rd: 4,
+                rm: 5,
+            })
+        );
+        assert_eq!(
+            v7m_bytes([0x90, 0xfa, 0xa7, 0xf6]),
+            Ok(Inst32::Unary {
+                op: UnaryOp::Rbit,
+                rd: 6,
+                rm: 7,
+            })
+        );
+        // clz r8, r9 -> fab0 f889.
+        assert_eq!(
+            v7m_bytes([0xb0, 0xfa, 0x89, 0xf8]),
+            Ok(Inst32::Unary {
+                op: UnaryOp::Clz,
+                rd: 8,
+                rm: 9,
+            })
+        );
+        // The `Rn` field's low nibble in the first halfword is ignored.
+        assert_eq!(
+            v7m_bytes([0x8f, 0xfa, 0x81, 0xf0]),
+            Ok(Inst32::Unary {
+                op: UnaryOp::Rev,
+                rd: 0,
+                rm: 1,
+            })
+        );
+        // A reserved selector combination stays UNDEFINED, and the ARMv6-M
+        // decoder rejects the whole `1111 1010` unary zone.
+        assert!(v7m_bytes([0x80, 0xfa, 0x0f, 0xf1]).is_err());
+        assert!(decode32_bytes([0x9a, 0xfa, 0x06, 0xf0]).is_err());
+        assert!(decode32_bytes([0xba, 0xfa, 0x08, 0xf0]).is_err());
     }
 }

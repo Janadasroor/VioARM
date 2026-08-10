@@ -14,7 +14,7 @@ use crate::mem::PeripheralBus;
 use decode16::{decode16, AluOp, Inst16, LsImm, LsReg, Shift, ShiftImm};
 use decode32::{
     decode32, decode32_v7m, is_thumb2, is_thumb2_v7m, thumb_expand_imm, DpOp, Inst32, MemOp, MulOp,
-    ShiftType, SysReg,
+    ShiftType, SysReg, UnaryOp,
 };
 use registers::{Registers, Xpsr, APSR_FLAGS, XPSR_T};
 
@@ -869,6 +869,30 @@ impl<B: PeripheralBus> Core<B> {
                 }
                 Ok(Next::Advance(pc + 4))
             }
+            I::Unary { op, rd, rm } => {
+                if rd == 15 {
+                    return Err(HaltCause::NotImplemented {
+                        what: "unary data-processing writes to pc",
+                    });
+                }
+                let v = self.regs.read(rm);
+                let result = match op {
+                    UnaryOp::Rev => v.swap_bytes(),
+                    UnaryOp::Rev16 => ((v & 0x00FF_00FF) << 8) | ((v >> 8) & 0x00FF_00FF),
+                    UnaryOp::Revsh => {
+                        let half = ((v & 0xFF) << 8) | ((v >> 8) & 0xFF);
+                        if half & 0x8000 != 0 {
+                            half | 0xFFFF_0000
+                        } else {
+                            half
+                        }
+                    }
+                    UnaryOp::Rbit => rbit(v),
+                    UnaryOp::Clz => v.leading_zeros(),
+                };
+                self.regs.write(rd, result);
+                Ok(Next::Advance(pc + 4))
+            }
         }
     }
 
@@ -1389,6 +1413,19 @@ fn sub_flags(a: u32, b: u32, borrow_in: bool) -> (u32, bool, bool) {
     let carry = u64::from(a) >= u64::from(b) + u64::from(borrow_in);
     let overflow = ((a ^ b) & (a ^ res)) & 0x8000_0000 != 0;
     (res, carry, overflow)
+}
+
+/// Reverse the 32 bits of `v` (`RBIT`).
+///
+/// Swap the bytes (reversing the byte order *and* dropping each byte into the
+/// mirror position), then finish reversing the bits within each byte so the
+/// whole word is mirrored end to end.
+#[must_use]
+const fn rbit(v: u32) -> u32 {
+    let v = v.swap_bytes();
+    let v = (v & 0x0F0F_0F0F) << 4 | (v & 0xF0F0_F0F0) >> 4;
+    let v = (v & 0x3333_3333) << 2 | (v & 0xCCCC_CCCC) >> 2;
+    (v & 0x5555_5555) << 1 | (v & 0xAAAA_AAAA) >> 1
 }
 
 /// Shift `v` by an immediate 5-bit `amount` (LSL/LSR/ASR #n). Returns
@@ -2000,6 +2037,82 @@ mod tests {
         c.regs.write(2, 3);
         c.regs.write(3, 4);
         load_inst(&mut c, 0x2000_0000, &[0xa2, 0xfb, 0x03, 0x1f]);
+        assert!(matches!(c.step(), Err(HaltCause::NotImplemented { .. })));
+    }
+
+    #[test]
+    fn unary_rev_and_flags() {
+        // rev r0, r1 (fa80 f081): byte-reverse a word, flags untouched.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.xpsr.set_nzcv(true, true, true, true);
+        c.regs.write(1, 0x1234_5678);
+        load_inst(&mut c, 0x2000_0000, &[0x80, 0xfa, 0x81, 0xf0]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0x7856_3412);
+        assert_eq!(c.regs.pc, 0x2000_0004);
+        assert!(c.xpsr.n() && c.xpsr.z() && c.xpsr.c() && c.xpsr.v());
+
+        // rev16 r2, r3 (fa80 f293): swap bytes within each halfword.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(3, 0x1234_5678);
+        load_inst(&mut c, 0x2000_0000, &[0x80, 0xfa, 0x93, 0xf2]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[2], 0x3412_7856);
+
+        // revsh r4, r5 (fa90 f4b5): byte-swap the low half, sign-extend.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(5, 0x0000_1234);
+        load_inst(&mut c, 0x2000_0000, &[0x90, 0xfa, 0xb5, 0xf4]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[4], 0x0000_3412);
+
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(5, 0x0000_80FF);
+        load_inst(&mut c, 0x2000_0000, &[0x90, 0xfa, 0xb5, 0xf4]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[4], 0xFFFF_FF80);
+    }
+
+    #[test]
+    fn unary_rbit_clz() {
+        // rbit r6, r7 (fa90 f6a7): mirror all 32 bits.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(7, 0x1234_5678);
+        load_inst(&mut c, 0x2000_0000, &[0x90, 0xfa, 0xa7, 0xf6]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[6], 0x1E6A_2C48);
+
+        // clz r8, r9 (fab0 f889).
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(9, 0x000F_0000);
+        load_inst(&mut c, 0x2000_0000, &[0xb0, 0xfa, 0x89, 0xf8]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[8], 12);
+
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(9, 0x8000_0000);
+        load_inst(&mut c, 0x2000_0000, &[0xb0, 0xfa, 0x89, 0xf8]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[8], 0);
+
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(9, 0);
+        load_inst(&mut c, 0x2000_0000, &[0xb0, 0xfa, 0x89, 0xf8]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[8], 32);
+
+        // Writing the destination register 15 is rejected.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        load_inst(&mut c, 0x2000_0000, &[0x80, 0xfa, 0x80, 0xff]);
         assert!(matches!(c.step(), Err(HaltCause::NotImplemented { .. })));
     }
 }

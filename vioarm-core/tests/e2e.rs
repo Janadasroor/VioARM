@@ -545,3 +545,30 @@ fn multiply_on_armv7m() {
     assert!(xpsr.z() && !xpsr.n() && !xpsr.c() && !xpsr.v());
     assert_eq!(regs.sp, INIT_SP);
 }
+
+/// ARMv7-M: the unary byte/bits data-processing. `rev`/`rev16`/`revsh`/`rbit`
+/// reorder, `clz` counts, and none of them touch the flags left by `movs`.
+#[test]
+fn unary_data_processing_on_armv7m() {
+    // movs r0, #4 ; lsls r0, r0, #24  -> 0x0400_0000
+    // rev r1, r0 ; rbit r2, r0 ; clz r3, r0 ; bkpt
+    let mut m = boot_v7m(&[
+        0x04, 0x20, 0x00, 0x06, 0x80, 0xfa, 0x80, 0xf1, 0x90, 0xfa, 0xa0, 0xf2, 0xb0, 0xfa, 0x80,
+        0xf3, 0x00, 0xbe,
+    ]);
+    let err = m.run(10);
+    assert_eq!(err, Err(HaltCause::Breakpoint));
+    let (regs, xpsr, cycles) = m.core.snapshot();
+    // Five instructions retire before the stopping bkpt.
+    assert_eq!(cycles, 5);
+    assert_eq!(regs.r[0], 0x0400_0000);
+    // rev: byte order flipped.
+    assert_eq!(regs.r[1], 0x0000_0004);
+    // rbit: the one set bit moves to the mirrored position (bit 26 -> 5).
+    assert_eq!(regs.r[2], 0x0000_0020);
+    // clz: five leading zeros above bit 26.
+    assert_eq!(regs.r[3], 5);
+    // No unary instruction touched the flags from movs/lsls.
+    assert!(!xpsr.n() && !xpsr.z() && !xpsr.c() && !xpsr.v());
+    assert_eq!(regs.sp, INIT_SP);
+}
