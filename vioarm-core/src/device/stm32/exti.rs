@@ -9,7 +9,7 @@
 //! wired to an exception (IRQ 6), which the SVD lists as `EXTI0`.
 
 use crate::device::svd::stm32f103;
-use crate::device::svd::{Behavior, RegisterFile, Registers};
+use crate::device::svd::{Behavior, Device, RegisterFile, Registers};
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
 use crate::mem::bus::Region;
@@ -82,7 +82,17 @@ impl Exti {
     /// peripheral (a build-time invariant enforced by conformance tests).
     #[must_use]
     pub fn new() -> Self {
-        let def = stm32f103::peripheral("EXTI").expect("generated tables contain EXTI");
+        Self::for_device::<stm32f103::Stm32f103>()
+    }
+
+    /// A new `EXTI` on another chip's device tables.
+    ///
+    /// # Panics
+    /// Panics if `D`'s generated tables do not contain the `EXTI`
+    /// peripheral.
+    #[must_use]
+    pub fn for_device<D: Device>() -> Self {
+        let def = D::peripheral("EXTI").expect("generated tables contain EXTI");
         Self {
             inner: RegisterFile::new(def, ExtiBehavior::default()),
         }

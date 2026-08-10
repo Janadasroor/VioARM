@@ -9,7 +9,7 @@
 //! Channel logic (`CCR`/`CCER`) is latched state only.
 
 use crate::device::svd::stm32f103;
-use crate::device::svd::{Behavior, RegisterFile, Registers};
+use crate::device::svd::{Behavior, Device, RegisterFile, Registers};
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
 use crate::mem::bus::Region;
@@ -116,7 +116,16 @@ impl Timer {
     /// peripheral (a build-time invariant enforced by conformance tests).
     #[must_use]
     pub fn tim2() -> Self {
-        let def = stm32f103::peripheral("TIM2").expect("generated tables contain TIM2");
+        Self::tim2_for::<stm32f103::Stm32f103>()
+    }
+
+    /// A `TIM2` on another chip's device tables.
+    ///
+    /// # Panics
+    /// Panics if `D`'s generated tables do not contain the `TIM2` peripheral.
+    #[must_use]
+    pub fn tim2_for<D: Device>() -> Self {
+        let def = D::peripheral("TIM2").expect("generated tables contain TIM2");
         Self {
             inner: RegisterFile::new(def, TimerBehavior::new(u32::MAX)),
             name: "tim2",
@@ -130,7 +139,16 @@ impl Timer {
     /// peripheral (a build-time invariant enforced by conformance tests).
     #[must_use]
     pub fn tim3() -> Self {
-        let def = stm32f103::peripheral("TIM3").expect("generated tables contain TIM3");
+        Self::tim3_for::<stm32f103::Stm32f103>()
+    }
+
+    /// A `TIM3` on another chip's device tables.
+    ///
+    /// # Panics
+    /// Panics if `D`'s generated tables do not contain the `TIM3` peripheral.
+    #[must_use]
+    pub fn tim3_for<D: Device>() -> Self {
+        let def = D::peripheral("TIM3").expect("generated tables contain TIM3");
         Self {
             inner: RegisterFile::new(def, TimerBehavior::new(0xFFFF)),
             name: "tim3",

@@ -27,7 +27,7 @@ fn main() {
     let xml = fs::read_to_string(svd_path)
         .unwrap_or_else(|e| die(&format!("cannot read {svd_path}: {e}")));
     let model = svd::parse(&xml).unwrap_or_else(|e| die(&e.to_string()));
-    let code = emit::emit(&model, svd_path);
+    let code = emit::emit(&model, svd_path, out_path);
     fs::write(out_path, code).unwrap_or_else(|e| die(&format!("cannot write {out_path}: {e}")));
 
     let periphs = model.peripherals.len();

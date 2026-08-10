@@ -14,6 +14,7 @@ use crate::mem::bus::Region;
 use core::ops::Deref;
 
 pub mod stm32f103;
+pub mod stm32f107;
 
 /// The register access vocabulary used by the supported SVD files.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,6 +59,18 @@ pub struct PeripheralDef {
     pub window: u32,
     pub irqs: &'static [IrqDef],
     pub registers: &'static [RegisterDef],
+}
+
+/// A generated device table: one chip's peripheral map.
+///
+/// [`stm32f103::Stm32f103`] and [`stm32f107::Stm32f107`] implement this so a
+/// [`Behavior`] can be mounted against either chip's tables unchanged.
+pub trait Device {
+    /// Find the generated descriptor for a peripheral by SVD name.
+    fn peripheral(name: &str) -> Option<&'static PeripheralDef>;
+
+    /// Find the generated descriptor for a peripheral by base address.
+    fn by_base(base: u32) -> Option<&'static PeripheralDef>;
 }
 
 /// A window into the register file's storage, keyed by register offset.
@@ -397,6 +410,23 @@ mod tests {
         u32::from_le_bytes(bytes)
     }
 
+    #[allow(clippy::cast_possible_truncation)]
+    fn p_write_word<P: Peripheral>(p: &mut P, off: u32, val: u32) {
+        for (i, b) in val.to_le_bytes().iter().enumerate() {
+            p.write(p.ranges()[0].base + off + i as u32, *b).unwrap();
+        }
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
+    fn p_read_word<P: Peripheral>(p: &mut P, off: u32) -> u32 {
+        let base = p.ranges()[0].base;
+        let mut bytes = [0u8; 4];
+        for (i, b) in bytes.iter_mut().enumerate() {
+            *b = p.read(base + off + i as u32).unwrap();
+        }
+        u32::from_le_bytes(bytes)
+    }
+
     #[test]
     fn register_bytes_roundtrip() {
         let mut rf = RegisterFile::<Noop>::new(&TINY, Noop);
@@ -591,8 +621,102 @@ mod tests {
     }
 
     #[test]
-    fn generated_table_is_internally_consistent() {
-        for p in super::stm32f103::PERIPHERALS {
+    fn generated_stm32f107_matches_silicon_layout() {
+        let cases = [
+            ("RCC", 0x4002_1000u32),
+            ("AFIO", 0x4001_0000),
+            ("EXTI", 0x4001_0400),
+            ("TIM2", 0x4000_0000),
+            ("USART1", 0x4001_3800),
+            ("GPIOA", 0x4001_0800),
+            ("GPIOE", 0x4001_1800),
+            ("CAN1", 0x4000_6400),
+            ("CAN2", 0x4000_6800),
+            ("ETHERNET_MAC", 0x4002_8000),
+            ("USB_OTG_GLOBAL", 0x5000_0000),
+        ];
+        for (name, base) in cases {
+            let def = super::stm32f107::peripheral(name)
+                .unwrap_or_else(|| panic!("generated tables contain {name}"));
+            assert_eq!(def.base, base, "base address of {name}");
+        }
+        let usart1 = super::stm32f107::peripheral("USART1").unwrap();
+        let irq = usart1.irqs.first().unwrap();
+        assert_eq!(irq.number, 37, "USART1 IRQ number");
+        assert_eq!(16 + irq.number, 53, "USART1 exception number");
+        let eth = super::stm32f107::peripheral("ETHERNET_MAC").unwrap();
+        assert!(eth.irqs.iter().any(|i| i.number == 61), "ETH has IRQ 61");
+        let gpioa = super::stm32f107::peripheral("GPIOA").unwrap();
+        let crl = gpioa.registers.iter().find(|r| r.name == "CRL").unwrap();
+        assert_eq!(crl.offset, 0x00);
+        assert_eq!(crl.reset, 0x4444_4444);
+    }
+
+    #[test]
+    fn same_behavior_mounts_f107_tables() {
+        use super::stm32f107;
+        use crate::device::stm32::afio::Afio;
+        use crate::device::stm32::exti::Exti;
+        use crate::device::stm32::gpio::Gpio;
+        use crate::device::stm32::rcc::Rcc;
+        use crate::device::stm32::timer::Timer;
+        use crate::device::stm32::usart::Usart1;
+        use crate::device::{InterruptSource, Peripheral};
+
+        // USART1: the byte-oriented behavior on F107's tables.
+        let mut u = Usart1::for_device::<stm32f107::Stm32f107>();
+        assert_eq!(u.ranges()[0].base, 0x4001_3800);
+        u.drive_inputs(0x55);
+        assert_eq!(u.pending(), 0);
+        p_write_word(&mut u, 0x0C, 0x2020); // CR1 = UE | RXNEIE
+        assert_eq!(u.pending(), 1);
+        assert_eq!(u.read(0x4001_3804).unwrap(), 0x55);
+        assert_eq!(u.pending(), 0);
+        p_write_word(&mut u, 0x0C, 0x2008); // CR1 = UE | TE
+        u.write(0x4001_3804, b'X').unwrap();
+        assert_eq!(u.drain_output(), b"X");
+
+        // RCC: HSIRDY synthesis on F107's tables.
+        let mut rcc = Rcc::for_device::<stm32f107::Stm32f107>();
+        assert_eq!(rcc.ranges()[0].base, 0x4002_1000);
+        assert_eq!(p_read_word(&mut rcc, 0x00) & (1 << 1), 1 << 1);
+
+        // GPIO: BSRR/IDR behavior on F107's GPIOE.
+        let mut gpioe = Gpio::at_in::<stm32f107::Stm32f107>(0x4001_1800, "gpioe");
+        p_write_word(&mut gpioe, 0x00, 0x0000_0002); // pin 0 output push-pull
+        p_write_word(&mut gpioe, 0x10, 0x0000_0001); // BSRR sets pin 0
+        assert_eq!(p_read_word(&mut gpioe, 0x0C) & 1, 1, "ODR follows BSRR");
+        assert_eq!(
+            p_read_word(&mut gpioe, 0x08) & 1,
+            1,
+            "IDR reads the output latch"
+        );
+
+        // Timer: tick-driven UIF on F107's TIM2.
+        let mut tim2 = Timer::tim2_for::<stm32f107::Stm32f107>();
+        p_write_word(&mut tim2, 0x2C, 1); // ARR = 1
+        p_write_word(&mut tim2, 0x28, 0); // PSC = 0
+        p_write_word(&mut tim2, 0x0C, 1); // DIER = UIE
+        p_write_word(&mut tim2, 0x00, 1); // CR1 = CEN
+        assert_eq!(tim2.pending(), 0);
+        tim2.tick(2);
+        assert_eq!(tim2.pending(), 1, "UIF latched on F107 TIM2");
+
+        // EXTI and AFIO construct against F107's tables.
+        assert_eq!(
+            Exti::for_device::<stm32f107::Stm32f107>().ranges()[0].base,
+            0x4001_0400
+        );
+        assert_eq!(
+            Afio::for_device::<stm32f107::Stm32f107>().ranges()[0].base,
+            0x4001_0000
+        );
+    }
+
+    #[test]
+    fn generated_tables_are_internally_consistent() {
+        let tables = [super::stm32f103::PERIPHERALS, super::stm32f107::PERIPHERALS];
+        for p in tables.into_iter().flatten() {
             let mut spans: Vec<(u32, u32)> = Vec::new();
             for r in p.registers {
                 let start = u32::from(r.offset);

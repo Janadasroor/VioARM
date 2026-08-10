@@ -9,7 +9,7 @@
 //! are correct for the default mapping the e2e firmware uses.
 
 use crate::device::svd::stm32f103;
-use crate::device::svd::{NoBehavior, RegisterFile};
+use crate::device::svd::{Device, NoBehavior, RegisterFile};
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
 use crate::mem::bus::Region;
@@ -28,7 +28,17 @@ impl Afio {
     /// peripheral (a build-time invariant enforced by conformance tests).
     #[must_use]
     pub fn new() -> Self {
-        let def = stm32f103::peripheral("AFIO").expect("generated tables contain AFIO");
+        Self::for_device::<stm32f103::Stm32f103>()
+    }
+
+    /// A new `AFIO` on another chip's device tables.
+    ///
+    /// # Panics
+    /// Panics if `D`'s generated tables do not contain the `AFIO`
+    /// peripheral.
+    #[must_use]
+    pub fn for_device<D: Device>() -> Self {
+        let def = D::peripheral("AFIO").expect("generated tables contain AFIO");
         Self {
             inner: RegisterFile::new(def, NoBehavior),
         }

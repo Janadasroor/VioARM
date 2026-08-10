@@ -8,12 +8,25 @@
 //!   vioarm-core/src/device/svd/stm32f103.rs
 //! ```
 
-use super::{Access, FieldDef, IrqDef, PeripheralDef, RegisterDef};
+use super::{Access, Device, FieldDef, IrqDef, PeripheralDef, RegisterDef};
 
 /// Find the generated descriptor for a peripheral by SVD name.
 #[must_use]
 pub fn peripheral(name: &str) -> Option<&'static PeripheralDef> {
     PERIPHERALS.iter().find(|p| p.name == name)
+}
+
+/// The chip type that mounts [`Device`] behavior on this table.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Stm32f103;
+
+impl Device for Stm32f103 {
+    fn peripheral(name: &str) -> Option<&'static PeripheralDef> {
+        peripheral(name)
+    }
+    fn by_base(base: u32) -> Option<&'static PeripheralDef> {
+        PERIPHERALS.iter().find(|p| p.base == base)
+    }
 }
 
 /// Every peripheral the SVD describes, in file order.

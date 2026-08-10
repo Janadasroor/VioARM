@@ -9,7 +9,7 @@
 //! config nibbles, the output latch, and the host-injected input level.
 
 use crate::device::svd::stm32f103;
-use crate::device::svd::{Behavior, RegisterFile, Registers};
+use crate::device::svd::{Behavior, Device, RegisterFile, Registers};
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
 use crate::mem::bus::Region;
@@ -121,10 +121,16 @@ impl Gpio {
     /// `base` (a build-time invariant enforced by conformance tests).
     #[must_use]
     pub fn at(base: u32, name: &'static str) -> Self {
-        let def = stm32f103::PERIPHERALS
-            .iter()
-            .find(|p| p.base == base)
-            .expect("generated tables contain a peripheral at base");
+        Self::at_in::<stm32f103::Stm32f103>(base, name)
+    }
+
+    /// A new port on another chip's device tables.
+    ///
+    /// # Panics
+    /// Panics if `D`'s generated tables do not contain a peripheral at `base`.
+    #[must_use]
+    pub fn at_in<D: Device>(base: u32, name: &'static str) -> Self {
+        let def = D::by_base(base).expect("generated tables contain a peripheral at base");
         Self {
             inner: RegisterFile::new(def, GpioBehavior::default()),
             name,

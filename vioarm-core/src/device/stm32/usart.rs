@@ -12,7 +12,7 @@
 //! synthesis and the read-to-clear `RXNE` side effect.
 
 use crate::device::svd::stm32f103;
-use crate::device::svd::{Behavior, RegisterFile, Registers};
+use crate::device::svd::{Behavior, Device, RegisterFile, Registers};
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
 use crate::mem::bus::Region;
@@ -129,7 +129,17 @@ impl Usart1 {
     /// peripheral (a build-time invariant enforced by conformance tests).
     #[must_use]
     pub fn new() -> Self {
-        let def = stm32f103::peripheral("USART1").expect("generated tables contain USART1");
+        Self::for_device::<stm32f103::Stm32f103>()
+    }
+
+    /// A new `USART1` on another chip's device tables.
+    ///
+    /// # Panics
+    /// Panics if `D`'s generated tables do not contain the `USART1`
+    /// peripheral.
+    #[must_use]
+    pub fn for_device<D: Device>() -> Self {
+        let def = D::peripheral("USART1").expect("generated tables contain USART1");
         Self {
             inner: RegisterFile::new(def, UsartBehavior::default()),
         }
