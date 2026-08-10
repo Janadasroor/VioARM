@@ -201,6 +201,13 @@ pub enum Inst16 {
     Branch {
         off: i32,
     },
+    /// `CBZ`/`CBNZ`: compare `rn` against zero and take the branch when the
+    /// condition matches. `off` is the byte offset from `pc + 4`.
+    CbzCbnz {
+        rn: u8,
+        off: i32,
+        nonzero: bool,
+    },
     Svc {
         imm: u8,
     },
@@ -512,6 +519,21 @@ pub fn decode16(op: u16) -> Result<Inst16, DecodeError> {
         return Ok(Inst16::BranchCond { cond, off });
     }
 
+    // CBZ/CBNZ: 1011 P 0 i 1 imm5 rn. Bit 11 selects CBZ (0) / CBNZ (1),
+    // bit 9 is the i bit, bits[7:3] the imm5, and the offset is the unsigned
+    // (forward-only) `i:imm5:0`.
+    if op & 0xF500 == 0xB100 {
+        let rn = (op & 0x7) as u8;
+        let i = i32::from((op >> 9) & 1);
+        let imm5 = i32::from((op >> 3) & 0x1F);
+        let off = (i << 6) | (imm5 << 1);
+        return Ok(Inst16::CbzCbnz {
+            rn,
+            off,
+            nonzero: op & 0x0800 != 0,
+        });
+    }
+
     // B (unconditional): 1110 imm11.
     if op & 0xF800 == 0xE000 {
         let off = i32::from(op & 0x7FF) << 1;
@@ -705,6 +727,37 @@ mod tests {
         assert_eq!(
             decode_bytes([0x01, 0xd0]),
             Ok(Inst16::BranchCond { cond: 0x0, off: 2 })
+        );
+    }
+
+    #[test]
+    fn cbz_cbnz() {
+        // cbz r0, +2 -> [0x08, 0xb1] (imm5=1 => offset 2).
+        assert_eq!(
+            decode_bytes([0x08, 0xb1]),
+            Ok(Inst16::CbzCbnz {
+                rn: 0,
+                off: 2,
+                nonzero: false
+            })
+        );
+        // cbnz r3, +8 -> [0x23, 0xb9] (P=1, i=0, imm5=4 => offset 8).
+        assert_eq!(
+            decode_bytes([0x23, 0xb9]),
+            Ok(Inst16::CbzCbnz {
+                rn: 3,
+                off: 8,
+                nonzero: true
+            })
+        );
+        // cbz r0, +64 -> [0x00, 0xb3] (i=1, imm5=0 => offset 64).
+        assert_eq!(
+            decode_bytes([0x00, 0xb3]),
+            Ok(Inst16::CbzCbnz {
+                rn: 0,
+                off: 64,
+                nonzero: false
+            })
         );
     }
 

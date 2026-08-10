@@ -186,6 +186,13 @@ pub enum Inst32 {
         writeback: bool,
         dec_before: bool,
     },
+    /// ARMv7-M table branch: `TBB [Rn, Rm]` (`half == false`) or
+    /// `TBH [Rn, Rm]` (`half == true`).
+    TblBranch {
+        rn: u8,
+        rm: u8,
+        half: bool,
+    },
 }
 
 /// True when `hw` is the first halfword of a 32-bit ARMv6-M instruction.
@@ -271,6 +278,7 @@ pub fn decode32_v7m(hi: u16, lo: u16) -> Result<Inst32, DecodeError> {
         .or_else(|| decode_movwide(hi, lo))
         .or_else(|| decode_mem(hi, lo))
         .or_else(|| decode_ldm_stm(hi, lo))
+        .or_else(|| decode_tbranch(hi, lo))
         .or_else(|| decode_dp_plain(hi, lo))
         .or_else(|| decode_dp_modified(hi, lo))
         .or_else(|| decode_dp_reg(hi, lo))
@@ -637,6 +645,25 @@ fn decode_dp_modified(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
 }
 
 /// decode the ARMv7-M data-processing (register) set, with its shifted
+/// Decode the ARMv7-M table branch instructions `TBB`/`TBH`.
+///
+/// `TBB [Rn, Rm]` is `1110 1000 1101 Rn / 1111 0000 0000 Rm` and
+/// `TBH [Rn, Rm]` is `1110 1000 1101 Rn / 1111 0000 0001 Rm`; the second
+/// halfword's bit 4 selects the byte table over the halfword table.
+const fn decode_tbranch(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
+    if hi & 0xFFF0 != 0xE8D0 {
+        return None;
+    }
+    let rn = (hi & 0xF) as u8;
+    let half = match lo & 0xFFF0 {
+        0xF000 => false,
+        0xF010 => true,
+        _ => return Some(Err(err_for(hi))),
+    };
+    let rm = (lo & 0xF) as u8;
+    Some(Ok(Inst32::TblBranch { rn, rm, half }))
+}
+
 /// register operand.
 fn decode_dp_reg(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
     // 1110 101 1 C op S Rn / 0 imm3 Rd imm2 type Rm. The shift type field is
@@ -1362,5 +1389,27 @@ mod tests {
         // Write-back with rn not the lowest register in the list is
         // UNPREDICTABLE (ldmia r1!, {r0, r1, r2}).
         assert!(v7m_bytes([0xb1, 0xe8, 0x07, 0x00]).is_err());
+    }
+
+    #[test]
+    fn v7m_tbranch() {
+        // tbb [r2, r5] -> e8d2 f005.
+        assert_eq!(
+            v7m_bytes([0xd2, 0xe8, 0x05, 0xf0]),
+            Ok(Inst32::TblBranch {
+                rn: 2,
+                rm: 5,
+                half: false
+            })
+        );
+        // tbh [r0, r3] -> e8d0 f013.
+        assert_eq!(
+            v7m_bytes([0xd0, 0xe8, 0x13, 0xf0]),
+            Ok(Inst32::TblBranch {
+                rn: 0,
+                rm: 3,
+                half: true
+            })
+        );
     }
 }

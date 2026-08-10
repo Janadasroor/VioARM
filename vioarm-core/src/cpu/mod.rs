@@ -491,6 +491,15 @@ impl<B: PeripheralBus> Core<B> {
                 }
             }
             I::Branch { off } => Ok(Next::Advance(pc.wrapping_add(4).wrapping_add_signed(off))),
+            I::CbzCbnz { rn, off, nonzero } => {
+                let is_zero = self.regs.read(rn) == 0;
+                let taken = if nonzero { !is_zero } else { is_zero };
+                if taken {
+                    Ok(Next::Advance(pc.wrapping_add(4).wrapping_add_signed(off)))
+                } else {
+                    Ok(Next::Advance(pc + 2))
+                }
+            }
             I::Svc { imm } => Ok(Next::Stop(HaltCause::Svc(imm))),
             I::Bkpt { .. } => Ok(Next::Stop(HaltCause::Breakpoint)),
             I::Hint { .. } => Ok(Next::Advance(pc + 2)),
@@ -750,6 +759,37 @@ impl<B: PeripheralBus> Core<B> {
                     }
                 }
                 Ok(Next::Advance(pc + 4))
+            }
+            I::TblBranch { rn, rm, half } => {
+                // index = Mem[Rn + Rm (or Rn + Rm<<1) as byte/halfword];
+                // target = (pc + 4) + 2 * index, a simple Thumb branch. A PC
+                // base reads the address of the following instruction.
+                let base = if rn == 15 {
+                    pc.wrapping_add(4)
+                } else {
+                    self.regs.read(rn)
+                };
+                let index_reg = self.regs.read(rm);
+                let table_addr = if half {
+                    base.wrapping_add(index_reg << 1)
+                } else {
+                    base.wrapping_add(index_reg)
+                };
+                let index: u32 = if half {
+                    u32::from(
+                        self.mem
+                            .read_half(table_addr)
+                            .map_err(|_| HaltCause::BusFault { address: table_addr })?,
+                    )
+                } else {
+                    u32::from(
+                        self.mem
+                            .read(table_addr)
+                            .map_err(|_| HaltCause::BusFault { address: table_addr })?,
+                    )
+                };
+                let target = pc.wrapping_add(4).wrapping_add(index << 1);
+                Ok(Next::Advance(target & !1))
             }
         }
     }
@@ -1639,5 +1679,57 @@ mod tests {
         load_inst(&mut c, 0x2000_0000, &[0xd1, 0xf8, 0x00, 0xf0]);
         c.step().unwrap();
         assert_eq!(c.regs.pc, 0x2000_0500);
+    }
+
+    #[test]
+    fn branch_cbz_cbnz() {
+        // cbz r0, +6 (b118): r0 == 0 so it branches to pc + 4 + 6.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(0, 0);
+        load_inst(&mut c, 0x2000_0000, &[0x18, 0xb1]);
+        c.step().unwrap();
+        assert_eq!(c.regs.pc, 0x2000_000a);
+
+        // cbz r0, +6: r0 != 0 falls through.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(0, 1);
+        load_inst(&mut c, 0x2000_0000, &[0x18, 0xb1]);
+        c.step().unwrap();
+        assert_eq!(c.regs.pc, 0x2000_0002);
+
+        // cbnz r3, +8 (b923): r3 != 0 branches; offset 8.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(3, 3);
+        load_inst(&mut c, 0x2000_0000, &[0x23, 0xb9]);
+        c.step().unwrap();
+        assert_eq!(c.regs.pc, 0x2000_000c);
+    }
+
+    #[test]
+    fn branch_tbb_tbh() {
+        // tbb [r0, r1] (e8d0 f001): byte index at r0+r1. pc = 0x2000, so the
+        // base pc+4 = 0x2004; index byte = 6 -> target 0x2004 + 12 = 0x2010.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(0, 0x2000_0200);
+        c.regs.write(1, 4);
+        c.mem().write(0x2000_0204, 6).unwrap();
+        load_inst(&mut c, 0x2000_0000, &[0xd0, 0xe8, 0x01, 0xf0]);
+        c.step().unwrap();
+        assert_eq!(c.regs.pc, 0x2000_0010);
+
+        // tbh [r1, r2] (e8d1 f012): halfword index at r1 + 2*r2. Index = 0x100
+        // -> +0x200 = target 0x2000 + 4 + 0x200.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0x2000_0200);
+        c.regs.write(2, 4);
+        c.mem().write_half(0x2000_0208, 0x100).unwrap();
+        load_inst(&mut c, 0x2000_0000, &[0xd1, 0xe8, 0x12, 0xf0]);
+        c.step().unwrap();
+        assert_eq!(c.regs.pc, 0x2000_0204);
     }
 }
