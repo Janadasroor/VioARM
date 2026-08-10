@@ -27,7 +27,9 @@ const RAM: u32 = 0x2000_0000;
 const FLASH_LEN: u32 = 0x10000;
 const RAM_LEN: u32 = 0x10000;
 const CODE_BASE: u32 = 0x0000_0100;
-const INIT_SP: u32 = 0x2000_8000;
+/// The initial stack pointer: high enough for the harness stacks yet within
+/// every board's RAM (the smallest, the F103's 20 KiB, ends at `0x2000_5000`).
+const INIT_SP: u32 = 0x2000_4000;
 
 const IN_ADDR: u32 = RAM;
 const SUM_ADDR: u32 = RAM + 4;
@@ -108,12 +110,21 @@ void reset(void) {
 "#;
 
 static SEQ: AtomicUsize = AtomicUsize::new(0);
-/// Find an executable by name on `PATH`.
+/// Find an executable by name on `PATH` (trying `name.exe` on Windows, where
+/// `clang` is installed as `clang.exe`).
 fn which(name: &str) -> Option<PathBuf> {
     env::var_os("PATH").and_then(|paths| {
-        env::split_paths(&paths)
-            .map(|dir| dir.join(name))
-            .find(|path| path.is_file())
+        env::split_paths(&paths).find_map(|dir| {
+            let plain = dir.join(name);
+            if plain.is_file() {
+                return Some(plain);
+            }
+            let exe = dir.join(format!("{name}.exe"));
+            if exe.is_file() {
+                return Some(exe);
+            }
+            None
+        })
     })
 }
 
@@ -321,19 +332,29 @@ fn virtual_board_io_round_trips() {
 /// Keil pack: clock gates, GPIO config via `BSRR`, `USART1` transmit plus an
 /// interrupt-driven receive, and a counting `TIM2` — all exercised through
 /// the real peripheral registers.
+///
+/// The firmware is kept self-contained (no string literals or static
+/// variables): the harness extracts raw `.text` from the object, so any
+/// `.rodata`/`.bss` relocation would collapse to address zero. Characters and
+/// the RX scratch live at absolute addresses instead.
 const STM32_F103_FIRMWARE: &str = r#"
+#define STM32F10X_HD
 #include "stm32f10x.h"
 
 #define OUT_SNAPSHOT 0x20000000u
 #define RX_SNAPSHOT  0x20000004u
 #define TIM_SNAPSHOT 0x20000008u
-
-static volatile unsigned g_rx;
+#define RX_WORD      (*(volatile unsigned *)0x2000000Cu)
 
 void USART1_IRQHandler(void) {
     if (USART1->SR & USART_SR_RXNE) {
-        g_rx = USART1->DR;
+        RX_WORD = USART1->DR;
     }
+}
+
+static void tx_byte(unsigned c) {
+    while (!(USART1->SR & USART_SR_TXE)) { }
+    USART1->DR = c;
 }
 
 void reset(void) {
@@ -344,14 +365,14 @@ void reset(void) {
     /* 2. PA9 = USART1_TX (alternate push-pull 50 MHz), PA10 = USART1_RX. */
     GPIOA->CRH = (GPIOA->CRH & ~(0xFu << (1 * 4))) | (0xBu << (1 * 4));
     GPIOA->CRH = (GPIOA->CRH & ~(0xFu << (2 * 4))) | (0x4u << (2 * 4));
-    GPIOA->BSRR = GPIO_Pin_0; /* drive PA0 high */
+    GPIOA->BSRR = (1u << 0); /* drive PA0 high */
 
     /* 3. USART1 at 8 MHz HSI / 9600 baud: BRR = 8e6 / 9600 = 833. */
     USART1->BRR = 0x341;
     USART1->CR1 = USART_CR1_UE | USART_CR1_TE | USART_CR1_RE;
 
-    /* 4. TIM2 free-runs (PSC 0, 32-bit ARR). */
-    TIM2->ARR = 0xFFFFFFFFu;
+    /* 4. TIM2 free-runs (PSC 0, 16-bit ARR in the F1 header). */
+    TIM2->ARR = 0xFFFFu;
     TIM2->PSC = 0;
     TIM2->EGR = TIM_EGR_UG;
     TIM2->CR1 = TIM_CR1_CEN;
@@ -361,19 +382,13 @@ void reset(void) {
     USART1->CR1 |= USART_CR1_RXNEIE;
 
     /* 6. Transmit a line. */
-    {
-        const char *s = "ok!\n";
-        while (*s) {
-            while (!(USART1->SR & USART_SR_TXE)) { }
-            USART1->DR = *s++;
-        }
-    }
+    tx_byte('o'); tx_byte('k'); tx_byte('!'); tx_byte('\n');
 
     /* 7. Wait for the host-injected byte to arrive through the IRQ. */
-    while (!g_rx) { }
+    while (!RX_WORD) { }
 
     *(volatile unsigned *)OUT_SNAPSHOT = GPIOA->ODR;
-    *(volatile unsigned *)RX_SNAPSHOT = g_rx;
+    *(volatile unsigned *)RX_SNAPSHOT = RX_WORD;
     *(volatile unsigned *)TIM_SNAPSHOT = TIM2->CNT;
     __asm__ volatile("bkpt #0");
 }
@@ -385,20 +400,44 @@ void reset(void) {
 fn run_stm32_firmware(
     board: impl FnOnce() -> board::BoardMemory,
 ) -> Option<(u32, u32, u32, Vec<u8>)> {
-    let include = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../packs/Keil.STM32F1xx_DFP/Device/Include");
-    if !include.is_dir() {
-        eprintln!(
-            "skipping stm32 test: pack include dir {} not found",
-            include.display()
+    run_stm32_firmware_with_includes(
+        board,
+        STM32_F103_FIRMWARE,
+        &[
+            "../packs/Keil.STM32F1xx_DFP/Device/Include",
+            "../packs/STM32F4xx_CMSIS/CMSIS/Core/Include",
+        ],
+    )
+}
+
+/// Compile `firmware` with `includes` as extra `-I` paths, boot it on `board`,
+/// inject a received byte, and return `(GPIOA ODR, RX snapshot, TIM2 count,
+/// USART1 TX bytes)`. `None` means the test was skipped (missing toolchain or
+/// pack).
+fn run_stm32_firmware_with_includes(
+    board: impl FnOnce() -> board::BoardMemory,
+    firmware: &str,
+    includes: &[&str],
+) -> Option<(u32, u32, u32, Vec<u8>)> {
+    let mut include_paths = Vec::new();
+    for rel in includes {
+        let include = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel);
+        if !include.is_dir() {
+            eprintln!(
+                "skipping stm32 test: pack include dir {} not found",
+                include.display()
+            );
+            return None;
+        }
+        include_paths.push(
+            include
+                .to_str()
+                .expect("pack include path is not UTF-8")
+                .to_owned(),
         );
-        return None;
     }
-    let include = include
-        .to_str()
-        .expect("pack include path is not UTF-8")
-        .to_owned();
-    let (code, symbols) = match build_firmware_with_includes(STM32_F103_FIRMWARE, &[&include]) {
+    let include_refs: Vec<&str> = include_paths.iter().map(String::as_str).collect();
+    let (code, symbols) = match build_firmware_with_includes(firmware, &include_refs) {
         Ok(image) => image,
         Err(why) => {
             eprintln!("skipping stm32 test: {why}");
@@ -462,6 +501,93 @@ fn stm32f103_firmware_uses_real_peripherals() {
 #[test]
 fn stm32f107_firmware_uses_real_peripherals() {
     let Some((odr, rx, tim_cnt, tx)) = run_stm32_firmware(board::stm32f107) else {
+        return; // skipped
+    };
+    assert_eq!(odr, 0x1);
+    assert_eq!(rx, 0x5A);
+    assert!(tim_cnt > 0, "TIM2 never counted: {tim_cnt}");
+    assert_eq!(tx, b"ok!\n");
+}
+
+/// Real CMSIS-style firmware against the STM32F407 device header: the F4 GPIO
+/// model is configured through `MODER`/`AFR` (instead of the F1 `CRL`/`CRH`),
+/// `PA0` is driven via `BSRR`, and the rest matches the F1 firmware — shared
+/// USART1/TIM2/EXTI/RCC cores are chip-agnostic. Like the F1 firmware it is
+/// self-contained (no string literals or statics), so raw `.text` extraction
+/// loses no relocations.
+const STM32_F407_FIRMWARE: &str = r#"
+#define STM32F407xx
+#include "stm32f4xx.h"
+
+#define OUT_SNAPSHOT 0x20000000u
+#define RX_SNAPSHOT  0x20000004u
+#define TIM_SNAPSHOT 0x20000008u
+#define RX_WORD      (*(volatile unsigned *)0x2000000Cu)
+
+void USART1_IRQHandler(void) {
+    if (USART1->SR & USART_SR_RXNE) {
+        RX_WORD = USART1->DR;
+    }
+}
+
+static void tx_byte(unsigned c) {
+    while (!(USART1->SR & USART_SR_TXE)) { }
+    USART1->DR = c;
+}
+
+void reset(void) {
+    /* 1. Clock gates: GPIOA on AHB1, USART1 on APB2, TIM2 on APB1. */
+    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN;
+    RCC->APB2ENR |= RCC_APB2ENR_USART1EN;
+    RCC->APB1ENR |= RCC_APB1ENR_TIM2EN;
+
+    /* 2. PA0 output, PA9/PA10 alternate-function AF7 for USART1 TX/RX. */
+    GPIOA->MODER = (GPIOA->MODER & ~(3u << 0)) | (1u << 0);
+    GPIOA->MODER = (GPIOA->MODER & ~(3u << 18)) | (2u << 18);
+    GPIOA->MODER = (GPIOA->MODER & ~(3u << 20)) | (2u << 20);
+    GPIOA->AFR[1] = (GPIOA->AFR[1] & ~(0xFFu << 4)) | (0x77u << 4);
+    GPIOA->BSRR = GPIO_BSRR_BS0_Msk; /* drive PA0 high */
+
+    /* 3. USART1 at 8 MHz HSI / 9600 baud: BRR = 8e6 / 9600 = 833. */
+    USART1->BRR = 0x341;
+    USART1->CR1 = USART_CR1_UE | USART_CR1_TE | USART_CR1_RE;
+
+    /* 4. TIM2 free-runs (PSC 0, 32-bit ARR). */
+    TIM2->ARR = 0xFFFFFFFFu;
+    TIM2->PSC = 0;
+    TIM2->EGR = TIM_EGR_UG;
+    TIM2->CR1 = TIM_CR1_CEN;
+
+    /* 5. Arm the RX interrupt (IRQ 37, exception vector 53). */
+    NVIC->ISER[1] = 1u << (USART1_IRQn - 32);
+    USART1->CR1 |= USART_CR1_RXNEIE;
+
+    /* 6. Transmit a line. */
+    tx_byte('o'); tx_byte('k'); tx_byte('!'); tx_byte('\n');
+
+    /* 7. Wait for the host-injected byte to arrive through the IRQ. */
+    while (!RX_WORD) { }
+
+    *(volatile unsigned *)OUT_SNAPSHOT = GPIOA->ODR;
+    *(volatile unsigned *)RX_SNAPSHOT = RX_WORD;
+    *(volatile unsigned *)TIM_SNAPSHOT = TIM2->CNT;
+    __asm__ volatile("bkpt #0");
+}
+"#;
+
+/// On the STM32F407 board, firmware compiled against the real F4 device header
+/// configures GPIO via `MODER`/`AFR`/`BSRR` and exercises the shared USART1,
+/// TIM2, EXTI, and RCC cores on the `STM32F407.svd` tables.
+#[test]
+fn stm32f407_firmware_uses_real_peripherals() {
+    let Some((odr, rx, tim_cnt, tx)) = run_stm32_firmware_with_includes(
+        board::stm32f407,
+        STM32_F407_FIRMWARE,
+        &[
+            "../packs/STM32F4xx_CMSIS/Device/Include",
+            "../packs/STM32F4xx_CMSIS/CMSIS/Core/Include",
+        ],
+    ) else {
         return; // skipped
     };
     assert_eq!(odr, 0x1);

@@ -16,7 +16,9 @@ use crate::device::gpio::Gpio;
 use crate::device::stm32::afio::Afio;
 use crate::device::stm32::exti::Exti;
 use crate::device::stm32::gpio::Gpio as StmGpio;
+use crate::device::stm32::gpio_f4::GpioF4;
 use crate::device::stm32::rcc::Rcc;
+use crate::device::stm32::syscfg::Syscfg;
 use crate::device::stm32::timer::Timer;
 use crate::device::stm32::usart::Usart1;
 use crate::device::systick::SysTick;
@@ -111,6 +113,40 @@ pub fn stm32f107() -> BoardMemory {
     mem.attach(Box::new(Timer::tim3_for::<Stm32f107>()));
     mem.attach(Box::new(Exti::for_device::<Stm32f107>()));
     mem.attach(Box::new(Afio::for_device::<Stm32f107>()));
+    mem.attach(Box::new(SysTick::new()));
+    mem
+}
+
+/// STM32F407 (Discovery-class) flash base — booted at the `0x0000_0000` alias.
+pub const STM32_F407_FLASH: u32 = FLASH;
+/// STM32F407 flash size in bytes (1 MiB).
+pub const STM32_F407_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F407 main SRAM size in bytes (128 KiB at `0x2000_0000`; the 64 KiB CCM
+/// at `0x1000_0000` is not modeled).
+pub const STM32_F407_RAM_LEN: u32 = 0x0002_0000;
+
+/// An STM32F407 board: the M0 core with the F4 peripheral set mapped at its
+/// real addresses (from `STM32F407.svd`).
+///
+/// GPIO uses the F4 register semantics (`MODER`/`BSRR`/`AFR`, no `CRL`/`CRH`);
+/// RCC/EXTI/USART/TIM mount the same chip-agnostic cores as the F1 boards, and
+/// `SYSCFG` replaces `AFIO` as the `EXTI` line-router.
+#[must_use]
+pub fn stm32f407() -> BoardMemory {
+    use crate::device::svd::stm32f407::Stm32f407;
+    let backing =
+        FlatMemory::with_layout(&[FLASH, RAM], &[STM32_F407_FLASH_LEN, STM32_F407_RAM_LEN]);
+    let mut mem = SystemMemory::new(backing);
+    mem.attach(Box::new(Rcc::for_device::<Stm32f407>()));
+    mem.attach(Box::new(GpioF4::at_in::<Stm32f407>(0x4002_0000, "gpioa")));
+    mem.attach(Box::new(GpioF4::at_in::<Stm32f407>(0x4002_0400, "gpiob")));
+    mem.attach(Box::new(GpioF4::at_in::<Stm32f407>(0x4002_0800, "gpioc")));
+    mem.attach(Box::new(GpioF4::at_in::<Stm32f407>(0x4002_0C00, "gpiod")));
+    mem.attach(Box::new(GpioF4::at_in::<Stm32f407>(0x4002_1000, "gpioe")));
+    mem.attach(Box::new(Usart1::for_device::<Stm32f407>()));
+    mem.attach(Box::new(Timer::tim2_for::<Stm32f407>()));
+    mem.attach(Box::new(Exti::for_device::<Stm32f407>()));
+    mem.attach(Box::new(Syscfg::for_device::<Stm32f407>()));
     mem.attach(Box::new(SysTick::new()));
     mem
 }

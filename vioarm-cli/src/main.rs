@@ -20,6 +20,8 @@ enum Board {
     Stm32f103,
     /// A connectivity-line STM32F107.
     Stm32f107,
+    /// A Discovery-class STM32F407.
+    Stm32f407,
 }
 
 #[derive(Parser, Debug)]
@@ -37,7 +39,7 @@ struct Args {
     #[arg(long)]
     hex: Option<PathBuf>,
 
-    /// Board to boot: virtual, stm32f103, or stm32f107.
+    /// Board to boot: virtual, stm32f103, stm32f107, or stm32f407.
     #[arg(long, value_enum, default_value_t = Board::Virtual)]
     board: Board,
 
@@ -113,6 +115,7 @@ fn main() {
         Board::Virtual => board::virtual_board(),
         Board::Stm32f103 => board::stm32f103(),
         Board::Stm32f107 => board::stm32f107(),
+        Board::Stm32f407 => board::stm32f407(),
     };
     let mut m = Machine::new(mem);
     m.load_image(&img);
