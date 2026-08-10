@@ -379,19 +379,20 @@ void reset(void) {
 }
 "#;
 
-/// On the STM32F103 board, firmware compiled against the real device header
-/// enables clocks, drives GPIO, transmits over `USART1`, receives a byte
-/// through its IRQ, and lets `TIM2` free-run — all through real registers.
-#[test]
-fn stm32f103_firmware_uses_real_peripherals() {
+/// Compile [`STM32_F103_FIRMWARE`], boot it on `board`, inject a received byte,
+/// and return `(GPIOA ODR, RX snapshot, TIM2 count, USART1 TX bytes)`.
+/// `None` means the test was skipped (missing toolchain or pack).
+fn run_stm32_firmware(
+    board: impl FnOnce() -> board::BoardMemory,
+) -> Option<(u32, u32, u32, Vec<u8>)> {
     let include = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../packs/Keil.STM32F1xx_DFP/Device/Include");
     if !include.is_dir() {
         eprintln!(
-            "skipping stm32f103 test: pack include dir {} not found",
+            "skipping stm32 test: pack include dir {} not found",
             include.display()
         );
-        return;
+        return None;
     }
     let include = include
         .to_str()
@@ -400,8 +401,8 @@ fn stm32f103_firmware_uses_real_peripherals() {
     let (code, symbols) = match build_firmware_with_includes(STM32_F103_FIRMWARE, &[&include]) {
         Ok(image) => image,
         Err(why) => {
-            eprintln!("skipping stm32f103 test: {why}");
-            return;
+            eprintln!("skipping stm32 test: {why}");
+            return None;
         }
     };
     let entry = *symbols.get("reset").expect("no reset symbol");
@@ -410,7 +411,7 @@ fn stm32f103_firmware_uses_real_peripherals() {
         .expect("no USART1_IRQHandler symbol");
     assert!(!code.is_empty(), "compiled .text must not be empty");
 
-    let mut m = Machine::new(board::stm32f103());
+    let mut m = Machine::new(board());
     m.load_image(&load_flat(CODE_BASE, &code));
     {
         let mem = m.core.mem();
@@ -429,16 +430,42 @@ fn stm32f103_firmware_uses_real_peripherals() {
     let err = m.run(200_000);
     assert_eq!(err, Err(HaltCause::Breakpoint));
     // GPIO: PA0 was driven high through BSRR and read back on ODR.
-    assert_eq!(m.core.mem().read_word(board::RAM).unwrap(), 0x1);
+    let odr = m.core.mem().read_word(board::RAM).unwrap();
     // USART1: the interrupt handler latched the received byte.
-    assert_eq!(m.core.mem().read_word(board::RAM + 4).unwrap(), 0x5A);
+    let rx = m.core.mem().read_word(board::RAM + 4).unwrap();
     // TIM2: the free-running counter advanced past zero.
     let tim_cnt = m.core.mem().read_word(board::RAM + 8).unwrap();
-    assert!(tim_cnt > 0, "TIM2 never counted: {tim_cnt}");
     // USART1 TX: the transmitted line reached the host channel.
     let mut tx = Vec::new();
     for device in m.core.mem().devices_mut() {
         tx.extend(device.drain_output());
     }
+    Some((odr, rx, tim_cnt, tx))
+}
+
+/// On the STM32F103 board, firmware compiled against the real device header
+/// enables clocks, drives GPIO, transmits over `USART1`, receives a byte
+/// through its IRQ, and lets `TIM2` free-run — all through real registers.
+#[test]
+fn stm32f103_firmware_uses_real_peripherals() {
+    let Some((odr, rx, tim_cnt, tx)) = run_stm32_firmware(board::stm32f103) else {
+        return; // skipped
+    };
+    assert_eq!(odr, 0x1);
+    assert_eq!(rx, 0x5A);
+    assert!(tim_cnt > 0, "TIM2 never counted: {tim_cnt}");
+    assert_eq!(tx, b"ok!\n");
+}
+
+/// The same firmware runs unchanged on the STM32F107 board: the shared cores
+/// mount on the `STM32F107xx.svd` tables at the identical addresses.
+#[test]
+fn stm32f107_firmware_uses_real_peripherals() {
+    let Some((odr, rx, tim_cnt, tx)) = run_stm32_firmware(board::stm32f107) else {
+        return; // skipped
+    };
+    assert_eq!(odr, 0x1);
+    assert_eq!(rx, 0x5A);
+    assert!(tim_cnt > 0, "TIM2 never counted: {tim_cnt}");
     assert_eq!(tx, b"ok!\n");
 }

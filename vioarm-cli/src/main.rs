@@ -11,6 +11,17 @@ use vioarm_core::error::HaltCause;
 use vioarm_core::loader;
 use vioarm_core::machine::Machine;
 
+/// The concrete boards the CLI can boot.
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum Board {
+    /// The generic virtual board: flash + RAM + GPIO + UART + `SysTick`.
+    Virtual,
+    /// A Blue-Pill-class STM32F103.
+    Stm32f103,
+    /// A connectivity-line STM32F107.
+    Stm32f107,
+}
+
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
@@ -25,6 +36,10 @@ struct Args {
     /// Intel HEX image to load.
     #[arg(long)]
     hex: Option<PathBuf>,
+
+    /// Board to boot: virtual, stm32f103, or stm32f107.
+    #[arg(long, value_enum, default_value_t = Board::Virtual)]
+    board: Board,
 
     /// Load base address for `--bin`. Accepts `0x`-prefixed hex or decimal.
     #[arg(long, default_value_t = 0, value_parser = parse_u32)]
@@ -93,8 +108,13 @@ fn main() {
         return;
     }
 
-    // The generic virtual board: flash + RAM + GPIO + UART + SysTick.
-    let mut m = Machine::new(board::virtual_board());
+    // The selected board: flash + RAM + the STM32 peripheral set.
+    let mem = match args.board {
+        Board::Virtual => board::virtual_board(),
+        Board::Stm32f103 => board::stm32f103(),
+        Board::Stm32f107 => board::stm32f107(),
+    };
+    let mut m = Machine::new(mem);
     m.load_image(&img);
 
     if let Err(cause) = m.reset() {

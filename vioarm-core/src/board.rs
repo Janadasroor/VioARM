@@ -9,7 +9,8 @@
 //! - `0xE000_E000` NVIC / `0xE000_E010` `SysTick`
 //!
 //! A second board, [`stm32f103`], models a Blue-Pill-class STM32F103 with its
-//! real peripheral map.
+//! real peripheral map; a third, [`stm32f107`], models a connectivity-line
+//! STM32F107 on the shared `STM32F107xx.svd` tables.
 
 use crate::device::gpio::Gpio;
 use crate::device::stm32::afio::Afio;
@@ -79,6 +80,37 @@ pub fn stm32f103() -> BoardMemory {
     mem.attach(Box::new(Timer::tim3()));
     mem.attach(Box::new(Exti::new()));
     mem.attach(Box::new(Afio::new()));
+    mem.attach(Box::new(SysTick::new()));
+    mem
+}
+
+/// STM32F107 (connectivity line) flash size in bytes.
+pub const STM32_F107_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F107 RAM size in bytes.
+pub const STM32_F107_RAM_LEN: u32 = 0x0001_0000;
+
+/// A connectivity-line STM32F107 board: the M0 core with the STM32F1
+/// peripheral set mapped at its real addresses (from `STM32F107xx.svd`).
+///
+/// The shared cores mount the same behaviors as the F103 board; the F107 adds
+/// Ethernet, USB OTG, and a second CAN, which the model does not yet expose.
+#[must_use]
+pub fn stm32f107() -> BoardMemory {
+    use crate::device::svd::stm32f107::Stm32f107;
+    let backing =
+        FlatMemory::with_layout(&[FLASH, RAM], &[STM32_F107_FLASH_LEN, STM32_F107_RAM_LEN]);
+    let mut mem = SystemMemory::new(backing);
+    mem.attach(Box::new(Rcc::for_device::<Stm32f107>()));
+    mem.attach(Box::new(StmGpio::at_in::<Stm32f107>(0x4001_0800, "gpioa")));
+    mem.attach(Box::new(StmGpio::at_in::<Stm32f107>(0x4001_0C00, "gpiob")));
+    mem.attach(Box::new(StmGpio::at_in::<Stm32f107>(0x4001_1000, "gpioc")));
+    mem.attach(Box::new(StmGpio::at_in::<Stm32f107>(0x4001_1400, "gpiod")));
+    mem.attach(Box::new(StmGpio::at_in::<Stm32f107>(0x4001_1800, "gpioe")));
+    mem.attach(Box::new(Usart1::for_device::<Stm32f107>()));
+    mem.attach(Box::new(Timer::tim2_for::<Stm32f107>()));
+    mem.attach(Box::new(Timer::tim3_for::<Stm32f107>()));
+    mem.attach(Box::new(Exti::for_device::<Stm32f107>()));
+    mem.attach(Box::new(Afio::for_device::<Stm32f107>()));
     mem.attach(Box::new(SysTick::new()));
     mem
 }
