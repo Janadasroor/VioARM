@@ -12,7 +12,10 @@ pub mod registers;
 use crate::error::{Exception, HaltCause};
 use crate::mem::PeripheralBus;
 use decode16::{decode16, AluOp, Inst16, LsImm, LsReg, Shift, ShiftImm};
-use decode32::{decode32, is_thumb2, Inst32, SysReg};
+use decode32::{
+    decode32, decode32_v7m, is_thumb2, is_thumb2_v7m, thumb_expand_imm, DpOp, Inst32, ShiftType,
+    SysReg,
+};
 use registers::{Registers, Xpsr, APSR_FLAGS, XPSR_T};
 
 /// Which Thumb architecture the core executes.
@@ -162,8 +165,8 @@ impl<B: PeripheralBus> Core<B> {
         // The halfword at `pc` is the start of the instruction: `h0` for an
         // even 4-byte slot, `h1` when the PC sits on the second halfword.
         let (first, second) = if pc & 2 == 0 { (h0, h1) } else { (h1, h0) };
-        if is_thumb2(first) {
-            match decode32(first, second) {
+        if is_thumb2_v7m(first) {
+            match decode32_v7m(first, second) {
                 Ok(inst) => self.exec32(pc, inst),
                 Err(_) => self.hardfault_on_undefined(pc, 4),
             }
@@ -589,7 +592,150 @@ impl<B: PeripheralBus> Core<B> {
                 Ok(Next::Advance(pc + 4))
             }
             I::Barrier { .. } => Ok(Next::Advance(pc + 4)),
+            I::DpReg {
+                op,
+                rd,
+                rn,
+                rm,
+                shift,
+                amount,
+                set_flags,
+            } => {
+                let rm_v = self.regs.read(rm);
+                let (op2, shift_carry) = match (shift, amount) {
+                    (ShiftType::Ror, 0) => {
+                        // RRX: rotate one bit right through the old carry.
+                        let carry_out = rm_v & 1 == 1;
+                        let rotated = (rm_v >> 1) | (u32::from(self.xpsr.c()) << 31);
+                        (rotated, Some(carry_out))
+                    }
+                    (ShiftType::Ror, n) => {
+                        let carry = (rm_v >> (n - 1)) & 1 == 1;
+                        (rm_v.rotate_right(u32::from(n)), Some(carry))
+                    }
+                    (kind, n) => {
+                        let kind = match kind {
+                            ShiftType::Lsl => ShiftImm::Lsl,
+                            ShiftType::Lsr => ShiftImm::Lsr,
+                            ShiftType::Asr => ShiftImm::Asr,
+                            ShiftType::Ror => unreachable!(),
+                        };
+                        shift_imm(kind, rm_v, u32::from(n))
+                    }
+                };
+                self.exec_dp32(op, rd, rn, op2, set_flags, shift_carry)?;
+                Ok(Next::Advance(pc + 4))
+            }
+            I::DpImm {
+                op,
+                rd,
+                rn,
+                imm12,
+                expand,
+                set_flags,
+            } => {
+                let (op2, expand_carry) = if expand {
+                    let imm32 = thumb_expand_imm(imm12);
+                    // A flag-setting logical op folds bit31 of a *rotated*
+                    // modified immediate into C; an unrotated one (imm8 placed
+                    // directly, i:imm3 == 0) leaves C alone.
+                    let imm_c = imm12 & 0xC00 != 0;
+                    (imm32, imm_c.then_some(imm32 >> 31 & 1 != 0))
+                } else {
+                    (u32::from(imm12), None)
+                };
+                self.exec_dp32(op, rd, rn, op2, set_flags, expand_carry)?;
+                Ok(Next::Advance(pc + 4))
+            }
+            I::MovWide { rd, imm, high } => {
+                if rd == 15 {
+                    return Err(HaltCause::NotImplemented {
+                        what: "movw/movt to pc",
+                    });
+                }
+                let cur = self.regs.read(rd);
+                let new = if high {
+                    (cur & 0xFFFF) | (u32::from(imm) << 16)
+                } else {
+                    (cur & 0xFFFF_0000) | u32::from(imm)
+                };
+                self.regs.write(rd, new);
+                Ok(Next::Advance(pc + 4))
+            }
         }
+    }
+
+    /// Execute the common ARMv7-M data-processing core over an already
+    /// shifted (`op2`) operand. `shift_carry` is the carry the shifted
+    /// register produced; only the flag-setting logical operations consume it
+    /// (arithmetic computes `C`/`V` from the operation itself).
+    fn exec_dp32(
+        &mut self,
+        op: DpOp,
+        rd: u8,
+        rn: u8,
+        op2: u32,
+        set_flags: bool,
+        shift_carry: Option<bool>,
+    ) -> Result<(), HaltCause> {
+        let writes_rd = !matches!(
+            op,
+            DpOp::Tst | DpOp::Teq | DpOp::Cmp | DpOp::Cmn
+        );
+        if writes_rd && rd == 15 {
+            return Err(HaltCause::NotImplemented {
+                what: "data-processing writes to pc",
+            });
+        }
+        let rn_v = self.regs.read(rn);
+        let (res, c, v) = match op {
+            DpOp::And | DpOp::Tst => {
+                let c = self.shift_carry_or_current(shift_carry);
+                (rn_v & op2, c, self.xpsr.v())
+            }
+            DpOp::Eor | DpOp::Teq => {
+                let c = self.shift_carry_or_current(shift_carry);
+                (rn_v ^ op2, c, self.xpsr.v())
+            }
+            DpOp::Bic => {
+                let c = self.shift_carry_or_current(shift_carry);
+                (rn_v & !op2, c, self.xpsr.v())
+            }
+            DpOp::Orr => {
+                let c = self.shift_carry_or_current(shift_carry);
+                (rn_v | op2, c, self.xpsr.v())
+            }
+            DpOp::Orn => {
+                let c = self.shift_carry_or_current(shift_carry);
+                (op2 | !rn_v, c, self.xpsr.v())
+            }
+            DpOp::Mov => {
+                let c = self.shift_carry_or_current(shift_carry);
+                (op2, c, self.xpsr.v())
+            }
+            DpOp::Mvn => {
+                let c = self.shift_carry_or_current(shift_carry);
+                (!op2, c, self.xpsr.v())
+            }
+            DpOp::Adc => add_flags(rn_v, op2, self.xpsr.c()),
+            DpOp::Add | DpOp::Cmn => add_flags(rn_v, op2, false),
+            DpOp::Sub | DpOp::Cmp => sub_flags(rn_v, op2, false),
+            DpOp::Sbc => sub_flags(rn_v, op2, !self.xpsr.c()),
+            DpOp::Rsb => sub_flags(op2, rn_v, false),
+        };
+        if set_flags {
+            self.set_nzcv(res, c, v);
+        }
+        if writes_rd {
+            self.regs.write(rd, res);
+        }
+        Ok(())
+    }
+
+    /// The carry an ARMv7-M data-processing logical op produces, when it sets
+    /// flags: the shifted-register carry if there was one, else the old `C`.
+    fn shift_carry_or_current(&self, shift_carry: Option<bool>) -> bool {
+        shift_carry.unwrap_or_else(|| self.xpsr.c())
     }
 
     fn exec_alu(&mut self, rd: u8, rm: u8, op: AluOp) {

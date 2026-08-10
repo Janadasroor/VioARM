@@ -29,6 +29,19 @@ fn boot(code: &[u8]) -> Machine<FlatMemory> {
     m
 }
 
+/// Boot `code` at ENTRY on an ARMv7-M (Cortex-M3/M4) core.
+fn boot_v7m(code: &[u8]) -> Machine<FlatMemory> {
+    let mut m = Machine::armv7m(FlatMemory::with_layout(&[FLASH, RAM], &[0x10000, 0x10000]));
+    m.load_image(&load_flat(ENTRY, code));
+    {
+        let mem = m.core.mem();
+        mem.write_word(FLASH, INIT_SP).unwrap();
+        mem.write_word(FLASH + 4, ENTRY | 1).unwrap();
+    }
+    m.reset().expect("reset from vector table");
+    m
+}
+
 /// Boot with a full vector table: SP at 0, reset at +4, NMI at +8, and a
 /// `HardFault` vector at +12 pointing at `hardfault`.
 fn boot_with_vectors(
@@ -360,4 +373,52 @@ fn handler_returns_via_pop_pc() {
     assert_eq!(m.core.mem().read_word(RAM).unwrap(), 0x5a);
     assert_eq!(regs.r[2], 0x22);
     assert_eq!(regs.sp, INIT_SP);
+}
+
+/// ARMv7-M: `movw`/`movt` build a 32-bit constant, `movs rn, #ThumbExpandImm`
+/// materializes a rotated immediate, and the register `orrs`/`eors` fold it in
+/// (`orrs r1, r1, r0; eors r2, r2, r0`).
+#[test]
+fn movt_and_dp_immediate_on_armv7m() {
+    // movw r0, #0xABCD ; movt r0, #0x1234 ; movs r1, #0x0F000000
+    // orrs r1, r1, r0  ; movs r2, #0x0F000000 ; eors r2, r2, r0 ; bx lr
+    let mut m = boot_v7m(&[
+        0x4a, 0xf6, 0xcd, 0x30, 0xc1, 0xf2, 0x34, 0x20, 0x5f, 0xf0, 0x70, 0x61, 0x51, 0xea, 0x00,
+        0x01, 0x5f, 0xf0, 0x70, 0x62, 0x92, 0xea, 0x00, 0x02, 0x70, 0x47,
+    ]);
+    let err = m.run(10);
+    assert_eq!(err, Err(HaltCause::FetchAbort));
+    let (regs, xpsr, cycles) = m.core.snapshot();
+    assert_eq!(cycles, 7);
+    assert_eq!(regs.r[0], 0x1234_abcd);
+    // 0x0F00_0000 OR 0x1234_ABCD, then XOR the same pair.
+    assert_eq!(regs.r[1], 0x1f34_abcd);
+    assert_eq!(regs.r[2], 0x1d34_abcd);
+    assert!(!xpsr.n() && !xpsr.z() && !xpsr.c() && !xpsr.v());
+    assert_eq!(regs.sp, INIT_SP);
+}
+
+/// ARMv7-M: a shifted-register data-processing folds the shift carry into
+/// `C`, and the plain `addw`/`subw` immediates work on `sp` without touching
+/// the flags.
+#[test]
+fn shift_carry_and_addw_subw_sp_on_armv7m() {
+    // movw r0, #0xFFE0 ; movt r0, #0xF000 ; lsls r1, r0, #4
+    // subw sp, sp, #0x20 ; addw sp, sp, #0x20 ; bx lr
+    let mut m = boot_v7m(&[
+        0x4f, 0xf6, 0xe0, 0x70, 0xcf, 0xf2, 0x00, 0x00, 0x5f, 0xea, 0x00, 0x11, 0xad, 0xf2, 0x20,
+        0x0d, 0x0d, 0xf2, 0x20, 0x0d, 0x70, 0x47,
+    ]);
+    let err = m.run(10);
+    assert_eq!(err, Err(HaltCause::FetchAbort));
+    let (regs, xpsr, cycles) = m.core.snapshot();
+    assert_eq!(cycles, 6);
+    assert_eq!(regs.r[0], 0xf000_ffe0);
+    // LSL #4 drops the four set high nibbles; the top shifted-out bit is 1.
+    assert_eq!(regs.r[1], 0x000f_fe00);
+    assert!(xpsr.c());
+    assert!(!xpsr.n() && !xpsr.z() && !xpsr.v());
+    // The raw-immediate subw/addw cancel and leave sp and flags untouched.
+    assert_eq!(regs.sp, INIT_SP);
+    assert!(!xpsr.n() && !xpsr.z());
 }
