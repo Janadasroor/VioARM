@@ -19,8 +19,6 @@ pub enum HaltCause {
     /// The CPU attempted to take an exception the simulator does not model,
     /// or executed a system instruction it cannot service.
     UnhandledException,
-    /// A supervisor call that the simulator does not model.
-    Svc(u8),
     /// The cycle budget passed to `Core::run` ran out before the machine
     /// halted of its own accord. This is a host-side limit, not a machine
     /// state.
@@ -46,7 +44,6 @@ impl fmt::Display for HaltCause {
             Self::Breakpoint => f.write_str("breakpoint"),
             Self::CycleBudgetExhausted => f.write_str("cycle budget exhausted"),
             Self::UnhandledException => f.write_str("unsupported system exception"),
-            Self::Svc(imm) => write!(f, "supervisor call {imm}"),
             Self::BusFault { address } => write!(f, "bus fault at {address:#010x}"),
             Self::StackMisaligned { address } => {
                 write!(f, "misaligned stack at {address:#010x}")
@@ -62,6 +59,9 @@ pub enum Exception {
     /// Exception number 3: the only fault ARMv6-M software can reach without
     /// a peripheral-provided interrupt.
     HardFault,
+    /// Exception number 11: the supervisor call, taken by executing `svc`.
+    /// Its vector is read from the same table as the other exceptions.
+    SvCall,
     /// Exception number 15: the system tick, driven by the `SysTick`
     /// peripheral.
     SysTick,
@@ -75,6 +75,7 @@ impl Exception {
     pub const fn number(self) -> u8 {
         match self {
             Self::HardFault => 3,
+            Self::SvCall => 11,
             Self::SysTick => 15,
             Self::Irq(n) => 16 + n,
         }

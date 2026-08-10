@@ -375,6 +375,42 @@ fn handler_returns_via_pop_pc() {
     assert_eq!(regs.sp, INIT_SP);
 }
 
+/// A 16-bit `svc` takes the `SVCall` exception (#11, vector at +0x2c): the
+/// handler runs from its own vector, and `bx lr` resumes the thread one
+/// halfword after the SVC.
+#[test]
+fn svc_takes_svcall_and_returns() {
+    const CODE: u32 = 0x40;
+    const SC: u32 = 0x100;
+    // movs r0, #0x55 ; svc #3 ; movs r3, #0x22 ; bkpt
+    let thread = &[
+        0x55, 0x20, // movs r0, #0x55
+        0x03, 0xdf, // svc #3
+        0x22, 0x23, // movs r3, #0x22
+        0x00, 0xbe, // bkpt
+    ];
+    let mut m = Machine::new(FlatMemory::with_layout(&[FLASH, RAM], &[0x10000, 0x10000]));
+    m.load_image(&load_flat(CODE, thread));
+    m.load_image(&load_flat(SC, &marker_handler(0x77)));
+    {
+        let mem = m.core.mem();
+        mem.write_word(FLASH, INIT_SP).unwrap();
+        mem.write_word(FLASH + 4, CODE | 1).unwrap();
+        mem.write_word(FLASH + 8, 0).unwrap();
+        mem.write_word(FLASH + 0x2c, SC | 1).unwrap(); // SVCall vector (#11)
+    }
+    m.reset().expect("reset from vector table");
+    let err = m.run(16);
+    assert_eq!(err, Err(HaltCause::Breakpoint));
+    let (regs, _, _) = m.core.snapshot();
+    // The handler ran and stored its marker; the exception return undid its
+    // register clobbers, and the thread resumed after the SVC.
+    assert_eq!(m.core.mem().read_word(RAM).unwrap(), 0x77);
+    assert_eq!(regs.r[0], 0x55);
+    assert_eq!(regs.r[3], 0x22);
+    assert_eq!(regs.sp, INIT_SP);
+}
+
 /// ARMv7-M: `movw`/`movt` build a 32-bit constant, `movs rn, #ThumbExpandImm`
 /// materializes a rotated immediate, and the register `orrs`/`eors` fold it in
 /// (`orrs r1, r1, r0; eors r2, r2, r0`).

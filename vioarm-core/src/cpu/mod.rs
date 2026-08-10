@@ -500,7 +500,14 @@ impl<B: PeripheralBus> Core<B> {
                     Ok(Next::Advance(pc + 2))
                 }
             }
-            I::Svc { imm } => Ok(Next::Stop(HaltCause::Svc(imm))),
+            I::Svc { .. } => {
+                // ARMv7-M: a 16-bit SVC takes the SVCall exception; the
+                // stacked return address is the instruction after the SVC so
+                // the handler can continue with `bx lr`. The immediate is
+                // service data for software only.
+                self.take_exception(Exception::SvCall, pc + 2)?;
+                Ok(Next::Advance(self.regs.pc))
+            }
             I::Bkpt { .. } => Ok(Next::Stop(HaltCause::Breakpoint)),
             I::Hint { .. } => Ok(Next::Advance(pc + 2)),
             I::Cps { disable, im } => {
@@ -775,19 +782,18 @@ impl<B: PeripheralBus> Core<B> {
                 } else {
                     base.wrapping_add(index_reg)
                 };
-                let index: u32 = if half {
-                    u32::from(
-                        self.mem
-                            .read_half(table_addr)
-                            .map_err(|_| HaltCause::BusFault { address: table_addr })?,
-                    )
-                } else {
-                    u32::from(
-                        self.mem
-                            .read(table_addr)
-                            .map_err(|_| HaltCause::BusFault { address: table_addr })?,
-                    )
-                };
+                let index: u32 =
+                    if half {
+                        u32::from(self.mem.read_half(table_addr).map_err(|_| {
+                            HaltCause::BusFault {
+                                address: table_addr,
+                            }
+                        })?)
+                    } else {
+                        u32::from(self.mem.read(table_addr).map_err(|_| HaltCause::BusFault {
+                            address: table_addr,
+                        })?)
+                    };
                 let target = pc.wrapping_add(4).wrapping_add(index << 1);
                 Ok(Next::Advance(target & !1))
             }
@@ -1144,6 +1150,7 @@ impl<B: PeripheralBus> Core<B> {
     pub fn enter_exception(&mut self, n: u8) -> Result<(), HaltCause> {
         let ex = match n {
             3 => Exception::HardFault,
+            11 => Exception::SvCall,
             15 => Exception::SysTick,
             16..=79 => Exception::Irq(n - 16),
             _ => return Err(HaltCause::UnhandledException),
@@ -1502,6 +1509,45 @@ mod tests {
             c.sysreg_write(SysReg::Other(0x7f), 0),
             Err(HaltCause::NotImplemented { .. })
         ));
+    }
+
+    #[test]
+    fn svc_takes_svcall_exception_and_returns() {
+        const SVC_ADDR: u32 = 0x2000_0100;
+        const HANDLER: u32 = 0x2000_0400;
+        const SP: u32 = 0x2000_0800;
+        let mut c = Core::armv7m(crate::mem::flat::FlatMemory::with_layout(
+            &[0x0000_0000, 0x2000_0000],
+            &[0x1000, 0x1000],
+        ));
+        // SVCall is exception 11: its vector sits at 0x2c in the vector table.
+        c.mem().write_word(0x2c, HANDLER | 1).unwrap();
+        c.regs.sp = SP;
+        c.regs.msp = SP;
+        load_inst(&mut c, SVC_ADDR, &[0x99, 0xdf]); // svc #153
+        load_inst(&mut c, HANDLER, &[0x70, 0x47]); // bx lr
+        c.regs.pc = SVC_ADDR;
+        c.step().unwrap();
+        // The SVCall handler is entered: ipsr = 11, pc = handler, lr holds the
+        // EXC_RETURN through which the handler returns.
+        assert_eq!(c.ipsr, 11);
+        assert_eq!(c.regs.pc, HANDLER);
+        assert_eq!(c.regs.lr, EXC_RETURN_THREAD_MSP);
+        // The task frame lies on the main SP: the stacked PC is one halfword
+        // past the SVC, and the stacked xPSR carries Thumb with the
+        // pre-exception IPSR (0 in Thread mode).
+        assert_eq!(c.regs.sp, SP - FRAME_BYTES);
+        assert_eq!(
+            c.mem().read_word(SP - FRAME_BYTES + 24).unwrap(),
+            (SVC_ADDR + 2) | 1
+        );
+        assert_eq!(c.mem().read_word(SP - FRAME_BYTES + 28).unwrap(), XPSR_T);
+        c.step().unwrap();
+        // `bx lr` performs the exception return: thread resumes at the
+        // instruction after the SVC with its SP intact.
+        assert_eq!(c.ipsr, 0);
+        assert_eq!(c.regs.pc, SVC_ADDR + 2);
+        assert_eq!(c.regs.sp, SP);
     }
 
     #[test]
