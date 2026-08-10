@@ -7,8 +7,10 @@
 //!
 //! ARMv7-M (Cortex-M3/M4) adds the full Thumb-2 set; this file carries the
 //! data-processing group (`MOVW`/`MOVT`, shifted-register operations, and the
-//! `ThumbExpandImm` plus raw-12-bit immediate forms), verified against
-//! `clang --target=thumbv7m`. Encoding ground truth lives in the test suite.
+//! `ThumbExpandImm` plus raw-12-bit immediate forms), the single-data-transfer
+//! family (all `LDR`/`STR` immediate sizes and the signed loads), verified
+//! against `clang --target=thumbv7m`. Encoding ground truth lives in the test
+//! suite.
 
 use super::decode::DecodeError;
 use crate::error::HaltCause;
@@ -75,6 +77,24 @@ pub enum DpOp {
     Cmn,
 }
 
+/// Load/store access size in the ARMv7-M single-data-transfer family.
+///
+/// The `Ldr*` members are the unsigned loads; `Ldrsb`/`Ldrsh` sign-extend the
+/// loaded byte/halfword. Which of the two `Ldr`/`Str` halfword forms (imm12
+/// vs imm8) was encoded is carried separately by the decoder, so the enum
+/// only names the memory op.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MemOp {
+    Str,
+    Ldr,
+    Strb,
+    Ldrb,
+    Strh,
+    Ldrh,
+    Ldrsb,
+    Ldrsh,
+}
+
 /// Shift applied to `Rm` in an ARMv7-M data-processing (register)
 /// instruction. Which variant the encoder intended (LSL/LSR/ASR/ROR #n, or
 /// RRX) is resolved from the raw shift type plus its 5-bit amount.
@@ -135,6 +155,22 @@ pub enum Inst32 {
         rd: u8,
         imm: u16,
         high: bool,
+    },
+    /// ARMv7-M single-data-transfer with an immediate offset: `LDR`/`STR`
+    /// word, byte, halfword, and the sign-extending loads. `off` is the
+    /// offset magnitude (0-4095 imm12 or 0-255 imm8); `add` selects `+`/`-`.
+    /// `index`/`writeback` give the three addressing forms: offset
+    /// (`index`, no writeback), pre-indexed (both), post-indexed (writeback
+    /// only). `rn == 15` marks the PC-relative literal form (loads only),
+    /// whose base is `Align(pc + 4, 4)`.
+    Mem {
+        access: MemOp,
+        rt: u8,
+        rn: u8,
+        off: u32,
+        add: bool,
+        index: bool,
+        writeback: bool,
     },
 }
 
@@ -202,9 +238,12 @@ pub fn decode32(hi: u16, lo: u16) -> Result<Inst32, DecodeError> {
 
 /// Decode the two halfwords of a 32-bit ARMv7-M instruction.
 ///
-/// The ARMv6-M subset is preserved; `MOVW`/`MOVT` and the Thumb-2
+/// The ARMv6-M subset is preserved; `MOVW`/`MOVT`, the Thumb-2
 /// data-processing set (shifted register, `ThumbExpandImm`, and the raw
-/// `addw`/`subw` immediates) are layered on top.
+/// `addw`/`subw` immediates), and the immediate-offset load/store family are
+/// layered on top. The memory decoders are consulted before the
+/// data-processing set: their `F8xx`/`F9xx` first halfwords overlap the
+/// modified-immediate mask (`hi & 0xF600`) and must win the match.
 ///
 /// # Errors
 ///
@@ -216,6 +255,7 @@ pub fn decode32_v7m(hi: u16, lo: u16) -> Result<Inst32, DecodeError> {
         .or_else(|| decode_barrier(hi, lo))
         .or_else(|| decode_bl(hi, lo))
         .or_else(|| decode_movwide(hi, lo))
+        .or_else(|| decode_mem(hi, lo))
         .or_else(|| decode_dp_plain(hi, lo))
         .or_else(|| decode_dp_modified(hi, lo))
         .or_else(|| decode_dp_reg(hi, lo))
@@ -319,6 +359,93 @@ fn decode_movwide(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
     let rd = ((lo >> 8) & 0xF) as u8;
     let imm = (hi & 0xF) << 12 | i << 11 | ((lo >> 12) & 0x7) << 8 | lo & 0xFF;
     Some(Ok(Inst32::MovWide { rd, imm, high }))
+}
+
+/// decode the ARMv7-M immediate-offset single-data-transfer family.
+///
+/// Two halfword layouts share the `1111 100x` first halfword:
+/// the unsigned forms live at `F8xx`, the sign-extending loads at `F9xx`
+/// (`bit8` is the sign bit). Each size/op has an imm12 form (offset only,
+/// second-halfword `Rt imm12`) and an imm8 form (off-, pre-, post-indexed,
+/// second-halfword `1 P U W Rt imm8`). `Rn == 15` in either form is the
+/// PC-relative literal (loads only).
+fn decode_mem(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
+    let (access, wide) = match hi & 0xFFF0 {
+        0xF8C0 => (MemOp::Str, true),
+        0xF8D0 => (MemOp::Ldr, true),
+        0xF880 => (MemOp::Strb, true),
+        0xF890 => (MemOp::Ldrb, true),
+        0xF8A0 => (MemOp::Strh, true),
+        0xF8B0 => (MemOp::Ldrh, true),
+        0xF990 => (MemOp::Ldrsb, true),
+        0xF9B0 => (MemOp::Ldrsh, true),
+        0xF840 => (MemOp::Str, false),
+        0xF850 => (MemOp::Ldr, false),
+        0xF800 => (MemOp::Strb, false),
+        0xF810 => (MemOp::Ldrb, false),
+        0xF820 => (MemOp::Strh, false),
+        0xF830 => (MemOp::Ldrh, false),
+        0xF910 => (MemOp::Ldrsb, false),
+        0xF930 => (MemOp::Ldrsh, false),
+        _ => return None,
+    };
+    let rn = (hi & 0xF) as u8;
+    let is_load = matches!(
+        access,
+        MemOp::Ldr | MemOp::Ldrb | MemOp::Ldrh | MemOp::Ldrsb | MemOp::Ldrsh
+    );
+    let err = || Some(Err(err_for(hi)));
+    if wide {
+        let rt = (lo >> 12) as u8;
+        if !is_load && (rn == 15 || rt == 15) {
+            // STR to PC, or with a PC base, is architecturally UNPREDICTABLE.
+            return err();
+        }
+        Some(Ok(Inst32::Mem {
+            access,
+            rt,
+            rn,
+            off: u32::from(lo & 0xFFF),
+            add: true,
+            index: true,
+            writeback: false,
+        }))
+    } else {
+        let p = lo & 0x4000 != 0;
+        let u = lo & 0x2000 != 0;
+        let w = lo & 0x1000 != 0;
+        let rt = ((lo >> 8) & 0xF) as u8;
+        let off = u32::from(lo & 0xFF);
+        if !is_load && (rn == 15 || rt == 15) {
+            return err();
+        }
+        if rn == 15 && w {
+            // A PC-relative literal with write-back is UNPREDICTABLE.
+            return err();
+        }
+        if rn != 15 && p && u && !w {
+            // The unprivileged LDRT/STRT form is UNPREDICTABLE on ARMv7-M.
+            return err();
+        }
+        if !p && !w {
+            return err();
+        }
+        let (index, writeback) = match (p, w) {
+            (true, true) => (true, true),
+            (false, true) => (false, true),
+            (true, false) => (true, false),
+            _ => unreachable!(),
+        };
+        Some(Ok(Inst32::Mem {
+            access,
+            rt,
+            rn,
+            off,
+            add: u,
+            index,
+            writeback,
+        }))
+    }
 }
 
 /// Map the ARMv7-M data-processing opcode field, plus the `Rd`/`Rn` aliases
@@ -493,6 +620,26 @@ mod tests {
             imm12,
             expand,
             set_flags,
+        }
+    }
+
+    fn mem(
+        access: MemOp,
+        rt: u8,
+        rn: u8,
+        off: u32,
+        add: bool,
+        index: bool,
+        writeback: bool,
+    ) -> Inst32 {
+        Inst32::Mem {
+            access,
+            rt,
+            rn,
+            off,
+            add,
+            index,
+            writeback,
         }
     }
 
@@ -765,6 +912,101 @@ mod tests {
                 high: false
             })
         );
+    }
+
+    #[test]
+    fn v7m_load_store_immediate() {
+        // ldr.w r0, [r1, #4] -> f8d1 0004 (imm12 offset).
+        assert_eq!(
+            v7m_bytes([0xd1, 0xf8, 0x04, 0x00]),
+            Ok(mem(MemOp::Ldr, 0, 1, 4, true, true, false))
+        );
+        // str.w r0, [r1, #4] -> f8c1 0004.
+        assert_eq!(
+            v7m_bytes([0xc1, 0xf8, 0x04, 0x00]),
+            Ok(mem(MemOp::Str, 0, 1, 4, true, true, false))
+        );
+        // ldrb.w r12, [r3, #0xff] -> f893 c0ff.
+        assert_eq!(
+            v7m_bytes([0x93, 0xf8, 0xff, 0xc0]),
+            Ok(mem(MemOp::Ldrb, 12, 3, 0xFF, true, true, false))
+        );
+        // strb.w r0, [r1, #4] -> f881 0004.
+        assert_eq!(
+            v7m_bytes([0x81, 0xf8, 0x04, 0x00]),
+            Ok(mem(MemOp::Strb, 0, 1, 4, true, true, false))
+        );
+        // ldrh.w r0, [r1, #4] -> f8b1 0004.
+        assert_eq!(
+            v7m_bytes([0xb1, 0xf8, 0x04, 0x00]),
+            Ok(mem(MemOp::Ldrh, 0, 1, 4, true, true, false))
+        );
+        // strh.w r0, [r1, #4] -> f8a1 0004.
+        assert_eq!(
+            v7m_bytes([0xa1, 0xf8, 0x04, 0x00]),
+            Ok(mem(MemOp::Strh, 0, 1, 4, true, true, false))
+        );
+        // ldrsb.w r0, [r1, #4] -> f991 0004.
+        assert_eq!(
+            v7m_bytes([0x91, 0xf9, 0x04, 0x00]),
+            Ok(mem(MemOp::Ldrsb, 0, 1, 4, true, true, false))
+        );
+        // ldrsh.w r0, [r1, #4] -> f9b1 0004.
+        assert_eq!(
+            v7m_bytes([0xb1, 0xf9, 0x04, 0x00]),
+            Ok(mem(MemOp::Ldrsh, 0, 1, 4, true, true, false))
+        );
+        // ldr.w r0, [r1, #-8] -> f851 c008 (imm8, offset).
+        assert_eq!(
+            v7m_bytes([0x51, 0xf8, 0x08, 0xc0]),
+            Ok(mem(MemOp::Ldr, 0, 1, 8, false, true, false))
+        );
+        // ldr.w r0, [r1, #8]! -> f851 f008 (imm8, pre-indexed).
+        assert_eq!(
+            v7m_bytes([0x51, 0xf8, 0x08, 0xf0]),
+            Ok(mem(MemOp::Ldr, 0, 1, 8, true, true, true))
+        );
+        // ldr.w r0, [r1], #8 -> f851 b008 (imm8, post-indexed).
+        assert_eq!(
+            v7m_bytes([0x51, 0xf8, 0x08, 0xb0]),
+            Ok(mem(MemOp::Ldr, 0, 1, 8, true, false, true))
+        );
+        // ldr.w r4, [pc, #8] -> f8df 4008 (PC-relative literal, imm12).
+        assert_eq!(
+            v7m_bytes([0xdf, 0xf8, 0x08, 0x40]),
+            Ok(mem(MemOp::Ldr, 4, 15, 8, true, true, false))
+        );
+        // ldrh.w r5, [pc, #4] -> f8bf 5004 (PC-relative literal, imm12).
+        assert_eq!(
+            v7m_bytes([0xbf, 0xf8, 0x04, 0x50]),
+            Ok(mem(MemOp::Ldrh, 5, 15, 4, true, true, false))
+        );
+        // ldr.w r5, [pc, #4] -> f85f e504 (PC-relative literal, imm8).
+        assert_eq!(
+            v7m_bytes([0x5f, 0xf8, 0x04, 0xe5]),
+            Ok(mem(MemOp::Ldr, 5, 15, 4, true, true, false))
+        );
+        // ldrsb.w r9, [r6, #-1] -> f916 c901 (imm8 offset, subtract).
+        assert_eq!(
+            v7m_bytes([0x16, 0xf9, 0x01, 0xc9]),
+            Ok(mem(MemOp::Ldrsb, 9, 6, 1, false, true, false))
+        );
+    }
+
+    #[test]
+    fn v7m_load_store_undefined_cases() {
+        // A store through the PC base is UNPREDICTABLE.
+        assert!(v7m_bytes([0xcf, 0xf8, 0x04, 0x00]).is_err());
+        // A store to PC is UNPREDICTABLE.
+        assert!(v7m_bytes([0xc1, 0xf8, 0x04, 0xf0]).is_err());
+        // P == 0 && W == 0 in the imm8 form is UNDEFINED.
+        assert!(v7m_bytes([0x51, 0xf8, 0x00, 0x80]).is_err());
+        // The unprivileged (LDRT/STRT) pattern is UNPREDICTABLE.
+        assert!(v7m_bytes([0x51, 0xf8, 0x00, 0xe0]).is_err());
+        // A PC-relative literal with write-back is UNPREDICTABLE.
+        assert!(v7m_bytes([0x5f, 0xf8, 0x04, 0xf5]).is_err());
+        // The ARMv6-M decoder must not swallow the ARMv7-M memory set.
+        assert!(decode32_bytes([0x51, 0xf8, 0x08, 0xb0]).is_err());
     }
 
     #[test]

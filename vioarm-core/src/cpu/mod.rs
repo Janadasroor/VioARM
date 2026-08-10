@@ -13,8 +13,8 @@ use crate::error::{Exception, HaltCause};
 use crate::mem::PeripheralBus;
 use decode16::{decode16, AluOp, Inst16, LsImm, LsReg, Shift, ShiftImm};
 use decode32::{
-    decode32, decode32_v7m, is_thumb2, is_thumb2_v7m, thumb_expand_imm, DpOp, Inst32, ShiftType,
-    SysReg,
+    decode32, decode32_v7m, is_thumb2, is_thumb2_v7m, thumb_expand_imm, DpOp, Inst32, MemOp,
+    ShiftType, SysReg,
 };
 use registers::{Registers, Xpsr, APSR_FLAGS, XPSR_T};
 
@@ -662,6 +662,35 @@ impl<B: PeripheralBus> Core<B> {
                 self.regs.write(rd, new);
                 Ok(Next::Advance(pc + 4))
             }
+            I::Mem {
+                access,
+                rt,
+                rn,
+                off,
+                add,
+                index,
+                writeback,
+            } => {
+                // Rn == 15 is the literal form: the word-aligned `pc + 4`.
+                let base = if rn == 15 {
+                    (pc.wrapping_add(4)) & !3
+                } else {
+                    self.regs.read(rn)
+                };
+                let offset_addr = if add {
+                    base.wrapping_add(off)
+                } else {
+                    base.wrapping_sub(off)
+                };
+                // Post-indexed forms access the base and then step it; the
+                // other two access the stepped address.
+                let address = if index { offset_addr } else { base };
+                let next = self.exec_ls_at(address, rt, access.into(), pc, 4)?;
+                if writeback {
+                    self.regs.write(rn, offset_addr);
+                }
+                Ok(next)
+            }
         }
     }
 
@@ -824,6 +853,19 @@ impl<B: PeripheralBus> Core<B> {
 
     /// A load or store with a fully-computed `addr`.
     fn exec_ls(&mut self, addr: u32, rt: u8, access: LsAccess, pc: u32) -> Result<Next, HaltCause> {
+        self.exec_ls_at(addr, rt, access, pc, 2)
+    }
+
+    /// `exec_ls`, but the fall-through (and the `rt == 15` branch's `LR`
+    /// base) advance by `step` instead of 2, for the 32-bit load/stores.
+    fn exec_ls_at(
+        &mut self,
+        addr: u32,
+        rt: u8,
+        access: LsAccess,
+        pc: u32,
+        step: u32,
+    ) -> Result<Next, HaltCause> {
         let is_load = matches!(
             access,
             LsAccess::Word { load: true }
@@ -856,7 +898,7 @@ impl<B: PeripheralBus> Core<B> {
                 },
                 _ => unreachable!(),
             };
-            self.write_rt(rt, v, addr, pc)
+            self.write_rt_at(rt, v, addr, pc, step)
         } else {
             match access {
                 LsAccess::Word { load: false } => {
@@ -882,19 +924,31 @@ impl<B: PeripheralBus> Core<B> {
                 }
                 _ => unreachable!(),
             }
-            Ok(Next::Advance(pc + 2))
+            Ok(Next::Advance(pc + step))
         }
     }
 
     /// Write a loaded value to `rt`. If `rt == 15` the load is a branch
     /// (Thumb bit checked, EXC_RETURN honored).
     fn write_rt(&mut self, rt: u8, v: u32, addr: u32, pc: u32) -> Result<Next, HaltCause> {
+        self.write_rt_at(rt, v, addr, pc, 2)
+    }
+
+    /// `write_rt` with a 32-bit fall-through step.
+    fn write_rt_at(
+        &mut self,
+        rt: u8,
+        v: u32,
+        addr: u32,
+        pc: u32,
+        step: u32,
+    ) -> Result<Next, HaltCause> {
         let _ = addr;
         if rt == 15 {
             return self.branch(v);
         }
         self.regs.write(rt, v);
-        Ok(Next::Advance(pc + 2))
+        Ok(Next::Advance(pc + step))
     }
 
     /// Turn a Thumb target into a `Next`, or a `NonThumbTarget` stop.
@@ -1126,6 +1180,21 @@ impl From<LsImm> for LsAccess {
     }
 }
 
+impl From<MemOp> for LsAccess {
+    fn from(m: MemOp) -> Self {
+        match m {
+            MemOp::Str => Self::Word { load: false },
+            MemOp::Ldr => Self::Word { load: true },
+            MemOp::Strb => Self::Byte { load: false },
+            MemOp::Ldrb => Self::Byte { load: true },
+            MemOp::Strh => Self::Half { load: false },
+            MemOp::Ldrh => Self::Half { load: true },
+            MemOp::Ldrsb => Self::SextByte,
+            MemOp::Ldrsh => Self::SextHalf,
+        }
+    }
+}
+
 /// `a + b + carry_in`, returning `(result, carry_out, overflow)`.
 fn add_flags(a: u32, b: u32, carry_in: bool) -> (u32, bool, bool) {
     let sum = (u64::from(a)) + (u64::from(b)) + u64::from(carry_in);
@@ -1222,6 +1291,7 @@ const fn shift_by_count(kind: ShiftImm, v: u32, count: u32) -> (u32, Option<bool
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mem::bus::Bus;
 
     #[test]
     fn add_flags_basic() {
@@ -1264,6 +1334,20 @@ mod tests {
             &[0x2000_0000],
             &[0x1000],
         ))
+    }
+
+    fn armv7m_core() -> Core<crate::mem::flat::FlatMemory> {
+        Core::armv7m(crate::mem::flat::FlatMemory::with_layout(
+            &[0x2000_0000],
+            &[0x1000],
+        ))
+    }
+
+    /// Place a byte sequence (an instruction stream) at `addr`.
+    fn load_inst(c: &mut Core<crate::mem::flat::FlatMemory>, addr: u32, bytes: &[u8]) {
+        for (i, b) in bytes.iter().enumerate() {
+            c.mem().write(addr + i as u32, *b).unwrap();
+        }
     }
 
     #[test]
@@ -1321,5 +1405,100 @@ mod tests {
             c.sysreg_write(SysReg::Other(0x7f), 0),
             Err(HaltCause::NotImplemented { .. })
         ));
+    }
+
+    #[test]
+    fn mem_imm_word_roundtrip() {
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0xCAFE_BABE);
+        c.regs.write(2, 0x2000_0400);
+        // str.w r1, [r2, #4] f8c2 1004; ldr.w r3, [r2, #4] f8d2 3004.
+        load_inst(&mut c, 0x2000_0000, &[0xc2, 0xf8, 0x04, 0x10]);
+        load_inst(&mut c, 0x2000_0004, &[0xd2, 0xf8, 0x04, 0x30]);
+        c.step().unwrap();
+        assert_eq!(c.regs.pc, 0x2000_0004);
+        assert_eq!(c.mem().read_word(0x2000_0404).unwrap(), 0xCAFE_BABE);
+        c.step().unwrap();
+        assert_eq!(c.regs.read(3), 0xCAFE_BABE);
+        assert_eq!(c.regs.pc, 0x2000_0008);
+    }
+
+    #[test]
+    fn mem_imm_byte_half_store() {
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(0, 0xAABB_CCDD);
+        c.regs.write(1, 0x1122_3344);
+        c.regs.write(2, 0x2000_0400);
+        // strb.w r0, [r2, #0] f882 0000; strh.w r1, [r2, #2] f8a2 1002.
+        load_inst(&mut c, 0x2000_0000, &[0x82, 0xf8, 0x00, 0x00]);
+        load_inst(&mut c, 0x2000_0004, &[0xa2, 0xf8, 0x02, 0x10]);
+        c.step().unwrap();
+        assert_eq!(c.mem().read(0x2000_0400).unwrap(), 0xDD);
+        c.step().unwrap();
+        assert_eq!(c.mem().read(0x2000_0402).unwrap(), 0x44);
+        assert_eq!(c.mem().read(0x2000_0403).unwrap(), 0x33);
+    }
+
+    #[test]
+    fn mem_imm_signed_loads() {
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(2, 0x2000_0400);
+        c.mem().write(0x2000_0410, 0x80).unwrap();
+        c.mem().write_half(0x2000_0420, 0x8000).unwrap();
+        // ldrsb.w r0, [r2, #0x10] f992 0010; ldrsh.w r1, [r2, #0x20] f9b2 1020.
+        load_inst(&mut c, 0x2000_0000, &[0x92, 0xf9, 0x10, 0x00]);
+        load_inst(&mut c, 0x2000_0004, &[0xb2, 0xf9, 0x20, 0x10]);
+        c.step().unwrap();
+        assert_eq!(c.regs.read(0), 0xFFFF_FF80);
+        c.step().unwrap();
+        assert_eq!(c.regs.read(1), 0xFFFF_8000);
+    }
+
+    #[test]
+    fn mem_imm_pre_post_index() {
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(0, 0xDEAD_0000);
+        c.regs.write(2, 0x2000_0400);
+        // str.w r0, [r2, #8]! f842 f008 (pre-indexed write-back).
+        load_inst(&mut c, 0x2000_0000, &[0x42, 0xf8, 0x08, 0xf0]);
+        c.step().unwrap();
+        assert_eq!(c.mem().read_word(0x2000_0408).unwrap(), 0xDEAD_0000);
+        assert_eq!(c.regs.read(2), 0x2000_0408);
+        assert_eq!(c.regs.pc, 0x2000_0004);
+        // ldr.w r3, [r2], #8 f852 b308 (post-indexed write-back).
+        load_inst(&mut c, 0x2000_0004, &[0x52, 0xf8, 0x08, 0xb3]);
+        c.step().unwrap();
+        assert_eq!(c.regs.read(3), 0xDEAD_0000);
+        assert_eq!(c.regs.read(2), 0x2000_0410);
+        assert_eq!(c.regs.pc, 0x2000_0008);
+    }
+
+    #[test]
+    fn mem_imm_pc_literal() {
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        // ldr.w r4, [pc, #8] f8df 4008: base Align(pc+4) = 0x20000004, so the
+        // word is fetched from 0x2000000c.
+        load_inst(&mut c, 0x2000_0000, &[0xdf, 0xf8, 0x08, 0x40]);
+        c.mem().write_word(0x2000_000c, 0x1234_5678).unwrap();
+        c.step().unwrap();
+        assert_eq!(c.regs.read(4), 0x1234_5678);
+        assert_eq!(c.regs.pc, 0x2000_0004);
+    }
+
+    #[test]
+    fn mem_imm_load_to_pc_branches() {
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0x2000_0400);
+        c.mem().write_word(0x2000_0400, 0x2000_0501).unwrap();
+        // ldr.w pc, [r1, #0] f8d1 f000.
+        load_inst(&mut c, 0x2000_0000, &[0xd1, 0xf8, 0x00, 0xf0]);
+        c.step().unwrap();
+        assert_eq!(c.regs.pc, 0x2000_0500);
     }
 }
