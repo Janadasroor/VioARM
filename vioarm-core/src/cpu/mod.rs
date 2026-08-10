@@ -157,7 +157,10 @@ impl<B: PeripheralBus> Core<B> {
             return Err(HaltCause::FetchAbort);
         }
         let aligned = pc & !3;
-        let h0 = self.mem.read_half(aligned).map_err(|_| HaltCause::FetchAbort)?;
+        let h0 = self
+            .mem
+            .read_half(aligned)
+            .map_err(|_| HaltCause::FetchAbort)?;
         let h1 = self
             .mem
             .read_half(aligned.wrapping_add(2))
@@ -667,6 +670,8 @@ impl<B: PeripheralBus> Core<B> {
                 rt,
                 rn,
                 off,
+                rm,
+                shift,
                 add,
                 index,
                 writeback,
@@ -677,7 +682,11 @@ impl<B: PeripheralBus> Core<B> {
                 } else {
                     self.regs.read(rn)
                 };
-                let offset_addr = if add {
+                // A register offset adds `Rv(Rm) << shift`; the immediate
+                // forms add or subtract `off`.
+                let offset_addr = if let Some(rm) = rm {
+                    base.wrapping_add(self.regs.read(rm) << shift)
+                } else if add {
                     base.wrapping_add(off)
                 } else {
                     base.wrapping_sub(off)
@@ -707,10 +716,7 @@ impl<B: PeripheralBus> Core<B> {
         set_flags: bool,
         shift_carry: Option<bool>,
     ) -> Result<(), HaltCause> {
-        let writes_rd = !matches!(
-            op,
-            DpOp::Tst | DpOp::Teq | DpOp::Cmp | DpOp::Cmn
-        );
+        let writes_rd = !matches!(op, DpOp::Tst | DpOp::Teq | DpOp::Cmp | DpOp::Cmn);
         if writes_rd && rd == 15 {
             return Err(HaltCause::NotImplemented {
                 what: "data-processing writes to pc",
@@ -1463,17 +1469,39 @@ mod tests {
         c.regs.pc = 0x2000_0000;
         c.regs.write(0, 0xDEAD_0000);
         c.regs.write(2, 0x2000_0400);
-        // str.w r0, [r2, #8]! f842 f008 (pre-indexed write-back).
-        load_inst(&mut c, 0x2000_0000, &[0x42, 0xf8, 0x08, 0xf0]);
+        // str.w r0, [r2, #8]! f842 0f08 (pre-indexed write-back).
+        load_inst(&mut c, 0x2000_0000, &[0x42, 0xf8, 0x08, 0x0f]);
         c.step().unwrap();
         assert_eq!(c.mem().read_word(0x2000_0408).unwrap(), 0xDEAD_0000);
         assert_eq!(c.regs.read(2), 0x2000_0408);
         assert_eq!(c.regs.pc, 0x2000_0004);
-        // ldr.w r3, [r2], #8 f852 b308 (post-indexed write-back).
-        load_inst(&mut c, 0x2000_0004, &[0x52, 0xf8, 0x08, 0xb3]);
+        // ldr.w r3, [r2], #8 f852 3b08 (post-indexed write-back).
+        load_inst(&mut c, 0x2000_0004, &[0x52, 0xf8, 0x08, 0x3b]);
         c.step().unwrap();
         assert_eq!(c.regs.read(3), 0xDEAD_0000);
         assert_eq!(c.regs.read(2), 0x2000_0410);
+        assert_eq!(c.regs.pc, 0x2000_0008);
+    }
+
+    #[test]
+    fn mem_reg_offset_roundtrip() {
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(2, 0x2000_0400);
+        c.regs.write(3, 0x10);
+        c.regs.write(4, 0xDEAD_BEEF);
+        // str.w r4, [r2, r3] f842 4003: offset Rm = 0x10, no write-back.
+        load_inst(&mut c, 0x2000_0000, &[0x42, 0xf8, 0x03, 0x40]);
+        c.step().unwrap();
+        assert_eq!(c.mem().read_word(0x2000_0410).unwrap(), 0xDEAD_BEEF);
+        assert_eq!(c.regs.read(2), 0x2000_0400);
+        assert_eq!(c.regs.pc, 0x2000_0004);
+        // ldr.w r5, [r2, r3, lsl #2] f852 5013: offset Rm << 2 = 0x40.
+        load_inst(&mut c, 0x2000_0004, &[0x52, 0xf8, 0x13, 0x50]);
+        c.mem().write_word(0x2000_0440, 0x1234_ABCD).unwrap();
+        c.step().unwrap();
+        assert_eq!(c.regs.read(5), 0x1234_ABCD);
+        assert_eq!(c.regs.read(2), 0x2000_0400);
         assert_eq!(c.regs.pc, 0x2000_0008);
     }
 

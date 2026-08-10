@@ -156,18 +156,22 @@ pub enum Inst32 {
         imm: u16,
         high: bool,
     },
-    /// ARMv7-M single-data-transfer with an immediate offset: `LDR`/`STR`
-    /// word, byte, halfword, and the sign-extending loads. `off` is the
-    /// offset magnitude (0-4095 imm12 or 0-255 imm8); `add` selects `+`/`-`.
-    /// `index`/`writeback` give the three addressing forms: offset
-    /// (`index`, no writeback), pre-indexed (both), post-indexed (writeback
-    /// only). `rn == 15` marks the PC-relative literal form (loads only),
-    /// whose base is `Align(pc + 4, 4)`.
+    /// ARMv7-M single-data-transfer with an immediate or register offset:
+    /// `LDR`/`STR` word, byte, halfword, and the sign-extending loads. `off`
+    /// is the immediate offset magnitude (0-4095 imm12 or 0-255 imm8) when
+    /// `rm` is `None`; otherwise the offset is `Rv(Rm) << shift`, where
+    /// `shift` is an LSL amount (0, 2, 4, or 6). `add` selects `+`/`-` (the
+    /// register forms always add). `index`/`writeback` give the three
+    /// addressing forms: offset (`index`, no writeback), pre-indexed (both),
+    /// post-indexed (writeback only). `rn == 15` marks the PC-relative
+    /// literal form (loads only), whose base is `Align(pc + 4, 4)`.
     Mem {
         access: MemOp,
         rt: u8,
         rn: u8,
         off: u32,
+        rm: Option<u8>,
+        shift: u8,
         add: bool,
         index: bool,
         writeback: bool,
@@ -361,14 +365,15 @@ fn decode_movwide(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
     Some(Ok(Inst32::MovWide { rd, imm, high }))
 }
 
-/// decode the ARMv7-M immediate-offset single-data-transfer family.
+/// decode the ARMv7-M single-data-transfer family.
 ///
-/// Two halfword layouts share the `1111 100x` first halfword:
-/// the unsigned forms live at `F8xx`, the sign-extending loads at `F9xx`
-/// (`bit8` is the sign bit). Each size/op has an imm12 form (offset only,
-/// second-halfword `Rt imm12`) and an imm8 form (off-, pre-, post-indexed,
-/// second-halfword `1 P U W Rt imm8`). `Rn == 15` in either form is the
-/// PC-relative literal (loads only).
+/// Three halfword layouts share the `1111 100x` first halfword: the unsigned
+/// forms live at `F8xx`, the sign-extending loads at `F9xx` (`bit8` is the
+/// sign bit). Each size/op has an imm12 form (offset only, second-halfword
+/// `Rt imm12`), an imm8 form (off-, pre-, post-indexed, second-halfword
+/// `Rt 1 P U W imm8`), and a shifted-register form (second-halfword
+/// `Rt 000000 shimm Rm`). `Rn == 15` in any form is the PC-relative literal
+/// (loads only).
 fn decode_mem(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
     let (access, wide) = match hi & 0xFFF0 {
         0xF8C0 => (MemOp::Str, true),
@@ -395,9 +400,29 @@ fn decode_mem(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
         MemOp::Ldr | MemOp::Ldrb | MemOp::Ldrh | MemOp::Ldrsb | MemOp::Ldrsh
     );
     let err = || Some(Err(err_for(hi)));
+    // The literal load patterns (`Rn == 15`) win the whole single-load space
+    // regardless of the second halfword, so a PC base always means the imm12
+    // literal form. Stores with a PC base are UNPREDICTABLE.
+    if rn == 15 {
+        if !is_load {
+            return err();
+        }
+        let rt = (lo >> 12) as u8;
+        return Some(Ok(Inst32::Mem {
+            access,
+            rt,
+            rn: 15,
+            off: u32::from(lo & 0xFFF),
+            rm: None,
+            shift: 0,
+            add: true,
+            index: true,
+            writeback: false,
+        }));
+    }
     if wide {
         let rt = (lo >> 12) as u8;
-        if !is_load && (rn == 15 || rt == 15) {
+        if !is_load && rt == 15 {
             // STR to PC, or with a PC base, is architecturally UNPREDICTABLE.
             return err();
         }
@@ -406,24 +431,25 @@ fn decode_mem(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
             rt,
             rn,
             off: u32::from(lo & 0xFFF),
+            rm: None,
+            shift: 0,
             add: true,
             index: true,
             writeback: false,
         }))
-    } else {
-        let p = lo & 0x4000 != 0;
-        let u = lo & 0x2000 != 0;
-        let w = lo & 0x1000 != 0;
-        let rt = ((lo >> 8) & 0xF) as u8;
+    } else if lo & 0x0800 != 0 {
+        // The immediate form's second halfword is `Rt 1 P U W imm8`: bit 11
+        // is the fixed one that selects it over the register form below.
+        let p = lo & 0x0400 != 0;
+        let u = lo & 0x0200 != 0;
+        let w = lo & 0x0100 != 0;
+        let rt = (lo >> 12) as u8;
         let off = u32::from(lo & 0xFF);
-        if !is_load && (rn == 15 || rt == 15) {
+        if !is_load && rt == 15 {
+            // STR to PC is architecturally UNPREDICTABLE.
             return err();
         }
-        if rn == 15 && w {
-            // A PC-relative literal with write-back is UNPREDICTABLE.
-            return err();
-        }
-        if rn != 15 && p && u && !w {
+        if p && u && !w {
             // The unprivileged LDRT/STRT form is UNPREDICTABLE on ARMv7-M.
             return err();
         }
@@ -441,10 +467,37 @@ fn decode_mem(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
             rt,
             rn,
             off,
+            rm: None,
+            shift: 0,
             add: u,
             index,
             writeback,
         }))
+    } else if lo & 0x0FC0 == 0 {
+        // The register-offset form's second halfword is `Rt 000000 shimm Rm`:
+        // bits 11..6 are all zero, and the offset is `Rm << (shimm * 2)`
+        // (LSL only, 0/2/4/6). It always adds (`U == 1`) with no write-back.
+        let rt = (lo >> 12) as u8;
+        let rm = (lo & 0xF) as u8;
+        let shift = (((lo >> 4) & 0x3) as u8) * 2;
+        if !is_load && rt == 15 {
+            return err();
+        }
+        Some(Ok(Inst32::Mem {
+            access,
+            rt,
+            rn,
+            off: 0,
+            rm: Some(rm),
+            shift,
+            add: true,
+            index: true,
+            writeback: false,
+        }))
+    } else {
+        // A second halfword with bit 11 clear but bits 11..6 non-zero is
+        // not a valid form of these encodings.
+        err()
     }
 }
 
@@ -516,8 +569,7 @@ fn decode_dp_modified(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
     let set_flags = hi & 0x10 != 0;
     let rn = (hi & 0xF) as u8;
     let rd = ((lo >> 8) & 0xF) as u8;
-    let Some(op) = dp_op(hi & 0x100 != 0, ((hi >> 5) & 0x7) as u8, rn, rd, set_flags)
-    else {
+    let Some(op) = dp_op(hi & 0x100 != 0, ((hi >> 5) & 0x7) as u8, rn, rd, set_flags) else {
         return Some(Err(err_for(hi)));
     };
     Some(Ok(Inst32::DpImm {
@@ -544,8 +596,7 @@ fn decode_dp_reg(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
     let set_flags = hi & 0x10 != 0;
     let rn = (hi & 0xF) as u8;
     let rd = ((lo >> 8) & 0xF) as u8;
-    let Some(op) = dp_op(hi & 0x100 != 0, ((hi >> 5) & 0x7) as u8, rn, rd, set_flags)
-    else {
+    let Some(op) = dp_op(hi & 0x100 != 0, ((hi >> 5) & 0x7) as u8, rn, rd, set_flags) else {
         return Some(Err(err_for(hi)));
     };
     let shift = match (lo >> 4) & 0x3 {
@@ -605,14 +656,7 @@ mod tests {
         }
     }
 
-    fn imm(
-        op: DpOp,
-        rd: u8,
-        rn: u8,
-        imm12: u16,
-        expand: bool,
-        set_flags: bool,
-    ) -> Inst32 {
+    fn imm(op: DpOp, rd: u8, rn: u8, imm12: u16, expand: bool, set_flags: bool) -> Inst32 {
         Inst32::DpImm {
             op,
             rd,
@@ -637,9 +681,27 @@ mod tests {
             rt,
             rn,
             off,
+            rm: None,
+            shift: 0,
             add,
             index,
             writeback,
+        }
+    }
+
+    /// The register-offset form: `R[n] ± R[rm] << shift`, always add, index
+    /// only, no write-back.
+    fn mem_reg(access: MemOp, rt: u8, rn: u8, rm: u8, shift: u8) -> Inst32 {
+        Inst32::Mem {
+            access,
+            rt,
+            rn,
+            off: 0,
+            rm: Some(rm),
+            shift,
+            add: true,
+            index: true,
+            writeback: false,
         }
     }
 
@@ -956,19 +1018,29 @@ mod tests {
             v7m_bytes([0xb1, 0xf9, 0x04, 0x00]),
             Ok(mem(MemOp::Ldrsh, 0, 1, 4, true, true, false))
         );
-        // ldr.w r0, [r1, #-8] -> f851 c008 (imm8, offset).
+        // ldr.w r12, [r3, #0x20] -> f8d3 c020 (imm12 offset).
         assert_eq!(
-            v7m_bytes([0x51, 0xf8, 0x08, 0xc0]),
+            v7m_bytes([0xd3, 0xf8, 0x20, 0xc0]),
+            Ok(mem(MemOp::Ldr, 12, 3, 0x20, true, true, false))
+        );
+        // ldr.w r10, [r1, #-4] -> f851 ac04 (imm8 offset, Rt in 15..12).
+        assert_eq!(
+            v7m_bytes([0x51, 0xf8, 0x04, 0xac]),
+            Ok(mem(MemOp::Ldr, 10, 1, 4, false, true, false))
+        );
+        // ldr.w r0, [r1, #-8] -> f851 0c08 (imm8, offset, subtract).
+        assert_eq!(
+            v7m_bytes([0x51, 0xf8, 0x08, 0x0c]),
             Ok(mem(MemOp::Ldr, 0, 1, 8, false, true, false))
         );
-        // ldr.w r0, [r1, #8]! -> f851 f008 (imm8, pre-indexed).
+        // ldr.w r0, [r1, #8]! -> f851 0f08 (imm8, pre-indexed).
         assert_eq!(
-            v7m_bytes([0x51, 0xf8, 0x08, 0xf0]),
+            v7m_bytes([0x51, 0xf8, 0x08, 0x0f]),
             Ok(mem(MemOp::Ldr, 0, 1, 8, true, true, true))
         );
-        // ldr.w r0, [r1], #8 -> f851 b008 (imm8, post-indexed).
+        // ldr.w r0, [r1], #8 -> f851 0b08 (imm8, post-indexed).
         assert_eq!(
-            v7m_bytes([0x51, 0xf8, 0x08, 0xb0]),
+            v7m_bytes([0x51, 0xf8, 0x08, 0x0b]),
             Ok(mem(MemOp::Ldr, 0, 1, 8, true, false, true))
         );
         // ldr.w r4, [pc, #8] -> f8df 4008 (PC-relative literal, imm12).
@@ -981,15 +1053,61 @@ mod tests {
             v7m_bytes([0xbf, 0xf8, 0x04, 0x50]),
             Ok(mem(MemOp::Ldrh, 5, 15, 4, true, true, false))
         );
-        // ldr.w r5, [pc, #4] -> f85f e504 (PC-relative literal, imm8).
+        // ldrsb.w r9, [r6, #-1] -> f916 9c01 (imm8 offset, subtract).
         assert_eq!(
-            v7m_bytes([0x5f, 0xf8, 0x04, 0xe5]),
-            Ok(mem(MemOp::Ldr, 5, 15, 4, true, true, false))
-        );
-        // ldrsb.w r9, [r6, #-1] -> f916 c901 (imm8 offset, subtract).
-        assert_eq!(
-            v7m_bytes([0x16, 0xf9, 0x01, 0xc9]),
+            v7m_bytes([0x16, 0xf9, 0x01, 0x9c]),
             Ok(mem(MemOp::Ldrsb, 9, 6, 1, false, true, false))
+        );
+    }
+
+    #[test]
+    fn v7m_load_store_register() {
+        // The register-offset second halfword is `Rt 000000 shimm Rm`, where
+        // the offset is `Rm << (shimm * 2)` (LSL only).
+        // ldr.w r0, [r2, r3] -> f852 0003.
+        assert_eq!(
+            v7m_bytes([0x52, 0xf8, 0x03, 0x00]),
+            Ok(mem_reg(MemOp::Ldr, 0, 2, 3, 0))
+        );
+        // ldr.w r2, [r4, r8] -> f854 2008.
+        assert_eq!(
+            v7m_bytes([0x54, 0xf8, 0x08, 0x20]),
+            Ok(mem_reg(MemOp::Ldr, 2, 4, 8, 0))
+        );
+        // str.w r5, [r6, r7, lsl #2] -> f846 5017.
+        assert_eq!(
+            v7m_bytes([0x46, 0xf8, 0x17, 0x50]),
+            Ok(mem_reg(MemOp::Str, 5, 6, 7, 2))
+        );
+        // strb.w r0, [r1, r2] -> f801 0002.
+        assert_eq!(
+            v7m_bytes([0x01, 0xf8, 0x02, 0x00]),
+            Ok(mem_reg(MemOp::Strb, 0, 1, 2, 0))
+        );
+        // ldrb.w r9, [r3, r4] -> f813 9004.
+        assert_eq!(
+            v7m_bytes([0x13, 0xf8, 0x04, 0x90]),
+            Ok(mem_reg(MemOp::Ldrb, 9, 3, 4, 0))
+        );
+        // strh.w r6, [r12, r2, lsl #2] -> f82c 6012.
+        assert_eq!(
+            v7m_bytes([0x2c, 0xf8, 0x12, 0x60]),
+            Ok(mem_reg(MemOp::Strh, 6, 12, 2, 2))
+        );
+        // ldrh.w r3, [r10, r4] -> f83a 3004.
+        assert_eq!(
+            v7m_bytes([0x3a, 0xf8, 0x04, 0x30]),
+            Ok(mem_reg(MemOp::Ldrh, 3, 10, 4, 0))
+        );
+        // ldrsb.w r7, [r8, r11, lsl #6] -> f918 703b.
+        assert_eq!(
+            v7m_bytes([0x18, 0xf9, 0x3b, 0x70]),
+            Ok(mem_reg(MemOp::Ldrsb, 7, 8, 11, 6))
+        );
+        // ldrsh.w r0, [r2, r3, lsl #4] -> f932 0023.
+        assert_eq!(
+            v7m_bytes([0x32, 0xf9, 0x23, 0x00]),
+            Ok(mem_reg(MemOp::Ldrsh, 0, 2, 3, 4))
         );
     }
 
@@ -999,14 +1117,17 @@ mod tests {
         assert!(v7m_bytes([0xcf, 0xf8, 0x04, 0x00]).is_err());
         // A store to PC is UNPREDICTABLE.
         assert!(v7m_bytes([0xc1, 0xf8, 0x04, 0xf0]).is_err());
+        // A register-offset store through the PC base is UNPREDICTABLE.
+        assert!(v7m_bytes([0x4f, 0xf8, 0x01, 0x00]).is_err());
         // P == 0 && W == 0 in the imm8 form is UNDEFINED.
-        assert!(v7m_bytes([0x51, 0xf8, 0x00, 0x80]).is_err());
+        assert!(v7m_bytes([0x51, 0xf8, 0x08, 0x0a]).is_err());
         // The unprivileged (LDRT/STRT) pattern is UNPREDICTABLE.
-        assert!(v7m_bytes([0x51, 0xf8, 0x00, 0xe0]).is_err());
-        // A PC-relative literal with write-back is UNPREDICTABLE.
-        assert!(v7m_bytes([0x5f, 0xf8, 0x04, 0xf5]).is_err());
+        assert!(v7m_bytes([0x51, 0xf8, 0x00, 0x0e]).is_err());
+        // A second halfword with bit 11 clear but bits 11..6 non-zero is
+        // not a valid immediate or register form.
+        assert!(v7m_bytes([0x50, 0xf8, 0x40, 0x00]).is_err());
         // The ARMv6-M decoder must not swallow the ARMv7-M memory set.
-        assert!(decode32_bytes([0x51, 0xf8, 0x08, 0xb0]).is_err());
+        assert!(decode32_bytes([0x51, 0xf8, 0x08, 0x0b]).is_err());
     }
 
     #[test]
