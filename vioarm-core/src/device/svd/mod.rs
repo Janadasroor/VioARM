@@ -845,6 +845,40 @@ mod tests {
         assert_eq!(tim2.pending(), 0);
         tim2.tick(2);
         assert_eq!(tim2.pending(), 1, "UIF latched on F407 TIM2");
+
+        // RCC: the CR synthesis mounts unchanged on F407's RCC.
+        let mut rcc = crate::device::stm32::rcc::Rcc::for_device::<stm32f407::Stm32f407>();
+        assert_eq!(rcc.ranges()[0].base, 0x4002_3800);
+        assert_eq!(p_read_word(&mut rcc, 0x00) & (1 << 1), 1 << 1);
+
+        // EXTI: edge detection on F407's controller.
+        let mut exti = crate::device::stm32::exti::Exti::for_device::<stm32f407::Stm32f407>();
+        assert_eq!(exti.ranges()[0].base, 0x4001_3c00);
+        p_write_word(&mut exti, 0x08, 1); // RTSR line 0
+        p_write_word(&mut exti, 0x00, 1); // IMR line 0
+        exti.drive_inputs(0); // establish reference level
+        exti.drive_inputs(1); // rising edge
+        assert_eq!(exti.pending(), 1);
+
+        // SYSCFG: the F4 EXTI router latches EXTICR routing.
+        let mut syscfg = crate::device::stm32::syscfg::Syscfg::for_device::<stm32f407::Stm32f407>();
+        assert_eq!(syscfg.ranges()[0].base, 0x4001_3800);
+        p_write_word(&mut syscfg, 0x08, 0x0000_0001); // EXTICR1: EXTI0 <- PA0
+        assert_eq!(p_read_word(&mut syscfg, 0x08), 0x0000_0001);
+
+        // F4 GPIO: MODER-configured outputs drive ODR/IDR through BSRR.
+        let mut gpioa = crate::device::stm32::gpio_f4::GpioF4::at_in::<stm32f407::Stm32f407>(
+            0x4002_0000,
+            "gpioa",
+        );
+        p_write_word(&mut gpioa, 0x00, 0x0000_0001); // MODER: PA0 output
+        p_write_word(&mut gpioa, 0x18, 0x0000_0001); // BSRR set pin 0
+        assert_eq!(p_read_word(&mut gpioa, 0x14) & 1, 1, "ODR follows BSRR");
+        assert_eq!(
+            p_read_word(&mut gpioa, 0x10) & 1,
+            1,
+            "IDR reads the output latch"
+        );
     }
 
     #[test]
