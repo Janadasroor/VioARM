@@ -149,32 +149,27 @@ impl<B: PeripheralBus> Core<B> {
 
     /// Fetch and execute a single ARMv7-M instruction.
     ///
-    /// ARMv7-M fetches 32-bit instructions only from 4-byte-aligned addresses.
-    /// The fetch always reads the aligned halfword pair `[pc & ~3, pc + 2]`;
-    /// which halfword the instruction starts at is decided by `pc & 2`.
+    /// ARMv7-M freely intermixes 16-bit and 32-bit instructions at any even
+    /// address, so a 32-bit instruction can start on the second halfword of an
+    /// aligned word (`pc & 2 == 2`). The two halfwords are therefore read
+    /// from `pc` and `pc + 2` directly; the parallel aligned-word fetch would
+    /// mispair the halves for that case.
     fn step_v7m(&mut self, pc: u32) -> Result<Next, HaltCause> {
         if pc & 1 != 0 {
             return Err(HaltCause::FetchAbort);
         }
-        let aligned = pc & !3;
-        let h0 = self
-            .mem
-            .read_half(aligned)
-            .map_err(|_| HaltCause::FetchAbort)?;
+        let h0 = self.mem.read_half(pc).map_err(|_| HaltCause::FetchAbort)?;
         let h1 = self
             .mem
-            .read_half(aligned.wrapping_add(2))
+            .read_half(pc.wrapping_add(2))
             .map_err(|_| HaltCause::FetchAbort)?;
-        // The halfword at `pc` is the start of the instruction: `h0` for an
-        // even 4-byte slot, `h1` when the PC sits on the second halfword.
-        let (first, second) = if pc & 2 == 0 { (h0, h1) } else { (h1, h0) };
-        if is_thumb2_v7m(first) {
-            match decode32_v7m(first, second) {
+        if is_thumb2_v7m(h0) {
+            match decode32_v7m(h0, h1) {
                 Ok(inst) => self.exec32(pc, inst),
                 Err(_) => self.hardfault_on_undefined(pc, 4),
             }
         } else {
-            match decode16(first) {
+            match decode16(h0) {
                 Ok(inst) => self.exec(pc, inst),
                 Err(_) => self.hardfault_on_undefined(pc, 2),
             }
@@ -796,6 +791,28 @@ impl<B: PeripheralBus> Core<B> {
                     };
                 let target = pc.wrapping_add(4).wrapping_add(index << 1);
                 Ok(Next::Advance(target & !1))
+            }
+            #[allow(clippy::cast_sign_loss, clippy::cast_possible_wrap)]
+            I::Div { signed, rd, rn, rm } => {
+                if rd == 15 {
+                    return Err(HaltCause::NotImplemented {
+                        what: "divide writes to pc",
+                    });
+                }
+                // A zero divisor yields zero (no fault; `DIV_0_TRP` is off at
+                // reset and not modeled). Signed `MIN / -1` saturates to MIN
+                // without trapping, exactly as the architecture requires.
+                let num = self.regs.read(rn);
+                let den = self.regs.read(rm);
+                let result = if den == 0 {
+                    0
+                } else if signed {
+                    i32::wrapping_div(num as i32, den as i32) as u32
+                } else {
+                    u32::wrapping_div(num, den)
+                };
+                self.regs.write(rd, result);
+                Ok(Next::Advance(pc + 4))
             }
         }
     }
@@ -1778,5 +1795,55 @@ mod tests {
         load_inst(&mut c, 0x2000_0000, &[0xd1, 0xe8, 0x12, 0xf0]);
         c.step().unwrap();
         assert_eq!(c.regs.pc, 0x2000_0204);
+    }
+
+    #[test]
+    fn divide_signed_unsigned() {
+        // udiv r2, r4, r5 (fbb4 f2f5): 100 / 4 = 25, flags untouched.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.xpsr.set_nzcv(true, true, true, true);
+        c.regs.write(4, 100);
+        c.regs.write(5, 4);
+        load_inst(&mut c, 0x2000_0000, &[0xb4, 0xfb, 0xf5, 0xf2]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[2], 25);
+        assert_eq!(c.regs.pc, 0x2000_0004);
+        assert!(c.xpsr.n() && c.xpsr.z() && c.xpsr.c() && c.xpsr.v());
+
+        // sdiv r1, r0, r3 (fb90 f1f3): -100 / 7 truncates toward zero.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(0, 0xFFFF_FF9C);
+        c.regs.write(3, 7);
+        load_inst(&mut c, 0x2000_0000, &[0x90, 0xfb, 0xf3, 0xf1]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[1], 0xFFFF_FFF2);
+
+        // sdiv r0, r0, r1 (fb90 f0f1): MIN / -1 saturates to MIN.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(0, 0x8000_0000);
+        c.regs.write(1, 0xFFFF_FFFF);
+        load_inst(&mut c, 0x2000_0000, &[0x90, 0xfb, 0xf1, 0xf0]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0x8000_0000);
+
+        // A zero divisor yields zero for both flavors.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(4, 100);
+        c.regs.write(5, 0);
+        load_inst(&mut c, 0x2000_0000, &[0xb4, 0xfb, 0xf5, 0xf2]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[2], 0);
+
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(0, 0xFFFF_FF9C);
+        c.regs.write(1, 0);
+        load_inst(&mut c, 0x2000_0000, &[0x90, 0xfb, 0xf1, 0xf0]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0);
     }
 }

@@ -193,6 +193,14 @@ pub enum Inst32 {
         rm: u8,
         half: bool,
     },
+    /// ARMv7-M signed (`signed == true`) or unsigned divide:
+    /// `div Rd, Rn, Rm`. Flags are not affected.
+    Div {
+        signed: bool,
+        rd: u8,
+        rn: u8,
+        rm: u8,
+    },
 }
 
 /// True when `hw` is the first halfword of a 32-bit ARMv6-M instruction.
@@ -282,6 +290,7 @@ pub fn decode32_v7m(hi: u16, lo: u16) -> Result<Inst32, DecodeError> {
         .or_else(|| decode_dp_plain(hi, lo))
         .or_else(|| decode_dp_modified(hi, lo))
         .or_else(|| decode_dp_reg(hi, lo))
+        .or_else(|| decode_div(hi, lo))
         .unwrap_or_else(|| Err(err_for(hi)))
 }
 
@@ -695,6 +704,32 @@ fn decode_dp_reg(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
         shift,
         amount,
         set_flags,
+    }))
+}
+
+/// decode the ARMv7-M divide instruction family.
+///
+/// `SDIV Rd, Rn, Rm` is `1111 1011 1001 Rn 1111 Rd 1111 Rm` and
+/// `UDIV Rd, Rn, Rm` is `1111 1011 1011 Rn 1111 Rd 1111 Rm`; the first
+/// halfword's low nibble is `Rn` and the second halfword packs `Rd` in the
+/// middle. The `0xF000` upper nibbles of both halfwords make the pair
+/// unmistakable, and there is no 16-bit form.
+const fn decode_div(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
+    let selected = hi & 0xFFF0;
+    if selected != 0xFB90 && selected != 0xFBB0 {
+        return None;
+    }
+    if lo & 0xF0F0 != 0xF0F0 {
+        return Some(Err(err_for(hi)));
+    }
+    let rd = ((lo >> 8) & 0xF) as u8;
+    let rn = (hi & 0xF) as u8;
+    let rm = (lo & 0xF) as u8;
+    Some(Ok(Inst32::Div {
+        signed: selected == 0xFB90,
+        rd,
+        rn,
+        rm,
     }))
 }
 
@@ -1411,5 +1446,44 @@ mod tests {
                 half: true
             })
         );
+    }
+
+    #[test]
+    fn v7m_divide() {
+        // sdiv r0, r0, r1 -> fb90 f0f1.
+        assert_eq!(
+            v7m_bytes([0x90, 0xfb, 0xf1, 0xf0]),
+            Ok(Inst32::Div {
+                signed: true,
+                rd: 0,
+                rn: 0,
+                rm: 1
+            })
+        );
+        // udiv r2, r4, r5 -> fbb4 f2f5.
+        assert_eq!(
+            v7m_bytes([0xb4, 0xfb, 0xf5, 0xf2]),
+            Ok(Inst32::Div {
+                signed: false,
+                rd: 2,
+                rn: 4,
+                rm: 5
+            })
+        );
+        // sdiv r3, r9, r8 -> fb99 f3f8.
+        assert_eq!(
+            v7m_bytes([0x99, 0xfb, 0xf8, 0xf3]),
+            Ok(Inst32::Div {
+                signed: true,
+                rd: 3,
+                rn: 9,
+                rm: 8
+            })
+        );
+        // A malformed second halfword (bits 7:4 of the lo not `1111`) is
+        // UNDEFINED, and the ARMv6-M decoder must not swallow the family.
+        assert!(v7m_bytes([0x90, 0xfb, 0xe0, 0xf0]).is_err());
+        assert!(decode32_bytes([0x90, 0xfb, 0xf1, 0xf0]).is_err());
+        assert!(decode32_bytes([0xb4, 0xfb, 0xf5, 0xf2]).is_err());
     }
 }

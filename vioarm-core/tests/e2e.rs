@@ -492,3 +492,24 @@ fn pendsv_handler_runs_and_returns() {
     assert_eq!(regs.r[3], 0x22);
     assert_eq!(regs.sp, INIT_SP);
 }
+
+/// ARMv7-M: `udiv` returns the unsigned quotient, and a zero divisor yields
+/// zero (the reset `DIV_0_TRP` state raises no fault). No flags change.
+#[test]
+fn divide_on_armv7m() {
+    // movs r0, #100 ; movs r2, #4 ; udiv r1, r0, r2
+    // movs r3, #0 ; udiv r4, r0, r3 ; bkpt
+    let mut m = boot_v7m(&[
+        0x64, 0x20, 0x04, 0x22, 0x90, 0xfb, 0xf2, 0xf1, 0x00, 0x23, 0x90, 0xfb, 0xf3, 0xf4, 0x00,
+        0xbe,
+    ]);
+    let err = m.run(10);
+    assert_eq!(err, Err(HaltCause::Breakpoint));
+    let (regs, _, cycles) = m.core.snapshot();
+    // Two movs, two udiv, then the stopping bkpt (which costs no cycle).
+    assert_eq!(cycles, 5);
+    // 100 / 4 = 25; the divide-by-zero `udiv` wrote zero and left r0 intact.
+    assert_eq!(regs.r[1], 25);
+    assert_eq!(regs.r[4], 0);
+    assert_eq!(regs.r[0], 100);
+}
