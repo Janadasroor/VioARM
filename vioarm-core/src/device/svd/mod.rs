@@ -1,10 +1,11 @@
 //! SVD-driven register tables and the table-driven `RegisterFile` runtime.
 //!
-//! [`vioarm-svd`] generates [`stm32f103`] from a CMSIS pack; this module holds
-//! the descriptor types that table plugs into, plus a generic [`RegisterFile`]
-//! peripheral that derives its whole address map from a [`PeripheralDef`].
-//! Anything the SVD cannot express — read-to-clear flags, write-one-to-clear,
-//! timer overflow, set/reset splits — is a hand-written [`Behavior`] hook.
+//! [`vioarm-svd`] generates [`stm32f103`], [`stm32f107`], and [`stm32f407`]
+//! from CMSIS SVD files; this module holds the descriptor types those tables
+//! plug into, plus a generic [`RegisterFile`] peripheral that derives its whole
+//! address map from a [`PeripheralDef`]. Anything the SVD cannot express —
+//! read-to-clear flags, write-one-to-clear, timer overflow, set/reset splits —
+//! is a hand-written [`Behavior`] hook.
 //!
 //! [`vioarm-svd`]: ../../../../../vioarm-svd/src/main.rs
 
@@ -15,6 +16,7 @@ use core::ops::Deref;
 
 pub mod stm32f103;
 pub mod stm32f107;
+pub mod stm32f407;
 
 /// The register access vocabulary used by the supported SVD files.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,8 +65,9 @@ pub struct PeripheralDef {
 
 /// A generated device table: one chip's peripheral map.
 ///
-/// [`stm32f103::Stm32f103`] and [`stm32f107::Stm32f107`] implement this so a
-/// [`Behavior`] can be mounted against either chip's tables unchanged.
+/// Each generated table defines a chip type — [`stm32f103::Stm32f103`],
+/// [`stm32f107::Stm32f107`], [`stm32f407::Stm32f407`] — that implements this
+/// so a [`Behavior`] can be mounted against any chip's tables unchanged.
 pub trait Device {
     /// Find the generated descriptor for a peripheral by SVD name.
     fn peripheral(name: &str) -> Option<&'static PeripheralDef>;
@@ -714,8 +717,143 @@ mod tests {
     }
 
     #[test]
+    fn generated_stm32f407_matches_silicon_layout() {
+        let cases = [
+            ("GPIOA", 0x4002_0000u32),
+            ("GPIOE", 0x4002_1000),
+            ("GPIOH", 0x4002_1c00),
+            ("RCC", 0x4002_3800),
+            ("FLASH", 0x4002_3c00),
+            ("USART1", 0x4001_1000),
+            ("USART6", 0x4001_1400),
+            ("TIM1", 0x4001_0000),
+            ("TIM2", 0x4000_0000),
+            ("TIM11", 0x4001_4800),
+            ("SYSCFG", 0x4001_3800),
+            ("EXTI", 0x4001_3c00),
+            ("DMA1", 0x4002_6000),
+            ("DMA2", 0x4002_6400),
+            ("SPI1", 0x4001_3000),
+            ("I2C1", 0x4000_5400),
+            ("CAN1", 0x4000_6400),
+            ("CAN2", 0x4000_6800),
+            ("ADC1", 0x4001_2000),
+            ("DAC", 0x4000_7400),
+            ("SDIO", 0x4001_2c00),
+            ("Ethernet_MAC", 0x4002_8000),
+            ("OTG_FS_GLOBAL", 0x5000_0000),
+            ("OTG_HS_GLOBAL", 0x4004_0000),
+        ];
+        for (name, base) in cases {
+            let def = super::stm32f407::peripheral(name)
+                .unwrap_or_else(|| panic!("generated tables contain {name}"));
+            assert_eq!(def.base, base, "base address of {name}");
+        }
+
+        // GPIOA is the F4 split design: MODER mode nibbles replace the F1 CRL/CRH.
+        let gpioa = super::stm32f407::peripheral("GPIOA").unwrap();
+        let gpio_regs = [
+            ("MODER", 0x00, Access::ReadWrite),
+            ("OTYPER", 0x04, Access::ReadWrite),
+            ("OSPEEDR", 0x08, Access::ReadWrite),
+            ("PUPDR", 0x0c, Access::ReadWrite),
+            ("IDR", 0x10, Access::ReadOnly),
+            ("ODR", 0x14, Access::ReadWrite),
+            ("BSRR", 0x18, Access::WriteOnly),
+            ("LCKR", 0x1c, Access::ReadWrite),
+            ("AFRL", 0x20, Access::ReadWrite),
+            ("AFRH", 0x24, Access::ReadWrite),
+        ];
+        for (name, offset, access) in gpio_regs {
+            let r = gpioa
+                .registers
+                .iter()
+                .find(|r| r.name == name)
+                .unwrap_or_else(|| panic!("GPIOA:{name} present"));
+            assert_eq!(r.offset, offset, "GPIOA:{name} offset");
+            assert_eq!(r.access, access, "GPIOA:{name} access");
+        }
+        assert!(gpioa
+            .registers
+            .iter()
+            .all(|r| r.name != "CRL" && r.name != "BRR"));
+        let moder = gpioa.registers.iter().find(|r| r.name == "MODER").unwrap();
+        assert_eq!(moder.reset, 0xa800_0000, "pins 14/15 reset to analog");
+        let pupdr = gpioa.registers.iter().find(|r| r.name == "PUPDR").unwrap();
+        assert_eq!(
+            pupdr.reset & 0x2400_0000,
+            0x2400_0000,
+            "SWD pins 13/14 reset pulled up"
+        );
+
+        // RCC keeps CR at 0x00 but gates clocks in AHB1ENR, not AHBENR.
+        let rcc = super::stm32f407::peripheral("RCC").unwrap();
+        let rcc_regs = [
+            ("CR", 0x00, 0x0000_0083),
+            ("PLLCFGR", 0x04, 0x2400_3010),
+            ("AHB1ENR", 0x30, 0x0010_0000),
+            ("APB1ENR", 0x40, 0x0000_0000),
+            ("APB2ENR", 0x44, 0x0000_0000),
+        ];
+        for (name, offset, reset) in rcc_regs {
+            let r = rcc
+                .registers
+                .iter()
+                .find(|r| r.name == name)
+                .unwrap_or_else(|| panic!("RCC:{name} present"));
+            assert_eq!(r.offset, offset, "RCC:{name} offset");
+            assert_eq!(r.reset, reset, "RCC:{name} reset");
+        }
+        assert!(rcc.registers.iter().all(|r| r.name != "AHBENR"));
+
+        // AFIO is gone on the Cortex-M4 line; SYSCFG took its place.
+        assert!(super::stm32f407::peripheral("AFIO").is_none());
+
+        let usart1 = super::stm32f407::peripheral("USART1").unwrap();
+        let irq = usart1.irqs.first().unwrap();
+        assert_eq!(irq.number, 37, "USART1 IRQ number");
+        assert_eq!(16 + irq.number, 53, "USART1 exception number");
+    }
+
+    #[test]
+    fn same_behavior_mounts_f407_tables() {
+        use super::stm32f407;
+        use crate::device::stm32::timer::Timer;
+        use crate::device::stm32::usart::Usart1;
+        use crate::device::{InterruptSource, Peripheral};
+
+        // USART1: the byte-oriented behavior on F407's tables (same 7-register
+        // layout as F1, different base).
+        let mut u = Usart1::for_device::<stm32f407::Stm32f407>();
+        assert_eq!(u.ranges()[0].base, 0x4001_1000);
+        u.drive_inputs(0x55);
+        assert_eq!(u.pending(), 0);
+        p_write_word(&mut u, 0x0C, 0x2020); // CR1 = UE | RXNEIE
+        assert_eq!(u.pending(), 1);
+        assert_eq!(u.read(0x4001_1004).unwrap(), 0x55);
+        assert_eq!(u.pending(), 0);
+        p_write_word(&mut u, 0x0C, 0x2008); // CR1 = UE | TE
+        u.write(0x4001_1004, b'X').unwrap();
+        assert_eq!(u.drain_output(), b"X");
+
+        // Timer: tick-driven UIF on F407's TIM2.
+        let mut tim2 = Timer::tim2_for::<stm32f407::Stm32f407>();
+        p_write_word(&mut tim2, 0x2C, 1); // ARR = 1
+        p_write_word(&mut tim2, 0x28, 0); // PSC = 0
+        p_write_word(&mut tim2, 0x0C, 1); // DIER = UIE
+        p_write_word(&mut tim2, 0x00, 1); // CR1 = CEN
+        assert_eq!(tim2.pending(), 0);
+        tim2.tick(2);
+        assert_eq!(tim2.pending(), 1, "UIF latched on F407 TIM2");
+    }
+
+    #[test]
     fn generated_tables_are_internally_consistent() {
-        let tables = [super::stm32f103::PERIPHERALS, super::stm32f107::PERIPHERALS];
+        let tables = [
+            super::stm32f103::PERIPHERALS,
+            super::stm32f107::PERIPHERALS,
+            super::stm32f407::PERIPHERALS,
+        ];
         for p in tables.into_iter().flatten() {
             let mut spans: Vec<(u32, u32)> = Vec::new();
             for r in p.registers {

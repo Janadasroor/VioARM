@@ -176,7 +176,7 @@ pub fn parse(xml: &str) -> Result<Model, ParseError> {
             Ok(Event::End(e)) => {
                 let qname = e.name();
                 let name: &[u8] = qname.as_ref();
-                if name == b"name" && nodes.is_empty() {
+                if name == b"name" && nodes.is_empty() && device.is_empty() {
                     device = text.trim().to_string();
                 } else if SCALARS.contains(&name) && capturing {
                     if let Some(node) = nodes.last_mut() {
@@ -452,6 +452,18 @@ mod tests {
         let model = parse(SAMPLE).unwrap();
         assert_eq!(model.peripherals[1].irqs[0].number, 6);
         assert_eq!(model.peripherals[1].irqs[0].name, "EXTI0");
+    }
+
+    #[test]
+    fn cpu_name_does_not_override_the_device_name() {
+        let with_cpu = r"<device>
+          <name>STM32F407</name>
+          <cpu><name>CM4</name></cpu>
+          <peripheral><name>RNG</name><baseAddress>0x50060800</baseAddress></peripheral>
+        </device>";
+        let model = parse(with_cpu).unwrap();
+        assert_eq!(model.device, "STM32F407");
+        assert_eq!(model.peripherals.len(), 1);
     }
 
     #[test]
