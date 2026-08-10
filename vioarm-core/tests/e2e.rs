@@ -10,6 +10,7 @@ use vioarm_core::loader::{load_flat, load_hex};
 use vioarm_core::machine::Machine;
 use vioarm_core::mem::bus::Bus;
 use vioarm_core::mem::flat::FlatMemory;
+use vioarm_core::mem::system::SystemMemory;
 
 const FLASH: u32 = 0x0000_0000;
 const RAM: u32 = 0x2000_0000;
@@ -457,4 +458,37 @@ fn shift_carry_and_addw_subw_sp_on_armv7m() {
     // The raw-immediate subw/addw cancel and leave sp and flags untouched.
     assert_eq!(regs.sp, INIT_SP);
     assert!(!xpsr.n() && !xpsr.z());
+}
+
+/// ARMv7-M: writing `ICSR.PENDSVSET` latches `PendSV` in the `SCB`; the core
+/// stacks an 8-word frame, runs the `PendSV` handler, and `bx lr` restores the
+/// thread, which resumes at its entry point.
+#[test]
+fn pendsv_handler_runs_and_returns() {
+    const CODE: u32 = 0x40;
+    const PS: u32 = 0x2000_0100;
+    let mut m = Machine::armv7m(SystemMemory::new(FlatMemory::with_layout(
+        &[FLASH, RAM],
+        &[0x10000, 0x10000],
+    )));
+    m.load_image(&load_flat(CODE, &[0x22, 0x23, 0x00, 0xbe])); // movs r3,#0x22; bkpt
+    m.load_image(&load_flat(PS, &marker_handler(0x66)));
+    {
+        let mem = m.core.mem();
+        mem.write_word(FLASH, INIT_SP).unwrap();
+        mem.write_word(FLASH + 4, CODE | 1).unwrap();
+        mem.write_word(FLASH + 8, 0).unwrap();
+        mem.write_word(FLASH + 0x38, PS | 1).unwrap(); // PendSV vector (#14)
+    }
+    m.reset().expect("reset from vector table");
+    // Pend PendSV after reset, since reset clears the SCB's latches.
+    m.core.mem().write_word(0xE000_ED04, 0x1000_0000).unwrap();
+    let err = m.run(16);
+    assert_eq!(err, Err(HaltCause::Breakpoint));
+    let (regs, _, _) = m.core.snapshot();
+    // The handler ran and stored its marker; the exception return undid its
+    // register clobbers, and the thread resumed and advanced r3.
+    assert_eq!(m.core.mem().read_word(RAM).unwrap(), 0x66);
+    assert_eq!(regs.r[3], 0x22);
+    assert_eq!(regs.sp, INIT_SP);
 }

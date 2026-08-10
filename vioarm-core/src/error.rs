@@ -62,6 +62,9 @@ pub enum Exception {
     /// Exception number 11: the supervisor call, taken by executing `svc`.
     /// Its vector is read from the same table as the other exceptions.
     SvCall,
+    /// Exception number 14: the pendable service call, the RTOS context-switch
+    /// hook. Pended through `ICSR.PENDSVSET`.
+    PendSV,
     /// Exception number 15: the system tick, driven by the `SysTick`
     /// peripheral.
     SysTick,
@@ -76,6 +79,7 @@ impl Exception {
         match self {
             Self::HardFault => 3,
             Self::SvCall => 11,
+            Self::PendSV => 14,
             Self::SysTick => 15,
             Self::Irq(n) => 16 + n,
         }

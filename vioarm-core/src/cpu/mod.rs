@@ -1151,6 +1151,7 @@ impl<B: PeripheralBus> Core<B> {
         let ex = match n {
             3 => Exception::HardFault,
             11 => Exception::SvCall,
+            14 => Exception::PendSV,
             15 => Exception::SysTick,
             16..=79 => Exception::Irq(n - 16),
             _ => return Err(HaltCause::UnhandledException),

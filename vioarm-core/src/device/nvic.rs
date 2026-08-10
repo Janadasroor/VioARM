@@ -1,11 +1,10 @@
-//! The ARMv6-M nested vectored interrupt controller.
+//! The ARMv7-M nested vectored interrupt controller.
 //!
-//! A fixed-priority controller for up to 64 external interrupts (exception
-//! `16..=79`): the lowest-numbered pending line wins, exactly as the
-//! architecture requires. The register file is small — set/clear enable and
-//! set/clear pending (two 32-bit words each for lines 0..63), plus ignored
-//! priority bytes — and the "ready to take" decision lives in the
-//! `SystemMemory` that wires device lines into the `pending` register.
+//! Up to 64 external interrupts (exception `16..=79`) with set/clear enable,
+//! set/clear pending (two 32-bit words each), and one configurable priority
+//! byte per line at `IPR`. The "ready to take" decision lives in the
+//! `SystemMemory`, which wires device lines into the `pending` register and
+//! arbitrates by priority.
 
 use crate::device::Peripheral;
 use crate::error::BusError;
@@ -28,12 +27,17 @@ const ISPR_END: u32 = ISPR + BANK_LEN;
 const ICPR_END: u32 = ICPR + BANK_LEN;
 const IPR_END: u32 = IPR + IPR_LEN;
 
-/// The NVIC register file: enabled and latched-pending masks for lines 0..63.
+/// The NVIC register file: enabled and latched-pending masks for lines 0..63,
+/// plus one configurable 8-bit priority byte per line.
+///
+/// Lower priority value means higher priority, exactly as the architecture
+/// defines it.
 #[derive(Debug, Clone)]
 pub struct Nvic {
     ranges: [Region; 5],
     enabled: u64,
     pending: u64,
+    priority: [u8; 64],
 }
 
 impl Nvic {
@@ -49,6 +53,7 @@ impl Nvic {
             ],
             enabled: 0,
             pending: 0,
+            priority: [0; 64],
         }
     }
 
@@ -56,6 +61,13 @@ impl Nvic {
     #[must_use]
     pub const fn ready(&self) -> u64 {
         self.enabled & self.pending
+    }
+
+    /// The configured priority byte for external interrupt `line` (lower is
+    /// higher). Defaults to zero (the highest configurable priority).
+    #[must_use]
+    pub const fn priority(&self, line: u32) -> u8 {
+        self.priority[line as usize]
     }
 
     /// Latch `lines` as pending (device asserts, or software `ISPR`).
@@ -101,7 +113,7 @@ impl Peripheral for Nvic {
         } else if (ICPR..ICPR_END).contains(&addr) {
             Ok(pick(self.pending, ICPR))
         } else if (IPR..IPR_END).contains(&addr) {
-            Ok(0)
+            Ok(self.priority[(addr - IPR) as usize])
         } else {
             Err(BusError::Reserved)
         }
@@ -116,8 +128,8 @@ impl Peripheral for Nvic {
             ICER..ICER_END => self.enabled &= !(u64::from(val) << shift(ICER)),
             ISPR..ISPR_END => self.pending |= u64::from(val) << shift(ISPR),
             ICPR..ICPR_END => self.pending &= !(u64::from(val) << shift(ICPR)),
-            // IPR: priority is fixed by vector number on v6-M; writes ignored.
-            IPR..IPR_END => {}
+            // IPR: one priority byte per line, low nibble significant on M3/M4.
+            IPR..IPR_END => self.priority[(addr - IPR) as usize] = val,
             _ => return Err(BusError::Reserved),
         }
         Ok(())
@@ -126,6 +138,7 @@ impl Peripheral for Nvic {
     fn reset(&mut self) {
         self.enabled = 0;
         self.pending = 0;
+        self.priority.fill(0);
     }
 
     fn name(&self) -> &'static str {
@@ -183,10 +196,12 @@ mod tests {
     }
 
     #[test]
-    fn priority_bytes_read_zero_and_accept_writes() {
+    fn priority_bytes_store_and_read() {
         let mut n = Nvic::new();
         write_word(&mut n, 0xE000_E400, 0xC0C0_C0C0);
-        assert_eq!(read_word(&mut n, 0xE000_E400), 0);
+        assert_eq!(read_word(&mut n, 0xE000_E400), 0xC0C0_C0C0);
+        assert_eq!(n.priority(0), 0xC0);
+        assert_eq!(n.priority(3), 0xC0);
     }
 
     #[test]

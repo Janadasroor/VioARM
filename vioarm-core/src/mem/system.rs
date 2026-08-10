@@ -8,6 +8,7 @@
 //! bus.
 
 use crate::device::nvic::Nvic;
+use crate::device::scb::Scb;
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
 use crate::mem::bus::{Bus, PeripheralBus};
@@ -24,6 +25,9 @@ pub struct SystemMemory<M: Bus> {
     backing: M,
     devices: Vec<Box<dyn InterruptSource>>,
     nvic: Nvic,
+    /// The ARMv7-M system control block: interrupt control/state, priority
+    /// registers for the fixed exceptions, and the AIRCR reset bits.
+    scb: Scb,
 }
 
 impl<M: Bus + core::fmt::Debug> core::fmt::Debug for SystemMemory<M> {
@@ -31,6 +35,7 @@ impl<M: Bus + core::fmt::Debug> core::fmt::Debug for SystemMemory<M> {
         f.debug_struct("SystemMemory")
             .field("backing", &self.backing)
             .field("nvic", &self.nvic)
+            .field("scb", &self.scb)
             .field(
                 "devices",
                 &self.devices.iter().map(|d| d.name()).collect::<Vec<_>>(),
@@ -47,6 +52,7 @@ impl<M: Bus> SystemMemory<M> {
             backing,
             devices: Vec::new(),
             nvic: Nvic::new(),
+            scb: Scb::new(),
         }
     }
 
@@ -67,9 +73,13 @@ impl<M: Bus> SystemMemory<M> {
         &mut self.devices
     }
 
-    /// Restore every attached device and the NVIC to its post-reset state.
+    /// Restore every attached device, the NVIC, and the SCB to its post-reset
+    /// state. The processor's reset (AIRCR.SYSRESETREQ) folds into this too —
+    /// the SCB clears its own latches, which is the architectural reset
+    /// behaviour for pending SYSTICK and PENDSV.
     pub fn reset_devices(&mut self) {
         self.nvic.reset();
+        self.scb.reset();
         for device in &mut self.devices {
             device.reset();
         }
@@ -89,58 +99,95 @@ impl<M: Bus> SystemMemory<M> {
         self.latch_device_asserts();
     }
 
-    /// The two-phase "peek": the lowest-numbered exception that should be
+    /// Fold candidate exception `n` at priority `p` into `best`, keeping the
+    /// higher-priority candidate; ties fall to the lower exception number.
+    /// Lower priority byte value means higher priority.
+    fn consider(best: &mut Option<(u8, u8)>, n: u8, p: u8) {
+        let replace = match *best {
+            None => true,
+            Some((bn, bp)) => p < bp || (p == bp && n < bn),
+        };
+        if replace {
+            *best = Some((n, p));
+        }
+    }
+
+    /// The current execution priority: the priority of the running exception,
+    /// or `u8::MAX` in Thread mode.
+    #[allow(clippy::cast_possible_truncation)]
+    fn current_priority(&self, ipsr: u8) -> u8 {
+        match ipsr {
+            0 => u8::MAX,
+            n @ 14..=15 => self.scb.priority(n),
+            n => self.nvic.priority(u32::from(n - 16)),
+        }
+    }
+
+    /// The two-phase "peek": the highest-priority exception that should be
     /// taken right now, or `None`. Side-effect free; the NVIC pending register
-    /// was already freshened by `tick_devices`.
+    /// was already freshened by `tick_devices`, and its priority bytes plus the
+    /// SCB's fixed-exception priorities are the arbiter.
     #[allow(clippy::cast_possible_truncation)]
     fn peek_exception(&self, primask: bool, current_ipsr: u8) -> Option<u8> {
-        // SysTick (15) pends from its own device latch.
-        let mut best: Option<u8> = None;
-        for device in &self.devices {
-            if device.exception_number() == Some(15) && device.pending() != 0 {
-                best = Some(15);
-                break;
-            }
-        }
-        // External IRQs: lowest-numbered ready line wins.
-        let ready = self.nvic.ready();
-        if ready != 0 {
-            let line = ready.trailing_zeros();
-            best = match best {
-                Some(b) if b < 16 + line as u8 => Some(b),
-                _ => Some(16 + line as u8),
-            };
-        }
-        let n = best?;
         // PRIMASK blocks every exception we model (only faults escape it).
         if primask {
             return None;
         }
-        // In Handler mode only a strictly higher-priority (lower-numbered)
-        // exception preempts.
-        if current_ipsr != 0 && n >= current_ipsr {
-            return None;
+        // Best pending candidate by priority; ties go to the lowest exception
+        // number, which is exactly the M-profile preemption rule.
+        let mut best: Option<(u8, u8)> = None;
+        for device in &self.devices {
+            if device.exception_number() == Some(15) && device.pending() != 0 {
+                Self::consider(&mut best, 15, self.scb.priority(15));
+            }
         }
-        Some(n)
+        if self.scb.pendsv_pending() {
+            Self::consider(&mut best, 14, self.scb.priority(14));
+        }
+        let mut ready = self.nvic.ready();
+        while ready != 0 {
+            let line = ready.trailing_zeros();
+            let n = 16 + line as u8;
+            Self::consider(&mut best, n, self.nvic.priority(line));
+            ready &= ready - 1;
+        }
+        let (n, priority) = best?;
+        // Only a strictly higher-priority (numerically lower) exception
+        // preempts the one running. HardFault (3) blocks everything we model.
+        match self.current_priority(current_ipsr) {
+            3 => None,
+            current => {
+                if priority < current {
+                    Some(n)
+                } else {
+                    None
+                }
+            }
+        }
     }
 
     /// The two-phase "consume": the core is taking exception `n`; clear the
     /// NVIC pending latch and tell the source device to drop its line.
     fn consume_exception(&mut self, n: u8) {
-        if n == 15 {
-            for device in &mut self.devices {
-                if device.exception_number() == Some(15) {
-                    device.acknowledge(1);
+        match n {
+            14 => self.scb.acknowledge(1),
+            15 => {
+                for device in &mut self.devices {
+                    if device.exception_number() == Some(15) {
+                        device.acknowledge(1);
+                    }
                 }
             }
-        } else if n >= 16 {
-            let line = u32::from(n - 16);
-            self.nvic.take(line);
-            for device in &mut self.devices {
-                if device.exception_number() == Some(n) {
-                    device.acknowledge(1);
+            n if n >= 16 => {
+                let line = u32::from(n - 16);
+                self.nvic.take(line);
+                for device in &mut self.devices {
+                    if device.exception_number() == Some(n) {
+                        device.acknowledge(1);
+                    }
                 }
             }
+            _ => {}
         }
     }
 
@@ -165,6 +212,8 @@ impl<M: Bus> Bus for SystemMemory<M> {
             .find(|d| d.ranges().iter().any(|r| r.contains(addr)))
         {
             dev.read(addr)
+        } else if self.scb.ranges().iter().any(|r| r.contains(addr)) {
+            self.scb.read(addr)
         } else if self.nvic.ranges().iter().any(|r| r.contains(addr)) {
             self.nvic.read(addr)
         } else {
@@ -179,6 +228,8 @@ impl<M: Bus> Bus for SystemMemory<M> {
             .find(|d| d.ranges().iter().any(|r| r.contains(addr)))
         {
             dev.write(addr, val)
+        } else if self.scb.ranges().iter().any(|r| r.contains(addr)) {
+            self.scb.write(addr, val)
         } else if self.nvic.ranges().iter().any(|r| r.contains(addr)) {
             self.nvic.write(addr, val)
         } else {
@@ -484,12 +535,25 @@ mod tests {
     #[test]
     fn handler_only_preempted_by_higher_priority() {
         let mut sys = SystemMemory::new(ram());
-        // IRQ 0 (exc 16) and IRQ 7 (exc 23) both pending.
+        // IRQ 0 (exc 16) and IRQ 7 (exc 23) both pending, enabled.
         sys.write_word(0xE000_E100, (1 << 0) | (1 << 7)).unwrap();
         sys.write_word(0xE000_E200, (1 << 0) | (1 << 7)).unwrap();
-        // Running in the IRQ7 handler (23): IRQ0 preempts, IRQ7 cannot.
+        // IRQ7 keeps a low priority (0xC0); IRQ0 stays default 0.
+        sys.write(0xE000_E407, 0xC0).unwrap();
+        // Running in the IRQ7 handler (23, prio 0xC0): IRQ0 (prio 0) preempts.
         assert_eq!(sys.next_exception(false, 23), Some(16));
-        // Running in the IRQ0 handler (16): neither line preempts.
+        // Running in the IRQ0 handler (16, prio 0): IRQ7 (prio 0xC0) cannot.
+        assert_eq!(sys.next_exception(false, 16), None);
+    }
+
+    #[test]
+    fn equal_priority_never_preempts() {
+        let mut sys = SystemMemory::new(ram());
+        sys.write_word(0xE000_E100, (1 << 0) | (1 << 7)).unwrap();
+        sys.write_word(0xE000_E200, (1 << 0) | (1 << 7)).unwrap();
+        // Same priority in thread mode: the lower line wins the take...
+        assert_eq!(sys.next_exception(false, 0), Some(16));
+        // ...but a same-priority handler blocks the other.
         assert_eq!(sys.next_exception(false, 16), None);
     }
 
@@ -500,11 +564,51 @@ mod tests {
         sys.attach(Box::new(SysTick::new()));
         sys.write_word(0xE000_E100, 1).unwrap();
         sys.write_word(0xE000_E200, 1).unwrap();
+        // IRQ0 tries to lower itself below SysTick's default priority 0.
+        sys.write(0xE000_E400, 0x40).unwrap();
         // Arm SysTick to wrap after two cycles with TICKINT set.
         sys.write_word(0xE000_E014, 1).unwrap();
         sys.write_word(0xE000_E010, 0b111).unwrap();
         sys.tick_devices(2);
-        // Exception 15 outranks IRQ0 (16).
+        // Exception 15 (prio 0) still outranks IRQ0 (now prio 0x40).
         assert_eq!(sys.next_exception(false, 0), Some(15));
+    }
+
+    #[test]
+    fn pendsv_pends_via_icsr_and_is_taken_in_thread_mode() {
+        let mut sys = SystemMemory::new(ram());
+        // Pend PendSV through ICSR.PENDSVSET.
+        sys.write_word(0xE000_ED04, 0x1000_0000).unwrap();
+        assert_eq!(sys.next_exception(false, 0), Some(14));
+        sys.acknowledge_exception(14);
+        assert_eq!(sys.next_exception(false, 0), None);
+        // PRIMASK still masks it.
+        sys.write_word(0xE000_ED04, 0x1000_0000).unwrap();
+        assert_eq!(sys.next_exception(true, 0), None);
+        assert_eq!(sys.next_exception(false, 0), Some(14));
+    }
+
+    #[test]
+    fn pendsv_preempts_lower_priority_handler() {
+        let mut sys = SystemMemory::new(ram());
+        // Pended PendSV at SHPR3 pris; IRQ7 (exc 23) running at prio 0xC0.
+        sys.write_word(0xE000_E200, 1 << 7).unwrap();
+        sys.write_word(0xE000_E100, 1 << 7).unwrap();
+        sys.write(0xE000_E407, 0xC0).unwrap();
+        sys.write(0xE000_ED22, 0x40).unwrap(); // PendSV prio 0x40
+        sys.write_word(0xE000_ED04, 0x1000_0000).unwrap();
+        assert_eq!(sys.next_exception(false, 23), Some(14));
+    }
+
+    #[test]
+    fn pendsv_waits_at_same_priority() {
+        let mut sys = SystemMemory::new(ram());
+        // PendSV pended at priority equal to the running IRQ7 handler.
+        sys.write_word(0xE000_E200, 1 << 7).unwrap();
+        sys.write_word(0xE000_E100, 1 << 7).unwrap();
+        sys.write(0xE000_E407, 0xC0).unwrap();
+        sys.write(0xE000_ED22, 0xC0).unwrap();
+        sys.write_word(0xE000_ED04, 0x1000_0000).unwrap();
+        assert_eq!(sys.next_exception(false, 23), None);
     }
 }
