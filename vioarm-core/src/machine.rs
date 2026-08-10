@@ -26,6 +26,14 @@ impl<M: PeripheralBus> Machine<M> {
         }
     }
 
+    /// A machine over an ARMv7-M (Cortex-M3/M4) core.
+    #[must_use]
+    pub fn armv7m(mem: M) -> Self {
+        Self {
+            core: Core::armv7m(mem),
+        }
+    }
+
     /// Load an image's segments into the machine's memory.
     #[allow(clippy::cast_possible_truncation)]
     pub fn load_image(&mut self, img: &LoadedImage) {

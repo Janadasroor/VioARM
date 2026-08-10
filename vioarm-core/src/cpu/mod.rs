@@ -10,10 +10,22 @@ pub mod decode32;
 pub mod registers;
 
 use crate::error::{Exception, HaltCause};
-use crate::mem::Bus;
+use crate::mem::PeripheralBus;
 use decode16::{decode16, AluOp, Inst16, LsImm, LsReg, Shift, ShiftImm};
 use decode32::{decode32, is_thumb2, Inst32, SysReg};
 use registers::{Registers, Xpsr, APSR_FLAGS, XPSR_T};
+
+/// Which Thumb architecture the core executes.
+///
+/// ARMv6-M (Cortex-M0/M0+) is a 16-bit ISA plus `bl`/`mrs`/`msr`/barriers;
+/// ARMv7-M (Cortex-M3/M4) adds the full Thumb-2 set, IT blocks, and a
+/// programmable exception-priority model. The decoder and executor select
+/// behavior on this field so a single core type serves both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Isa {
+    Armv6M,
+    Armv7M,
+}
 
 /// `LR` value loaded on exception entry, causing `bx lr`/`pop {pc}` to return
 /// to Handler mode (re-entering the handler that was interrupted).
@@ -39,30 +51,52 @@ enum Next {
 }
 
 /// The core CPU state plus its bus.
-pub struct Core<B: Bus> {
+pub struct Core<B: PeripheralBus> {
     pub regs: Registers,
     pub xpsr: Xpsr,
+    /// The ISA this core was constructed for. Immutable after construction.
+    pub isa: Isa,
     /// PRIMASK (interrupt masking). Only bit `i` of `CPSIE/CPSID` touches it
     /// on ARMv6-M.
     pub primask: bool,
+    /// BASEPRI (ARMv7-M): masks exceptions with priority >= this value.
+    pub basepri: u8,
+    /// FAULTMASK (ARMv7-M): masks every configurable-priority exception.
+    pub faultmask: bool,
     /// CONTROL register: bit0 nPRIV, bit1 SPSEL, bit2 FPCA.
     pub control: u32,
     /// Current exception number: 0 in Thread mode, non-zero in Handler mode.
     pub ipsr: u8,
+    /// IT block state (ARMv7-M): bits [3:0] condition, bits [7:4] remaining
+    /// conditional instructions. Zero outside an IT block.
+    pub itstate: u8,
     pub cycles: u64,
     mem: B,
 }
 
-impl<B: Bus> Core<B> {
-    /// Create an uninitialized core over `mem`. Register state is zero until
-    /// `reset_from_vector_table()` or host code sets it.
+impl<B: PeripheralBus> Core<B> {
+    /// Create an uninitialized ARMv6-M core over `mem`. Register state is zero
+    /// until `reset_from_vector_table()` or host code sets it.
     pub fn new(mem: B) -> Self {
+        Self::new_with_isa(mem, Isa::Armv6M)
+    }
+
+    /// Create an uninitialized ARMv7-M core over `mem`.
+    pub fn armv7m(mem: B) -> Self {
+        Self::new_with_isa(mem, Isa::Armv7M)
+    }
+
+    fn new_with_isa(mem: B, isa: Isa) -> Self {
         Self {
             regs: Registers::default(),
             xpsr: Xpsr::new(XPSR_T),
+            isa,
             primask: false,
+            basepri: 0,
+            faultmask: false,
             control: 0,
             ipsr: 0,
+            itstate: 0,
             cycles: 0,
             mem,
         }
@@ -78,21 +112,9 @@ impl<B: Bus> Core<B> {
     /// are taken by the `Machine`, not here.
     pub fn step(&mut self) -> Result<(), HaltCause> {
         let pc = self.regs.pc;
-        let hw = self.mem.read_half(pc).map_err(|_| HaltCause::FetchAbort)?;
-        let next = if is_thumb2(hw) {
-            let lo = self
-                .mem
-                .read_half(pc.wrapping_add(2))
-                .map_err(|_| HaltCause::FetchAbort)?;
-            match decode32(hw, lo) {
-                Ok(inst) => self.exec32(pc, inst)?,
-                Err(_) => return self.hardfault_on_undefined(pc, 4),
-            }
-        } else {
-            match decode16(hw) {
-                Ok(inst) => self.exec(pc, inst)?,
-                Err(_) => return self.hardfault_on_undefined(pc, 2),
-            }
+        let next = match self.isa {
+            Isa::Armv6M => self.step_v6m(pc)?,
+            Isa::Armv7M => self.step_v7m(pc)?,
         };
         match next {
             Next::Advance(a) => self.regs.pc = a,
@@ -100,6 +122,57 @@ impl<B: Bus> Core<B> {
         }
         self.cycles += 1;
         Ok(())
+    }
+
+    /// Fetch and execute a single 16-bit-centric ARMv6-M instruction.
+    fn step_v6m(&mut self, pc: u32) -> Result<Next, HaltCause> {
+        let hw = self.mem.read_half(pc).map_err(|_| HaltCause::FetchAbort)?;
+        if is_thumb2(hw) {
+            let lo = self
+                .mem
+                .read_half(pc.wrapping_add(2))
+                .map_err(|_| HaltCause::FetchAbort)?;
+            match decode32(hw, lo) {
+                Ok(inst) => self.exec32(pc, inst),
+                Err(_) => self.hardfault_on_undefined(pc, 4),
+            }
+        } else {
+            match decode16(hw) {
+                Ok(inst) => self.exec(pc, inst),
+                Err(_) => self.hardfault_on_undefined(pc, 2),
+            }
+        }
+    }
+
+    /// Fetch and execute a single ARMv7-M instruction.
+    ///
+    /// ARMv7-M fetches 32-bit instructions only from 4-byte-aligned addresses.
+    /// The fetch always reads the aligned halfword pair `[pc & ~3, pc + 2]`;
+    /// which halfword the instruction starts at is decided by `pc & 2`.
+    fn step_v7m(&mut self, pc: u32) -> Result<Next, HaltCause> {
+        if pc & 1 != 0 {
+            return Err(HaltCause::FetchAbort);
+        }
+        let aligned = pc & !3;
+        let h0 = self.mem.read_half(aligned).map_err(|_| HaltCause::FetchAbort)?;
+        let h1 = self
+            .mem
+            .read_half(aligned.wrapping_add(2))
+            .map_err(|_| HaltCause::FetchAbort)?;
+        // The halfword at `pc` is the start of the instruction: `h0` for an
+        // even 4-byte slot, `h1` when the PC sits on the second halfword.
+        let (first, second) = if pc & 2 == 0 { (h0, h1) } else { (h1, h0) };
+        if is_thumb2(first) {
+            match decode32(first, second) {
+                Ok(inst) => self.exec32(pc, inst),
+                Err(_) => self.hardfault_on_undefined(pc, 4),
+            }
+        } else {
+            match decode16(first) {
+                Ok(inst) => self.exec(pc, inst),
+                Err(_) => self.hardfault_on_undefined(pc, 2),
+            }
+        }
     }
 
     /// Execute until the machine halts of its own accord, or `budget`
@@ -126,8 +199,11 @@ impl<B: Bus> Core<B> {
         self.regs.pc = pc & !1;
         self.xpsr = Xpsr::new(XPSR_T);
         self.primask = false;
+        self.basepri = 0;
+        self.faultmask = false;
         self.control = 0;
         self.ipsr = 0;
+        self.itstate = 0;
         Ok(())
     }
 
@@ -694,11 +770,10 @@ impl<B: Bus> Core<B> {
 
     /// Raise a HardFault for an undecodable instruction at `pc`. The stacked
     /// return address is the following instruction so the handler can skip
-    /// the bad opcode and continue.
-    fn hardfault_on_undefined(&mut self, pc: u32, size: u32) -> Result<(), HaltCause> {
+    /// the bad opcode and continue. Returns the branch to the handler entry.
+    fn hardfault_on_undefined(&mut self, pc: u32, size: u32) -> Result<Next, HaltCause> {
         self.take_exception(Exception::HardFault, pc.wrapping_add(size))?;
-        self.cycles += 1;
-        Ok(())
+        Ok(Next::Advance(self.regs.pc))
     }
 
     /// Escalate a faulting data access at `addr` (from instruction at `pc`)
