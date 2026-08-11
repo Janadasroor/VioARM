@@ -658,3 +658,59 @@ fn extend_and_reverse_on_v6m() {
     assert!(!xpsr.n() && !xpsr.z() && !xpsr.c() && !xpsr.v());
     assert_eq!(regs.sp, INIT_SP);
 }
+
+/// ARMv7-M: the `IT` (If-Then) block. `movs r0, #5` leaves Z clear, so the
+/// `eq` arm of the `ite eq` pair is suppressed while its `ne` arm runs; a
+/// following three-instruction `ittt ne` runs all three arms. The 16-bit ADD
+/// forms inside the blocks must not clobber the flags from `movs`.
+#[test]
+fn it_blocks_on_armv7m() {
+    // movs r0, #5 ; ite eq ; adds r1, r1, #1 (skipped) ; adds r1, r1, #7
+    // ittt ne ; adds r2, r2, #1 ; adds r3, r3, #2 ; adds r4, r4, #3 ; bkpt
+    let mut m = boot_v7m(&[
+        0x05, 0x20, 0x0c, 0xbf, 0x01, 0x31, 0x07, 0x31, 0x1e, 0xbf, 0x01, 0x32, 0x02, 0x33, 0x03,
+        0x34, 0x00, 0xbe,
+    ]);
+    let err = m.run(10);
+    assert_eq!(err, Err(HaltCause::Breakpoint));
+    let (regs, xpsr, cycles) = m.core.snapshot();
+    // The stopping bkpt does not count toward cycles.
+    assert_eq!(cycles, 8);
+    assert_eq!(regs.r[0], 5);
+    assert_eq!(regs.r[1], 7);
+    assert_eq!(regs.r[2], 1);
+    assert_eq!(regs.r[3], 2);
+    assert_eq!(regs.r[4], 3);
+    // The in-block 16-bit ADDS forms left the flags from `movs` untouched.
+    assert!(!xpsr.n() && !xpsr.z() && !xpsr.c() && !xpsr.v());
+    assert_eq!(regs.sp, INIT_SP);
+}
+
+/// ARMv7-M: ITSTATE is part of xPSR, so an exception taken inside an IT block
+/// saves the block in the stacked frame and returns into it. The `svc` is the
+/// second (last) instruction of an `itt ne` block; the handler's `bx lr`
+/// restores ITSTATE and the instruction after the `svc` still runs under the
+/// block's condition.
+#[test]
+fn itstate_round_trips_exception_on_armv7m() {
+    // movs r0, #5 ; itt ne ; adds r1, r1, #1 ; svc 0
+    // adds r2, r2, #2 ; bkpt
+    let mut m = boot_v7m(&[
+        0x05, 0x20, 0x1c, 0xbf, 0x01, 0x31, 0x00, 0xdf, 0x02, 0x32, 0x00, 0xbe,
+    ]);
+    {
+        let mem = m.core.mem();
+        // SVC vector (exception 11) -> handler at 0x50: `bx lr`.
+        mem.write_word(11 * 4, 0x51).unwrap();
+        mem.write(0x50, 0x70).unwrap();
+        mem.write(0x51, 0x47).unwrap();
+    }
+    let err = m.run(10);
+    assert_eq!(err, Err(HaltCause::Breakpoint));
+    let (regs, _, cycles) = m.core.snapshot();
+    // The stopping bkpt does not count toward cycles.
+    assert_eq!(cycles, 6);
+    assert_eq!(regs.r[1], 1);
+    assert_eq!(regs.r[2], 2);
+    assert_eq!(regs.sp, INIT_SP);
+}

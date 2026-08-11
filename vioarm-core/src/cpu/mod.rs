@@ -11,7 +11,7 @@ pub mod registers;
 
 use crate::error::{Exception, HaltCause};
 use crate::mem::PeripheralBus;
-use decode16::{decode16, AluOp, ExtendKind, Inst16, LsImm, LsReg, ReverseKind, Shift, ShiftImm};
+use decode16::{decode16, decode16_v7m, AluOp, ExtendKind, Inst16, LsImm, LsReg, ReverseKind, Shift, ShiftImm};
 use decode32::{
     decode32, decode32_v7m, is_thumb2, is_thumb2_v7m, thumb_expand_imm, BitfieldOp, DpOp, Inst32,
     MemOp, MulOp, ShiftType, SysReg, UnaryOp,
@@ -165,14 +165,60 @@ impl<B: PeripheralBus> Core<B> {
             .map_err(|_| HaltCause::FetchAbort)?;
         if is_thumb2_v7m(h0) {
             match decode32_v7m(h0, h1) {
-                Ok(inst) => self.exec32(pc, inst),
+                Ok(inst) => self.exec_it_step(pc, 4, |s| s.exec32(pc, inst)),
                 Err(_) => self.hardfault_on_undefined(pc, 4),
             }
         } else {
-            match decode16(h0) {
-                Ok(inst) => self.exec(pc, inst),
+            match decode16_v7m(h0) {
+                Ok(inst) => self.exec_it_step(pc, 2, |s| s.exec(pc, inst)),
                 Err(_) => self.hardfault_on_undefined(pc, 2),
             }
+        }
+    }
+
+    /// ARMv7-M conditional-execution wrapper.
+    ///
+    /// When `itstate` is nonzero the current instruction sits inside an IT
+    /// block. Its condition is `itstate >> 4`; if it fails the instruction is
+    /// suppressed (no side effects) but ITSTATE still advances and the PC
+    /// moves on by `step`. When it passes, `exec` runs and ITSTATE advances
+    /// on a normal fall-through. A taken branch clears ITSTATE in its own arm
+    /// and skips the advance here, and an exception entry/stop discards it.
+    fn exec_it_step(
+        &mut self,
+        pc: u32,
+        step: u32,
+        exec: impl FnOnce(&mut Self) -> Result<Next, HaltCause>,
+    ) -> Result<Next, HaltCause> {
+        if self.itstate == 0 {
+            return exec(self);
+        }
+        let cond = self.itstate >> 4;
+        if !self.cond_passes(cond) {
+            self.it_advance();
+            return Ok(Next::Advance(pc + step));
+        }
+        let next = exec(self)?;
+        match next {
+            Next::Advance(a) if a == pc + step => {
+                self.it_advance();
+                Ok(next)
+            }
+            // Branch taken or exception/halt: the branch path clears ITSTATE,
+            // exception entry clears it, and stops discard it.
+            _ => Ok(next),
+        }
+    }
+
+    /// Advance the ITSTATE to the next conditional instruction, per the
+    /// architecture's `ITAdvance()`: if the block has one instruction left
+    /// (`ITSTATE<2:0> == 000`) it clears; otherwise the low five bits shift
+    /// left so the next instruction's condition bit lands in `ITSTATE<4>`.
+    fn it_advance(&mut self) {
+        if self.itstate.trailing_zeros() >= 3 {
+            self.itstate = 0;
+        } else {
+            self.itstate = (self.itstate & 0xE0) | (((self.itstate & 0x1F) << 1) & 0x1F);
         }
     }
 
@@ -236,7 +282,14 @@ impl<B: PeripheralBus> Core<B> {
     fn sysreg_read(&self, sys: SysReg) -> Result<u32, HaltCause> {
         let v = match sys {
             SysReg::Apsr => self.xpsr.get() & APSR_FLAGS,
-            SysReg::Xpsr => self.xpsr.get() & (APSR_FLAGS | XPSR_T),
+            SysReg::Xpsr => {
+                // xPSR also carries ITSTATE at bits [15:10] and [26:25].
+                let mut v = self.xpsr.get() & (APSR_FLAGS | XPSR_T);
+                let it = u32::from(self.itstate);
+                v |= (it & 0xFC) << 8;
+                v |= (it & 0x03) << 25;
+                v
+            }
             SysReg::Ipsr => u32::from(self.ipsr),
             SysReg::Epsr => XPSR_T,
             SysReg::Msp => {
@@ -351,7 +404,7 @@ impl<B: PeripheralBus> Core<B> {
             } => {
                 let v = self.regs.read(rm);
                 let (res, c) = shift_imm(kind, v, u32::from(amount));
-                self.write_shift_flags(res, c);
+                self.write_shift_flags_it(res, c);
                 self.regs.write(rd, res);
                 Ok(Next::Advance(pc + 2))
             }
@@ -359,38 +412,38 @@ impl<B: PeripheralBus> Core<B> {
                 let v = self.regs.read(rn);
                 let count = self.regs.read(rm) & 0xFF;
                 let (res, c) = shift_reg(kind, v, count);
-                self.write_shift_flags(res, c);
+                self.write_shift_flags_it(res, c);
                 self.regs.write(rd, res);
                 Ok(Next::Advance(pc + 2))
             }
             I::AddReg { rd, rn, rm } => {
                 let (res, c, v) = add_flags(self.regs.read(rn), self.regs.read(rm), false);
                 self.regs.write(rd, res);
-                self.set_nzcv(res, c, v);
+                self.set_nzcv_it(res, c, v);
                 Ok(Next::Advance(pc + 2))
             }
             I::SubReg { rd, rn, rm } => {
                 let (res, c, v) = sub_flags(self.regs.read(rn), self.regs.read(rm), false);
                 self.regs.write(rd, res);
-                self.set_nzcv(res, c, v);
+                self.set_nzcv_it(res, c, v);
                 Ok(Next::Advance(pc + 2))
             }
             I::AddImm3 { rd, rn, imm } => {
                 let (res, c, v) = add_flags(self.regs.read(rn), u32::from(imm), false);
                 self.regs.write(rd, res);
-                self.set_nzcv(res, c, v);
+                self.set_nzcv_it(res, c, v);
                 Ok(Next::Advance(pc + 2))
             }
             I::SubImm3 { rd, rn, imm } => {
                 let (res, c, v) = sub_flags(self.regs.read(rn), u32::from(imm), false);
                 self.regs.write(rd, res);
-                self.set_nzcv(res, c, v);
+                self.set_nzcv_it(res, c, v);
                 Ok(Next::Advance(pc + 2))
             }
             I::MovImm { rd, imm } => {
                 let res = u32::from(imm);
                 self.regs.write(rd, res);
-                self.set_nz(res, false);
+                self.set_nz_it(res, false);
                 Ok(Next::Advance(pc + 2))
             }
             I::CmpImm { rn, imm } => {
@@ -401,17 +454,17 @@ impl<B: PeripheralBus> Core<B> {
             I::AddImm8 { rd, imm } => {
                 let (res, c, v) = add_flags(self.regs.read(rd), u32::from(imm), false);
                 self.regs.write(rd, res);
-                self.set_nzcv(res, c, v);
+                self.set_nzcv_it(res, c, v);
                 Ok(Next::Advance(pc + 2))
             }
             I::SubImm8 { rd, imm } => {
                 let (res, c, v) = sub_flags(self.regs.read(rd), u32::from(imm), false);
                 self.regs.write(rd, res);
-                self.set_nzcv(res, c, v);
+                self.set_nzcv_it(res, c, v);
                 Ok(Next::Advance(pc + 2))
             }
             I::Alu { rd, rm, op } => {
-                self.exec_alu(rd, rm, op);
+                self.exec_alu(rd, rm, op, self.itstate == 0);
                 Ok(Next::Advance(pc + 2))
             }
             I::AddSpImm8 { imm } => {
@@ -446,6 +499,7 @@ impl<B: PeripheralBus> Core<B> {
             I::Bx { rm } => self.branch(self.regs.read(rm)),
             I::Blx { rm } => {
                 let target = self.regs.read(rm);
+                self.itstate = 0;
                 self.regs.lr = (pc + 2) | 1;
                 Ok(Self::check_branch(target))
             }
@@ -480,16 +534,21 @@ impl<B: PeripheralBus> Core<B> {
             }
             I::BranchCond { cond, off } => {
                 if self.cond_passes(cond) {
+                    self.itstate = 0;
                     Ok(Next::Advance(pc.wrapping_add(4).wrapping_add_signed(off)))
                 } else {
                     Ok(Next::Advance(pc + 2))
                 }
             }
-            I::Branch { off } => Ok(Next::Advance(pc.wrapping_add(4).wrapping_add_signed(off))),
+            I::Branch { off } => {
+                self.itstate = 0;
+                Ok(Next::Advance(pc.wrapping_add(4).wrapping_add_signed(off)))
+            }
             I::CbzCbnz { rn, off, nonzero } => {
                 let is_zero = self.regs.read(rn) == 0;
                 let taken = if nonzero { !is_zero } else { is_zero };
                 if taken {
+                    self.itstate = 0;
                     Ok(Next::Advance(pc.wrapping_add(4).wrapping_add_signed(off)))
                 } else {
                     Ok(Next::Advance(pc + 2))
@@ -512,6 +571,14 @@ impl<B: PeripheralBus> Core<B> {
                 if im & 0b010 != 0 {
                     self.primask = disable;
                 }
+                Ok(Next::Advance(pc + 2))
+            }
+            I::It { cond, mask } => {
+                // ITSTATE = firstcond:mask. `exec_it_step` never gates this
+                // instruction itself because an IT inside an IT block is
+                // UNPREDICTABLE; the fresh value simply replaces any stale
+                // state.
+                self.itstate = (cond << 4) | mask;
                 Ok(Next::Advance(pc + 2))
             }
             I::Extend { rd, rm, kind } => {
@@ -622,6 +689,7 @@ impl<B: PeripheralBus> Core<B> {
         use Inst32 as I;
         match inst {
             I::Bl { off } => {
+                self.itstate = 0;
                 self.regs.lr = (pc.wrapping_add(4)) | 1;
                 Ok(Next::Advance(pc.wrapping_add(4).wrapping_add_signed(off)))
             }
@@ -863,6 +931,7 @@ impl<B: PeripheralBus> Core<B> {
                         })?)
                     };
                 let target = pc.wrapping_add(4).wrapping_add(index << 1);
+                self.itstate = 0;
                 Ok(Next::Advance(target & !1))
             }
             #[allow(clippy::cast_sign_loss, clippy::cast_possible_wrap)]
@@ -1092,49 +1161,68 @@ impl<B: PeripheralBus> Core<B> {
         shift_carry.unwrap_or_else(|| self.xpsr.c())
     }
 
-    fn exec_alu(&mut self, rd: u8, rm: u8, op: AluOp) {
+    /// Execute a 16-bit ALU (data-processing) instruction. `set_flags` is
+    /// false only inside an IT block, where the S-forms stop updating the
+    /// flags (CMP/CMN/TST always update them).
+    fn exec_alu(&mut self, rd: u8, rm: u8, op: AluOp, set_flags: bool) {
         let a = self.regs.read(rd);
         let b = self.regs.read(rm);
         match op {
             AluOp::And => {
                 let res = a & b;
                 self.regs.write(rd, res);
-                self.set_nz(res, false);
+                if set_flags {
+                    self.set_nz(res, false);
+                }
             }
             AluOp::Eor => {
                 let res = a ^ b;
                 self.regs.write(rd, res);
-                self.set_nz(res, false);
+                if set_flags {
+                    self.set_nz(res, false);
+                }
             }
             AluOp::Lsl => {
                 let (res, c) = shift_reg(Shift::Lsl, a, b & 0xFF);
                 self.regs.write(rd, res);
-                self.write_shift_flags(res, c);
+                if set_flags {
+                    self.write_shift_flags(res, c);
+                }
             }
             AluOp::Lsr => {
                 let (res, c) = shift_reg(Shift::Lsr, a, b & 0xFF);
                 self.regs.write(rd, res);
-                self.write_shift_flags(res, c);
+                if set_flags {
+                    self.write_shift_flags(res, c);
+                }
             }
             AluOp::Asr => {
                 let (res, c) = shift_reg(Shift::Asr, a, b & 0xFF);
                 self.regs.write(rd, res);
-                self.write_shift_flags(res, c);
+                if set_flags {
+                    self.write_shift_flags(res, c);
+                }
             }
             AluOp::Adc => {
                 let (res, c, v) = add_flags(a, b, self.xpsr.c());
                 self.regs.write(rd, res);
-                self.set_nzcv(res, c, v);
+                if set_flags {
+                    self.set_nzcv(res, c, v);
+                }
             }
             AluOp::Sbc => {
                 let (res, c, v) = sub_flags(a, b, !self.xpsr.c());
                 self.regs.write(rd, res);
-                self.set_nzcv(res, c, v);
+                if set_flags {
+                    self.set_nzcv(res, c, v);
+                }
             }
             AluOp::Ror => {
                 let (res, c) = shift_reg(Shift::Ror, a, b & 0xFF);
                 self.regs.write(rd, res);
-                self.write_shift_flags(res, c);
+                if set_flags {
+                    self.write_shift_flags(res, c);
+                }
             }
             AluOp::Tst => {
                 let res = a & b;
@@ -1143,7 +1231,9 @@ impl<B: PeripheralBus> Core<B> {
             AluOp::Neg => {
                 let (res, c, v) = sub_flags(0, a, false);
                 self.regs.write(rd, res);
-                self.set_nzcv(res, c, v);
+                if set_flags {
+                    self.set_nzcv(res, c, v);
+                }
             }
             AluOp::Cmp => {
                 let (res, c, v) = sub_flags(a, b, false);
@@ -1156,17 +1246,23 @@ impl<B: PeripheralBus> Core<B> {
             AluOp::Orr => {
                 let res = a | b;
                 self.regs.write(rd, res);
-                self.set_nz(res, false);
+                if set_flags {
+                    self.set_nz(res, false);
+                }
             }
             AluOp::Mul => {
                 let res = a.wrapping_mul(b);
                 self.regs.write(rd, res);
-                self.set_nzcv(res, false, false);
+                if set_flags {
+                    self.set_nzcv(res, false, false);
+                }
             }
             AluOp::Bic => {
                 let res = a & !b;
                 self.regs.write(rd, res);
-                self.set_nz(res, false);
+                if set_flags {
+                    self.set_nz(res, false);
+                }
             }
             AluOp::Mvn => {
                 let res = !a;
@@ -1286,7 +1382,11 @@ impl<B: PeripheralBus> Core<B> {
 
     /// Take a branch to `target`, unless it is an `EXC_RETURN` while a
     /// handler is active, in which case perform the exception return.
+    ///
+    /// Any taken branch leaves the current IT block, so ITSTATE is cleared
+    /// (the exception-return path overwrites it from the stacked xPSR).
     fn branch(&mut self, target: u32) -> Result<Next, HaltCause> {
+        self.itstate = 0;
         if self.ipsr != 0 && is_exc_return(target) {
             return self.exception_return(target);
         }
@@ -1336,6 +1436,11 @@ impl<B: PeripheralBus> Core<B> {
         let use_process = self.sp_is_process();
         let mut sp = self.regs.sp;
         let mut sxpsr = self.xpsr.get() & (APSR_FLAGS | XPSR_T) | u32::from(self.ipsr);
+        // ITSTATE occupies xPSR bits [15:10] (IT[7:2]) and [26:25] (IT[1:0]).
+        // It is captured in the frame and cleared for the handler.
+        let it = u32::from(self.itstate);
+        sxpsr |= (it & 0xFC) << 8;
+        sxpsr |= (it & 0x03) << 25;
         if sp & 0x4 != 0 {
             sp = sp.wrapping_sub(4);
             sxpsr |= XPSR_ALIGN;
@@ -1363,6 +1468,7 @@ impl<B: PeripheralBus> Core<B> {
         }
         self.regs.pc = vector & !1;
         self.ipsr = ex.number();
+        self.itstate = 0;
         Ok(())
     }
 
@@ -1424,6 +1530,9 @@ impl<B: PeripheralBus> Core<B> {
         self.regs.lr = lr;
         self.regs.pc = pc_ret & !1;
         self.xpsr.set(sxpsr & (APSR_FLAGS | XPSR_T));
+        // Restore ITSTATE from its xPSR[15:10] / [26:25] slots.
+        self.itstate =
+            ((sxpsr >> 8) & 0xFC) as u8 | ((sxpsr >> 25) & 0x03) as u8;
         if to_process {
             self.regs.msp = handler_msp;
             self.regs.psp = sp;
@@ -1457,6 +1566,31 @@ impl<B: PeripheralBus> Core<B> {
     fn write_shift_flags(&mut self, res: u32, c: Option<bool>) {
         let c = c.unwrap_or_else(|| self.xpsr.c());
         self.xpsr.set_nzcv(res >> 31 == 1, res == 0, c, false);
+    }
+
+    /// `set_nzcv` gated on IT-block state: the 16-bit data-processing
+    /// instructions that normally set flags do not do so when they execute
+    /// inside an IT block (CMP, CMN and TST are exempt and keep using the
+    /// ungated writers). The gate works because `itstate` is still nonzero
+    /// for the *whole* of an IT-block instruction's execution.
+    fn set_nzcv_it(&mut self, res: u32, c: bool, v: bool) {
+        if self.itstate == 0 {
+            self.set_nzcv(res, c, v);
+        }
+    }
+
+    /// `set_nz` gated on IT-block state, see `set_nzcv_it`.
+    fn set_nz_it(&mut self, res: u32, v: bool) {
+        if self.itstate == 0 {
+            self.set_nz(res, v);
+        }
+    }
+
+    /// `write_shift_flags` gated on IT-block state, see `set_nzcv_it`.
+    fn write_shift_flags_it(&mut self, res: u32, c: Option<bool>) {
+        if self.itstate == 0 {
+            self.write_shift_flags(res, c);
+        }
     }
 }
 
@@ -2377,5 +2511,107 @@ mod tests {
         load_inst(&mut c, 0x2000_0000, &[0xeb, 0xba]);
         c.step().unwrap();
         assert_eq!(c.regs.r[3], 0x3412);
+    }
+
+    #[test]
+    fn it_block_conditional_execution() {
+        // movs r0, #1 (Z=0) ; ite eq ; adds r1, r1, #1 (suppressed) ;
+        // adds r1, r1, #2 (taken). ARMv7-M only.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        load_inst(
+            &mut c,
+            0x2000_0000,
+            &[0x01, 0x20, 0x0c, 0xbf, 0x01, 0x31, 0x02, 0x31],
+        );
+        for _ in 0..4 {
+            c.step().unwrap();
+        }
+        assert_eq!(c.regs.pc, 0x2000_0008);
+        assert_eq!(c.regs.r[0], 1);
+        assert_eq!(c.regs.r[1], 2);
+        // The in-block 16-bit ADDS forms left `movs`'s flags alone.
+        assert!(!c.xpsr.n() && !c.xpsr.z() && !c.xpsr.c() && !c.xpsr.v());
+        assert_eq!(c.itstate, 0);
+    }
+
+    #[test]
+    fn it_block_full_advance() {
+        // movs r0, #5 (Z=0) ; ittt ne ; adds r1..#3 (all three arms run).
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        load_inst(
+            &mut c,
+            0x2000_0000,
+            &[0x05, 0x20, 0x1e, 0xbf, 0x01, 0x31, 0x02, 0x32, 0x03, 0x33],
+        );
+        for _ in 0..5 {
+            c.step().unwrap();
+        }
+        assert_eq!(c.regs.pc, 0x2000_000a);
+        assert_eq!(c.regs.r[1], 1);
+        assert_eq!(c.regs.r[2], 2);
+        assert_eq!(c.regs.r[3], 3);
+        assert_eq!(c.itstate, 0);
+    }
+
+    #[test]
+    fn it_block_failed_condition_skips() {
+        // movs r0, #5 (Z=0) ; ite eq ; adds r1, r1, #1 (skipped) ;
+        // adds r1, r1, #7 (taken).
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        load_inst(
+            &mut c,
+            0x2000_0000,
+            &[0x05, 0x20, 0x0c, 0xbf, 0x01, 0x31, 0x07, 0x31],
+        );
+        for _ in 0..4 {
+            c.step().unwrap();
+        }
+        assert_eq!(c.regs.pc, 0x2000_0008);
+        assert_eq!(c.regs.r[1], 7);
+        assert_eq!(c.itstate, 0);
+    }
+
+    #[test]
+    fn it_block_branch_clears_state() {
+        // movs r0, #5 (Z=0) ; itt ne ; adds r1, r1, #1 ; bne +2 (taken,
+        // clearing the IT block).
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        load_inst(
+            &mut c,
+            0x2000_0000,
+            &[0x05, 0x20, 0x1c, 0xbf, 0x01, 0x31, 0x01, 0xd1],
+        );
+        for _ in 0..4 {
+            c.step().unwrap();
+        }
+        assert_eq!(c.regs.pc, 0x2000_000c);
+        assert_eq!(c.regs.r[1], 1);
+        assert_eq!(c.itstate, 0);
+    }
+
+    #[test]
+    fn itstate_saved_in_exception_frame() {
+        let mut c = Core::armv7m(crate::mem::flat::FlatMemory::with_layout(
+            &[0x0000_0000, 0x2000_0000],
+            &[0x1000, 0x1000],
+        ));
+        c.regs.pc = 0x2000_0000;
+        c.regs.sp = 0x2000_0400;
+        c.regs.msp = 0x2000_0400;
+        c.itstate = 0x0C; // `ite eq`
+        c.mem().write_word(11 * 4, 0x2000_0011).unwrap();
+        c.take_exception(Exception::SvCall, 0x2000_0002).unwrap();
+        assert_eq!(c.itstate, 0);
+        // ITSTATE[7:2] sits in the stacked xPSR at [15:10] (here 0x0C << 8).
+        let frame = c.regs.sp;
+        let saved = c.mem().read_word(frame + 28).unwrap();
+        assert_eq!(saved & 0xFC00, 0x0C00);
+        // Returning pops the frame and revives the block.
+        c.exception_return(EXC_RETURN_THREAD_MSP).unwrap();
+        assert_eq!(c.itstate, 0x0C);
     }
 }

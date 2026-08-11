@@ -4,7 +4,8 @@
 //! `llvm-mc -triple=thumbv6m-none-eabi` in the test suite. ARMv6-M has no IT
 //! block, no `cbz`/`cbnz` (ARMv8-M+), and no immediate `ldrsb`/`ldrsh` (those
 //! are Thumb-2). The 32-bit ARMv6-M instructions (`bl`, `mrs`/`msr`, and the
-//! barriers) live in `super::decode32`.
+//! barriers) live in `super::decode32`. The ARMv7-M `IT` instruction is not
+//! part of `decode16` either: `decode16_v7m` layers it on top.
 
 use super::decode::DecodeError;
 use crate::error::HaltCause;
@@ -269,6 +270,14 @@ pub enum Inst16 {
         is_load: bool,
         rn: u8,
         regs: u8,
+    },
+    /// `IT{ x {y {z}}} <firstcond>`: marks the next 1-4 instructions
+    /// conditional. `cond` is `firstcond`, `mask` the architectural mask.
+    /// The executor derives the running ITSTATE from `(cond << 4) | mask`.
+    /// ARMv7-M only.
+    It {
+        cond: u8,
+        mask: u8,
     },
 }
 
@@ -607,6 +616,35 @@ pub fn decode16(op: u16) -> Result<Inst16, DecodeError> {
     }
 
     Err(err())
+}
+
+/// ARMv7-M 16-bit decode: `decode16` plus the `IT` instruction.
+///
+/// The `1011 1111 imm8` space is split between `HINT` (low nibble zero,
+/// handled by `decode16`) and `IT` (low nibble nonzero). ARMv6-M has no `IT`,
+/// so the shared `decode16` must not accept it; only the ARMv7-M step path
+/// calls this function.
+///
+/// # Errors
+/// Returns `UndefinedInstruction` when `firstcond == 1111`, or `firstcond == AL`
+/// with more than one conditional instruction.
+pub fn decode16_v7m(op: u16) -> Result<Inst16, DecodeError> {
+    if op & 0xFF00 == 0xBF00 && op & 0x000F != 0 {
+        let cond = ((op >> 4) & 0xF) as u8;
+        let mask = (op & 0xF) as u8;
+        // Architecturally UNPREDICTABLE: `firstcond == 1111`, or
+        // `firstcond == AL` (1110) with more than one conditional
+        // instruction (an `E` implies an inverted condition, meaningless
+        // under AL). Treat both as undefined, which HardFaults.
+        if cond == 0xF || (cond == 0xE && mask.count_ones() != 1) {
+            return Err(DecodeError {
+                opcode: op,
+                cause: HaltCause::UndefinedInstruction,
+            });
+        }
+        return Ok(Inst16::It { cond, mask });
+    }
+    decode16(op)
 }
 
 #[cfg(test)]
@@ -966,5 +1004,33 @@ mod tests {
         );
         // The `1011 1010 10` middle space is unallocated.
         assert!(decode_bytes([0x80, 0xba]).is_err());
+    }
+
+    #[test]
+    fn it_block() {
+        // Encodings verified against the ARM ARM Table 8.3 (`mask` rows) and
+        // real `itt ne`/`ite ne`/`itte ne` disassembly.
+        // it eq   -> 0xBF08 (mask 1000).
+        assert_eq!(decode16_v7m(0xBF08), Ok(Inst16::It { cond: 0x0, mask: 0x8 }));
+        // it ne   -> 0xBF18.
+        assert_eq!(decode16_v7m(0xBF18), Ok(Inst16::It { cond: 0x1, mask: 0x8 }));
+        // itt eq  -> 0xBF04 (mask 0100).
+        assert_eq!(decode16_v7m(0xBF04), Ok(Inst16::It { cond: 0x0, mask: 0x4 }));
+        // ite eq  -> 0xBF0C (mask 1100).
+        assert_eq!(decode16_v7m(0xBF0C), Ok(Inst16::It { cond: 0x0, mask: 0xC }));
+        // itte eq -> 0xBF06 (mask 0110).
+        assert_eq!(decode16_v7m(0xBF06), Ok(Inst16::It { cond: 0x0, mask: 0x6 }));
+        // itttt eq -> 0xBF01 (mask 0001, 4 instructions).
+        assert_eq!(decode16_v7m(0xBF01), Ok(Inst16::It { cond: 0x0, mask: 0x1 }));
+        // itet ge -> 0xBFA9 (GE=1010, mask 1001).
+        assert_eq!(decode16_v7m(0xBFA9), Ok(Inst16::It { cond: 0xA, mask: 0x9 }));
+        // HINT (mask == 0) is not an IT.
+        assert_eq!(decode16_v7m(0xBF00), Ok(Inst16::Hint { kind: Hint::Nop }));
+        // `firstcond == 1111` is UNPREDICTABLE.
+        assert!(decode16_v7m(0xBFF8).is_err());
+        // `ite al` (firstcond AL with an else) is UNPREDICTABLE.
+        assert!(decode16_v7m(0xBFEC).is_err());
+        // IT is ARMv7-M only: the shared ARMv6-M decoder rejects it.
+        assert!(decode16(0xBF08).is_err());
     }
 }
