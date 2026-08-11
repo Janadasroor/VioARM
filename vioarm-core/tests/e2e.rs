@@ -598,3 +598,63 @@ fn bitfield_on_armv7m() {
     assert!(xpsr.z() && !xpsr.n() && !xpsr.c() && !xpsr.v());
     assert_eq!(regs.sp, INIT_SP);
 }
+
+/// ARMv7-M: the dual word `ldrd`/`strd`. `strd` sinks a register pair into a
+/// pair of words, `ldrd` brings them back, and the `!`/post-indexed variants
+/// step the SP base down and back up so the pair of words written at
+/// `SP - 8` round-trips intact.
+#[test]
+fn ldrd_strd_on_armv7m() {
+    // movs r0, #0xab ; movs r1, #0xcd
+    // strd r0, r1, [sp, #-8] ; ldrd r2, r3, [sp, #-8]
+    // strd r0, r1, [sp, #-8]! ; ldrd r4, r5, [sp], #8 ; bkpt
+    let mut m = boot_v7m(&[
+        0xab, 0x20, 0xcd, 0x21, 0x4d, 0xe9, 0x02, 0x01, 0x5d, 0xe9, 0x02, 0x23, 0x6d, 0xe9, 0x02,
+        0x01, 0xfd, 0xe8, 0x02, 0x45, 0x00, 0xbe,
+    ]);
+    let err = m.run(10);
+    assert_eq!(err, Err(HaltCause::Breakpoint));
+    let (regs, _, cycles) = m.core.snapshot();
+    // Six instructions retire before the stopping bkpt.
+    assert_eq!(cycles, 6);
+    // The offset `strd` parked the pair at SP - 8 and the offset `ldrd`
+    // fetched it back; the `!` and post-indexed forms then stepped SP down
+    // and up by 8, reading the same two words on the way back.
+    assert_eq!(regs.r[2], 0xAB);
+    assert_eq!(regs.r[3], 0xCD);
+    assert_eq!(regs.r[4], 0xAB);
+    assert_eq!(regs.r[5], 0xCD);
+    assert_eq!(regs.sp, INIT_SP);
+}
+
+/// ARMv6-M: the 16-bit extend (`sxth`/`sxtb`/`uxth`/`uxtb`) and reverse
+/// (`rev`/`rev16`/`revsh`) family. Given `r0 = 0x80`, the signed forms
+/// sign-extend the field, `uxtb` keeps the byte, and the reverses flip byte
+/// order per their operand width; none of them touch the flags from `movs`.
+#[test]
+fn extend_and_reverse_on_v6m() {
+    // movs r0, #0x80
+    // sxtb r1, r0 ; sxth r2, r0 ; uxtb r6, r0
+    // rev r3, r0 ; rev16 r4, r0 ; revsh r5, r0 ; bkpt
+    let mut m = boot(&[
+        0x80, 0x20, 0x41, 0xb2, 0x02, 0xb2, 0xc6, 0xb2, 0x03, 0xba, 0x44, 0xba, 0xc5, 0xba, 0x00,
+        0xbe,
+    ]);
+    let err = m.run(10);
+    assert_eq!(err, Err(HaltCause::Breakpoint));
+    let (regs, xpsr, cycles) = m.core.snapshot();
+    // Seven instructions retire before the stopping bkpt.
+    assert_eq!(cycles, 7);
+    // 0x80 as a byte and halfword sign-extends identically...
+    assert_eq!(regs.r[1], 0xFFFF_FF80);
+    assert_eq!(regs.r[2], 0x0000_0080);
+    assert_eq!(regs.r[6], 0x0000_0080);
+    // ...and byte-reverses to 0x8000_0000, 0x0000_8000, and 0xFFFF_8000.
+    assert_eq!(regs.r[3], 0x8000_0000);
+    assert_eq!(regs.r[4], 0x0000_8000);
+    assert_eq!(regs.r[5], 0xFFFF_8000);
+    // `movs r0, #0x80` zero-extends the byte, so the flags are all clear
+    // (N=0, Z=0) and no extend/reverse touched them.
+    assert!(!xpsr.n() && !xpsr.z() && !xpsr.c() && !xpsr.v());
+    assert_eq!(regs.sp, INIT_SP);
+}

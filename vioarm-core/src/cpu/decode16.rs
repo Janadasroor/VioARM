@@ -81,6 +81,24 @@ pub enum Hint {
     Sev,
 }
 
+/// Sign/zero extension (`SXTH`/`SXTB`/`UXTH`/`UXTB`). `half` selects the
+/// 16-bit (`T*H`) form over the 8-bit (`T*B`) form.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExtendKind {
+    Sxth,
+    Sxtb,
+    Uxth,
+    Uxtb,
+}
+
+/// Byte-reversal (`REV`/`REV16`/`REVSH`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReverseKind {
+    Rev,
+    Rev16,
+    Revsh,
+}
+
 /// A decoded 16-bit instruction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Inst16 {
@@ -222,6 +240,18 @@ pub enum Inst16 {
     Cps {
         disable: bool,
         im: u8,
+    },
+    /// `SXTH`/`SXTB`/`UXTH`/`UXTB Rd, Rm`.
+    Extend {
+        rd: u8,
+        rm: u8,
+        kind: ExtendKind,
+    },
+    /// `REV`/`REV16`/`REVSH Rd, Rm`.
+    Reverse {
+        rd: u8,
+        rm: u8,
+        kind: ReverseKind,
     },
     /// `PUSH {r0-r7}` plus `lr` when `include_lr`.
     Push {
@@ -491,6 +521,40 @@ pub fn decode16(op: u16) -> Result<Inst16, DecodeError> {
         return Ok(Inst16::Cps {
             disable: op & 0x10 != 0,
             im: (op & 0x7) as u8,
+        });
+    }
+
+    // EXTEND: 1011 0010 01 op Rm Rd. The two-bit `op` (bits[7:6]) picks the
+    // signed/unsigned halfword/byte form; `Rm` sits in bits[6:3] and `Rd` in
+    // bits[2:0], so the low six bits never overlap the discriminator.
+    if op & 0xFF00 == 0xB200 {
+        let kind = match op & 0xFFC0 {
+            0xB200 => ExtendKind::Sxth,
+            0xB240 => ExtendKind::Sxtb,
+            0xB280 => ExtendKind::Uxth,
+            0xB2C0 => ExtendKind::Uxtb,
+            _ => return Err(err()),
+        };
+        return Ok(Inst16::Extend {
+            rd: (op & 0x7) as u8,
+            rm: ((op >> 3) & 0x7) as u8,
+            kind,
+        });
+    }
+
+    // REVERSE: 1011 1010 op Rm Rd. `op` (bits[7:6]) selects `REV` (00),
+    // `REV16` (01), or `REVSH` (11); the `10` middle space is unallocated.
+    if op & 0xFF00 == 0xBA00 {
+        let kind = match op & 0xFFC0 {
+            0xBA00 => ReverseKind::Rev,
+            0xBA40 => ReverseKind::Rev16,
+            0xBAC0 => ReverseKind::Revsh,
+            _ => return Err(err()),
+        };
+        return Ok(Inst16::Reverse {
+            rd: (op & 0x7) as u8,
+            rm: ((op >> 3) & 0x7) as u8,
+            kind,
         });
     }
 
@@ -829,5 +893,78 @@ mod tests {
                 regs: 0x60
             })
         );
+    }
+
+    #[test]
+    fn extend() {
+        // sxth r3, r5 -> [0x2b, 0xb2].
+        assert_eq!(
+            decode_bytes([0x2b, 0xb2]),
+            Ok(Inst16::Extend {
+                rd: 3,
+                rm: 5,
+                kind: ExtendKind::Sxth
+            })
+        );
+        // sxtb r2, r4 -> [0x62, 0xb2].
+        assert_eq!(
+            decode_bytes([0x62, 0xb2]),
+            Ok(Inst16::Extend {
+                rd: 2,
+                rm: 4,
+                kind: ExtendKind::Sxtb
+            })
+        );
+        // uxth r1, r6 -> [0xb1, 0xb2].
+        assert_eq!(
+            decode_bytes([0xb1, 0xb2]),
+            Ok(Inst16::Extend {
+                rd: 1,
+                rm: 6,
+                kind: ExtendKind::Uxth
+            })
+        );
+        // uxtb r0, r7 -> [0xf8, 0xb2].
+        assert_eq!(
+            decode_bytes([0xf8, 0xb2]),
+            Ok(Inst16::Extend {
+                rd: 0,
+                rm: 7,
+                kind: ExtendKind::Uxtb
+            })
+        );
+    }
+
+    #[test]
+    fn reverse() {
+        // rev r3, r5 -> [0x2b, 0xba].
+        assert_eq!(
+            decode_bytes([0x2b, 0xba]),
+            Ok(Inst16::Reverse {
+                rd: 3,
+                rm: 5,
+                kind: ReverseKind::Rev
+            })
+        );
+        // rev16 r2, r4 -> [0x62, 0xba].
+        assert_eq!(
+            decode_bytes([0x62, 0xba]),
+            Ok(Inst16::Reverse {
+                rd: 2,
+                rm: 4,
+                kind: ReverseKind::Rev16
+            })
+        );
+        // revsh r1, r6 -> [0xf1, 0xba].
+        assert_eq!(
+            decode_bytes([0xf1, 0xba]),
+            Ok(Inst16::Reverse {
+                rd: 1,
+                rm: 6,
+                kind: ReverseKind::Revsh
+            })
+        );
+        // The `1011 1010 10` middle space is unallocated.
+        assert!(decode_bytes([0x80, 0xba]).is_err());
     }
 }

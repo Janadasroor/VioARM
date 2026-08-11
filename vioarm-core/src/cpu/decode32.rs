@@ -177,6 +177,22 @@ pub enum Inst32 {
         index: bool,
         writeback: bool,
     },
+    /// ARMv7-M load/store dual: `LDRD`/`STRD` with an immediate offset.
+    /// `imm` is the byte offset (`imm8 << 2`), `add` selects `+`/`-`,
+    /// `index`/`writeback` give the three addressing forms as in `Mem`.
+    /// `rn == 15` marks the `LDRD` literal form (loads only), whose base is
+    /// `Align(pc + 4, 4)`; the low word goes to `rt` and the high word to
+    /// `rt2`. Flags are not affected.
+    LdrdStrd {
+        is_load: bool,
+        rt: u8,
+        rt2: u8,
+        rn: u8,
+        imm: u32,
+        add: bool,
+        index: bool,
+        writeback: bool,
+    },
     /// ARMv7-M load/store multiple: `STMIA`/`LDMIA`/`STMDB`/`LDMDB
     /// rn{!}, {list}`. `regs` is the 16-bit register mask; `writeback` is the
     /// `!`, `dec_before` selects the decrement-before (DB) forms over IA.
@@ -372,6 +388,7 @@ pub fn decode32_v7m(hi: u16, lo: u16) -> Result<Inst32, DecodeError> {
         .or_else(|| decode_mem(hi, lo))
         .or_else(|| decode_ldm_stm(hi, lo))
         .or_else(|| decode_tbranch(hi, lo))
+        .or_else(|| decode_ldrd_strd(hi, lo))
         .or_else(|| decode_dp_plain(hi, lo))
         .or_else(|| decode_dp_modified(hi, lo))
         .or_else(|| decode_dp_reg(hi, lo))
@@ -759,6 +776,59 @@ const fn decode_tbranch(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>>
     };
     let rm = (lo & 0xF) as u8;
     Some(Ok(Inst32::TblBranch { rn, rm, half }))
+}
+
+/// decode the ARMv7-M load/store dual family: `LDRD`/`STRD` with an
+/// immediate offset.
+///
+/// The `1110 100P U1WL Rn` first-halfword space carries `P` (pre-indexed),
+/// `U` (add), `W` (writeback), `L` (load), and `Rn`; the second halfword
+/// packs `Rt Rt2 imm8`, where the byte offset is `imm8 << 2`. `LDRD` with
+/// `Rn == 15` is the PC-relative literal form. The `(P, W) == (0, 0)`
+/// combos of this space belong to `TBB`/`TBH` (consulted first) or are
+/// UNDEFINED; register pairs touching the PC, a doubled register, a
+/// writeback base that overlaps the pair, a `STRD` PC base, or writeback to
+/// the PC are all UNPREDICTABLE and decode as UNDEFINED.
+const fn decode_ldrd_strd(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
+    if hi & 0xFE40 != 0xE840 {
+        return None;
+    }
+    let rn = (hi & 0xF) as u8;
+    let is_load = hi & 0x10 != 0;
+    let add = hi & 0x80 != 0;
+    let index = hi & 0x100 != 0;
+    let writeback = hi & 0x20 != 0;
+    let rt = ((lo >> 12) & 0xF) as u8;
+    let rt2 = ((lo >> 8) & 0xF) as u8;
+    let err = Some(Err(err_for(hi)));
+    if !index && !writeback {
+        // The post-indexed forms always write back.
+        return err;
+    }
+    if rt == 15 || rt2 == 15 || rt == rt2 {
+        return err;
+    }
+    if !is_load && rn == 15 {
+        // STRD has no PC-relative literal form.
+        return err;
+    }
+    if rn == 15 && writeback {
+        // Only the literal `LDRD` (no writeback) may use a PC base.
+        return err;
+    }
+    if writeback && (rn == rt || rn == rt2) {
+        return err;
+    }
+    Some(Ok(Inst32::LdrdStrd {
+        is_load,
+        rt,
+        rt2,
+        rn,
+        imm: ((lo & 0xFF) as u32) << 2,
+        add,
+        index,
+        writeback,
+    }))
 }
 
 /// register operand.
@@ -1888,5 +1958,91 @@ mod tests {
         assert!(v7m_bytes([0x61, 0xf3, 0x0f, 0x40]).is_err());
         assert!(v7m_bytes([0x41, 0xf3, 0x27, 0x20]).is_err());
         assert!(decode32_bytes([0x41, 0xf3, 0x07, 0x20]).is_err());
+    }
+
+    #[test]
+    fn v7m_ldrd_strd() {
+        // ldrd r2, r3, [r0, #8] -> e9d0 2302: `P U W L` in the first
+        // halfword, `Rt Rt2 imm8` (byte offset `imm8 << 2`) in the second.
+        assert_eq!(
+            v7m_bytes([0xd0, 0xe9, 0x02, 0x23]),
+            Ok(Inst32::LdrdStrd {
+                is_load: true,
+                rt: 2,
+                rt2: 3,
+                rn: 0,
+                imm: 8,
+                add: true,
+                index: true,
+                writeback: false,
+            })
+        );
+        // strd r4, r5, [r1, #-4] -> e941 4501: a negative offset clears `U`.
+        assert_eq!(
+            v7m_bytes([0x41, 0xe9, 0x01, 0x45]),
+            Ok(Inst32::LdrdStrd {
+                is_load: false,
+                rt: 4,
+                rt2: 5,
+                rn: 1,
+                imm: 4,
+                add: false,
+                index: true,
+                writeback: false,
+            })
+        );
+        // ldrd r0, r1, [r2], #8 -> e8f2 0102: the post-indexed form clears
+        // `P` and sets `W`.
+        assert_eq!(
+            v7m_bytes([0xf2, 0xe8, 0x02, 0x01]),
+            Ok(Inst32::LdrdStrd {
+                is_load: true,
+                rt: 0,
+                rt2: 1,
+                rn: 2,
+                imm: 8,
+                add: true,
+                index: false,
+                writeback: true,
+            })
+        );
+        // strd r6, r7, [r3, #16]! -> e9e3 6704: pre-indexed with writeback.
+        assert_eq!(
+            v7m_bytes([0xe3, 0xe9, 0x04, 0x67]),
+            Ok(Inst32::LdrdStrd {
+                is_load: false,
+                rt: 6,
+                rt2: 7,
+                rn: 3,
+                imm: 16,
+                add: true,
+                index: true,
+                writeback: true,
+            })
+        );
+        // ldrd r0, r1, [pc, #8] -> e9df 0102: `Rn == 15` is the literal form.
+        assert_eq!(
+            v7m_bytes([0xdf, 0xe9, 0x02, 0x01]),
+            Ok(Inst32::LdrdStrd {
+                is_load: true,
+                rt: 0,
+                rt2: 1,
+                rn: 0xF,
+                imm: 8,
+                add: true,
+                index: true,
+                writeback: false,
+            })
+        );
+        // A doubled or PC destination register, a `STRD` PC base, writeback
+        // onto a loaded register, and the `TBB`-adjacent `(P, W) == (0, 0)`
+        // space are all UNPREDICTABLE and decode as UNDEFINED; the ARMv6-M
+        // decoder rejects the whole `1110 100P U1WL` dual space.
+        assert!(v7m_bytes([0xd1, 0xe9, 0x01, 0x00]).is_err()); // rt == rt2
+        assert!(v7m_bytes([0xd0, 0xe9, 0x01, 0x1f]).is_err()); // rt == 15
+        assert!(v7m_bytes([0x4f, 0xe9, 0x01, 0x01]).is_err()); // STRD [pc]
+        assert!(v7m_bytes([0xf0, 0xe9, 0x01, 0x01]).is_err()); // wb over r0
+        assert!(v7m_bytes([0x40, 0xe8, 0x01, 0x01]).is_err()); // P == W == 0
+        assert!(decode32_bytes([0xd0, 0xe9, 0x02, 0x23]).is_err());
     }
 }

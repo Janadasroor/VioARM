@@ -11,7 +11,7 @@ pub mod registers;
 
 use crate::error::{Exception, HaltCause};
 use crate::mem::PeripheralBus;
-use decode16::{decode16, AluOp, Inst16, LsImm, LsReg, Shift, ShiftImm};
+use decode16::{decode16, AluOp, ExtendKind, Inst16, LsImm, LsReg, ReverseKind, Shift, ShiftImm};
 use decode32::{
     decode32, decode32_v7m, is_thumb2, is_thumb2_v7m, thumb_expand_imm, BitfieldOp, DpOp, Inst32,
     MemOp, MulOp, ShiftType, SysReg, UnaryOp,
@@ -514,6 +514,39 @@ impl<B: PeripheralBus> Core<B> {
                 }
                 Ok(Next::Advance(pc + 2))
             }
+            I::Extend { rd, rm, kind } => {
+                let v = self.regs.read(rm);
+                // The signed forms sign-extend the selected low field; the
+                // unsigned forms zero it. No flags are affected.
+                let result = match kind {
+                    ExtendKind::Sxth => ((v & 0xFFFF) as i16) as i32 as u32,
+                    ExtendKind::Sxtb => ((v & 0xFF) as i8) as i32 as u32,
+                    ExtendKind::Uxth => v & 0xFFFF,
+                    ExtendKind::Uxtb => v & 0xFF,
+                };
+                self.regs.write(rd, result);
+                Ok(Next::Advance(pc + 2))
+            }
+            I::Reverse { rd, rm, kind } => {
+                let v = self.regs.read(rm);
+                // `REV` flips the whole word's byte order, `REV16` flips each
+                // halfword, and `REVSH` flips the low halfword's bytes before
+                // sign-extending it to 32 bits. No flags are affected.
+                let result = match kind {
+                    ReverseKind::Rev => v.swap_bytes(),
+                    ReverseKind::Rev16 => ((v & 0x00FF_00FF) << 8) | ((v >> 8) & 0x00FF_00FF),
+                    ReverseKind::Revsh => {
+                        let half = ((v & 0xFF) << 8) | ((v >> 8) & 0xFF);
+                        if half & 0x8000 != 0 {
+                            half | 0xFFFF_0000
+                        } else {
+                            half
+                        }
+                    }
+                };
+                self.regs.write(rd, result);
+                Ok(Next::Advance(pc + 2))
+            }
             I::Push { regs, include_lr } => {
                 let count = regs.count_ones() + u32::from(include_lr);
                 let mut addr = self.regs.sp.wrapping_sub(4 * count);
@@ -759,6 +792,46 @@ impl<B: PeripheralBus> Core<B> {
                     if writeback {
                         self.regs.write(rn, wb_addr);
                     }
+                }
+                Ok(Next::Advance(pc + 4))
+            }
+            I::LdrdStrd {
+                is_load,
+                rt,
+                rt2,
+                rn,
+                imm,
+                add,
+                index,
+                writeback,
+            } => {
+                // `Rn == 15` is the `LDRD` literal form: the word-aligned
+                // `pc + 4`. `index` selects the offset- (pre-) indexed
+                // address over the post-indexed base.
+                let base = if rn == 15 {
+                    (pc.wrapping_add(4)) & !3
+                } else {
+                    self.regs.read(rn)
+                };
+                let offset_addr = if add {
+                    base.wrapping_add(imm)
+                } else {
+                    base.wrapping_sub(imm)
+                };
+                let address = if index { offset_addr } else { base };
+                if is_load {
+                    // The low word lands in `rt`, the high word in `rt2`;
+                    // the decoder guarantees they are distinct registers.
+                    let first = self.read_word_halt(address)?;
+                    let second = self.read_word_halt(address.wrapping_add(4))?;
+                    self.regs.write(rt, first);
+                    self.regs.write(rt2, second);
+                } else {
+                    self.write_word_halt(address, self.regs.read(rt))?;
+                    self.write_word_halt(address.wrapping_add(4), self.regs.read(rt2))?;
+                }
+                if writeback {
+                    self.regs.write(rn, offset_addr);
                 }
                 Ok(Next::Advance(pc + 4))
             }
@@ -2226,5 +2299,83 @@ mod tests {
         c.regs.pc = 0x2000_0000;
         load_inst(&mut c, 0x2000_0000, &[0x60, 0xf3, 0x0f, 0x2f]);
         assert!(matches!(c.step(), Err(HaltCause::NotImplemented { .. })));
+    }
+
+    #[test]
+    fn extend_16bit() {
+        // sxth r3, r5 (b22b): sign-extend the low halfword.
+        let mut c = core();
+        c.regs.pc = 0x2000_0000;
+        c.xpsr.set_nzcv(true, true, true, true);
+        c.regs.write(5, 0x0000_FF80);
+        load_inst(&mut c, 0x2000_0000, &[0x2b, 0xb2]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[3], 0xFFFF_FF80);
+        assert_eq!(c.regs.pc, 0x2000_0002);
+        // The flags from the setup survive untouched.
+        assert!(c.xpsr.n() && c.xpsr.z() && c.xpsr.c() && c.xpsr.v());
+
+        // sxtb r3, r5 (b26b): sign-extend the low byte.
+        let mut c = core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(5, 0x0000_0080);
+        load_inst(&mut c, 0x2000_0000, &[0x6b, 0xb2]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[3], 0xFFFF_FF80);
+
+        // uxth r3, r5 (b2ab): zero the top halfword.
+        let mut c = core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(5, 0xFFFF_FFFF);
+        load_inst(&mut c, 0x2000_0000, &[0xab, 0xb2]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[3], 0xFFFF);
+
+        // uxtb r3, r5 (b2eb): zero the top three bytes.
+        let mut c = core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(5, 0x1234_5678);
+        load_inst(&mut c, 0x2000_0000, &[0xeb, 0xb2]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[3], 0x78);
+    }
+
+    #[test]
+    fn reverse_16bit() {
+        // rev r3, r5 (ba2b): full word byte reversal.
+        let mut c = core();
+        c.regs.pc = 0x2000_0000;
+        c.xpsr.set_nzcv(true, true, true, true);
+        c.regs.write(5, 0x1234_5678);
+        load_inst(&mut c, 0x2000_0000, &[0x2b, 0xba]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[3], 0x7856_3412);
+        assert_eq!(c.regs.pc, 0x2000_0002);
+        // The flags from the setup survive untouched.
+        assert!(c.xpsr.n() && c.xpsr.z() && c.xpsr.c() && c.xpsr.v());
+
+        // rev16 r3, r5 (ba6b): byte-reverse each halfword.
+        let mut c = core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(5, 0x1234_5678);
+        load_inst(&mut c, 0x2000_0000, &[0x6b, 0xba]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[3], 0x3412_7856);
+
+        // revsh r3, r5 (baeb): reverse the low halfword and sign-extend.
+        let mut c = core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(5, 0x0000_12F0);
+        load_inst(&mut c, 0x2000_0000, &[0xeb, 0xba]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[3], 0xFFFF_F012);
+
+        // A positive `revsh` keeps the value sign-bit-free.
+        let mut c = core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(5, 0x0000_1234);
+        load_inst(&mut c, 0x2000_0000, &[0xeb, 0xba]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[3], 0x3412);
     }
 }
