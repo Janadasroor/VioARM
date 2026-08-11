@@ -115,6 +115,24 @@ pub enum Inst32 {
     Bl {
         off: i32,
     },
+    /// `B.W {label}` (unconditional T4). `off` is the already-sign-extended
+    /// byte offset from `pc + 4`.
+    BranchWide {
+        off: i32,
+    },
+    /// `B<c>.W {label}` (conditional T3). `off` is the already-sign-extended
+    /// byte offset from `pc + 4`.
+    BranchCondWide {
+        cond: u8,
+        off: i32,
+    },
+    /// `BLX {label}` (immediate). `off` is the already-sign-extended byte
+    /// offset from `pc + 4`; targets are word-aligned, so the branch always
+    /// selects the ARM state, which faults on ARMv7-M. LR is set to
+    /// `pc + 4 | 1` by the executor.
+    BlxImm {
+        off: i32,
+    },
     Mrs {
         rd: u8,
         sys: SysReg,
@@ -370,10 +388,11 @@ pub fn decode32(hi: u16, lo: u16) -> Result<Inst32, DecodeError> {
 ///
 /// The ARMv6-M subset is preserved; `MOVW`/`MOVT`, the Thumb-2
 /// data-processing set (shifted register, `ThumbExpandImm`, and the raw
-/// `addw`/`subw` immediates), and the immediate-offset load/store family are
-/// layered on top. The memory decoders are consulted before the
-/// data-processing set: their `F8xx`/`F9xx` first halfwords overlap the
-/// modified-immediate mask (`hi & 0xF600`) and must win the match.
+/// `addw`/`subw` immediates), the immediate-offset load/store family, and the
+/// `B.W`/`B<c>.W`/`BLX` immediate branches are layered on top. The memory
+/// decoders are consulted before the data-processing set: their `F8xx`/`F9xx`
+/// first halfwords overlap the modified-immediate mask (`hi & 0xF600`) and
+/// must win the match.
 ///
 /// # Errors
 ///
@@ -383,7 +402,7 @@ pub fn decode32_v7m(hi: u16, lo: u16) -> Result<Inst32, DecodeError> {
     decode_mrs(hi, lo)
         .or_else(|| decode_msr(hi, lo))
         .or_else(|| decode_barrier(hi, lo))
-        .or_else(|| decode_bl(hi, lo))
+        .or_else(|| decode_branch(hi, lo))
         .or_else(|| decode_movwide(hi, lo))
         .or_else(|| decode_mem(hi, lo))
         .or_else(|| decode_ldm_stm(hi, lo))
@@ -407,28 +426,94 @@ const fn err_for(hi: u16) -> DecodeError {
     }
 }
 
-/// decode the ARMv6/7-M `BL` immediate.
+/// Decode the ARMv6-M `BL` immediate only.
 fn decode_bl(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
-    // BL: 1111 0 S imm10 / 1111 1 J1 J2 imm11.
+    // BL: 11110 S imm10 / 11 J1 1 J2 imm11.
     if hi & 0xF800 != 0xF000 {
         return None;
     }
-    if lo & 0xF800 != 0xF800 {
-        // The `11110` first-halfword space is shared with the ARMv7-M
-        // data-processing set; only a `11111`-shaped second halfword is BL.
+    if lo & 0xD000 != 0xD000 {
+        // The `11110` first-halfword space is shared with the Thumb-2
+        // data-processing set; only a `11 J1 1 J2`-shaped second halfword
+        // (bits 15, 14, 12 set) is BL.
         return None;
     }
     let s = i32::from((hi >> 10) & 1);
     let imm10 = i32::from(hi & 0x3FF);
-    let j1 = i32::from((lo >> 13) & 1);
-    let j2 = i32::from((lo >> 11) & 1);
     let imm11 = i32::from(lo & 0x7FF);
-    let i1 = 1 - (j1 ^ s);
-    let i2 = 1 - (j2 ^ s);
-    // 25-bit signed field S:imm10:i1:i2:imm11:0, shift-sign-extended from
-    // bit 24 (shifts wrap, so this is well-defined for the whole range).
-    let off = ((s << 24) | (imm10 << 14) | (i1 << 13) | (i2 << 12) | (imm11 << 1)) << 7 >> 7;
-    Some(Ok(Inst32::Bl { off }))
+    Some(Ok(Inst32::Bl {
+        off: branch_off25(s, imm10, branch_i(lo, 13, s), branch_i(lo, 11, s), imm11),
+    }))
+}
+
+/// Decode the shared ARMv7-M branch family of the `11110` first-halfword
+/// space. The second halfword splits it: `B.W` (T4) and `BL` (T1) share the
+/// 25-bit `imm10:imm11` field and differ only in bit 14; `BLX` (T2) swaps it
+/// for the word-aligned `imm10H:imm10L`; `B<c>.W` (T3) uses a 21-bit
+/// `imm6:imm11` offset with the condition in the first halfword.
+fn decode_branch(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
+    if hi & 0xF800 != 0xF000 {
+        return None;
+    }
+    let s = i32::from((hi >> 10) & 1);
+    let i1 = branch_i(lo, 13, s);
+    let i2 = branch_i(lo, 11, s);
+    match lo & 0xD000 {
+        // B.W (T4): 11110 S imm10 / 10 J1 1 J2 imm11.
+        0x9000 => {
+            let off = branch_off25(s, i32::from(hi & 0x3FF), i1, i2, i32::from(lo & 0x7FF));
+            Some(Ok(Inst32::BranchWide { off }))
+        }
+        // BL (T1): 11110 S imm10 / 11 J1 1 J2 imm11.
+        0xD000 => {
+            let off = branch_off25(s, i32::from(hi & 0x3FF), i1, i2, i32::from(lo & 0x7FF));
+            Some(Ok(Inst32::Bl { off }))
+        }
+        // BLX (T2): 11110 S imm10H / 11 J1 0 J2 imm10L.
+        0xC000 => {
+            let off = branch_off25(
+                s,
+                i32::from(hi & 0x3FF),
+                i1,
+                i2,
+                i32::from((lo >> 1) & 0x3FF) << 1,
+            );
+            Some(Ok(Inst32::BlxImm { off }))
+        }
+        // B<c>.W (T3): 11110 S cond imm6 / 10 J1 0 J2 imm11. The `cond == 1111`
+        // encoding is UNPREDICTABLE.
+        0x8000 => {
+            let cond = ((hi >> 6) & 0xF) as u8;
+            if cond == 0xF {
+                return Some(Err(err_for(hi)));
+            }
+            let off = branch_off21(s, i1, i2, i32::from(hi & 0x3F), i32::from(lo & 0x7FF));
+            Some(Ok(Inst32::BranchCondWide { cond, off }))
+        }
+        _ => None,
+    }
+}
+
+/// `I1`/`I2` for a branch: `NOT(J EOR S)`, where `J` is bit `bit` of the
+/// second halfword.
+#[inline]
+fn branch_i(lo: u16, bit: u8, s: i32) -> i32 {
+    1 - ((i32::from((lo >> bit) & 1)) ^ s)
+}
+
+/// Reconstruct the 25-bit signed byte offset `S:imm10:I1:I2:imm11:0`,
+/// shift-sign-extended from bit 24 (shifts wrap, so this is well-defined for
+/// the whole range).
+#[inline]
+const fn branch_off25(s: i32, imm10: i32, i1: i32, i2: i32, imm11: i32) -> i32 {
+    ((s << 24) | (imm10 << 14) | (i1 << 13) | (i2 << 12) | (imm11 << 1)) << 7 >> 7
+}
+
+/// Reconstruct the 21-bit signed byte offset `S:I1:I2:imm6:imm11:0`,
+/// shift-sign-extended from bit 20.
+#[inline]
+const fn branch_off21(s: i32, i1: i32, i2: i32, imm6: i32, imm11: i32) -> i32 {
+    ((s << 20) | (i1 << 19) | (i2 << 18) | (imm6 << 12) | (imm11 << 1)) << 11 >> 11
 }
 
 /// decode the ARMv6/7-M `MRS`.
@@ -1538,6 +1623,92 @@ mod tests {
         assert_eq!(
             decode32_bytes([0xff, 0xf7, 0xfe, 0xff]),
             Ok(Inst32::Bl { off: -4 })
+        );
+    }
+
+    #[test]
+    fn bw_offsets() {
+        // b.w +10 from 0x6 (f000 b805) -> off 10.
+        assert_eq!(
+            v7m_bytes([0x00, 0xf0, 0x05, 0xb8]),
+            Ok(Inst32::BranchWide { off: 10 })
+        );
+        // b.w -12 from 0xa (f7ff bffa) -> off -12.
+        assert_eq!(
+            v7m_bytes([0xff, 0xf7, 0xfa, 0xbf]),
+            Ok(Inst32::BranchWide { off: -12 })
+        );
+        // b.w +16384 with a nonzero imm10 (f001 b800) -> off 0x4000.
+        assert_eq!(
+            v7m_bytes([0x01, 0xf0, 0x00, 0xb8]),
+            Ok(Inst32::BranchWide { off: 0x4000 })
+        );
+        // b.w +16380 with imm11 = 0x7fe (f000 97fe) -> off 0x3ffc.
+        assert_eq!(
+            v7m_bytes([0x00, 0xf0, 0xfe, 0x97]),
+            Ok(Inst32::BranchWide { off: 0x3ffc })
+        );
+    }
+
+    #[test]
+    fn bcc_wide_offsets() {
+        // beq.w +8 from 0x6 (f000 a804) -> cond EQ, off 8.
+        assert_eq!(
+            v7m_bytes([0x00, 0xf0, 0x04, 0xa8]),
+            Ok(Inst32::BranchCondWide {
+                cond: 0,
+                off: 8
+            })
+        );
+        // bmi.w -183396 (f513 a9ce) -> cond MI, off -183396.
+        assert_eq!(
+            v7m_bytes([0x13, 0xf5, 0xce, 0xa9]),
+            Ok(Inst32::BranchCondWide {
+                cond: 4,
+                off: -183_396
+            })
+        );
+        // b.al.w (cond == 0xf) is UNPREDICTABLE -> UndefinedInstruction.
+        assert_eq!(
+            v7m_bytes([0xc0, 0xf3, 0x00, 0xa8]),
+            Err(DecodeError {
+                opcode: 0xf3c0,
+                cause: HaltCause::UndefinedInstruction
+            })
+        );
+    }
+
+    #[test]
+    fn blx_immediate_offsets() {
+        // blx . (f000 e800) -> off 0.
+        assert_eq!(
+            v7m_bytes([0x00, 0xf0, 0x00, 0xe8]),
+            Ok(Inst32::BlxImm { off: 0 })
+        );
+        // blx +8 (f000 e804) -> off 8.
+        assert_eq!(
+            v7m_bytes([0x00, 0xf0, 0x04, 0xe8]),
+            Ok(Inst32::BlxImm { off: 8 })
+        );
+        // blx +8192 with I1 = 1 (f000 c800) -> off 0x2000.
+        assert_eq!(
+            v7m_bytes([0x00, 0xf0, 0x00, 0xc8]),
+            Ok(Inst32::BlxImm { off: 0x2000 })
+        );
+        // blx -4 (f7ff efff) -> off -4.
+        assert_eq!(
+            v7m_bytes([0xff, 0xf7, 0xff, 0xef]),
+            Ok(Inst32::BlxImm { off: -4 })
+        );
+    }
+
+    #[test]
+    fn bl_accepts_j1_j2_ne_one() {
+        // bl +4104 with J2 = 0 (f000 f004) -> off 4104. The old `0xf800`
+        // second-halfword mask rejected this; the `0xd000` mask accepts it.
+        assert_eq!(
+            v7m_bytes([0x00, 0xf0, 0x04, 0xf0]),
+            Ok(Inst32::Bl { off: 4104 })
         );
     }
 

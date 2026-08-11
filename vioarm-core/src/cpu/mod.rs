@@ -693,6 +693,25 @@ impl<B: PeripheralBus> Core<B> {
                 self.regs.lr = (pc.wrapping_add(4)) | 1;
                 Ok(Next::Advance(pc.wrapping_add(4).wrapping_add_signed(off)))
             }
+            I::BlxImm { off } => {
+                self.itstate = 0;
+                self.regs.lr = (pc.wrapping_add(4)) | 1;
+                // BLX targets are word-aligned, so bit 0 is always clear and
+                // `check_branch` stops at the non-Thumb (ARM) target.
+                Ok(Self::check_branch(pc.wrapping_add(4).wrapping_add_signed(off)))
+            }
+            I::BranchWide { off } => {
+                self.itstate = 0;
+                Ok(Next::Advance(pc.wrapping_add(4).wrapping_add_signed(off)))
+            }
+            I::BranchCondWide { cond, off } => {
+                if self.cond_passes(cond) {
+                    self.itstate = 0;
+                    Ok(Next::Advance(pc.wrapping_add(4).wrapping_add_signed(off)))
+                } else {
+                    Ok(Next::Advance(pc + 4))
+                }
+            }
             I::Mrs { rd, sys } => {
                 if rd == 15 {
                     return Err(HaltCause::NotImplemented { what: "mrs to pc" });

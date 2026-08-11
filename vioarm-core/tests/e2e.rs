@@ -714,3 +714,133 @@ fn itstate_round_trips_exception_on_armv7m() {
     assert_eq!(regs.r[2], 2);
     assert_eq!(regs.sp, INIT_SP);
 }
+
+/// ARMv7-M `B.W` (unconditional Thumb-2 T4) forward: jumps over a 16-bit
+/// instruction. `b.w` at 0x12 with off +2 lands at 0x18, skipping `movs r1,#1`.
+#[test]
+fn t32_bw_forward_skips_instruction() {
+    // movs r0, #5 ; b.w 0x18 ; movs r1, #1 (skipped) ; movs r2, #2 ; bkpt
+    let mut m = boot_v7m(&[
+        0x05, 0x20, 0x00, 0xf0, 0x01, 0xb8, 0x01, 0x21, 0x02, 0x22, 0x00, 0xbe,
+    ]);
+    let err = m.run(10);
+    assert_eq!(err, Err(HaltCause::Breakpoint));
+    let (regs, _, cycles) = m.core.snapshot();
+    assert_eq!(cycles, 3);
+    assert_eq!(regs.r[0], 5);
+    assert_eq!(regs.r[1], 0);
+    assert_eq!(regs.r[2], 2);
+}
+
+/// ARMv7-M `B.W` backward with a negative offset, used as a loop back edge
+/// (`off` -10 from 0x1a to 0x14). The loop exits through a 16-bit `beq`.
+#[test]
+fn t32_bw_backward_loop_backedge() {
+    // movs r0, #5 ; movs r2, #2 ; (loop) subs r2, r2, #1 ; cmp r2, #0
+    // beq 0x1e ; b.w 0x14 ; movs r3, #3 ; bkpt
+    let mut m = boot_v7m(&[
+        0x05, 0x20, 0x02, 0x22, 0x01, 0x3a, 0x00, 0x2a, 0x01, 0xd0, 0xff, 0xf7, 0xfb, 0xbf, 0x03,
+        0x23, 0x00, 0xbe,
+    ]);
+    let err = m.run(12);
+    assert_eq!(err, Err(HaltCause::Breakpoint));
+    let (regs, _, cycles) = m.core.snapshot();
+    // movs r0, movs r2, subs, cmp, beq, b.w, subs, cmp, beq, movs r3.
+    assert_eq!(cycles, 10);
+    assert_eq!(regs.r[0], 5);
+    assert_eq!(regs.r[2], 0);
+    assert_eq!(regs.r[3], 3);
+}
+
+/// ARMv7-M `B<c>.W` (Thumb-2 T3): not taken falls through, taken skips an
+/// instruction. The first `beq.w` runs with Z=0 (not taken), the second with
+/// Z=1 (taken, skipping `movs r2,#2`).
+#[test]
+fn t32_bcc_wide_taken_and_fallthrough() {
+    // movs r0, #5 ; beq.w 0x1c ; movs r1, #1 ; movs r0, #0
+    // beq.w 0x20 ; movs r2, #2 (skipped) ; movs r3, #3 ; bkpt
+    let mut m = boot_v7m(&[
+        0x05, 0x20, 0x00, 0xf0, 0x03, 0xa8, 0x01, 0x21, 0x00, 0x20, 0x00, 0xf0, 0x01, 0xa8,
+        0x02, 0x22, 0x03, 0x23, 0x00, 0xbe,
+    ]);
+    let err = m.run(10);
+    assert_eq!(err, Err(HaltCause::Breakpoint));
+    let (regs, _, cycles) = m.core.snapshot();
+    assert_eq!(cycles, 6);
+    assert_eq!(regs.r[0], 0);
+    assert_eq!(regs.r[1], 1);
+    assert_eq!(regs.r[2], 0);
+    assert_eq!(regs.r[3], 3);
+}
+
+/// ARMv7-M `B<c>.W` backward with a negative offset as a loop back edge: a
+/// `bne.w` (off -8) loops until `subs` zeroes `r2`, then falls through.
+#[test]
+fn t32_bne_wide_loop() {
+    // movs r0, #5 ; movs r2, #2 ; (loop) subs r2, r2, #1 ; cmp r2, #0
+    // bne.w 0x14 ; movs r3, #3 ; bkpt
+    let mut m = boot_v7m(&[
+        0x05, 0x20, 0x02, 0x22, 0x01, 0x3a, 0x00, 0x2a, 0x7f, 0xf4, 0xfc, 0xaf, 0x03, 0x23,
+        0x00, 0xbe,
+    ]);
+    let err = m.run(10);
+    assert_eq!(err, Err(HaltCause::Breakpoint));
+    let (regs, _, cycles) = m.core.snapshot();
+    // movs r0, movs r2, subs, cmp, bne.w, subs, cmp, bne.w, movs r3.
+    assert_eq!(cycles, 9);
+    assert_eq!(regs.r[0], 5);
+    assert_eq!(regs.r[2], 0);
+    assert_eq!(regs.r[3], 3);
+}
+
+/// ARMv7-M `BLX` (immediate) always targets the ARM state (word-aligned, so
+/// bit 0 is clear) and faults as a `NonThumbTarget`. LR is set to
+/// `pc + 4 | 1` before the fault, so the caller can be resumed.
+#[test]
+fn t32_blx_immediate_faults_nonthumb() {
+    // movs r0, #5 ; blx 0x1e ; movs r1, #1 ; movs r2, #2 ; movs r3, #3
+    // movs r4, #4 ; bkpt
+    let mut m = boot_v7m(&[
+        0x05, 0x20, 0x00, 0xf0, 0x04, 0xe8, 0x01, 0x21, 0x02, 0x22, 0x03, 0x23, 0x04, 0x24,
+        0x00, 0xbe,
+    ]);
+    let err = m.run(10);
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
+    let (regs, _, cycles) = m.core.snapshot();
+    // The stopping BLX fault does not count toward cycles.
+    assert_eq!(cycles, 1);
+    assert_eq!(regs.r[0], 5);
+    assert_eq!(regs.lr, 0x17);
+    assert_eq!(regs.r[1], 0);
+    assert_eq!(regs.r[2], 0);
+    assert_eq!(regs.r[3], 0);
+    assert_eq!(regs.r[4], 0);
+}
+
+/// ARMv7-M `BL` with a large positive offset and a `J2 = 0` second halfword
+/// (only accepted since the decoder mask was widened from `0xf800` to
+/// `0xd000`). LR is set and control returns after the branch target.
+#[test]
+fn t32_bl_far_with_j2_zero() {
+    // movs r0, #5 ; bl 0x1016 ; movs r1, #1 ; movs r2, #2 ; bkpt
+    // (0x1016) movs r3, #3 ; bkpt
+    let mut m = boot_v7m(&[
+        0x05, 0x20, 0x00, 0xf0, 0x00, 0xf0, 0x01, 0x21, 0x02, 0x22, 0x00, 0xbe,
+    ]);
+    {
+        let mem = m.core.mem();
+        mem.write(0x1016, 0x03).unwrap();
+        mem.write(0x1017, 0x23).unwrap();
+        mem.write(0x1018, 0x00).unwrap();
+        mem.write(0x1019, 0xbe).unwrap();
+    }
+    let err = m.run(10);
+    assert_eq!(err, Err(HaltCause::Breakpoint));
+    let (regs, _, cycles) = m.core.snapshot();
+    assert_eq!(cycles, 3);
+    assert_eq!(regs.r[0], 5);
+    assert_eq!(regs.r[1], 0);
+    assert_eq!(regs.r[2], 0);
+    assert_eq!(regs.r[3], 3);
+    assert_eq!(regs.lr, 0x17);
+}
