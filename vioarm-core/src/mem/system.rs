@@ -128,9 +128,16 @@ impl<M: Bus> SystemMemory<M> {
     /// was already freshened by `tick_devices`, and its priority bytes plus the
     /// SCB's fixed-exception priorities are the arbiter.
     #[allow(clippy::cast_possible_truncation)]
-    fn peek_exception(&self, primask: bool, current_ipsr: u8) -> Option<u8> {
-        // PRIMASK blocks every exception we model (only faults escape it).
-        if primask {
+    fn peek_exception(
+        &self,
+        primask: bool,
+        faultmask: bool,
+        basepri: u8,
+        current_ipsr: u8,
+    ) -> Option<u8> {
+        // PRIMASK and FAULTMASK block every configurable-priority exception we
+        // model (only faults escape them).
+        if primask || faultmask {
             return None;
         }
         // Best pending candidate by priority; ties go to the lowest exception
@@ -152,6 +159,12 @@ impl<M: Bus> SystemMemory<M> {
             ready &= ready - 1;
         }
         let (n, priority) = best?;
+        // BASEPRI masks the configurable-priority exceptions (PendSV, SysTick,
+        // and external IRQs) whose priority number is `>=` its value. A zero
+        // BASEPRI never masks. Faults (3) are not configurable.
+        if basepri != 0 && n >= 14 && priority >= basepri {
+            return None;
+        }
         // Only a strictly higher-priority (numerically lower) exception
         // preempts the one running. HardFault (3) blocks everything we model.
         match self.current_priority(current_ipsr) {
@@ -239,8 +252,14 @@ impl<M: Bus> Bus for SystemMemory<M> {
 }
 
 impl<M: Bus> PeripheralBus for SystemMemory<M> {
-    fn next_exception(&mut self, primask: bool, current_ipsr: u8) -> Option<u8> {
-        self.peek_exception(primask, current_ipsr)
+    fn next_exception(
+        &mut self,
+        primask: bool,
+        faultmask: bool,
+        basepri: u8,
+        current_ipsr: u8,
+    ) -> Option<u8> {
+        self.peek_exception(primask, faultmask, basepri, current_ipsr)
     }
 
     fn acknowledge_exception(&mut self, n: u8) {
@@ -497,10 +516,12 @@ mod tests {
         sys.write_word(0xE000_E100, 1).unwrap(); // ISER: enable line 0
         sys.write(Raiser::BASE + 1, 1).unwrap(); // device asserts
         sys.tick_devices(1); // a sync point latches it into the NVIC
-        let n = sys.next_exception(false, 0).expect("IRQ0 pending");
+        let n = sys
+            .next_exception(false, false, 0, 0)
+            .expect("IRQ0 pending");
         assert_eq!(n, 16);
         sys.acknowledge_exception(n);
-        assert_eq!(sys.next_exception(false, 0), None);
+        assert_eq!(sys.next_exception(false, false, 0, 0), None);
         assert_eq!(sys.devices()[0].pending(), 0);
     }
 
@@ -508,11 +529,11 @@ mod tests {
     fn software_pending_needs_enable() {
         let mut sys = SystemMemory::new(ram());
         sys.write_word(0xE000_E200, 1).unwrap(); // ISPR: pend line 0
-        assert_eq!(sys.next_exception(false, 0), None);
+        assert_eq!(sys.next_exception(false, false, 0, 0), None);
         sys.write_word(0xE000_E100, 1).unwrap(); // ISER: enable line 0
-        assert_eq!(sys.next_exception(false, 0), Some(16));
+        assert_eq!(sys.next_exception(false, false, 0, 0), Some(16));
         sys.acknowledge_exception(16);
-        assert_eq!(sys.next_exception(false, 0), None);
+        assert_eq!(sys.next_exception(false, false, 0, 0), None);
     }
 
     #[test]
@@ -520,7 +541,7 @@ mod tests {
         let mut sys = SystemMemory::new(ram());
         sys.write_word(0xE000_E100, 0b11).unwrap();
         sys.write_word(0xE000_E200, 0b11).unwrap();
-        assert_eq!(sys.next_exception(false, 0), Some(16));
+        assert_eq!(sys.next_exception(false, false, 0, 0), Some(16));
     }
 
     #[test]
@@ -528,8 +549,41 @@ mod tests {
         let mut sys = SystemMemory::new(ram());
         sys.write_word(0xE000_E100, 1).unwrap();
         sys.write_word(0xE000_E200, 1).unwrap();
-        assert_eq!(sys.next_exception(true, 0), None);
-        assert_eq!(sys.next_exception(false, 0), Some(16));
+        assert_eq!(sys.next_exception(true, false, 0, 0), None);
+        assert_eq!(sys.next_exception(false, false, 0, 0), Some(16));
+    }
+
+    #[test]
+    fn faultmask_blocks_all() {
+        let mut sys = SystemMemory::new(ram());
+        sys.write_word(0xE000_E100, 1).unwrap();
+        sys.write_word(0xE000_E200, 1).unwrap();
+        assert_eq!(sys.next_exception(false, true, 0, 0), None);
+        assert_eq!(sys.next_exception(false, false, 0, 0), Some(16));
+    }
+
+    #[test]
+    fn basepri_masks_by_priority_number() {
+        let mut sys = SystemMemory::new(ram());
+        sys.write_word(0xE000_E100, 1).unwrap();
+        sys.write_word(0xE000_E200, 1).unwrap();
+        sys.write(0xE000_E400, 0x80).unwrap(); // IRQ0 priority 0x80
+                                               // BASEPRI at or below the priority number masks it.
+        assert_eq!(sys.next_exception(false, false, 0x40, 0), None);
+        assert_eq!(sys.next_exception(false, false, 0x80, 0), None);
+        // A larger BASEPRI leaves it unmasked; zero disables the mask.
+        assert_eq!(sys.next_exception(false, false, 0x90, 0), Some(16));
+        assert_eq!(sys.next_exception(false, false, 0, 0), Some(16));
+    }
+
+    #[test]
+    fn basepri_masks_pendsv() {
+        let mut sys = SystemMemory::new(ram());
+        sys.write_word(0xE000_ED04, 0x1000_0000).unwrap(); // pend PendSV
+        sys.write(0xE000_ED22, 0x40).unwrap(); // PendSV priority 0x40
+        assert_eq!(sys.next_exception(false, false, 0x20, 0), None);
+        assert_eq!(sys.next_exception(false, false, 0x40, 0), None);
+        assert_eq!(sys.next_exception(false, false, 0x50, 0), Some(14));
     }
 
     #[test]
@@ -541,9 +595,9 @@ mod tests {
         // IRQ7 keeps a low priority (0xC0); IRQ0 stays default 0.
         sys.write(0xE000_E407, 0xC0).unwrap();
         // Running in the IRQ7 handler (23, prio 0xC0): IRQ0 (prio 0) preempts.
-        assert_eq!(sys.next_exception(false, 23), Some(16));
+        assert_eq!(sys.next_exception(false, false, 0, 23), Some(16));
         // Running in the IRQ0 handler (16, prio 0): IRQ7 (prio 0xC0) cannot.
-        assert_eq!(sys.next_exception(false, 16), None);
+        assert_eq!(sys.next_exception(false, false, 0, 16), None);
     }
 
     #[test]
@@ -552,9 +606,9 @@ mod tests {
         sys.write_word(0xE000_E100, (1 << 0) | (1 << 7)).unwrap();
         sys.write_word(0xE000_E200, (1 << 0) | (1 << 7)).unwrap();
         // Same priority in thread mode: the lower line wins the take...
-        assert_eq!(sys.next_exception(false, 0), Some(16));
+        assert_eq!(sys.next_exception(false, false, 0, 0), Some(16));
         // ...but a same-priority handler blocks the other.
-        assert_eq!(sys.next_exception(false, 16), None);
+        assert_eq!(sys.next_exception(false, false, 0, 16), None);
     }
 
     #[test]
@@ -571,7 +625,7 @@ mod tests {
         sys.write_word(0xE000_E010, 0b111).unwrap();
         sys.tick_devices(2);
         // Exception 15 (prio 0) still outranks IRQ0 (now prio 0x40).
-        assert_eq!(sys.next_exception(false, 0), Some(15));
+        assert_eq!(sys.next_exception(false, false, 0, 0), Some(15));
     }
 
     #[test]
@@ -579,13 +633,13 @@ mod tests {
         let mut sys = SystemMemory::new(ram());
         // Pend PendSV through ICSR.PENDSVSET.
         sys.write_word(0xE000_ED04, 0x1000_0000).unwrap();
-        assert_eq!(sys.next_exception(false, 0), Some(14));
+        assert_eq!(sys.next_exception(false, false, 0, 0), Some(14));
         sys.acknowledge_exception(14);
-        assert_eq!(sys.next_exception(false, 0), None);
+        assert_eq!(sys.next_exception(false, false, 0, 0), None);
         // PRIMASK still masks it.
         sys.write_word(0xE000_ED04, 0x1000_0000).unwrap();
-        assert_eq!(sys.next_exception(true, 0), None);
-        assert_eq!(sys.next_exception(false, 0), Some(14));
+        assert_eq!(sys.next_exception(true, false, 0, 0), None);
+        assert_eq!(sys.next_exception(false, false, 0, 0), Some(14));
     }
 
     #[test]
@@ -597,7 +651,7 @@ mod tests {
         sys.write(0xE000_E407, 0xC0).unwrap();
         sys.write(0xE000_ED22, 0x40).unwrap(); // PendSV prio 0x40
         sys.write_word(0xE000_ED04, 0x1000_0000).unwrap();
-        assert_eq!(sys.next_exception(false, 23), Some(14));
+        assert_eq!(sys.next_exception(false, false, 0, 23), Some(14));
     }
 
     #[test]
@@ -609,6 +663,6 @@ mod tests {
         sys.write(0xE000_E407, 0xC0).unwrap();
         sys.write(0xE000_ED22, 0xC0).unwrap();
         sys.write_word(0xE000_ED04, 0x1000_0000).unwrap();
-        assert_eq!(sys.next_exception(false, 23), None);
+        assert_eq!(sys.next_exception(false, false, 0, 23), None);
     }
 }

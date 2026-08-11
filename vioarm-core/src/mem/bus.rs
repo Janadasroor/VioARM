@@ -105,9 +105,15 @@ pub trait Bus {
 /// commits to taking the exception.
 pub trait PeripheralBus: Bus {
     /// Peek: the lowest-numbered exception that should be taken right now,
-    /// honoring the core's mask and current exception priority, or `None`.
-    /// Must not consume.
-    fn next_exception(&mut self, primask: bool, current_ipsr: u8) -> Option<u8>;
+    /// honoring the core's mask (`PRIMASK`/`FAULTMASK`/`BASEPRI`) and current
+    /// exception priority, or `None`. Must not consume.
+    fn next_exception(
+        &mut self,
+        primask: bool,
+        faultmask: bool,
+        basepri: u8,
+        current_ipsr: u8,
+    ) -> Option<u8>;
 
     /// Consume: the core is taking exception `n`; drop the corresponding
     /// pending latch(es).

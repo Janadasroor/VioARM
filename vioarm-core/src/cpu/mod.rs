@@ -19,7 +19,7 @@ use decode32::{
     DualMulOp, ExSize, ExtendAddOp, Inst32, MemOp, MulOp, ParOp, ParSat, QaddOp, SatOp, ShiftType,
     SysReg, UnaryOp,
 };
-use registers::{Registers, Xpsr, APSR_QFLAGS, XPSR_T};
+use registers::{Registers, Xpsr, APSR_FLAGS, APSR_GE, APSR_Q, APSR_QFLAGS, XPSR_T};
 
 /// Which Thumb architecture the core executes.
 ///
@@ -289,7 +289,9 @@ impl<B: PeripheralBus> Core<B> {
     /// Read a system register for `mrs`.
     fn sysreg_read(&self, sys: SysReg) -> Result<u32, HaltCause> {
         let v = match sys {
-            SysReg::Apsr => self.xpsr.get() & APSR_QFLAGS,
+            // Reads return the whole APSR; the `_g`/`_nzcvqg` qualifiers only
+            // constrain the *write* mask.
+            SysReg::Apsr | SysReg::ApsrG | SysReg::ApsrNzvCqg => self.xpsr.get() & APSR_QFLAGS,
             SysReg::Xpsr => {
                 // xPSR also carries ITSTATE at bits [15:10] and [26:25].
                 let mut v = self.xpsr.get() & (APSR_QFLAGS | XPSR_T);
@@ -315,6 +317,8 @@ impl<B: PeripheralBus> Core<B> {
                 }
             }
             SysReg::Primask => u32::from(self.primask),
+            SysReg::Basepri | SysReg::BasepriMax => u32::from(self.basepri),
+            SysReg::Faultmask => u32::from(self.faultmask),
             SysReg::Control => self.control,
             SysReg::Other(_) => {
                 return Err(HaltCause::NotImplemented {
@@ -330,7 +334,16 @@ impl<B: PeripheralBus> Core<B> {
         match sys {
             SysReg::Apsr => {
                 let cur = self.xpsr.get();
-                self.xpsr.set((cur & !APSR_QFLAGS) | (v & APSR_QFLAGS));
+                self.xpsr.set((cur & !APSR_FLAGS) | (v & APSR_FLAGS));
+                self.xpsr.set_q(v & APSR_Q != 0);
+            }
+            SysReg::ApsrG => {
+                let cur = self.xpsr.get();
+                self.xpsr.set((cur & !APSR_GE) | (v & APSR_GE));
+            }
+            SysReg::ApsrNzvCqg => {
+                self.xpsr
+                    .set((self.xpsr.get() & !APSR_QFLAGS) | (v & APSR_QFLAGS));
             }
             SysReg::Msp => {
                 if self.sp_is_process() {
@@ -347,6 +360,17 @@ impl<B: PeripheralBus> Core<B> {
                 }
             }
             SysReg::Primask => self.primask = v & 1 != 0,
+            SysReg::Basepri => self.basepri = v as u8,
+            SysReg::BasepriMax => {
+                // Raises the mask (moves toward higher priority / lower
+                // number); writes that would reduce it are ignored, and a
+                // zero never re-enables a set mask.
+                let new = v as u8;
+                if new != 0 && (self.basepri == 0 || new < self.basepri) {
+                    self.basepri = new;
+                }
+            }
+            SysReg::Faultmask => self.faultmask = v & 1 != 0,
             SysReg::Control => {
                 let new = v & 0x7;
                 let want_process = new & 0x2 != 0;
@@ -613,11 +637,13 @@ impl<B: PeripheralBus> Core<B> {
             I::Bkpt { .. } => Ok(Next::Stop(HaltCause::Breakpoint)),
             I::Hint { .. } => Ok(Next::Advance(pc + 2)),
             I::Cps { disable, im } => {
-                // Only the `i` bit (bit1) has an architectural effect on
-                // ARMv6-M: it controls PRIMASK. `f`/`a` are aliases that do
-                // not exist on the M0.
+                // The `i` bit (bit1) controls PRIMASK. On ARMv7-M the `f` bit
+                // (bit0) is a FAULTMASK alias; ARMv6-M has neither `f` nor `a`.
                 if im & 0b010 != 0 {
                     self.primask = disable;
+                }
+                if self.isa == Isa::Armv7M && im & 0b001 != 0 {
+                    self.faultmask = disable;
                 }
                 Ok(Next::Advance(pc + 2))
             }
@@ -2571,6 +2597,91 @@ mod tests {
             c.sysreg_write(SysReg::Other(0x7f), 0),
             Err(HaltCause::NotImplemented { .. })
         ));
+    }
+
+    #[test]
+    fn sysreg_masks_basepri_and_faultmask() {
+        let mut c = armv7m_core();
+        // msr basepri, r0 -> f380 8011; mrs r0, basepri -> f3ef 8011.
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(0, 0x80);
+        load_inst(&mut c, 0x2000_0000, &[0x80, 0xf3, 0x11, 0x80]);
+        c.step().unwrap();
+        assert_eq!(c.basepri, 0x80);
+        load_inst(&mut c, 0x2000_0004, &[0xef, 0xf3, 0x11, 0x80]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0x80);
+        // BASEPRI_MAX (f380 8012) raises the mask but never lowers it.
+        c.regs.write(0, 0x90);
+        load_inst(&mut c, 0x2000_0008, &[0x80, 0xf3, 0x12, 0x80]);
+        c.step().unwrap();
+        assert_eq!(c.basepri, 0x80);
+        c.regs.write(0, 0x40);
+        load_inst(&mut c, 0x2000_000c, &[0x80, 0xf3, 0x12, 0x80]);
+        c.step().unwrap();
+        assert_eq!(c.basepri, 0x40);
+        c.regs.write(0, 0);
+        load_inst(&mut c, 0x2000_0010, &[0x80, 0xf3, 0x12, 0x80]);
+        c.step().unwrap();
+        assert_eq!(c.basepri, 0x40);
+        // A plain MSR BASEPRI writes freely in either direction.
+        c.regs.write(0, 0x20);
+        load_inst(&mut c, 0x2000_0014, &[0x80, 0xf3, 0x11, 0x80]);
+        c.step().unwrap();
+        assert_eq!(c.basepri, 0x20);
+        // FAULTMASK (f380 8013 / f3ef 8013) is a single mask bit.
+        c.regs.write(0, 1);
+        load_inst(&mut c, 0x2000_0018, &[0x80, 0xf3, 0x13, 0x80]);
+        c.step().unwrap();
+        assert!(c.faultmask);
+        load_inst(&mut c, 0x2000_001c, &[0xef, 0xf3, 0x13, 0x80]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 1);
+    }
+
+    #[test]
+    fn cps_primask_and_faultmask() {
+        // cpsid i -> b672; cpsie i -> b662; cpsid f -> b671; cpsie f -> b661.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        load_inst(&mut c, 0x2000_0000, &[0x71, 0xb6]); // cpsid f
+        c.step().unwrap();
+        assert!(c.faultmask);
+        load_inst(&mut c, 0x2000_0002, &[0x61, 0xb6]); // cpsie f
+        c.step().unwrap();
+        assert!(!c.faultmask);
+        load_inst(&mut c, 0x2000_0004, &[0x72, 0xb6]); // cpsid i
+        c.step().unwrap();
+        assert!(c.primask);
+        // On ARMv6-M the `f` bit is not an alias: it must leave FAULTMASK
+        // untouched (the register does not exist there).
+        let mut m0 = core();
+        m0.regs.pc = 0x2000_0000;
+        load_inst(&mut m0, 0x2000_0000, &[0x71, 0xb6]); // cpsid f
+        m0.step().unwrap();
+        assert!(!m0.faultmask);
+        assert!(!m0.primask);
+    }
+
+    #[test]
+    fn msr_apsr_write_masks() {
+        // msr apsr, r0 -> f380 8000 writes nzcvq only; the `_g` (8001) and
+        // `_nzcvqg` (8002) forms expand the mask to GE.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        let v = 0x8000_0000 | 0x2000_0000 | 0x0800_0000 | 0x000F_0000;
+        c.regs.write(0, v);
+        load_inst(&mut c, 0x2000_0000, &[0x80, 0xf3, 0x00, 0x80]); // msr apsr, r0
+        c.step().unwrap();
+        assert!(c.xpsr.n() && c.xpsr.c() && c.xpsr.q());
+        assert_eq!(c.xpsr.ge(), 0);
+        load_inst(&mut c, 0x2000_0004, &[0x80, 0xf3, 0x01, 0x80]); // msr apsr_g, r0
+        c.step().unwrap();
+        assert_eq!(c.xpsr.ge(), 0xF);
+        load_inst(&mut c, 0x2000_0008, &[0x80, 0xf3, 0x02, 0x80]); // msr apsr_nzcvqg, r0
+        c.step().unwrap();
+        assert!(c.xpsr.n() && c.xpsr.c() && c.xpsr.q());
+        assert_eq!(c.xpsr.ge(), 0xF);
     }
 
     #[test]

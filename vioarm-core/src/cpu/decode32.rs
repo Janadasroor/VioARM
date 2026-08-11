@@ -20,13 +20,27 @@ use crate::error::HaltCause;
 /// 8-bit fields LLVM emits on `thumbv6m`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SysReg {
+    /// `APSR` (and `MRS APSR_<bits>`) — a write via `MSR APSR` updates the
+    /// `nzcvq` bits only.
     Apsr,
+    /// `APSR_g`: an `MSR` here touches only the `GE[3:0]` bits.
+    ApsrG,
+    /// `APSR_nzcvqg`: an `MSR` here updates `nzcvq` and `GE[3:0]`.
+    ApsrNzvCqg,
     Xpsr,
     Ipsr,
     Epsr,
     Msp,
     Psp,
     Primask,
+    /// `BASEPRI` masks configurable-priority exceptions at priority `>=` its
+    /// value; `0` disables the mask.
+    Basepri,
+    /// `BASEPRI_MAX`: reads alias `BASEPRI`; a write raises the mask but never
+    /// lowers it.
+    BasepriMax,
+    /// `FAULTMASK` masks every configurable-priority exception.
+    Faultmask,
     Control,
     /// A reserved/unknown system-register id.
     Other(u8),
@@ -36,12 +50,17 @@ impl From<u8> for SysReg {
     fn from(id: u8) -> Self {
         match id {
             0x00 => Self::Apsr,
+            0x01 => Self::ApsrG,
+            0x02 => Self::ApsrNzvCqg,
             0x03 => Self::Xpsr,
             0x05 => Self::Ipsr,
             0x06 => Self::Epsr,
             0x08 => Self::Msp,
             0x09 => Self::Psp,
             0x10 => Self::Primask,
+            0x11 => Self::Basepri,
+            0x12 => Self::BasepriMax,
+            0x13 => Self::Faultmask,
             0x14 => Self::Control,
             other => Self::Other(other),
         }
@@ -2466,6 +2485,64 @@ mod tests {
             Ok(Inst32::Msr {
                 rn: 6,
                 sys: SysReg::Msp
+            })
+        );
+    }
+
+    #[test]
+    fn v7m_mrs_msr_system_registers() {
+        // The ARMv7-M-only special registers: mrs r0, basepri -> f3ef 8011.
+        assert_eq!(
+            v7m_bytes([0xef, 0xf3, 0x11, 0x80]),
+            Ok(Inst32::Mrs {
+                rd: 0,
+                sys: SysReg::Basepri
+            })
+        );
+        // mrs r0, basepri_max -> f3ef 8012; msr basepri_max, r0 -> f380 8012.
+        assert_eq!(
+            v7m_bytes([0xef, 0xf3, 0x12, 0x80]),
+            Ok(Inst32::Mrs {
+                rd: 0,
+                sys: SysReg::BasepriMax
+            })
+        );
+        assert_eq!(
+            v7m_bytes([0x80, 0xf3, 0x12, 0x80]),
+            Ok(Inst32::Msr {
+                rn: 0,
+                sys: SysReg::BasepriMax
+            })
+        );
+        // mrs r0, faultmask -> f3ef 8013; msr faultmask, r0 -> f380 8013.
+        assert_eq!(
+            v7m_bytes([0xef, 0xf3, 0x13, 0x80]),
+            Ok(Inst32::Mrs {
+                rd: 0,
+                sys: SysReg::Faultmask
+            })
+        );
+        assert_eq!(
+            v7m_bytes([0x80, 0xf3, 0x13, 0x80]),
+            Ok(Inst32::Msr {
+                rn: 0,
+                sys: SysReg::Faultmask
+            })
+        );
+        // The APSR write-mask forms: msr apsr_g, r0 -> f380 8001 and
+        // msr apsr_nzcvqg, r0 -> f380 8002.
+        assert_eq!(
+            v7m_bytes([0x80, 0xf3, 0x01, 0x80]),
+            Ok(Inst32::Msr {
+                rn: 0,
+                sys: SysReg::ApsrG
+            })
+        );
+        assert_eq!(
+            v7m_bytes([0x80, 0xf3, 0x02, 0x80]),
+            Ok(Inst32::Msr {
+                rn: 0,
+                sys: SysReg::ApsrNzvCqg
             })
         );
     }

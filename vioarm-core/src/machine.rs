@@ -66,8 +66,17 @@ impl<M: PeripheralBus> Machine<M> {
     ///
     /// Returns the halt cause if the machine halts while stepping.
     pub fn step(&mut self) -> Result<(), HaltCause> {
-        let (primask, ipsr) = (self.core.primask, self.core.ipsr);
-        if let Some(n) = self.core.mem().next_exception(primask, ipsr) {
+        let (primask, faultmask, basepri, ipsr) = (
+            self.core.primask,
+            self.core.faultmask,
+            self.core.basepri,
+            self.core.ipsr,
+        );
+        if let Some(n) = self
+            .core
+            .mem()
+            .next_exception(primask, faultmask, basepri, ipsr)
+        {
             self.core.enter_exception(n)?;
             self.core.mem().acknowledge_exception(n);
             self.core.cycles += 1;

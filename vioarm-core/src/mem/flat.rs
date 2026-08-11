@@ -79,7 +79,13 @@ impl Bus for FlatMemory {
 }
 
 impl PeripheralBus for FlatMemory {
-    fn next_exception(&mut self, _primask: bool, _current_ipsr: u8) -> Option<u8> {
+    fn next_exception(
+        &mut self,
+        _primask: bool,
+        _faultmask: bool,
+        _basepri: u8,
+        _current_ipsr: u8,
+    ) -> Option<u8> {
         None
     }
 
