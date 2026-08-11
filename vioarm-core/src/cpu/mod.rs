@@ -13,8 +13,8 @@ use crate::error::{Exception, HaltCause};
 use crate::mem::PeripheralBus;
 use decode16::{decode16, AluOp, Inst16, LsImm, LsReg, Shift, ShiftImm};
 use decode32::{
-    decode32, decode32_v7m, is_thumb2, is_thumb2_v7m, thumb_expand_imm, DpOp, Inst32, MemOp, MulOp,
-    ShiftType, SysReg, UnaryOp,
+    decode32, decode32_v7m, is_thumb2, is_thumb2_v7m, thumb_expand_imm, BitfieldOp, DpOp, Inst32,
+    MemOp, MulOp, ShiftType, SysReg, UnaryOp,
 };
 use registers::{Registers, Xpsr, APSR_FLAGS, XPSR_T};
 
@@ -891,6 +891,59 @@ impl<B: PeripheralBus> Core<B> {
                     UnaryOp::Clz => v.leading_zeros(),
                 };
                 self.regs.write(rd, result);
+                Ok(Next::Advance(pc + 4))
+            }
+            I::Bitfield {
+                op,
+                rd,
+                rn,
+                lsb,
+                field,
+            } => {
+                if rd == 15 {
+                    return Err(HaltCause::NotImplemented {
+                        what: "bitfield writes to pc",
+                    });
+                }
+                match op {
+                    BitfieldOp::Sbfx | BitfieldOp::Ubfx => {
+                        // `width = field + 1` bits are shifted down from
+                        // `lsb` and sign- or zero-extended. The decoder
+                        // guarantees `lsb + field <= 31`.
+                        let width = u32::from(field) + 1;
+                        let mask = if width == 32 {
+                            u32::MAX
+                        } else {
+                            (1u32 << width) - 1
+                        };
+                        let extracted = self.regs.read(rn) >> u32::from(lsb) & mask;
+                        let result =
+                            if op == BitfieldOp::Sbfx && extracted & (1u32 << (width - 1)) != 0 {
+                                extracted | !mask
+                            } else {
+                                extracted
+                            };
+                        self.regs.write(rd, result);
+                    }
+                    BitfieldOp::Bfi | BitfieldOp::Bfc => {
+                        // Deposit `Rn`'s low `width` bits into `Rd[field:lsb]`
+                        // (or clear the window, for `BFC`). The decoder
+                        // guarantees `field >= lsb`.
+                        let width = u32::from(field) - u32::from(lsb) + 1;
+                        let mask = if width == 32 {
+                            u32::MAX
+                        } else {
+                            ((1u32 << width) - 1) << u32::from(lsb)
+                        };
+                        let base = self.regs.read(rd) & !mask;
+                        let inserted = if op == BitfieldOp::Bfc {
+                            0
+                        } else {
+                            self.regs.read(rn) << u32::from(lsb) & mask
+                        };
+                        self.regs.write(rd, base | inserted);
+                    }
+                }
                 Ok(Next::Advance(pc + 4))
             }
         }
@@ -2113,6 +2166,65 @@ mod tests {
         let mut c = armv7m_core();
         c.regs.pc = 0x2000_0000;
         load_inst(&mut c, 0x2000_0000, &[0x80, 0xfa, 0x80, 0xff]);
+        assert!(matches!(c.step(), Err(HaltCause::NotImplemented { .. })));
+    }
+
+    #[test]
+    fn bitfield_extract() {
+        // ubfx r0, r1, #4, #8 (f3c1 1007): pull the middle byte out,
+        // zero-extended, with the flags untouched.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.xpsr.set_nzcv(true, true, true, true);
+        c.regs.write(1, 0x1234_5678);
+        load_inst(&mut c, 0x2000_0000, &[0xc1, 0xf3, 0x07, 0x10]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0x67);
+        assert_eq!(c.regs.pc, 0x2000_0004);
+        assert!(c.xpsr.n() && c.xpsr.z() && c.xpsr.c() && c.xpsr.v());
+
+        // sbfx r2, r3, #8, #8 (f343 2207): a negative source byte
+        // sign-extends.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(3, 0x0000_80FF);
+        load_inst(&mut c, 0x2000_0000, &[0x43, 0xf3, 0x07, 0x22]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[2], 0xFFFF_FF80);
+
+        // ... while a positive byte stays small.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(3, 0x0000_1278);
+        load_inst(&mut c, 0x2000_0000, &[0x43, 0xf3, 0x07, 0x22]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[2], 0x12);
+    }
+
+    #[test]
+    fn bitfield_insert_clear() {
+        // bfi r4, r5, #8, #8 (f365 240f): drop r5's low byte into r4's
+        // [15:8] window, leaving the rest alone.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(4, 0xFFFF_FFFF);
+        c.regs.write(5, 0x12);
+        load_inst(&mut c, 0x2000_0000, &[0x65, 0xf3, 0x0f, 0x24]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[4], 0xFFFF_12FF);
+
+        // bfc r6, #8, #8 (f36f 260f): clear the same window.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(6, 0xFFFF_FFFF);
+        load_inst(&mut c, 0x2000_0000, &[0x6f, 0xf3, 0x0f, 0x26]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[6], 0xFFFF_00FF);
+
+        // Writing the destination register 15 is rejected.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        load_inst(&mut c, 0x2000_0000, &[0x60, 0xf3, 0x0f, 0x2f]);
         assert!(matches!(c.step(), Err(HaltCause::NotImplemented { .. })));
     }
 }

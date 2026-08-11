@@ -572,3 +572,29 @@ fn unary_data_processing_on_armv7m() {
     assert!(!xpsr.n() && !xpsr.z() && !xpsr.c() && !xpsr.v());
     assert_eq!(regs.sp, INIT_SP);
 }
+
+/// ARMv7-M: the bitfield family. `bfi` deposits a field, `ubfx` extracts it
+/// back out, and `bfc` clears a window in place; none of them move the flags
+/// left by the `movs` setup.
+#[test]
+fn bitfield_on_armv7m() {
+    // movs r0, #0xab ; movs r2, #0
+    // bfi r2, r0, #8, #8 ; ubfx r3, r2, #12, #4 ; bfc r0, #4, #4 ; bkpt
+    let mut m = boot_v7m(&[
+        0xab, 0x20, 0x00, 0x22, 0x60, 0xf3, 0x0f, 0x22, 0xc2, 0xf3, 0x03, 0x33, 0x6f, 0xf3, 0x07,
+        0x10, 0x00, 0xbe,
+    ]);
+    let err = m.run(10);
+    assert_eq!(err, Err(HaltCause::Breakpoint));
+    let (regs, xpsr, cycles) = m.core.snapshot();
+    // Five instructions retire before the stopping bkpt.
+    assert_eq!(cycles, 5);
+    // bfi parked r0's low byte in r2's [15:8]; ubfx then read its top nibble.
+    assert_eq!(regs.r[2], 0xAB00);
+    assert_eq!(regs.r[3], 0xA);
+    // bfc cleared r0's [7:4], turning 0xab into 0x0b.
+    assert_eq!(regs.r[0], 0x0B);
+    // Z remains set from `movs r2, #0`: no bitfield op touched the flags.
+    assert!(xpsr.z() && !xpsr.n() && !xpsr.c() && !xpsr.v());
+    assert_eq!(regs.sp, INIT_SP);
+}

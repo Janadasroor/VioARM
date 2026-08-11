@@ -9,9 +9,9 @@
 //! data-processing group (`MOVW`/`MOVT`, shifted-register operations, and the
 //! `ThumbExpandImm` plus raw-12-bit immediate forms), the single-data-transfer
 //! family (all `LDR`/`STR` immediate sizes and the signed loads), and the
-//! divide, multiply, and unary (`REV`/`REV16`/`REVSH`/`RBIT`/`CLZ`) families,
-//! verified against `clang --target=thumbv7m`. Encoding ground truth lives in
-//! the test suite.
+//! divide, multiply, unary (`REV`/`REV16`/`REVSH`/`RBIT`/`CLZ`), and bitfield
+//! (`SBFX`/`UBFX`/`BFI`/`BFC`) families, verified against
+//! `clang --target=thumbv7m`. Encoding ground truth lives in the test suite.
 
 use super::decode::DecodeError;
 use crate::error::HaltCause;
@@ -222,6 +222,17 @@ pub enum Inst32 {
         rd: u8,
         rm: u8,
     },
+    /// ARMv7-M bitfield extract/insert: `SBFX`/`UBFX`/`BFI`/`BFC`. `field`
+    /// is the `widthm1` for the extracts (width `field + 1`) or the `msb`
+    /// for the inserts; `rn` is the source register, or `15` for the `BFC`
+    /// clear form. Flags are not affected.
+    Bitfield {
+        op: BitfieldOp,
+        rd: u8,
+        rn: u8,
+        lsb: u8,
+        field: u8,
+    },
 }
 
 /// ARMv7-M multiply-family opcode. The long forms read their `RdHi:RdLo`
@@ -259,6 +270,22 @@ pub enum UnaryOp {
     Rbit,
     /// `CLZ Rd, Rm`: count leading zeros (`32` when `Rm == 0`).
     Clz,
+}
+
+/// ARMv7-M bitfield-family opcode. `SBFX`/`UBFX` extract `field + 1` bits of
+/// `Rn` from `lsb` (sign- or zero-extending the result); `BFI` deposits `Rn`'s
+/// low `field - lsb + 1` bits into `Rd[field:lsb]`; `BFC` (the `Rn == 15`
+/// form of `BFI`) clears that same window. None of them touch the flags.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BitfieldOp {
+    /// `SBFX Rd, Rn, #lsb, #width`: signed bitfield extract.
+    Sbfx,
+    /// `UBFX Rd, Rn, #lsb, #width`: unsigned bitfield extract.
+    Ubfx,
+    /// `BFI Rd, Rn, #lsb, #width`: bitfield insert.
+    Bfi,
+    /// `BFC Rd, #lsb, #width`: bitfield clear.
+    Bfc,
 }
 
 /// True when `hw` is the first halfword of a 32-bit ARMv6-M instruction.
@@ -351,6 +378,7 @@ pub fn decode32_v7m(hi: u16, lo: u16) -> Result<Inst32, DecodeError> {
         .or_else(|| decode_div(hi, lo))
         .or_else(|| decode_mul(hi, lo))
         .or_else(|| decode_unary(hi, lo))
+        .or_else(|| decode_bitfield(hi, lo))
         .unwrap_or_else(|| Err(err_for(hi)))
 }
 
@@ -843,6 +871,52 @@ const fn decode_unary(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
         op,
         rd: ((lo >> 8) & 0xF) as u8,
         rm: (lo & 0xF) as u8,
+    }))
+}
+
+/// decode the ARMv7-M bitfield family: `SBFX`, `UBFX`, `BFI`, and `BFC`.
+///
+/// The `1111 0011 010/110/011 0` first-halfword prefixes select
+/// `SBFX`/`UBFX`/`BFI`, with the source `Rn` in the low nibble (`Rn == 15`
+/// turns `BFI` into `BFC`). The second halfword packs `0 imm3 Rd imm2 0
+/// field`, where `imm3:imm2` builds the `lsb` position (the same composition
+/// as the data-processing shift amounts) and `field` is `widthm1` for the
+/// extracts or `msb` for the inserts. The extracts UNDEFINE when the field
+/// runs past bit 31; the inserts UNDEFINE when `msb < lsb`.
+const fn decode_bitfield(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
+    let rn = (hi & 0xF) as u8;
+    let op = match hi & 0xFFF0 {
+        0xF340 => BitfieldOp::Sbfx,
+        0xF3C0 => BitfieldOp::Ubfx,
+        0xF360 => {
+            if rn == 0xF {
+                BitfieldOp::Bfc
+            } else {
+                BitfieldOp::Bfi
+            }
+        }
+        _ => return None,
+    };
+    // The second halfword's bit 15 and bit 5 are fixed zero.
+    if lo & 0x8020 != 0 {
+        return Some(Err(err_for(hi)));
+    }
+    let rd = ((lo >> 8) & 0xF) as u8;
+    let lsb = ((((lo >> 12) & 0x7) as u8) << 2) | (((lo >> 6) & 0x3) as u8);
+    let field = (lo & 0x1F) as u8;
+    if matches!(op, BitfieldOp::Sbfx | BitfieldOp::Ubfx) {
+        if lsb + field > 31 {
+            return Some(Err(err_for(hi)));
+        }
+    } else if field < lsb {
+        return Some(Err(err_for(hi)));
+    }
+    Some(Ok(Inst32::Bitfield {
+        op,
+        rd,
+        rn,
+        lsb,
+        field,
     }))
 }
 
@@ -1746,5 +1820,73 @@ mod tests {
         assert!(v7m_bytes([0x80, 0xfa, 0x0f, 0xf1]).is_err());
         assert!(decode32_bytes([0x9a, 0xfa, 0x06, 0xf0]).is_err());
         assert!(decode32_bytes([0xba, 0xfa, 0x08, 0xf0]).is_err());
+    }
+
+    #[test]
+    fn v7m_bitfield() {
+        // sbfx r0, r1, #8, #8 -> f341 2007: `Rn` in the first halfword's low
+        // nibble, `imm3:imm2` (= 2:0) building the 8-bit `lsb` in the second.
+        assert_eq!(
+            v7m_bytes([0x41, 0xf3, 0x07, 0x20]),
+            Ok(Inst32::Bitfield {
+                op: BitfieldOp::Sbfx,
+                rd: 0,
+                rn: 1,
+                lsb: 8,
+                field: 7,
+            })
+        );
+        // sbfx r2, r3, #8, #8 -> f343 2207.
+        assert_eq!(
+            v7m_bytes([0x43, 0xf3, 0x07, 0x22]),
+            Ok(Inst32::Bitfield {
+                op: BitfieldOp::Sbfx,
+                rd: 2,
+                rn: 3,
+                lsb: 8,
+                field: 7,
+            })
+        );
+        // ubfx r0, r1, #4, #8 -> f3c1 1007: `imm3` = 1, `imm2` = 0.
+        assert_eq!(
+            v7m_bytes([0xc1, 0xf3, 0x07, 0x10]),
+            Ok(Inst32::Bitfield {
+                op: BitfieldOp::Ubfx,
+                rd: 0,
+                rn: 1,
+                lsb: 4,
+                field: 7,
+            })
+        );
+        // bfi r4, r5, #8, #8 -> f365 240f: `field` is the `msb` (15).
+        assert_eq!(
+            v7m_bytes([0x65, 0xf3, 0x0f, 0x24]),
+            Ok(Inst32::Bitfield {
+                op: BitfieldOp::Bfi,
+                rd: 4,
+                rn: 5,
+                lsb: 8,
+                field: 0xF,
+            })
+        );
+        // bfc r6, #8, #8 -> f36f 260f: `Rn == 15` marks the clear form.
+        assert_eq!(
+            v7m_bytes([0x6f, 0xf3, 0x0f, 0x26]),
+            Ok(Inst32::Bitfield {
+                op: BitfieldOp::Bfc,
+                rd: 6,
+                rn: 0xF,
+                lsb: 8,
+                field: 0xF,
+            })
+        );
+        // An extract whose field runs off the top of the word (lsb 24, width
+        // 16), a `BFI` with `msb < lsb`, and a second halfword with a
+        // reserved fixed bit set are all UNDEFINED; the ARMv6-M decoder
+        // rejects the whole `1111 0011` bitfield space.
+        assert!(v7m_bytes([0xc1, 0xf3, 0x0f, 0x60]).is_err());
+        assert!(v7m_bytes([0x61, 0xf3, 0x0f, 0x40]).is_err());
+        assert!(v7m_bytes([0x41, 0xf3, 0x27, 0x20]).is_err());
+        assert!(decode32_bytes([0x41, 0xf3, 0x07, 0x20]).is_err());
     }
 }
