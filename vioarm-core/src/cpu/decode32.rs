@@ -232,6 +232,9 @@ pub enum Inst32 {
     /// addressing forms: offset (`index`, no writeback), pre-indexed (both),
     /// post-indexed (writeback only). `rn == 15` marks the PC-relative
     /// literal form (loads only), whose base is `Align(pc + 4, 4)`.
+    /// `unprivileged` marks the `LDRT`/`STRT` family (`P == 1 && U == 1 &&
+    /// W == 0`), which performs the access against unprivileged permission;
+    /// without an MPU the access itself is identical.
     Mem {
         access: MemOp,
         rt: u8,
@@ -242,6 +245,7 @@ pub enum Inst32 {
         add: bool,
         index: bool,
         writeback: bool,
+        unprivileged: bool,
     },
     /// ARMv7-M load/store dual: `LDRD`/`STRD` with an immediate offset.
     /// `imm` is the byte offset (`imm8 << 2`), `add` selects `+`/`-`,
@@ -1068,6 +1072,7 @@ fn decode_mem(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
             add: true,
             index: true,
             writeback: false,
+            unprivileged: false,
         }));
     }
     if wide {
@@ -1086,6 +1091,7 @@ fn decode_mem(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
             add: true,
             index: true,
             writeback: false,
+            unprivileged: false,
         }))
     } else if lo & 0x0800 != 0 {
         // The immediate form's second halfword is `Rt 1 P U W imm8`: bit 11
@@ -1097,10 +1103,6 @@ fn decode_mem(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
         let off = u32::from(lo & 0xFF);
         if !is_load && rt == 15 {
             // STR to PC is architecturally UNPREDICTABLE.
-            return err();
-        }
-        if p && u && !w {
-            // The unprivileged LDRT/STRT form is UNPREDICTABLE on ARMv7-M.
             return err();
         }
         if !p && !w {
@@ -1122,6 +1124,9 @@ fn decode_mem(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
             add: u,
             index,
             writeback,
+            // `P == 1 && U == 1 && W == 0` is the unprivileged `LDRT`/`STRT`
+            // family, not an error.
+            unprivileged: p && u && !w,
         }))
     } else if lo & 0x0FC0 == 0 {
         // The register-offset form's second halfword is `Rt 000000 shimm Rm`:
@@ -1143,6 +1148,7 @@ fn decode_mem(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
             add: true,
             index: true,
             writeback: false,
+            unprivileged: false,
         }))
     } else {
         // A second halfword with bit 11 clear but bits 11..6 non-zero is
@@ -1888,6 +1894,7 @@ mod tests {
             add,
             index,
             writeback,
+            unprivileged: false,
         }
     }
 
@@ -1904,6 +1911,7 @@ mod tests {
             add: true,
             index: true,
             writeback: false,
+            unprivileged: false,
         }
     }
 
@@ -2245,6 +2253,34 @@ mod tests {
             v7m_bytes([0x51, 0xf8, 0x08, 0x0b]),
             Ok(mem(MemOp::Ldr, 0, 1, 8, true, false, true))
         );
+        // ldrt r0, [r1, #8] -> f851 0e08 (P=1, U=1, W=0: unprivileged).
+        assert_eq!(
+            v7m_bytes([0x51, 0xf8, 0x08, 0x0e]),
+            Ok({
+                let mut m = mem(MemOp::Ldr, 0, 1, 8, true, true, false);
+                if let Inst32::Mem {
+                    unprivileged, ..
+                } = &mut m
+                {
+                    *unprivileged = true;
+                }
+                m
+            })
+        );
+        // strt r3, [r2, #4] -> f842 3e04 (unprivileged store).
+        assert_eq!(
+            v7m_bytes([0x42, 0xf8, 0x04, 0x3e]),
+            Ok({
+                let mut m = mem(MemOp::Str, 3, 2, 4, true, true, false);
+                if let Inst32::Mem {
+                    unprivileged, ..
+                } = &mut m
+                {
+                    *unprivileged = true;
+                }
+                m
+            })
+        );
         // ldr.w r4, [pc, #8] -> f8df 4008 (PC-relative literal, imm12).
         assert_eq!(
             v7m_bytes([0xdf, 0xf8, 0x08, 0x40]),
@@ -2323,8 +2359,6 @@ mod tests {
         assert!(v7m_bytes([0x4f, 0xf8, 0x01, 0x00]).is_err());
         // P == 0 && W == 0 in the imm8 form is UNDEFINED.
         assert!(v7m_bytes([0x51, 0xf8, 0x08, 0x0a]).is_err());
-        // The unprivileged (LDRT/STRT) pattern is UNPREDICTABLE.
-        assert!(v7m_bytes([0x51, 0xf8, 0x00, 0x0e]).is_err());
         // A second halfword with bit 11 clear but bits 11..6 non-zero is
         // not a valid immediate or register form.
         assert!(v7m_bytes([0x50, 0xf8, 0x40, 0x00]).is_err());

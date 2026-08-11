@@ -933,6 +933,7 @@ impl<B: PeripheralBus> Core<B> {
                 add,
                 index,
                 writeback,
+                unprivileged: _,
             } => {
                 // Rn == 15 is the literal form: the word-aligned `pc + 4`.
                 let base = if rn == 15 {
@@ -2790,6 +2791,27 @@ mod tests {
         c.step().unwrap();
         assert_eq!(c.regs.read(3), 0xDEAD_0000);
         assert_eq!(c.regs.read(2), 0x2000_0410);
+        assert_eq!(c.regs.pc, 0x2000_0008);
+    }
+
+    #[test]
+    fn mem_unprivileged_ldrt_strt() {
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0x1122_3344);
+        c.regs.write(2, 0x2000_0400);
+        // strt r1, [r2, #4] f842 1e04 (unprivileged store, no write-back).
+        load_inst(&mut c, 0x2000_0000, &[0x42, 0xf8, 0x04, 0x1e]);
+        c.step().unwrap();
+        assert_eq!(c.mem().read_word(0x2000_0404).unwrap(), 0x1122_3344);
+        assert_eq!(c.regs.read(2), 0x2000_0400);
+        assert_eq!(c.regs.pc, 0x2000_0004);
+        // ldrt r0, [r2, #8] f852 0e08 (unprivileged load, no write-back).
+        c.mem().write_word(0x2000_0408, 0xAABB_CCDD).unwrap();
+        load_inst(&mut c, 0x2000_0004, &[0x52, 0xf8, 0x08, 0x0e]);
+        c.step().unwrap();
+        assert_eq!(c.regs.read(0), 0xAABB_CCDD);
+        assert_eq!(c.regs.read(2), 0x2000_0400);
         assert_eq!(c.regs.pc, 0x2000_0008);
     }
 
