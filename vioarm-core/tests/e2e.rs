@@ -515,8 +515,9 @@ fn divide_on_armv7m() {
 }
 
 /// ARMv7-M: the multiply family. `mul`/`mla`/`mls` write the low 32 bits,
-/// and the long forms split the 64-bit product across `RdHi:RdLo`; at these
-/// magnitudes the high words stay zero and no flags move.
+/// and the long forms split the 64-bit product across `RdHi:RdLo` (encoded
+/// as bits11:8 / bits15:12); at these magnitudes the high words stay zero
+/// and no flags move.
 #[test]
 fn multiply_on_armv7m() {
     // movs r0, #7 ; movs r1, #6 ; movs r2, #0
@@ -524,7 +525,7 @@ fn multiply_on_armv7m() {
     // smull r6, r7, r0, r1 ; umull r8, r9, r0, r1 ; bkpt
     let mut m = boot_v7m(&[
         0x07, 0x20, 0x06, 0x21, 0x00, 0x22, 0x00, 0xfb, 0x01, 0xf3, 0x00, 0xfb, 0x11, 0x34, 0x00,
-        0xfb, 0x01, 0x25, 0x80, 0xfb, 0x01, 0x76, 0xa0, 0xfb, 0x01, 0x98, 0x00, 0xbe,
+        0xfb, 0x01, 0x25, 0x80, 0xfb, 0x01, 0x67, 0xa0, 0xfb, 0x01, 0x89, 0x00, 0xbe,
     ]);
     let err = m.run(10);
     assert_eq!(err, Err(HaltCause::Breakpoint));
@@ -546,6 +547,42 @@ fn multiply_on_armv7m() {
     assert_eq!(regs.sp, INIT_SP);
 }
 
+/// ARMv7-M: the dual multiply family. The halfword-product accumulators and
+/// the top-word forms leave their results in a single register, while the
+/// long forms split across `RdLo:RdHi`; none of them disturb the flags.
+#[test]
+fn dual_multiply_on_armv7m() {
+    // movs r0, #7 ; movs r1, #6 ; movs r2, #0
+    // smlad r3, r0, r1, r2 ; smuad r4, r0, r1 ; smmla r5, r0, r1, r2
+    // smlabb r6, r0, r1, r2 ; smlalbb r8, r9, r0, r1 ; umaal r10, r11, r0, r1
+    // bkpt
+    let mut m = boot_v7m(&[
+        0x07, 0x20, 0x06, 0x21, 0x00, 0x22, 0x20, 0xfb, 0x01, 0x23, 0x20, 0xfb, 0x01, 0xf4, 0x50,
+        0xfb, 0x01, 0x25, 0x10, 0xfb, 0x01, 0x26, 0xc0, 0xfb, 0x81, 0x89, 0xe0, 0xfb, 0x61, 0xab,
+        0x00, 0xbe,
+    ]);
+    let err = m.run(10);
+    assert_eq!(err, Err(HaltCause::Breakpoint));
+    let (regs, xpsr, cycles) = m.core.snapshot();
+    // Nine instructions retire before the stopping bkpt.
+    assert_eq!(cycles, 9);
+    // The single-register forms all land on 42 (or 0 for the top word).
+    assert_eq!(regs.r[3], 42); // 42 + 0
+    assert_eq!(regs.r[4], 42); // 42 + 0 (SMUAD)
+    assert_eq!(regs.r[5], 0); // 42 >> 32
+    assert_eq!(regs.r[6], 42); // 42 + 0
+                               // The long forms split the product across RdLo:RdHi.
+    assert_eq!(regs.r[8], 42);
+    assert_eq!(regs.r[9], 0);
+    assert_eq!(regs.r[10], 42);
+    assert_eq!(regs.r[11], 0);
+    // No accumulate overflowed, so Q stays clear; the Z flag from `movs`
+    // also survives.
+    assert!(!xpsr.q());
+    assert!(xpsr.z() && !xpsr.n() && !xpsr.c() && !xpsr.v());
+    assert_eq!(regs.sp, INIT_SP);
+}
+
 /// ARMv7-M: the unary byte/bits data-processing. `rev`/`rev16`/`revsh`/`rbit`
 /// reorder, `clz` counts, and none of them touch the flags left by `movs`.
 #[test]
@@ -553,7 +590,7 @@ fn unary_data_processing_on_armv7m() {
     // movs r0, #4 ; lsls r0, r0, #24  -> 0x0400_0000
     // rev r1, r0 ; rbit r2, r0 ; clz r3, r0 ; bkpt
     let mut m = boot_v7m(&[
-        0x04, 0x20, 0x00, 0x06, 0x80, 0xfa, 0x80, 0xf1, 0x90, 0xfa, 0xa0, 0xf2, 0xb0, 0xfa, 0x80,
+        0x04, 0x20, 0x00, 0x06, 0x90, 0xfa, 0x80, 0xf1, 0x90, 0xfa, 0xa0, 0xf2, 0xb0, 0xfa, 0x80,
         0xf3, 0x00, 0xbe,
     ]);
     let err = m.run(10);
@@ -596,6 +633,66 @@ fn bitfield_on_armv7m() {
     assert_eq!(regs.r[0], 0x0B);
     // Z remains set from `movs r2, #0`: no bitfield op touched the flags.
     assert!(xpsr.z() && !xpsr.n() && !xpsr.c() && !xpsr.v());
+    assert_eq!(regs.sp, INIT_SP);
+}
+
+/// ARMv7-M: the parallel add/subtract family and `SEL`. `sadd8` writes the
+/// per-lane GE flags, `sel` consumes them, and `uqadd8` clamps an overflowing
+/// unsigned lane without touching GE or the sticky Q flag.
+#[test]
+fn parallel_add_sub_and_sel_on_armv7m() {
+    // movs r0, #0xfe ; movs r1, #1
+    // sadd8 r2, r0, r1 ; sel r3, r0, r1
+    // movs r4, #0x80 ; uqadd8 r5, r4, r4 ; bkpt
+    let mut m = boot_v7m(&[
+        0xfe, 0x20, 0x01, 0x21, 0x80, 0xfa, 0x01, 0xf2, 0xa0, 0xfa, 0x81, 0xf3, 0x80, 0x24, 0x84,
+        0xfa, 0x54, 0xf5, 0x00, 0xbe,
+    ]);
+    let err = m.run(10);
+    assert_eq!(err, Err(HaltCause::Breakpoint));
+    let (regs, xpsr, cycles) = m.core.snapshot();
+    // Six instructions retire before the stopping bkpt.
+    assert_eq!(cycles, 6);
+    // sadd8: lane 0 wraps (0xfe + 0x01), the rest stay zero.
+    assert_eq!(regs.r[2], 0x0000_00FF);
+    // sel: lane 0 follows r1 (GE0 clear), the others follow r0 (GE set).
+    assert_eq!(regs.r[3], 0x0000_0001);
+    // uqadd8 clamps 0x80 + 0x80 to 0xff in the low lane.
+    assert_eq!(regs.r[5], 0x0000_00FF);
+    // GE survives the uqadd8, and the per-lane saturation left Q clear.
+    assert_eq!(xpsr.ge(), 0b1110);
+    assert!(!xpsr.q());
+    // `movs` left no other flags and the SIMD ops did not disturb them.
+    assert!(!xpsr.n() && !xpsr.z() && !xpsr.c() && !xpsr.v());
+    assert_eq!(regs.sp, INIT_SP);
+}
+
+/// ARMv7-M: the register-extend family. `sxtab` sign-extends a byte and adds
+/// (wrapping through zero here), `uxtab`/`uxtab16` zero-extend with a plain or
+/// per-halfword add, and the `rn == 15` two-operand `sxth` form folds away the
+/// addend.
+#[test]
+fn extend_add_on_armv7m() {
+    // movs r0, #0xff ; movs r1, #1
+    // sxtab r2, r1, r0 ; uxtab r3, r1, r0 ; uxtab16 r4, r1, r0 ; sxth r5, r0
+    // bkpt
+    let mut m = boot_v7m(&[
+        0xff, 0x20, 0x01, 0x21, 0x41, 0xfa, 0x80, 0xf2, 0x51, 0xfa, 0x80, 0xf3, 0x31, 0xfa, 0x80,
+        0xf4, 0x0f, 0xfa, 0x80, 0xf5, 0x00, 0xbe,
+    ]);
+    let err = m.run(10);
+    assert_eq!(err, Err(HaltCause::Breakpoint));
+    let (regs, _, cycles) = m.core.snapshot();
+    // Six instructions retire before the stopping bkpt.
+    assert_eq!(cycles, 6);
+    // sxtab: sext(0xff) + 1 wraps to zero.
+    assert_eq!(regs.r[2], 0);
+    // uxtab: 0xff + 1 = 0x100.
+    assert_eq!(regs.r[3], 0x100);
+    // uxtab16: low half 0xff + 1 = 0x100, high half 0 + 0 = 0.
+    assert_eq!(regs.r[4], 0x100);
+    // sxth: sign-extend the low halfword 0x00ff.
+    assert_eq!(regs.r[5], 0xff);
     assert_eq!(regs.sp, INIT_SP);
 }
 
@@ -760,8 +857,8 @@ fn t32_bcc_wide_taken_and_fallthrough() {
     // movs r0, #5 ; beq.w 0x1c ; movs r1, #1 ; movs r0, #0
     // beq.w 0x20 ; movs r2, #2 (skipped) ; movs r3, #3 ; bkpt
     let mut m = boot_v7m(&[
-        0x05, 0x20, 0x00, 0xf0, 0x03, 0xa8, 0x01, 0x21, 0x00, 0x20, 0x00, 0xf0, 0x01, 0xa8,
-        0x02, 0x22, 0x03, 0x23, 0x00, 0xbe,
+        0x05, 0x20, 0x00, 0xf0, 0x03, 0xa8, 0x01, 0x21, 0x00, 0x20, 0x00, 0xf0, 0x01, 0xa8, 0x02,
+        0x22, 0x03, 0x23, 0x00, 0xbe,
     ]);
     let err = m.run(10);
     assert_eq!(err, Err(HaltCause::Breakpoint));
@@ -780,8 +877,8 @@ fn t32_bne_wide_loop() {
     // movs r0, #5 ; movs r2, #2 ; (loop) subs r2, r2, #1 ; cmp r2, #0
     // bne.w 0x14 ; movs r3, #3 ; bkpt
     let mut m = boot_v7m(&[
-        0x05, 0x20, 0x02, 0x22, 0x01, 0x3a, 0x00, 0x2a, 0x7f, 0xf4, 0xfc, 0xaf, 0x03, 0x23,
-        0x00, 0xbe,
+        0x05, 0x20, 0x02, 0x22, 0x01, 0x3a, 0x00, 0x2a, 0x7f, 0xf4, 0xfc, 0xaf, 0x03, 0x23, 0x00,
+        0xbe,
     ]);
     let err = m.run(10);
     assert_eq!(err, Err(HaltCause::Breakpoint));
@@ -801,8 +898,8 @@ fn t32_blx_immediate_faults_nonthumb() {
     // movs r0, #5 ; blx 0x1e ; movs r1, #1 ; movs r2, #2 ; movs r3, #3
     // movs r4, #4 ; bkpt
     let mut m = boot_v7m(&[
-        0x05, 0x20, 0x00, 0xf0, 0x04, 0xe8, 0x01, 0x21, 0x02, 0x22, 0x03, 0x23, 0x04, 0x24,
-        0x00, 0xbe,
+        0x05, 0x20, 0x00, 0xf0, 0x04, 0xe8, 0x01, 0x21, 0x02, 0x22, 0x03, 0x23, 0x04, 0x24, 0x00,
+        0xbe,
     ]);
     let err = m.run(10);
     assert_eq!(err, Err(HaltCause::NonThumbTarget));

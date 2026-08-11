@@ -1011,19 +1011,61 @@ mod tests {
         // Encodings verified against the ARM ARM Table 8.3 (`mask` rows) and
         // real `itt ne`/`ite ne`/`itte ne` disassembly.
         // it eq   -> 0xBF08 (mask 1000).
-        assert_eq!(decode16_v7m(0xBF08), Ok(Inst16::It { cond: 0x0, mask: 0x8 }));
+        assert_eq!(
+            decode16_v7m(0xBF08),
+            Ok(Inst16::It {
+                cond: 0x0,
+                mask: 0x8
+            })
+        );
         // it ne   -> 0xBF18.
-        assert_eq!(decode16_v7m(0xBF18), Ok(Inst16::It { cond: 0x1, mask: 0x8 }));
+        assert_eq!(
+            decode16_v7m(0xBF18),
+            Ok(Inst16::It {
+                cond: 0x1,
+                mask: 0x8
+            })
+        );
         // itt eq  -> 0xBF04 (mask 0100).
-        assert_eq!(decode16_v7m(0xBF04), Ok(Inst16::It { cond: 0x0, mask: 0x4 }));
+        assert_eq!(
+            decode16_v7m(0xBF04),
+            Ok(Inst16::It {
+                cond: 0x0,
+                mask: 0x4
+            })
+        );
         // ite eq  -> 0xBF0C (mask 1100).
-        assert_eq!(decode16_v7m(0xBF0C), Ok(Inst16::It { cond: 0x0, mask: 0xC }));
+        assert_eq!(
+            decode16_v7m(0xBF0C),
+            Ok(Inst16::It {
+                cond: 0x0,
+                mask: 0xC
+            })
+        );
         // itte eq -> 0xBF06 (mask 0110).
-        assert_eq!(decode16_v7m(0xBF06), Ok(Inst16::It { cond: 0x0, mask: 0x6 }));
+        assert_eq!(
+            decode16_v7m(0xBF06),
+            Ok(Inst16::It {
+                cond: 0x0,
+                mask: 0x6
+            })
+        );
         // itttt eq -> 0xBF01 (mask 0001, 4 instructions).
-        assert_eq!(decode16_v7m(0xBF01), Ok(Inst16::It { cond: 0x0, mask: 0x1 }));
+        assert_eq!(
+            decode16_v7m(0xBF01),
+            Ok(Inst16::It {
+                cond: 0x0,
+                mask: 0x1
+            })
+        );
         // itet ge -> 0xBFA9 (GE=1010, mask 1001).
-        assert_eq!(decode16_v7m(0xBFA9), Ok(Inst16::It { cond: 0xA, mask: 0x9 }));
+        assert_eq!(
+            decode16_v7m(0xBFA9),
+            Ok(Inst16::It {
+                cond: 0xA,
+                mask: 0x9
+            })
+        );
         // HINT (mask == 0) is not an IT.
         assert_eq!(decode16_v7m(0xBF00), Ok(Inst16::Hint { kind: Hint::Nop }));
         // `firstcond == 1111` is UNPREDICTABLE.

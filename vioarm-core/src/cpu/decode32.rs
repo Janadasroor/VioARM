@@ -107,6 +107,15 @@ pub enum ShiftType {
     Ror,
 }
 
+/// Access width of an ARMv7-M exclusive load/store. The doubleword forms
+/// (`LDREXD`/`STREXD`) are not valid on M-profile and are not modeled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExSize {
+    Byte,
+    Half,
+    Word,
+}
+
 /// A decoded 32-bit instruction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Inst32 {
@@ -144,6 +153,26 @@ pub enum Inst32 {
     Barrier {
         kind: Barrier,
     },
+    /// `LDREX{B,H}` (word `LDREX`). `off` is the word-form `imm8 << 2`
+    /// offset (0 for the byte/halfword forms). The executor marks the
+    /// effective address with the exclusive monitor.
+    Ldrex {
+        rt: u8,
+        rn: u8,
+        size: ExSize,
+        off: u32,
+    },
+    /// `STREX{B,H}` (word `STREX`). `rd` receives 0 on success and 1 on
+    /// failure; `off` is the word-form `imm8 << 2` offset.
+    Strex {
+        rd: u8,
+        rt: u8,
+        rn: u8,
+        size: ExSize,
+        off: u32,
+    },
+    /// `CLREX`: clear the local exclusive monitor.
+    Clrex,
     /// ARMv7-M data-processing with a shifted-register operand:
     /// `Rd = Rn <op> Shift(Rm)`. `rn == 15` marks the `MOV`/`MVN` aliases,
     /// which do not read `Rn`. `amount` is the 5-bit shift amount; a `Ror`
@@ -238,15 +267,38 @@ pub enum Inst32 {
     },
     /// ARMv7-M multiply family. `MUL` writes the low 32 bits of `Rn * Rm`;
     /// `MLA`/`MLS` add/subtract `Ra`, and the long forms write the 64-bit
-    /// product (or accumulator, for the *AL forms) to `Ra:Rd`. Flags are
-    /// never affected, so `MUL` and `MLA` need no `S` bit.
+    /// product (or accumulator, for the *AL forms) to `RdHi:RdLo`, which
+    /// decode as `rd` (bits11:8) and `ra` (bits15:12) respectively. Flags
+    /// are never affected, so `MUL` and `MLA` need no `S` bit.
     Mul {
         op: MulOp,
         rd: u8,
         rn: u8,
         rm: u8,
-        /// `MLA`/`MLS` accumulator, or the `RdHi` half of a long multiply.
-        /// For `MUL` this is the all-ones encoding sentinel.
+        /// `MLA`/`MLS` accumulator, or the `RdLo` half of a long multiply
+        /// (bits15:12 of the encoding). For `MUL` this is the all-ones
+        /// encoding sentinel.
+        ra: u8,
+    },
+    /// ARMv7-M DSP multiply family. `ra` is the `USADA8` accumulator (the
+    /// all-ones sentinel for every other form). Flags are never affected.
+    DspMul {
+        op: DspMulOp,
+        rd: u8,
+        rn: u8,
+        rm: u8,
+        ra: u8,
+    },
+    /// ARMv7-M dual multiply family. `ra` is the accumulate operand (the
+    /// all-ones sentinel for `SMUAD`/`SMUSD`), or the `RdLo` half of the long
+    /// forms, which decode as `rd` (bits11:8) = `RdHi` and `ra` (bits15:12) =
+    /// `RdLo`, mirroring `Mul`. Flags are never touched, though `Q` may be
+    /// sticky-set.
+    DualMul {
+        op: DualMulOp,
+        rd: u8,
+        rn: u8,
+        rm: u8,
         ra: u8,
     },
     /// ARMv7-M unary register data-processing: `REV`/`REV16`/`REVSH`,
@@ -255,6 +307,28 @@ pub enum Inst32 {
         op: UnaryOp,
         rd: u8,
         rm: u8,
+    },
+    /// ARMv7-M saturating add/subtract: `QADD`/`QSUB` and the doubling
+    /// `QDADD`/`QDSUB`. The result is clamped to the signed 32-bit range and
+    /// the sticky APSR.Q flag is set when clamping happens. Flags are
+    /// otherwise not affected.
+    Qadd {
+        op: QaddOp,
+        rd: u8,
+        rn: u8,
+        rm: u8,
+    },
+    /// ARMv7-M saturate: `SSAT`/`USAT` (optionally shifted) and their 16-bit
+    /// `SSAT16`/`USAT16` forms. `sat_n` is the `sat_imm + 1` bit width of the
+    /// target range; `shift`/`sh` apply only to the full-word forms. Sets
+    /// APSR.Q on saturation. Flags are otherwise not affected.
+    Sat {
+        op: SatOp,
+        rd: u8,
+        rn: u8,
+        sat_n: u8,
+        sh: bool,
+        shift: u8,
     },
     /// ARMv7-M bitfield extract/insert: `SBFX`/`UBFX`/`BFI`/`BFC`. `field`
     /// is the `widthm1` for the extracts (width `field + 1`) or the `msb`
@@ -266,6 +340,36 @@ pub enum Inst32 {
         rn: u8,
         lsb: u8,
         field: u8,
+    },
+    /// ARMv7-M parallel add/subtract: the `S`/`Q`/`SH`/`U`/`UQ`/`UH` forms of
+    /// `ADD8`/`ADD16`/`SUB8`/`SUB16`/`ASX`/`SAX`. Each lane of `Rd` is the
+    /// wrapped, halved, or saturated lane result; only the `S` and `U` forms
+    /// write the per-lane GE flags. The per-lane saturating forms never touch
+    /// the sticky `APSR.Q` flag.
+    Par {
+        op: ParOp,
+        sat: ParSat,
+        rd: u8,
+        rn: u8,
+        rm: u8,
+    },
+    /// ARMv7-M `SEL Rd, Rn, Rm`: byte lane `i` of `Rd` comes from `Rn` when
+    /// GE flag `i` is set, and from `Rm` otherwise. Flags are not affected.
+    Sel {
+        rd: u8,
+        rn: u8,
+        rm: u8,
+    },
+    /// ARMv7-M register-extend: `SXTAH`/`UXTAH`/`SXTAB16`/`UXTAB16`/`SXTAB`/
+    /// `UXTAB`. `rot` is the `ROR #rot*8` amount; `rn == 15` selects the
+    /// two-operand `SXTH`/`UXTH`/`SXTB16`/`UXTB16`/`SXTB`/`UXTB` forms, which
+    /// the executor folds by skipping the addend. Flags are not affected.
+    ExtendAdd {
+        op: ExtendAddOp,
+        rd: u8,
+        rn: u8,
+        rm: u8,
+        rot: u8,
     },
 }
 
@@ -290,6 +394,98 @@ pub enum MulOp {
     Umlal,
 }
 
+/// ARMv7-M DSP multiply-family opcode. The halfword forms select the 16-bit
+/// halves of `Rn` (`x`) and `Rm` (`y`); `SMULWB`/`SMULWT` multiply the full
+/// signed 32-bit `Rn` by the selected halfword of `Rm` and keep the top 32
+/// bits of the 48-bit product; `SMMUL`/`SMMULR` keep the top word of the full
+/// 32-by-32 product; `USAD8`/`USADA8` sum the absolute byte differences (with
+/// an accumulate operand for the `A8` form). None of them touch the flags.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DspMulOp {
+    /// `SMULBB Rd, Rn, Rm`: `Rn[15:0] * Rm[15:0]`.
+    Smulbb,
+    /// `SMULBT Rd, Rn, Rm`: `Rn[15:0] * Rm[31:16]`.
+    Smulbt,
+    /// `SMULTB Rd, Rn, Rm`: `Rn[31:16] * Rm[15:0]`.
+    Smultb,
+    /// `SMULTT Rd, Rn, Rm`: `Rn[31:16] * Rm[31:16]`.
+    Smultt,
+    /// `SMULWB Rd, Rn, Rm`: `(Rn * Rm[15:0]) >> 16`.
+    Smulwb,
+    /// `SMULWT Rd, Rn, Rm`: `(Rn * Rm[31:16]) >> 16`.
+    Smulwt,
+    /// `SMMUL Rd, Rn, Rm`: `(Rn * Rm) >> 32`.
+    Smmul,
+    /// `SMMULR Rd, Rn, Rm`: `SMMUL` rounded by adding `0x8000_0000`.
+    Smmulr,
+    /// `USAD8 Rd, Rn, Rm`: sum of the four absolute byte differences.
+    Usad8,
+    /// `USADA8 Rd, Rn, Rm, Ra`: `USAD8` plus `Ra`.
+    Usada8,
+}
+
+/// ARMv7-M dual multiply family, from the `1111 1011` multiply zone.
+///
+/// `SMLAD`/`SMLSD` (and the `X` variants, which swap `Rm`'s halves) form the
+/// two halfword products and add or subtract them, then add `Ra`; with `Ra`
+/// all-ones they become `SMUAD`/`SMUSD` and drop the accumulate. `SMLABB`..
+/// `SMLATT` and `SMLAWB`/`SMLAWT` accumulate a single 16-bit (or 16-bit-of-
+/// 32-bit) product with `Ra`. `SMMLA`/`SMMLS` keep the top word of a 32-by-32
+/// product (subtracting it from `Ra << 32` for `SMMLS`). The long forms
+/// `SMLALBB`..`SMLALTT`, `SMLALD`, `SMLSLD` and `UMAAL` write `RdLo:RdHi`
+/// (bits15:12 / bits11:8) and add their products to a 64-bit accumulator.
+/// `SMLAD`/`SMLSD`/`SMLABB`/`SMLAWB`/`SMMLA` set the sticky `Q` flag on
+/// overflow; the long forms and `UMAAL` never touch it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DualMulOp {
+    /// `SMLABB Rd, Rn, Rm, Ra`: `Ra + Rn[15:0] * Rm[15:0]`.
+    Smlabb,
+    /// `SMLABT Rd, Rn, Rm, Ra`: `Ra + Rn[15:0] * Rm[31:16]`.
+    Smlabt,
+    /// `SMLATB Rd, Rn, Rm, Ra`: `Ra + Rn[31:16] * Rm[15:0]`.
+    Smlatb,
+    /// `SMLATT Rd, Rn, Rm, Ra`: `Ra + Rn[31:16] * Rm[31:16]`.
+    Smlatt,
+    /// `SMLAWB Rd, Rn, Rm, Ra`: `Ra + (Rn * Rm[15:0]) >> 16`.
+    Smlawb,
+    /// `SMLAWT Rd, Rn, Rm, Ra`: `Ra + (Rn * Rm[31:16]) >> 16`.
+    Smlawt,
+    /// `SMLAD Rd, Rn, Rm, Ra`: `Ra + p1 + p2` (also `SMUAD` when `Ra == 15`).
+    Smlad,
+    /// `SMLADX Rd, Rn, Rm, Ra`: `SMLAD` with `Rm`'s halves swapped.
+    Smladx,
+    /// `SMLSD Rd, Rn, Rm, Ra`: `Ra + p1 - p2` (also `SMUSD` when `Ra == 15`).
+    Smlsd,
+    /// `SMLSDX Rd, Rn, Rm, Ra`: `SMLSD` with `Rm`'s halves swapped.
+    Smlsdx,
+    /// `SMMLA Rd, Rn, Rm, Ra`: `Ra + (Rn * Rm) >> 32`.
+    Smmla,
+    /// `SMMLAR Rd, Rn, Rm, Ra`: `SMMLA` rounded by the `Rm * Rn` low bit 31.
+    Smmlar,
+    /// `SMMLS Rd, Rn, Rm, Ra`: `(Ra << 32 - Rn * Rm) >> 32`.
+    Smmls,
+    /// `SMMLSR Rd, Rn, Rm, Ra`: `SMMLS` rounded by the product low bit 31.
+    Smmlsr,
+    /// `SMLALD RdLo, RdHi, Rn, Rm`: `p1 + p2` accumulated, signed 64-bit.
+    Smlald,
+    /// `SMLALDX RdLo, RdHi, Rn, Rm`: `SMLALD` with `Rm`'s halves swapped.
+    Smlaldx,
+    /// `SMLSLD RdLo, RdHi, Rn, Rm`: `p1 - p2` accumulated, signed 64-bit.
+    Smlsld,
+    /// `SMLSLDX RdLo, RdHi, Rn, Rm`: `SMLSLD` with `Rm`'s halves swapped.
+    Smlsldx,
+    /// `SMLALBB RdLo, RdHi, Rn, Rm`: accumulate `Rn[15:0] * Rm[15:0]`.
+    Smlalbb,
+    /// `SMLALBT RdLo, RdHi, Rn, Rm`: accumulate `Rn[15:0] * Rm[31:16]`.
+    Smlalbt,
+    /// `SMLALTB RdLo, RdHi, Rn, Rm`: accumulate `Rn[31:16] * Rm[15:0]`.
+    Smlaltb,
+    /// `SMLALTT RdLo, RdHi, Rn, Rm`: accumulate `Rn[31:16] * Rm[31:16]`.
+    Smlaltt,
+    /// `UMAAL RdLo, RdHi, Rn, Rm`: unsigned product plus `RdHi` and `RdLo`.
+    Umaal,
+}
+
 /// ARMv7-M unary register-only data-processing opcode, from the `1111 1010`
 /// misc group. Each reads `Rm` and writes `Rd`; the flags are never touched.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -306,6 +502,40 @@ pub enum UnaryOp {
     Clz,
 }
 
+/// ARMv7-M saturating add/subtract opcode (`QADD`/`QSUB`/`QDADD`/`QDSUB`).
+///
+/// `QADD`/`QSUB` clamp the plain sum or difference; `QDADD`/`QDSUB` clamp the
+/// doubled second operand first and then clamp the sum/difference with it. The
+/// sticky Q flag is set if either clamp engages.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QaddOp {
+    /// `QADD Rd, Rn, Rm`: `Rd = Sat(Rn + Rm)`.
+    Qadd,
+    /// `QDADD Rd, Rn, Rm`: `Rd = Sat(Rn + Sat(Rm * 2))`.
+    Qdadd,
+    /// `QSUB Rd, Rn, Rm`: `Rd = Sat(Rn - Rm)`.
+    Qsub,
+    /// `QDSUB Rd, Rn, Rm`: `Rd = Sat(Rn - Sat(Rm * 2))`.
+    Qdsub,
+}
+
+/// ARMv7-M saturate opcode (`SSAT`/`USAT`/`SSAT16`/`USAT16`).
+///
+/// `SSAT`/`USAT` saturate a (shifted) 32-bit word to a signed/unsigned
+/// `sat_n`-bit range; `SSAT16`/`USAT16` saturate each halfword independently.
+/// Saturation sets the sticky Q flag.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SatOp {
+    /// `SSAT Rd, #sat, Rn {, shift}`: signed saturate.
+    Ssat,
+    /// `USAT Rd, #sat, Rn {, shift}`: unsigned saturate.
+    Usat,
+    /// `SSAT16 Rd, #sat, Rn`: per-halfword signed saturate.
+    Ssat16,
+    /// `USAT16 Rd, #sat, Rn`: per-halfword unsigned saturate.
+    Usat16,
+}
+
 /// ARMv7-M bitfield-family opcode. `SBFX`/`UBFX` extract `field + 1` bits of
 /// `Rn` from `lsb` (sign- or zero-extending the result); `BFI` deposits `Rn`'s
 /// low `field - lsb + 1` bits into `Rd[field:lsb]`; `BFC` (the `Rn == 15`
@@ -320,6 +550,74 @@ pub enum BitfieldOp {
     Bfi,
     /// `BFC Rd, #lsb, #width`: bitfield clear.
     Bfc,
+}
+
+/// ARMv7-M parallel add/subtract families: `ADD8`, `ADD16`, `SUB8`, `SUB16`,
+/// `ASX`, and `SAX`.
+///
+/// The byte/halfword families work lane-wise over `Rn` and `Rm`; `ASX`/`SAX`
+/// exchange the second operand's halves (`ASX` subtracts the swapped high half
+/// from the low lane and adds the swapped low half to the high lane; `SAX`
+/// mirrors the operations).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParOp {
+    /// `ADD8 Rd, Rn, Rm`: per-byte add.
+    Add8,
+    /// `ADD16 Rd, Rn, Rm`: per-halfword add.
+    Add16,
+    /// `SUB8 Rd, Rn, Rm`: per-byte subtract.
+    Sub8,
+    /// `SUB16 Rd, Rn, Rm`: per-halfword subtract.
+    Sub16,
+    /// `ASX Rd, Rn, Rm`: halfword subtract/add with the operands exchanged.
+    Asx,
+    /// `SAX Rd, Rn, Rm`: halfword add/subtract with the operands exchanged.
+    Sax,
+}
+
+/// ARMv7-M parallel add/subtract saturation selector (`S`/`Q`/`SH`/`U`/`UQ`/`UH`).
+///
+/// `S`/`U` wrap silently and write the per-lane GE flags; `Q`/`UQ` saturate
+/// each lane to the signed/unsigned `bits`-bit range; `SH`/`UH` halve each
+/// lane's exact result. The saturating forms do not set the sticky Q flag.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParSat {
+    /// Signed wrapping, writes GE.
+    S,
+    /// Signed saturating.
+    Q,
+    /// Signed halving.
+    Sh,
+    /// Unsigned wrapping, writes GE.
+    U,
+    /// Unsigned saturating.
+    Uq,
+    /// Unsigned halving.
+    Uh,
+}
+
+/// ARMv7-M register-extend family: `SXTAH`/`UXTAH`/`SXTAB16`/`UXTAB16`/
+/// `SXTAB`/`UXTAB`.
+///
+/// Each rotates `Rm` right by `rot * 8` bits, extends the selected byte (both
+/// bytes for the `16` forms) or halfword, and adds `Rn`. Flags are not
+/// affected.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExtendAddOp {
+    /// `SXTAH Rd, Rn, Rm {, ROR #rot}`: sign-extend the halfword, add `Rn`.
+    Sxtah,
+    /// `UXTAH Rd, Rn, Rm {, ROR #rot}`: zero-extend the halfword, add `Rn`.
+    Uxtah,
+    /// `SXTAB16 Rd, Rn, Rm {, ROR #rot}`: sign-extend each byte, per-halfword
+    /// add `Rn`.
+    Sxtab16,
+    /// `UXTAB16 Rd, Rn, Rm {, ROR #rot}`: zero-extend each byte,
+    /// per-halfword add `Rn`.
+    Uxtab16,
+    /// `SXTAB Rd, Rn, Rm {, ROR #rot}`: sign-extend the byte, add `Rn`.
+    Sxtab,
+    /// `UXTAB Rd, Rn, Rm {, ROR #rot}`: zero-extend the byte, add `Rn`.
+    Uxtab,
 }
 
 /// True when `hw` is the first halfword of a 32-bit ARMv6-M instruction.
@@ -401,11 +699,13 @@ pub fn decode32(hi: u16, lo: u16) -> Result<Inst32, DecodeError> {
 pub fn decode32_v7m(hi: u16, lo: u16) -> Result<Inst32, DecodeError> {
     decode_mrs(hi, lo)
         .or_else(|| decode_msr(hi, lo))
+        .or_else(|| decode_clrex(hi, lo))
         .or_else(|| decode_barrier(hi, lo))
         .or_else(|| decode_branch(hi, lo))
         .or_else(|| decode_movwide(hi, lo))
         .or_else(|| decode_mem(hi, lo))
         .or_else(|| decode_ldm_stm(hi, lo))
+        .or_else(|| decode_exclusive(hi, lo))
         .or_else(|| decode_tbranch(hi, lo))
         .or_else(|| decode_ldrd_strd(hi, lo))
         .or_else(|| decode_dp_plain(hi, lo))
@@ -413,8 +713,14 @@ pub fn decode32_v7m(hi: u16, lo: u16) -> Result<Inst32, DecodeError> {
         .or_else(|| decode_dp_reg(hi, lo))
         .or_else(|| decode_div(hi, lo))
         .or_else(|| decode_mul(hi, lo))
+        .or_else(|| decode_dsp_mul(hi, lo))
+        .or_else(|| decode_dual_mul(hi, lo))
+        .or_else(|| decode_extend(hi, lo))
+        .or_else(|| decode_par_addsub(hi, lo))
+        .or_else(|| decode_qadd(hi, lo))
         .or_else(|| decode_unary(hi, lo))
         .or_else(|| decode_bitfield(hi, lo))
+        .or_else(|| decode_sat(hi, lo))
         .unwrap_or_else(|| Err(err_for(hi)))
 }
 
@@ -538,6 +844,12 @@ fn decode_msr(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
     if hi & 0xFFF0 != 0xF380 {
         return None;
     }
+    // The `1111 0011 10..` zone also hosts `USAT`, whose second halfword
+    // starts with a fixed zero (bit 15). MSR needs `1000` there, so a clear
+    // bit 15 is not ours to reject.
+    if lo & 0x8000 == 0 {
+        return None;
+    }
     if lo & 0xF000 != 0x8000 {
         return Some(Err(err_for(hi)));
     }
@@ -554,6 +866,11 @@ fn decode_barrier(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
     if hi != 0xF3BF {
         return None;
     }
+    // `CLREX` shares the first halfword; it is claimed by `decode_clrex` on
+    // the ARMv7-M path and must fall through (to undefined) on ARMv6-M.
+    if lo == 0x8F2F {
+        return None;
+    }
     if lo & 0xF000 != 0x8000 {
         return Some(Err(err_for(hi)));
     }
@@ -564,6 +881,102 @@ fn decode_barrier(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
         _ => return Some(Err(err_for(hi))),
     };
     Some(Ok(Inst32::Barrier { kind }))
+}
+
+/// decode the ARMv7-M `CLREX`. Its first halfword (`0xF3BF`) is shared with
+/// the barrier family; this decoder runs first on the ARMv7-M path.
+fn decode_clrex(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
+    if hi == 0xF3BF && lo == 0x8F2F {
+        Some(Ok(Inst32::Clrex))
+    } else {
+        None
+    }
+}
+
+/// decode the ARMv7-M exclusive load/store family: the word `LDREX`/`STREX`
+/// and the `LDREX{B,H}`/`STREX{B,H}` forms.
+///
+/// First-halfword bits [7:4] name the instruction: `0100` the word `STREX`,
+/// `0101` the word `LDREX`, `1100` the `STREX{B,H}`, `1101` the
+/// `LDREX{B,H}`. The word forms carry `Rt Rd imm8` / `Rt 1111 imm8` in the
+/// second halfword (offset `imm8 << 2`); the byte/halfword forms fix
+/// second-halfword bits [11:8] = `1111` and put the width selector in bits
+/// [7:4] (`0100` byte, `0101` halfword, `0111` doubleword — the doubleword
+/// forms are not valid on M-profile). The `0xE8C0`/`0xE8D0` spaces are
+/// shared with `STRD`/`LDRD` (bits [11:8] = `Rt2`) and `TBB`/`TBH`, so a
+/// second halfword without the `1111` tag is handed back to those decoders.
+fn decode_exclusive(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
+    let rn = (hi & 0xF) as u8;
+    let rt = ((lo >> 12) & 0xF) as u8;
+    let field = ((lo >> 8) & 0xF) as u8;
+    let err = || Some(Err(err_for(hi)));
+    match hi & 0xFFF0 {
+        0xE840 => {
+            // STREX (word): Rt Rd imm8. `Rt == 1111` is the ARMv8-M `TT`
+            // family, not valid here.
+            if rt == 15 || field == 15 || rn == 15 {
+                return err();
+            }
+            Some(Ok(Inst32::Strex {
+                rd: field,
+                rt,
+                rn,
+                size: ExSize::Word,
+                off: ((lo & 0xFF) as u32) << 2,
+            }))
+        }
+        0xE850 => {
+            // LDREX (word): Rt 1111 imm8.
+            if rt == 15 || field != 15 || rn == 15 {
+                return err();
+            }
+            Some(Ok(Inst32::Ldrex {
+                rt,
+                rn,
+                size: ExSize::Word,
+                off: ((lo & 0xFF) as u32) << 2,
+            }))
+        }
+        0xE8C0 | 0xE8D0 => {
+            let is_load = hi & 0x10 != 0;
+            // Without the `1111` tag this second halfword is a `STRD`
+            // (stores) or `LDRD` (loads) register pair.
+            if field != 15 {
+                return None;
+            }
+            let size = match (lo >> 4) & 0xF {
+                0x4 => ExSize::Byte,
+                0x5 => ExSize::Half,
+                // The `0111` doubleword forms (and the ARMv8 acquire /
+                // release family) are not valid on M-profile.
+                _ => return err(),
+            };
+            if is_load {
+                if lo & 0xF != 0xF || rt == 15 || rn == 15 {
+                    return err();
+                }
+                Some(Ok(Inst32::Ldrex {
+                    rt,
+                    rn,
+                    size,
+                    off: 0,
+                }))
+            } else {
+                let rd = (lo & 0xF) as u8;
+                if rd == 15 || rt == 15 || rn == 15 {
+                    return err();
+                }
+                Some(Ok(Inst32::Strex {
+                    rd,
+                    rt,
+                    rn,
+                    size,
+                    off: 0,
+                }))
+            }
+        }
+        _ => None,
+    }
 }
 
 /// decode the ARMv7-M `MOVW`/`MOVT`.
@@ -1000,25 +1413,172 @@ const fn decode_mul(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
         0xFBE0 => (MulOp::Umlal, true),
         _ => return None,
     };
+    // The `0xFBC0`/`0xFBE0` prefixes carry `SMLALBB`..`SMLALTT`, `SMLALD`,
+    // `SMLSLD` and `UMAAL` under other selectors, which `decode_dual_mul`
+    // claims.
     if is_long && lo & 0x00F0 != 0 {
-        return Some(Err(err_for(hi)));
+        return None;
     }
     Some(Ok(Inst32::Mul { op, rd, rn, rm, ra }))
+}
+
+/// Decode the ARMv7-M DSP multiply family: the halfword `SMUL`, the word
+/// `SMMUL`/`SMMULR`, and `USAD8`/`USADA8`.
+///
+/// They share the `1111 1011` multiply zone with `decode_mul`; the prefix
+/// nibble `op22_20` picks the family and the second halfword's `Ra:Rd:op:Rm`
+/// fields pick the form. `SMULx` and `SMMULx` reuse the `Ra == 1111` sentinel
+/// of the plain multiply: a nonzero `Ra` selects the accumulate variants
+/// (`SMLAB`/`SMLAWB`/`SMMLA`), which this decoder does not implement yet.
+const fn decode_dsp_mul(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
+    let rn = (hi & 0xF) as u8;
+    let rd = ((lo >> 8) & 0xF) as u8;
+    let ra = ((lo >> 12) & 0xF) as u8;
+    let rm = (lo & 0xF) as u8;
+    let op = match hi & 0xFFF0 {
+        0xFB10 => {
+            if ra != 0xF {
+                // `SMLABB`/`SMLABT`/`SMLATB`/`SMLATT` claim this prefix.
+                return None;
+            }
+            match lo & 0x00F0 {
+                0x0000 => DspMulOp::Smulbb,
+                0x0010 => DspMulOp::Smulbt,
+                0x0020 => DspMulOp::Smultb,
+                0x0030 => DspMulOp::Smultt,
+                _ => return Some(Err(err_for(hi))),
+            }
+        }
+        0xFB30 => {
+            if ra != 0xF {
+                // `SMLAWB`/`SMLAWT` claim this prefix.
+                return None;
+            }
+            match lo & 0x00F0 {
+                0x0000 => DspMulOp::Smulwb,
+                0x0010 => DspMulOp::Smulwt,
+                _ => return Some(Err(err_for(hi))),
+            }
+        }
+        0xFB50 => {
+            if ra != 0xF {
+                // `SMMLA`/`SMMLAR` claim this prefix.
+                return None;
+            }
+            match lo & 0x00F0 {
+                0x0000 => DspMulOp::Smmul,
+                0x0010 => DspMulOp::Smmulr,
+                _ => return Some(Err(err_for(hi))),
+            }
+        }
+        0xFB70 => match lo & 0x00F0 {
+            0x0000 => {
+                if ra == 0xF {
+                    DspMulOp::Usad8
+                } else {
+                    DspMulOp::Usada8
+                }
+            }
+            _ => return Some(Err(err_for(hi))),
+        },
+        _ => return None,
+    };
+    Some(Ok(Inst32::DspMul { op, rd, rn, rm, ra }))
+}
+
+/// Decode the ARMv7-M dual multiply family: `SMLAD`/`SMLSD`, `SMLABB`..`SMLATT`,
+/// `SMLAWB`/`SMLAWT`, `SMMLA`/`SMMLS`, the long forms `SMLALBB`..`SMLALTT`,
+/// `SMLALD`/`SMLSLD`, and `UMAAL`.
+///
+/// They share the `1111 1011` multiply zone; the first-halfword nibble `op22_20`
+/// picks the family and the second halfword's `Ra:Rd:sel:Rm` fields the form.
+/// The accumulate forms (a nonzero `Ra` on the `0xFB10`/`0xFB30`/`0xFB50`
+/// prefixes) and the `0xFB20`/`0xFB40`/`0xFB60`/`0xFBC0`/`0xFBD0`/`0xFBE0`
+/// prefixes never match `decode_mul`/`decode_dsp_mul`, so this decoder is only
+/// consulted in the multiply zone. `SMLAD`/`SMLSD` keep their `Ra == 1111`
+/// `SMUAD`/`SMUSD` meaning. Flags are never affected, though `Q` may be set.
+const fn decode_dual_mul(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
+    let rn = (hi & 0xF) as u8;
+    let rd = ((lo >> 8) & 0xF) as u8;
+    let ra = ((lo >> 12) & 0xF) as u8;
+    let rm = (lo & 0xF) as u8;
+    let op = match hi & 0xFFF0 {
+        0xFB10 => match lo & 0x00F0 {
+            0x0000 => DualMulOp::Smlabb,
+            0x0010 => DualMulOp::Smlabt,
+            0x0020 => DualMulOp::Smlatb,
+            0x0030 => DualMulOp::Smlatt,
+            _ => return Some(Err(err_for(hi))),
+        },
+        0xFB20 => match lo & 0x00F0 {
+            0x0000 => DualMulOp::Smlad,
+            0x0010 => DualMulOp::Smladx,
+            _ => return Some(Err(err_for(hi))),
+        },
+        0xFB30 => match lo & 0x00F0 {
+            0x0000 => DualMulOp::Smlawb,
+            0x0010 => DualMulOp::Smlawt,
+            _ => return Some(Err(err_for(hi))),
+        },
+        0xFB40 => match lo & 0x00F0 {
+            0x0000 => DualMulOp::Smlsd,
+            0x0010 => DualMulOp::Smlsdx,
+            _ => return Some(Err(err_for(hi))),
+        },
+        0xFB50 => match lo & 0x00F0 {
+            0x0000 => DualMulOp::Smmla,
+            0x0010 => DualMulOp::Smmlar,
+            _ => return Some(Err(err_for(hi))),
+        },
+        0xFB60 => match lo & 0x00F0 {
+            // `SMMLS` has no `Ra == 1111` form, so that case is UNDEFINED.
+            0x0000 if ra != 0xF => DualMulOp::Smmls,
+            0x0010 if ra != 0xF => DualMulOp::Smmlsr,
+            _ => return Some(Err(err_for(hi))),
+        },
+        0xFBC0 => match lo & 0x00F0 {
+            0x0080 => DualMulOp::Smlalbb,
+            0x0090 => DualMulOp::Smlalbt,
+            0x00A0 => DualMulOp::Smlaltb,
+            0x00B0 => DualMulOp::Smlaltt,
+            0x00C0 => DualMulOp::Smlald,
+            0x00D0 => DualMulOp::Smlaldx,
+            _ => return Some(Err(err_for(hi))),
+        },
+        0xFBD0 => match lo & 0x00F0 {
+            0x00C0 => DualMulOp::Smlsld,
+            0x00D0 => DualMulOp::Smlsldx,
+            _ => return Some(Err(err_for(hi))),
+        },
+        0xFBE0 => match lo & 0x00F0 {
+            0x0060 => DualMulOp::Umaal,
+            _ => return Some(Err(err_for(hi))),
+        },
+        _ => return None,
+    };
+    Some(Ok(Inst32::DualMul { op, rd, rn, rm, ra }))
 }
 
 /// decode the ARMv7-M unary data-processing family: `REV`, `REV16`, `REVSH`,
 /// `RBIT`, and `CLZ`.
 ///
-/// All five live in the `1111 1010` misc zone with `1111 Rd <sel> Rm` second
-/// halfwords; the two halfwords' selector nibbles (`10` then `00`/`01`/`10`/
-/// `11` and `10`/`11`) uniquely pick the opcode. The first halfword's low
-/// nibble is an ignored/`UNPREDICTABLE` `Rn` field.
+/// They live in the `1111 1010` misc zone: `REV`/`REV16`/`REVSH`/`RBIT` share
+/// the `1001` first-halfword selector (`0xFA90`, `RBIT`/`REV` selector `1010`
+/// at second-halfword bit 4) and `CLZ` the `1011` selector (`0xFAB0`). The
+/// register number is encoded twice — in the second halfword's `Rm` and the
+/// first halfword's low nibble `Rm2` — and must agree. The `QADD` family
+/// (selector `1000`, `0xFA80`) is handled by [`decode_qadd`].
 const fn decode_unary(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
+    // `Rm2` (first halfword low nibble) must copy `Rm`; otherwise the
+    // encoding is UNPREDICTABLE, which we treat as UNDEFINED.
+    if hi & 0xF != lo & 0xF {
+        return None;
+    }
     let op = match (hi & 0xFFF0, lo & 0xF0F0) {
-        (0xFA80, 0xF080) => UnaryOp::Rev,
-        (0xFA80, 0xF090) => UnaryOp::Rev16,
-        (0xFA90, 0xF0B0) => UnaryOp::Revsh,
+        (0xFA90, 0xF080) => UnaryOp::Rev,
+        (0xFA90, 0xF090) => UnaryOp::Rev16,
         (0xFA90, 0xF0A0) => UnaryOp::Rbit,
+        (0xFA90, 0xF0B0) => UnaryOp::Revsh,
         (0xFAB0, 0xF080) => UnaryOp::Clz,
         _ => return None,
     };
@@ -1026,6 +1586,171 @@ const fn decode_unary(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
         op,
         rd: ((lo >> 8) & 0xF) as u8,
         rm: (lo & 0xF) as u8,
+    }))
+}
+
+/// Decode the ARMv7-M register-extend family (`SXTAH`/`UXTAH`/`SXTAB16`/
+/// `UXTAB16`/`SXTAB`/`UXTAB`).
+///
+/// The first halfword is `1111 1010 <op> Rn` (`0xFA00 | op<<4 | rn`); the
+/// second is `1111 Rd 10 <rot> Rm`. `Rn == 15` is the two-operand alias
+/// (`SXTH`/`UXTB16`/...), which the executor folds by skipping the addend.
+/// Only the `op` nibbles `0`-`5` are extend instructions; the `0xFA80`+
+/// parallel, `QADD`, and unary families (and the reserved `0xFA60`/`0xFA70`
+/// space) are left for the other decoders.
+const fn decode_extend(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
+    if hi & 0xFF00 != 0xFA00 {
+        return None;
+    }
+    let op_nibble = (hi >> 4) & 0xF;
+    if op_nibble > 0x5 || lo & 0xF0C0 != 0xF080 {
+        return None;
+    }
+    let op = match op_nibble {
+        0x0 => ExtendAddOp::Sxtah,
+        0x1 => ExtendAddOp::Uxtah,
+        0x2 => ExtendAddOp::Sxtab16,
+        0x3 => ExtendAddOp::Uxtab16,
+        0x4 => ExtendAddOp::Sxtab,
+        _ => ExtendAddOp::Uxtab,
+    };
+    Some(Ok(Inst32::ExtendAdd {
+        op,
+        rd: ((lo >> 8) & 0xF) as u8,
+        rn: (hi & 0xF) as u8,
+        rm: (lo & 0xF) as u8,
+        rot: ((lo >> 4) & 0x3) as u8,
+    }))
+}
+
+/// Decode the ARMv7-M parallel add/subtract family (`SADD8`/`QADD16`/... and
+/// their `SH`/`U`/`UQ`/`UH` forms) plus the `SEL` instruction.
+///
+/// The first halfword is `1111 1010 fam Rn`; `fam` is a nibble from the
+/// `ADD8`/`ADD16`/`ASX`/`SUB8`/`SUB16`/`SAX` set, and `Rn` is the first
+/// operand. The second halfword is `1111 Rd <sel> Rm`, where the selector
+/// nibble picks the saturation mode. `SEL` reuses the `ASX` family with
+/// `sel == 1000`; the `sel` values that belong to `QADD` (family `ADD8`) and
+/// the unary ops (families `ADD16`/`ASX`-adjacent `0x9`/`0xB`) are returned
+/// as `None` so the other decoders claim them.
+const fn decode_par_addsub(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
+    if hi & 0xFF00 != 0xFA00 {
+        return None;
+    }
+    let fam = (hi >> 4) & 0xF;
+    let sel = (lo >> 4) & 0xF;
+    let op = match fam {
+        0x8 => ParOp::Add8,
+        0x9 => ParOp::Add16,
+        0xA => ParOp::Asx,
+        0xC => ParOp::Sub8,
+        0xD => ParOp::Sub16,
+        0xE => ParOp::Sax,
+        _ => return None,
+    };
+    if fam == 0xA && sel == 0x8 {
+        return Some(Ok(Inst32::Sel {
+            rd: ((lo >> 8) & 0xF) as u8,
+            rn: (hi & 0xF) as u8,
+            rm: (lo & 0xF) as u8,
+        }));
+    }
+    let sat = match sel {
+        0x0 => ParSat::S,
+        0x1 => ParSat::Q,
+        0x2 => ParSat::Sh,
+        0x4 => ParSat::U,
+        0x5 => ParSat::Uq,
+        0x6 => ParSat::Uh,
+        _ => return None,
+    };
+    Some(Ok(Inst32::Par {
+        op,
+        sat,
+        rd: ((lo >> 8) & 0xF) as u8,
+        rn: (hi & 0xF) as u8,
+        rm: (lo & 0xF) as u8,
+    }))
+}
+
+/// decode the ARMv7-M saturating add/subtract family: `QADD`, `QDADD`, `QSUB`,
+/// and `QDSUB`.
+///
+/// All four share the `1111 1010 1000 Rn` first halfword (`0xFA80`); the
+/// second halfword's selector nibble picks the opcode. Each reads `Rn` and
+/// `Rm`, writes `Rd`, and clamps to the signed 32-bit range, setting the
+/// sticky Q flag on saturation.
+const fn decode_qadd(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
+    if hi & 0xFFF0 != 0xFA80 {
+        return None;
+    }
+    // The second halfword is `1111 Rd <sel> Rm`; bit 15 is the fixed `1`.
+    let op = match (lo & 0xF000, lo & 0x00F0) {
+        (0xF000, 0x0080) => QaddOp::Qadd,
+        (0xF000, 0x0090) => QaddOp::Qdadd,
+        (0xF000, 0x00A0) => QaddOp::Qsub,
+        (0xF000, 0x00B0) => QaddOp::Qdsub,
+        _ => return Some(Err(err_for(hi))),
+    };
+    Some(Ok(Inst32::Qadd {
+        op,
+        rd: ((lo >> 8) & 0xF) as u8,
+        rn: (hi & 0xF) as u8,
+        rm: (lo & 0xF) as u8,
+    }))
+}
+
+/// decode the ARMv7-M saturate family: `SSAT`, `USAT`, `SSAT16`, and `USAT16`.
+///
+/// `SSAT`/`USAT` use `1111 0011 0/10 sh Rn` first halfwords (`0xF300`/`0xF380`
+/// with `sh` at bit 5); the second halfword packs `0 imm3 Rd imm2 0 sat_imm`,
+/// where `imm3:imm2` is the shift amount. `sh == 1` with a zero shift is the
+/// `SSAT16`/`USAT16` alias, which saturates each halfword independently and
+/// never shifts; the fixed zero bits (second-halfword bit 15 and bit 5) guard
+/// the encoding. The bitfield family's `0xF340`/`0xF360`/`0xF3C0` prefixes
+/// are disjoint, and `decode_msr` (also `0xF380`) is disambiguated by the
+/// second halfword's bit 15.
+const fn decode_sat(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
+    let sh = hi & (1 << 5) != 0;
+    // Mask off `sh` (bit 5) and `Rn` (low nibble) but keep the fixed zero at
+    // bit 4: both `SSAT`/`USAT` share the `1111 0011 00/10 0` prefix.
+    let op = match hi & 0xFFD0 {
+        0xF300 => SatOp::Ssat,
+        0xF380 => SatOp::Usat,
+        _ => return None,
+    };
+    // The second halfword is `0 imm3 Rd imm2 0 sat_imm`: bit 15 and bit 5
+    // are fixed zeros.
+    if lo & 0x8020 != 0 {
+        return Some(Err(err_for(hi)));
+    }
+    let rd = ((lo >> 8) & 0xF) as u8;
+    let rn = (hi & 0xF) as u8;
+    let shift = ((((lo >> 12) & 0x7) as u8) << 2) | (((lo >> 6) & 0x3) as u8);
+    let sat_n = (lo & 0x1F) as u8 + 1;
+    // `sh == 1` with `imm3:imm2 == 0` is the SEE alias to the 16-bit form,
+    // which never shifts.
+    if sh && shift == 0 {
+        return Some(Ok(Inst32::Sat {
+            op: match op {
+                SatOp::Ssat => SatOp::Ssat16,
+                SatOp::Usat => SatOp::Usat16,
+                _ => unreachable!(),
+            },
+            rd,
+            rn,
+            sat_n,
+            sh: false,
+            shift: 0,
+        }));
+    }
+    Some(Ok(Inst32::Sat {
+        op,
+        rd,
+        rn,
+        sat_n,
+        sh,
+        shift,
     }))
 }
 
@@ -1655,10 +2380,7 @@ mod tests {
         // beq.w +8 from 0x6 (f000 a804) -> cond EQ, off 8.
         assert_eq!(
             v7m_bytes([0x00, 0xf0, 0x04, 0xa8]),
-            Ok(Inst32::BranchCondWide {
-                cond: 0,
-                off: 8
-            })
+            Ok(Inst32::BranchCondWide { cond: 0, off: 8 })
         );
         // bmi.w -183396 (f513 a9ce) -> cond MI, off -183396.
         assert_eq!(
@@ -1951,48 +2673,49 @@ mod tests {
                 ra: 4,
             })
         );
-        // smull r0, r1, r2, r3 -> fb82 1003, with RdHi:RdLo in the lo.
+        // smull r0, r1, r2, r3 -> fb82 0103, with RdHi=rd (bits11:8) and
+        // RdLo=ra (bits15:12) in the lo.
         assert_eq!(
-            v7m_bytes([0x82, 0xfb, 0x03, 0x10]),
+            v7m_bytes([0x82, 0xfb, 0x03, 0x01]),
             Ok(Inst32::Mul {
                 op: MulOp::Smull,
-                rd: 0,
+                rd: 1,
                 rn: 2,
                 rm: 3,
-                ra: 1,
+                ra: 0,
             })
         );
-        // umull r0, r1, r2, r3 -> fba2 1003.
+        // umull r0, r1, r2, r3 -> fba2 0103.
         assert_eq!(
-            v7m_bytes([0xa2, 0xfb, 0x03, 0x10]),
+            v7m_bytes([0xa2, 0xfb, 0x03, 0x01]),
             Ok(Inst32::Mul {
                 op: MulOp::Umull,
-                rd: 0,
+                rd: 1,
                 rn: 2,
                 rm: 3,
-                ra: 1,
+                ra: 0,
             })
         );
-        // smlal r2, r3, r4, r5 -> fbc4 3205, accumulating into r3:r2.
+        // smlal r2, r3, r4, r5 -> fbc4 2305, accumulating into r3:r2.
         assert_eq!(
-            v7m_bytes([0xc4, 0xfb, 0x05, 0x32]),
+            v7m_bytes([0xc4, 0xfb, 0x05, 0x23]),
             Ok(Inst32::Mul {
                 op: MulOp::Smlal,
-                rd: 2,
+                rd: 3,
                 rn: 4,
                 rm: 5,
-                ra: 3,
+                ra: 2,
             })
         );
-        // umlal r2, r3, r4, r5 -> fbe4 3205.
+        // umlal r2, r3, r4, r5 -> fbe4 2305.
         assert_eq!(
-            v7m_bytes([0xe4, 0xfb, 0x05, 0x32]),
+            v7m_bytes([0xe4, 0xfb, 0x05, 0x23]),
             Ok(Inst32::Mul {
                 op: MulOp::Umlal,
-                rd: 2,
+                rd: 3,
                 rn: 4,
                 rm: 5,
-                ra: 3,
+                ra: 2,
             })
         );
         // A malformed selector is UNDEFINED, and ARMv6-M never decodes the
@@ -2003,10 +2726,360 @@ mod tests {
     }
 
     #[test]
-    fn v7m_unary() {
-        // rev r0, r1 -> fa80 f081; rev16 r2, r3 -> fa80 f293.
+    fn v7m_dsp_mul() {
+        // smulbb r0, r1, r2 -> fb11 f002; the b/t suffix flips the low nibble
+        // of the lo halfword (bit 4 selects the m half, bit 5 the n half).
         assert_eq!(
-            v7m_bytes([0x80, 0xfa, 0x81, 0xf0]),
+            v7m_bytes([0x11, 0xfb, 0x02, 0xf0]),
+            Ok(Inst32::DspMul {
+                op: DspMulOp::Smulbb,
+                rd: 0,
+                rn: 1,
+                rm: 2,
+                ra: 0xf,
+            })
+        );
+        assert_eq!(
+            v7m_bytes([0x11, 0xfb, 0x12, 0xf0]),
+            Ok(Inst32::DspMul {
+                op: DspMulOp::Smulbt,
+                rd: 0,
+                rn: 1,
+                rm: 2,
+                ra: 0xf,
+            })
+        );
+        assert_eq!(
+            v7m_bytes([0x11, 0xfb, 0x22, 0xf0]),
+            Ok(Inst32::DspMul {
+                op: DspMulOp::Smultb,
+                rd: 0,
+                rn: 1,
+                rm: 2,
+                ra: 0xf,
+            })
+        );
+        assert_eq!(
+            v7m_bytes([0x11, 0xfb, 0x32, 0xf0]),
+            Ok(Inst32::DspMul {
+                op: DspMulOp::Smultt,
+                rd: 0,
+                rn: 1,
+                rm: 2,
+                ra: 0xf,
+            })
+        );
+        // smulwb r0, r1, r2 -> fb31 f002; smulwt r0, r1, r2 -> fb31 f012.
+        assert_eq!(
+            v7m_bytes([0x31, 0xfb, 0x02, 0xf0]),
+            Ok(Inst32::DspMul {
+                op: DspMulOp::Smulwb,
+                rd: 0,
+                rn: 1,
+                rm: 2,
+                ra: 0xf,
+            })
+        );
+        assert_eq!(
+            v7m_bytes([0x31, 0xfb, 0x12, 0xf0]),
+            Ok(Inst32::DspMul {
+                op: DspMulOp::Smulwt,
+                rd: 0,
+                rn: 1,
+                rm: 2,
+                ra: 0xf,
+            })
+        );
+        // smmul r0, r1, r2 -> fb51 f002; smmulr r0, r1, r2 -> fb51 f012.
+        assert_eq!(
+            v7m_bytes([0x51, 0xfb, 0x02, 0xf0]),
+            Ok(Inst32::DspMul {
+                op: DspMulOp::Smmul,
+                rd: 0,
+                rn: 1,
+                rm: 2,
+                ra: 0xf,
+            })
+        );
+        assert_eq!(
+            v7m_bytes([0x51, 0xfb, 0x12, 0xf0]),
+            Ok(Inst32::DspMul {
+                op: DspMulOp::Smmulr,
+                rd: 0,
+                rn: 1,
+                rm: 2,
+                ra: 0xf,
+            })
+        );
+        // usad8 r0, r1, r2 -> fb71 f002; usada8 r0, r1, r2, r3 -> fb71 3002
+        // with the accumulation register in bits 15:12 of the lo halfword.
+        assert_eq!(
+            v7m_bytes([0x71, 0xfb, 0x02, 0xf0]),
+            Ok(Inst32::DspMul {
+                op: DspMulOp::Usad8,
+                rd: 0,
+                rn: 1,
+                rm: 2,
+                ra: 0xf,
+            })
+        );
+        assert_eq!(
+            v7m_bytes([0x71, 0xfb, 0x02, 0x30]),
+            Ok(Inst32::DspMul {
+                op: DspMulOp::Usada8,
+                rd: 0,
+                rn: 1,
+                rm: 2,
+                ra: 3,
+            })
+        );
+        // A couple of non-zero register combinations: smulbb r5, r6, r7 and
+        // smulwt r8, r9, r10.
+        assert_eq!(
+            v7m_bytes([0x16, 0xfb, 0x07, 0xf5]),
+            Ok(Inst32::DspMul {
+                op: DspMulOp::Smulbb,
+                rd: 5,
+                rn: 6,
+                rm: 7,
+                ra: 0xf,
+            })
+        );
+        assert_eq!(
+            v7m_bytes([0x39, 0xfb, 0x1a, 0xf8]),
+            Ok(Inst32::DspMul {
+                op: DspMulOp::Smulwt,
+                rd: 8,
+                rn: 9,
+                rm: 10,
+                ra: 0xf,
+            })
+        );
+        // The reserved selector (lo bits 6:4 = 0b101) is UNDEFINED, and the
+        // DSP zone never decodes on ARMv6-M.
+        assert!(v7m_bytes([0x11, 0xfb, 0x52, 0xf0]).is_err());
+        assert!(decode32_bytes([0x11, 0xfb, 0x02, 0xf0]).is_err());
+    }
+
+    #[test]
+    fn v7m_dual_mul() {
+        // smlad r0, r1, r2, r3 -> fb21 3002; the X form flips lo bit 4.
+        assert_eq!(
+            v7m_bytes([0x21, 0xfb, 0x02, 0x30]),
+            Ok(Inst32::DualMul {
+                op: DualMulOp::Smlad,
+                rd: 0,
+                rn: 1,
+                rm: 2,
+                ra: 3,
+            })
+        );
+        assert_eq!(
+            v7m_bytes([0x21, 0xfb, 0x12, 0x30]),
+            Ok(Inst32::DualMul {
+                op: DualMulOp::Smladx,
+                rd: 0,
+                rn: 1,
+                rm: 2,
+                ra: 3,
+            })
+        );
+        // smuad r4, r5, r6 -> fb25 6004: the all-ones Ra is the sentinel.
+        assert_eq!(
+            v7m_bytes([0x25, 0xfb, 0x06, 0xf4]),
+            Ok(Inst32::DualMul {
+                op: DualMulOp::Smlad,
+                rd: 4,
+                rn: 5,
+                rm: 6,
+                ra: 0xf,
+            })
+        );
+        // smlsd r0, r1, r2, r3 -> fb41 3002, and smusd via the sentinel.
+        assert_eq!(
+            v7m_bytes([0x41, 0xfb, 0x02, 0x30]),
+            Ok(Inst32::DualMul {
+                op: DualMulOp::Smlsd,
+                rd: 0,
+                rn: 1,
+                rm: 2,
+                ra: 3,
+            })
+        );
+        assert_eq!(
+            v7m_bytes([0x41, 0xfb, 0x02, 0xf0]),
+            Ok(Inst32::DualMul {
+                op: DualMulOp::Smlsd,
+                rd: 0,
+                rn: 1,
+                rm: 2,
+                ra: 0xf,
+            })
+        );
+        // smlabb/smlabt/smlatb/smlatt r0, r1, r2, r3 -> fb11 3002 + lo bit 4.
+        for (lo, op) in [
+            (0x02, DualMulOp::Smlabb),
+            (0x12, DualMulOp::Smlabt),
+            (0x22, DualMulOp::Smlatb),
+            (0x32, DualMulOp::Smlatt),
+        ] {
+            assert_eq!(
+                v7m_bytes([0x11, 0xfb, lo, 0x30]),
+                Ok(Inst32::DualMul {
+                    op,
+                    rd: 0,
+                    rn: 1,
+                    rm: 2,
+                    ra: 3,
+                })
+            );
+        }
+        // smlawb/smlawt r0, r1, r2, r3 -> fb31 3002 / fb31 3012.
+        assert_eq!(
+            v7m_bytes([0x31, 0xfb, 0x02, 0x30]),
+            Ok(Inst32::DualMul {
+                op: DualMulOp::Smlawb,
+                rd: 0,
+                rn: 1,
+                rm: 2,
+                ra: 3,
+            })
+        );
+        assert_eq!(
+            v7m_bytes([0x31, 0xfb, 0x12, 0x30]),
+            Ok(Inst32::DualMul {
+                op: DualMulOp::Smlawt,
+                rd: 0,
+                rn: 1,
+                rm: 2,
+                ra: 3,
+            })
+        );
+        // smmla/smmlar/smmls/smmlsr r0, r1, r2, r3.
+        assert_eq!(
+            v7m_bytes([0x51, 0xfb, 0x02, 0x30]),
+            Ok(Inst32::DualMul {
+                op: DualMulOp::Smmla,
+                rd: 0,
+                rn: 1,
+                rm: 2,
+                ra: 3,
+            })
+        );
+        assert_eq!(
+            v7m_bytes([0x51, 0xfb, 0x12, 0x30]),
+            Ok(Inst32::DualMul {
+                op: DualMulOp::Smmlar,
+                rd: 0,
+                rn: 1,
+                rm: 2,
+                ra: 3,
+            })
+        );
+        assert_eq!(
+            v7m_bytes([0x61, 0xfb, 0x02, 0x30]),
+            Ok(Inst32::DualMul {
+                op: DualMulOp::Smmls,
+                rd: 0,
+                rn: 1,
+                rm: 2,
+                ra: 3,
+            })
+        );
+        assert_eq!(
+            v7m_bytes([0x61, 0xfb, 0x12, 0x30]),
+            Ok(Inst32::DualMul {
+                op: DualMulOp::Smmlsr,
+                rd: 0,
+                rn: 1,
+                rm: 2,
+                ra: 3,
+            })
+        );
+        // The long forms pack RdLo=ra (bits15:12) and RdHi=rd (bits11:8).
+        // smlald r2, r1, r3, r4 -> fbc3 21c4; smlaldx flips lo bit 4.
+        assert_eq!(
+            v7m_bytes([0xc3, 0xfb, 0xc4, 0x21]),
+            Ok(Inst32::DualMul {
+                op: DualMulOp::Smlald,
+                rd: 1,
+                rn: 3,
+                rm: 4,
+                ra: 2,
+            })
+        );
+        assert_eq!(
+            v7m_bytes([0xc3, 0xfb, 0xd4, 0x21]),
+            Ok(Inst32::DualMul {
+                op: DualMulOp::Smlaldx,
+                rd: 1,
+                rn: 3,
+                rm: 4,
+                ra: 2,
+            })
+        );
+        // smlsld r2, r1, r3, r4 -> fbd3 21c4.
+        assert_eq!(
+            v7m_bytes([0xd3, 0xfb, 0xc4, 0x21]),
+            Ok(Inst32::DualMul {
+                op: DualMulOp::Smlsld,
+                rd: 1,
+                rn: 3,
+                rm: 4,
+                ra: 2,
+            })
+        );
+        assert_eq!(
+            v7m_bytes([0xd3, 0xfb, 0xd4, 0x21]),
+            Ok(Inst32::DualMul {
+                op: DualMulOp::Smlsldx,
+                rd: 1,
+                rn: 3,
+                rm: 4,
+                ra: 2,
+            })
+        );
+        // smlalbb/smlalbt/smlaltb/smlaltt r2, r1, r3, r4 -> fbc3 2184 + sel.
+        for (lo, op) in [
+            (0x84, DualMulOp::Smlalbb),
+            (0x94, DualMulOp::Smlalbt),
+            (0xa4, DualMulOp::Smlaltb),
+            (0xb4, DualMulOp::Smlaltt),
+        ] {
+            assert_eq!(
+                v7m_bytes([0xc3, 0xfb, lo, 0x21]),
+                Ok(Inst32::DualMul {
+                    op,
+                    rd: 1,
+                    rn: 3,
+                    rm: 4,
+                    ra: 2,
+                })
+            );
+        }
+        // umaal r2, r1, r3, r4 -> fbe3 2164.
+        assert_eq!(
+            v7m_bytes([0xe3, 0xfb, 0x64, 0x21]),
+            Ok(Inst32::DualMul {
+                op: DualMulOp::Umaal,
+                rd: 1,
+                rn: 3,
+                rm: 4,
+                ra: 2,
+            })
+        );
+        // SMMLS has no `Ra == 1111` form, so that combination is UNDEFINED;
+        // the dual zone never decodes on ARMv6-M.
+        assert!(v7m_bytes([0x61, 0xfb, 0x02, 0xf0]).is_err());
+        assert!(v7m_bytes([0x21, 0xfb, 0x42, 0x30]).is_err());
+        assert!(decode32_bytes([0x20, 0xfb, 0x02, 0x30]).is_err());
+    }
+
+    #[test]
+    fn v7m_unary() {
+        // rev r0, r1 -> fa91 f081; rev16 r2, r3 -> fa93 f293.
+        assert_eq!(
+            v7m_bytes([0x91, 0xfa, 0x81, 0xf0]),
             Ok(Inst32::Unary {
                 op: UnaryOp::Rev,
                 rd: 0,
@@ -2014,16 +3087,16 @@ mod tests {
             })
         );
         assert_eq!(
-            v7m_bytes([0x80, 0xfa, 0x93, 0xf2]),
+            v7m_bytes([0x93, 0xfa, 0x93, 0xf2]),
             Ok(Inst32::Unary {
                 op: UnaryOp::Rev16,
                 rd: 2,
                 rm: 3,
             })
         );
-        // revsh r4, r5 -> fa90 f4b5; rbit r6, r7 -> fa90 f6a7.
+        // revsh r4, r5 -> fa95 f4b5; rbit r6, r7 -> fa97 f6a7.
         assert_eq!(
-            v7m_bytes([0x90, 0xfa, 0xb5, 0xf4]),
+            v7m_bytes([0x95, 0xfa, 0xb5, 0xf4]),
             Ok(Inst32::Unary {
                 op: UnaryOp::Revsh,
                 rd: 4,
@@ -2031,36 +3104,361 @@ mod tests {
             })
         );
         assert_eq!(
-            v7m_bytes([0x90, 0xfa, 0xa7, 0xf6]),
+            v7m_bytes([0x97, 0xfa, 0xa7, 0xf6]),
             Ok(Inst32::Unary {
                 op: UnaryOp::Rbit,
                 rd: 6,
                 rm: 7,
             })
         );
-        // clz r8, r9 -> fab0 f889.
+        // clz r8, r9 -> fab9 f889.
         assert_eq!(
-            v7m_bytes([0xb0, 0xfa, 0x89, 0xf8]),
+            v7m_bytes([0xb9, 0xfa, 0x89, 0xf8]),
             Ok(Inst32::Unary {
                 op: UnaryOp::Clz,
                 rd: 8,
                 rm: 9,
             })
         );
-        // The `Rn` field's low nibble in the first halfword is ignored.
+        // The `Rm2` field (first halfword's low nibble) must copy `Rm`; a
+        // mismatch is architecturally UNPREDICTABLE and stays UNDEFINED.
+        assert!(v7m_bytes([0x90, 0xfa, 0xb5, 0xf4]).is_err());
+        // A reserved selector combination stays UNDEFINED, and the ARMv6-M
+        // decoder rejects the whole `1111 1010` unary zone.
+        assert!(v7m_bytes([0x90, 0xfa, 0x70, 0xf0]).is_err());
+        assert!(decode32_bytes([0x9a, 0xfa, 0x06, 0xf0]).is_err());
+        assert!(decode32_bytes([0xba, 0xfa, 0x08, 0xf0]).is_err());
+    }
+
+    #[test]
+    fn v7m_qadd() {
+        // qadd r0, r1, r2 -> fa81 f082.
         assert_eq!(
-            v7m_bytes([0x8f, 0xfa, 0x81, 0xf0]),
+            v7m_bytes([0x81, 0xfa, 0x82, 0xf0]),
+            Ok(Inst32::Qadd {
+                op: QaddOp::Qadd,
+                rd: 0,
+                rn: 1,
+                rm: 2,
+            })
+        );
+        // qsub r3, r4, r5 -> fa84 f2a5.
+        assert_eq!(
+            v7m_bytes([0x84, 0xfa, 0xa5, 0xf3]),
+            Ok(Inst32::Qadd {
+                op: QaddOp::Qsub,
+                rd: 3,
+                rn: 4,
+                rm: 5,
+            })
+        );
+        // qdadd r6, r7, r8 -> fa87 f198.
+        assert_eq!(
+            v7m_bytes([0x87, 0xfa, 0x98, 0xf6]),
+            Ok(Inst32::Qadd {
+                op: QaddOp::Qdadd,
+                rd: 6,
+                rn: 7,
+                rm: 8,
+            })
+        );
+        // qdsub r9, r10, r11 -> fa8a f3bb.
+        assert_eq!(
+            v7m_bytes([0x8a, 0xfa, 0xbb, 0xf9]),
+            Ok(Inst32::Qadd {
+                op: QaddOp::Qdsub,
+                rd: 9,
+                rn: 10,
+                rm: 11,
+            })
+        );
+        // The `1111 Rd` top nibble of the second halfword is fixed; a bogus
+        // selector or top nibble stays UNDEFINED. A zero selector is now a
+        // valid `SADD8`, so the bogus cases use the reserved `0b011` nibble.
+        assert!(v7m_bytes([0x81, 0xfa, 0xc2, 0xf0]).is_err());
+        assert!(v7m_bytes([0x81, 0xfa, 0x72, 0xf0]).is_err());
+    }
+
+    #[test]
+    fn v7m_parallel_add_sub() {
+        // sadd8 r0, r1, r2 -> fa81 f002.
+        assert_eq!(
+            v7m_bytes([0x81, 0xfa, 0x02, 0xf0]),
+            Ok(Inst32::Par {
+                op: ParOp::Add8,
+                sat: ParSat::S,
+                rd: 0,
+                rn: 1,
+                rm: 2,
+            })
+        );
+        // qadd16 r3, r4, r5 -> fa94 f315.
+        assert_eq!(
+            v7m_bytes([0x94, 0xfa, 0x15, 0xf3]),
+            Ok(Inst32::Par {
+                op: ParOp::Add16,
+                sat: ParSat::Q,
+                rd: 3,
+                rn: 4,
+                rm: 5,
+            })
+        );
+        // shsub8 r6, r7, r8 -> fac7 f628.
+        assert_eq!(
+            v7m_bytes([0xc7, 0xfa, 0x28, 0xf6]),
+            Ok(Inst32::Par {
+                op: ParOp::Sub8,
+                sat: ParSat::Sh,
+                rd: 6,
+                rn: 7,
+                rm: 8,
+            })
+        );
+        // uadd16 r9, r10, r11 -> fa9a f94b.
+        assert_eq!(
+            v7m_bytes([0x9a, 0xfa, 0x4b, 0xf9]),
+            Ok(Inst32::Par {
+                op: ParOp::Add16,
+                sat: ParSat::U,
+                rd: 9,
+                rn: 10,
+                rm: 11,
+            })
+        );
+        // uqsub8 r12, r13, r14 -> facd fc5e.
+        assert_eq!(
+            v7m_bytes([0xcd, 0xfa, 0x5e, 0xfc]),
+            Ok(Inst32::Par {
+                op: ParOp::Sub8,
+                sat: ParSat::Uq,
+                rd: 12,
+                rn: 13,
+                rm: 14,
+            })
+        );
+        // uhadd16 r0, r1, r2 -> fa91 f062.
+        assert_eq!(
+            v7m_bytes([0x91, 0xfa, 0x62, 0xf0]),
+            Ok(Inst32::Par {
+                op: ParOp::Add16,
+                sat: ParSat::Uh,
+                rd: 0,
+                rn: 1,
+                rm: 2,
+            })
+        );
+        // sasx r2, r3, r4 -> faa3 f204.
+        assert_eq!(
+            v7m_bytes([0xa3, 0xfa, 0x04, 0xf2]),
+            Ok(Inst32::Par {
+                op: ParOp::Asx,
+                sat: ParSat::S,
+                rd: 2,
+                rn: 3,
+                rm: 4,
+            })
+        );
+        // ssax r5, r6, r7 -> fae6 f507.
+        assert_eq!(
+            v7m_bytes([0xe6, 0xfa, 0x07, 0xf5]),
+            Ok(Inst32::Par {
+                op: ParOp::Sax,
+                sat: ParSat::S,
+                rd: 5,
+                rn: 6,
+                rm: 7,
+            })
+        );
+        // sel r0, r1, r2 -> faa1 f082; sel r3, r4, r5 -> faa4 f385.
+        assert_eq!(
+            v7m_bytes([0xa1, 0xfa, 0x82, 0xf0]),
+            Ok(Inst32::Sel {
+                rd: 0,
+                rn: 1,
+                rm: 2,
+            })
+        );
+        assert_eq!(
+            v7m_bytes([0xa4, 0xfa, 0x85, 0xf3]),
+            Ok(Inst32::Sel {
+                rd: 3,
+                rn: 4,
+                rm: 5,
+            })
+        );
+        // The first halfword's low nibble is `Rn`, not the `Rm2` copy the
+        // unary ops require: sadd16 r1, r0, r15 -> fa90 f10f decodes anyway.
+        assert_eq!(
+            v7m_bytes([0x90, 0xfa, 0x0f, 0xf1]),
+            Ok(Inst32::Par {
+                op: ParOp::Add16,
+                sat: ParSat::S,
+                rd: 1,
+                rn: 0,
+                rm: 15,
+            })
+        );
+        // The `SEL` selector is only valid on the ASX family: the same `sel`
+        // on the ADD16 family stays reserved for the unary ops.
+        assert_eq!(
+            v7m_bytes([0x91, 0xfa, 0x81, 0xf0]),
             Ok(Inst32::Unary {
                 op: UnaryOp::Rev,
                 rd: 0,
                 rm: 1,
             })
         );
-        // A reserved selector combination stays UNDEFINED, and the ARMv6-M
-        // decoder rejects the whole `1111 1010` unary zone.
-        assert!(v7m_bytes([0x80, 0xfa, 0x0f, 0xf1]).is_err());
-        assert!(decode32_bytes([0x9a, 0xfa, 0x06, 0xf0]).is_err());
-        assert!(decode32_bytes([0xba, 0xfa, 0x08, 0xf0]).is_err());
+        // A reserved selector nibble (0b011) is UNDEFINED.
+        assert!(v7m_bytes([0x81, 0xfa, 0x72, 0xf0]).is_err());
+        // The parallel family never decodes on ARMv6-M.
+        assert!(decode32_bytes([0x81, 0xfa, 0x02, 0xf0]).is_err());
+    }
+
+    #[test]
+    fn v7m_extend_add() {
+        // sxth r0, r1 (sxtah with rn == 15) -> fa0f f081.
+        assert_eq!(
+            v7m_bytes([0x0f, 0xfa, 0x81, 0xf0]),
+            Ok(Inst32::ExtendAdd {
+                op: ExtendAddOp::Sxtah,
+                rd: 0,
+                rn: 15,
+                rm: 1,
+                rot: 0,
+            })
+        );
+        // uxtah r2, r3, r4 -> fa13 f284.
+        assert_eq!(
+            v7m_bytes([0x13, 0xfa, 0x84, 0xf2]),
+            Ok(Inst32::ExtendAdd {
+                op: ExtendAddOp::Uxtah,
+                rd: 2,
+                rn: 3,
+                rm: 4,
+                rot: 0,
+            })
+        );
+        // sxtab16 r5, r6, r7, ror #8 -> fa26 f597.
+        assert_eq!(
+            v7m_bytes([0x26, 0xfa, 0x97, 0xf5]),
+            Ok(Inst32::ExtendAdd {
+                op: ExtendAddOp::Sxtab16,
+                rd: 5,
+                rn: 6,
+                rm: 7,
+                rot: 1,
+            })
+        );
+        // uxtab16 r8, r9, r10 -> fa39 fa8a.
+        assert_eq!(
+            v7m_bytes([0x39, 0xfa, 0x8a, 0xf8]),
+            Ok(Inst32::ExtendAdd {
+                op: ExtendAddOp::Uxtab16,
+                rd: 8,
+                rn: 9,
+                rm: 10,
+                rot: 0,
+            })
+        );
+        // sxtab r1, r2, r3, ror #24 -> fa42 f1b3.
+        assert_eq!(
+            v7m_bytes([0x42, 0xfa, 0xb3, 0xf1]),
+            Ok(Inst32::ExtendAdd {
+                op: ExtendAddOp::Sxtab,
+                rd: 1,
+                rn: 2,
+                rm: 3,
+                rot: 3,
+            })
+        );
+        // uxtb r4, r5 (uxtab with rn == 15) -> fa5f f485.
+        assert_eq!(
+            v7m_bytes([0x5f, 0xfa, 0x85, 0xf4]),
+            Ok(Inst32::ExtendAdd {
+                op: ExtendAddOp::Uxtab,
+                rd: 4,
+                rn: 15,
+                rm: 5,
+                rot: 0,
+            })
+        );
+        // A reserved op nibble (`0xFA6x`) and a second-halfword shape with
+        // bit 6 set stay UNDEFINED; ARMv6-M rejects the whole family.
+        assert!(v7m_bytes([0x60, 0xfa, 0x80, 0xf0]).is_err());
+        assert!(v7m_bytes([0x01, 0xfa, 0xc1, 0xf0]).is_err());
+        assert!(decode32_bytes([0x0f, 0xfa, 0x81, 0xf0]).is_err());
+    }
+
+    #[test]
+    fn v7m_saturate() {
+        // ssat r0, #8, r1, lsl #4 -> f301 1007: `sh` clear, LSL shift
+        // `imm3:imm2` = 4, `sat_imm` = 7 (8 bits).
+        assert_eq!(
+            v7m_bytes([0x01, 0xf3, 0x07, 0x10]),
+            Ok(Inst32::Sat {
+                op: SatOp::Ssat,
+                rd: 0,
+                rn: 1,
+                sat_n: 8,
+                sh: false,
+                shift: 4,
+            })
+        );
+        // ssat r0, #16, r1, asr #2 -> f321 008f: `sh` set, ASR #2.
+        assert_eq!(
+            v7m_bytes([0x21, 0xf3, 0x8f, 0x00]),
+            Ok(Inst32::Sat {
+                op: SatOp::Ssat,
+                rd: 0,
+                rn: 1,
+                sat_n: 16,
+                sh: true,
+                shift: 2,
+            })
+        );
+        // usat r2, #8, r3, lsl #2 -> f383 0287.
+        assert_eq!(
+            v7m_bytes([0x83, 0xf3, 0x87, 0x02]),
+            Ok(Inst32::Sat {
+                op: SatOp::Usat,
+                rd: 2,
+                rn: 3,
+                sat_n: 8,
+                sh: false,
+                shift: 2,
+            })
+        );
+        // ssat16 r4, #8, r5 -> f325 0407: the ASR-with-zero-shift alias.
+        assert_eq!(
+            v7m_bytes([0x25, 0xf3, 0x07, 0x04]),
+            Ok(Inst32::Sat {
+                op: SatOp::Ssat16,
+                rd: 4,
+                rn: 5,
+                sat_n: 8,
+                sh: false,
+                shift: 0,
+            })
+        );
+        // usat16 r6, #4, r7 -> f3a7 0603.
+        assert_eq!(
+            v7m_bytes([0xa7, 0xf3, 0x03, 0x06]),
+            Ok(Inst32::Sat {
+                op: SatOp::Usat16,
+                rd: 6,
+                rn: 7,
+                sat_n: 4,
+                sh: false,
+                shift: 0,
+            })
+        );
+        // The second halfword's fixed bit 5 is enforced, and the `1111 0011`
+        // first-halfword bit 4 must be clear (otherwise the encoding belongs
+        // to neither SAT nor the bitfield family). A second halfword with bit
+        // 15 set is claimed by the `B<c>.W` branch decoder first, so real
+        // SATs always arrive here with bit 15 clear.
+        assert!(v7m_bytes([0x01, 0xf3, 0x27, 0x00]).is_err());
+        assert!(v7m_bytes([0x11, 0xf3, 0x07, 0x00]).is_err());
     }
 
     #[test]
@@ -2213,7 +3611,110 @@ mod tests {
         assert!(v7m_bytes([0xd0, 0xe9, 0x01, 0x1f]).is_err()); // rt == 15
         assert!(v7m_bytes([0x4f, 0xe9, 0x01, 0x01]).is_err()); // STRD [pc]
         assert!(v7m_bytes([0xf0, 0xe9, 0x01, 0x01]).is_err()); // wb over r0
-        assert!(v7m_bytes([0x40, 0xe8, 0x01, 0x01]).is_err()); // P == W == 0
+                                                               // The `(P, W) == (0, 0)` load side of this space is UNDEFINED: the
+                                                               // `0xE840`/`0xE850` first halfwords now belong to `STREX`/`LDREX`
+                                                               // (see `v7m_exclusive`), so probe it with a non-exclusive pair.
+        assert!(v7m_bytes([0x50, 0xe8, 0x01, 0x02]).is_err()); // LDRD P == W == 0
         assert!(decode32_bytes([0xd0, 0xe9, 0x02, 0x23]).is_err());
+    }
+
+    #[test]
+    fn v7m_exclusive() {
+        // strex r1, r0, [r2] -> e842 0100.
+        assert_eq!(
+            v7m_bytes([0x42, 0xe8, 0x00, 0x01]),
+            Ok(Inst32::Strex {
+                rd: 1,
+                rt: 0,
+                rn: 2,
+                size: ExSize::Word,
+                off: 0,
+            })
+        );
+        // ldrex r0, [r2] -> e852 f000.
+        assert_eq!(
+            v7m_bytes([0x52, 0xe8, 0x00, 0x0f]),
+            Ok(Inst32::Ldrex {
+                rt: 0,
+                rn: 2,
+                size: ExSize::Word,
+                off: 0,
+            })
+        );
+        // The word forms carry an `imm8 << 2` offset: strex r1, r0, [r2, #8].
+        assert_eq!(
+            v7m_bytes([0x42, 0xe8, 0x02, 0x01]),
+            Ok(Inst32::Strex {
+                rd: 1,
+                rt: 0,
+                rn: 2,
+                size: ExSize::Word,
+                off: 8,
+            })
+        );
+        // strexb r1, r0, [r2] -> e8c2 0f41: Rd sits in bits [3:0].
+        assert_eq!(
+            v7m_bytes([0xc2, 0xe8, 0x41, 0x0f]),
+            Ok(Inst32::Strex {
+                rd: 1,
+                rt: 0,
+                rn: 2,
+                size: ExSize::Byte,
+                off: 0,
+            })
+        );
+        // strexh r1, r0, [r2] -> e8c2 0f51.
+        assert_eq!(
+            v7m_bytes([0xc2, 0xe8, 0x51, 0x0f]),
+            Ok(Inst32::Strex {
+                rd: 1,
+                rt: 0,
+                rn: 2,
+                size: ExSize::Half,
+                off: 0,
+            })
+        );
+        // ldrexb r0, [r2] -> e8d2 0f4f.
+        assert_eq!(
+            v7m_bytes([0xd2, 0xe8, 0x4f, 0x0f]),
+            Ok(Inst32::Ldrex {
+                rt: 0,
+                rn: 2,
+                size: ExSize::Byte,
+                off: 0,
+            })
+        );
+        // ldrexh r0, [r2] -> e8d2 0f5f.
+        assert_eq!(
+            v7m_bytes([0xd2, 0xe8, 0x5f, 0x0f]),
+            Ok(Inst32::Ldrex {
+                rt: 0,
+                rn: 2,
+                size: ExSize::Half,
+                off: 0,
+            })
+        );
+        // clrex -> f3bf 8f2f, indistinguishable from a barrier until the
+        // second halfword's `1111` tag.
+        assert_eq!(v7m_bytes([0xbf, 0xf3, 0x2f, 0x8f]), Ok(Inst32::Clrex));
+        // A `TBB` sharing the `0xE8D0` space still decodes (bits [11:8] = 0).
+        assert_eq!(
+            v7m_bytes([0xd2, 0xe8, 0x03, 0xf0]),
+            Ok(Inst32::TblBranch {
+                rn: 2,
+                rm: 3,
+                half: false,
+            })
+        );
+        // Register constraints and the ARMv7-A/R-only doubleword forms are
+        // UNDEFINED, and the whole family (plus CLREX) stays UNDEFINED on
+        // ARMv6-M.
+        assert!(v7m_bytes([0x42, 0xe8, 0x00, 0xf0]).is_err()); // STREX Rd == 15
+        assert!(v7m_bytes([0x52, 0xe8, 0x00, 0xff]).is_err()); // LDREX Rt == 15
+        assert!(v7m_bytes([0xc2, 0xe8, 0x4f, 0x0f]).is_err()); // STREXB Rd == 15
+        assert!(v7m_bytes([0xd2, 0xe8, 0xcf, 0x0f]).is_err()); // LDAEXB (v8 only)
+        assert!(v7m_bytes([0xc2, 0xe8, 0x70, 0x01]).is_err()); // STREXD
+        assert!(decode32_bytes([0xc2, 0xe8, 0x41, 0x0f]).is_err());
+        assert!(decode32_bytes([0xbf, 0xf3, 0x2f, 0x8f]).is_err()); // no CLREX on v6-M
     }
 }

@@ -11,12 +11,15 @@ pub mod registers;
 
 use crate::error::{Exception, HaltCause};
 use crate::mem::PeripheralBus;
-use decode16::{decode16, decode16_v7m, AluOp, ExtendKind, Inst16, LsImm, LsReg, ReverseKind, Shift, ShiftImm};
-use decode32::{
-    decode32, decode32_v7m, is_thumb2, is_thumb2_v7m, thumb_expand_imm, BitfieldOp, DpOp, Inst32,
-    MemOp, MulOp, ShiftType, SysReg, UnaryOp,
+use decode16::{
+    decode16, decode16_v7m, AluOp, ExtendKind, Inst16, LsImm, LsReg, ReverseKind, Shift, ShiftImm,
 };
-use registers::{Registers, Xpsr, APSR_FLAGS, XPSR_T};
+use decode32::{
+    decode32, decode32_v7m, is_thumb2, is_thumb2_v7m, thumb_expand_imm, BitfieldOp, DpOp, DspMulOp,
+    DualMulOp, ExSize, ExtendAddOp, Inst32, MemOp, MulOp, ParOp, ParSat, QaddOp, SatOp, ShiftType,
+    SysReg, UnaryOp,
+};
+use registers::{Registers, Xpsr, APSR_QFLAGS, XPSR_T};
 
 /// Which Thumb architecture the core executes.
 ///
@@ -73,6 +76,10 @@ pub struct Core<B: PeripheralBus> {
     /// IT block state (ARMv7-M): bits [3:0] condition, bits [7:4] remaining
     /// conditional instructions. Zero outside an IT block.
     pub itstate: u8,
+    /// The local exclusive monitor: the address tagged by the last `LDREX*`.
+    /// `None` means open; `STREX*` succeeds only while it matches, and any
+    /// exception entry or return clears it.
+    pub exmon: Option<u32>,
     pub cycles: u64,
     mem: B,
 }
@@ -100,6 +107,7 @@ impl<B: PeripheralBus> Core<B> {
             control: 0,
             ipsr: 0,
             itstate: 0,
+            exmon: None,
             cycles: 0,
             mem,
         }
@@ -281,10 +289,10 @@ impl<B: PeripheralBus> Core<B> {
     /// Read a system register for `mrs`.
     fn sysreg_read(&self, sys: SysReg) -> Result<u32, HaltCause> {
         let v = match sys {
-            SysReg::Apsr => self.xpsr.get() & APSR_FLAGS,
+            SysReg::Apsr => self.xpsr.get() & APSR_QFLAGS,
             SysReg::Xpsr => {
                 // xPSR also carries ITSTATE at bits [15:10] and [26:25].
-                let mut v = self.xpsr.get() & (APSR_FLAGS | XPSR_T);
+                let mut v = self.xpsr.get() & (APSR_QFLAGS | XPSR_T);
                 let it = u32::from(self.itstate);
                 v |= (it & 0xFC) << 8;
                 v |= (it & 0x03) << 25;
@@ -322,7 +330,7 @@ impl<B: PeripheralBus> Core<B> {
         match sys {
             SysReg::Apsr => {
                 let cur = self.xpsr.get();
-                self.xpsr.set((cur & !APSR_FLAGS) | (v & APSR_FLAGS));
+                self.xpsr.set((cur & !APSR_QFLAGS) | (v & APSR_QFLAGS));
             }
             SysReg::Msp => {
                 if self.sp_is_process() {
@@ -389,6 +397,46 @@ impl<B: PeripheralBus> Core<B> {
             0xD => z || n != v,  // LE
             _ => unreachable!("cond {cond:#x}"),
         }
+    }
+
+    /// Sign-extend the bottom (`top == false`) or top (`top == true`) halfword
+    /// of `v` to a signed 32-bit value.
+    const fn half_signed(&self, v: u32, top: bool) -> i32 {
+        let hw = if top { (v >> 16) as u16 } else { v as u16 };
+        hw as i16 as i32
+    }
+
+    /// The two halfword products of `n` and `m` (with `m`'s halves swapped
+    /// first when `m_swap`), each as a signed 32-bit value. A 16-by-16 signed
+    /// product always fits, so no overflow is possible.
+    const fn smul_dual(&self, n: u32, m: u32, m_swap: bool) -> (i32, i32) {
+        let ms = if m_swap { (m >> 16) | (m << 16) } else { m };
+        let p_lo = self
+            .half_signed(n, false)
+            .wrapping_mul(self.half_signed(ms, false));
+        let p_hi = self
+            .half_signed(n, true)
+            .wrapping_mul(self.half_signed(ms, true));
+        (p_lo, p_hi)
+    }
+
+    /// Wrapping signed 32-bit addition that sets the sticky `Q` flag on
+    /// overflow, mirroring QEMU's `add_setq` helper.
+    fn add_setq(&mut self, a: i32, b: i32) -> i32 {
+        let (result, overflow) = a.overflowing_add(b);
+        if overflow {
+            self.xpsr.set_q(true);
+        }
+        result
+    }
+
+    /// Sum the absolute differences of the four byte lanes of `n` and `m`.
+    const fn sum_abs_diff(&self, n: u32, m: u32) -> i32 {
+        let d0 = ((n & 0xFF) as i32) - ((m & 0xFF) as i32);
+        let d1 = (((n >> 8) & 0xFF) as i32) - (((m >> 8) & 0xFF) as i32);
+        let d2 = (((n >> 16) & 0xFF) as i32) - (((m >> 16) & 0xFF) as i32);
+        let d3 = (((n >> 24) & 0xFF) as i32) - (((m >> 24) & 0xFF) as i32);
+        d0.abs() + d1.abs() + d2.abs() + d3.abs()
     }
 
     /// Execute `inst` at address `pc`. Semantic meaning only; no memory
@@ -698,7 +746,9 @@ impl<B: PeripheralBus> Core<B> {
                 self.regs.lr = (pc.wrapping_add(4)) | 1;
                 // BLX targets are word-aligned, so bit 0 is always clear and
                 // `check_branch` stops at the non-Thumb (ARM) target.
-                Ok(Self::check_branch(pc.wrapping_add(4).wrapping_add_signed(off)))
+                Ok(Self::check_branch(
+                    pc.wrapping_add(4).wrapping_add_signed(off),
+                ))
             }
             I::BranchWide { off } => {
                 self.itstate = 0;
@@ -726,6 +776,57 @@ impl<B: PeripheralBus> Core<B> {
                 Ok(Next::Advance(pc + 4))
             }
             I::Barrier { .. } => Ok(Next::Advance(pc + 4)),
+            I::Ldrex { rt, rn, size, off } => {
+                let addr = self.regs.read(rn).wrapping_add(off);
+                let v = match size {
+                    ExSize::Word => match self.mem.read_word(addr) {
+                        Ok(v) => v,
+                        Err(_) => return self.data_fault(addr, pc),
+                    },
+                    ExSize::Half => match self.mem.read_half(addr) {
+                        Ok(hw) => u32::from(hw),
+                        Err(_) => return self.data_fault(addr, pc),
+                    },
+                    ExSize::Byte => match self.mem.read(addr) {
+                        Ok(b) => u32::from(b),
+                        Err(_) => return self.data_fault(addr, pc),
+                    },
+                };
+                self.regs.write(rt, v);
+                self.exmon = Some(addr);
+                Ok(Next::Advance(pc + 4))
+            }
+            I::Strex {
+                rd,
+                rt,
+                rn,
+                size,
+                off,
+            } => {
+                let addr = self.regs.read(rn).wrapping_add(off);
+                // The local monitor is cleared whether the store succeeds or
+                // not; it only lets a store through while it matches.
+                let ok = self.exmon == Some(addr);
+                self.exmon = None;
+                if ok {
+                    let result = match size {
+                        ExSize::Word => self.mem.write_word(addr, self.regs.read(rt)),
+                        ExSize::Half => self.mem.write_half(addr, self.regs.read(rt) as u16),
+                        ExSize::Byte => self.mem.write(addr, self.regs.read(rt) as u8),
+                    };
+                    if result.is_err() {
+                        return self.data_fault(addr, pc);
+                    }
+                    self.regs.write(rd, 0);
+                } else {
+                    self.regs.write(rd, 1);
+                }
+                Ok(Next::Advance(pc + 4))
+            }
+            I::Clrex => {
+                self.exmon = None;
+                Ok(Next::Advance(pc + 4))
+            }
             I::DpReg {
                 op,
                 rd,
@@ -1016,16 +1117,243 @@ impl<B: PeripheralBus> Core<B> {
                         } else {
                             i64::from(n).wrapping_mul(i64::from(m))
                         };
+                        // `ra` (bits15:12) is `RdLo` and `rd` (bits11:8) is
+                        // `RdHi`, so the accumulator is `RdHi:RdLo`.
                         let accumulator = if matches!(op, MulOp::Smlal | MulOp::Umlal) {
-                            (i64::from(self.regs.read(ra)) << 32) | i64::from(self.regs.read(rd))
+                            (i64::from(self.regs.read(rd)) << 32) | i64::from(self.regs.read(ra))
                         } else {
                             0
                         };
                         let total = product.wrapping_add(accumulator);
                         let lo = total as u32;
                         let hi = (total >> 32) as u32;
-                        self.regs.write(rd, lo);
-                        self.regs.write(ra, hi);
+                        self.regs.write(ra, lo);
+                        self.regs.write(rd, hi);
+                    }
+                }
+                Ok(Next::Advance(pc + 4))
+            }
+            #[allow(
+                clippy::cast_possible_wrap,
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss
+            )]
+            I::DspMul { op, rd, rn, rm, ra } => {
+                if rd == 15 {
+                    return Err(HaltCause::NotImplemented {
+                        what: "DSP multiply writes to pc",
+                    });
+                }
+                let n = self.regs.read(rn);
+                let m = self.regs.read(rm);
+                let result = match op {
+                    DspMulOp::Smulbb | DspMulOp::Smulbt | DspMulOp::Smultb | DspMulOp::Smultt => {
+                        let n_hi = matches!(op, DspMulOp::Smultb | DspMulOp::Smultt);
+                        let m_hi = matches!(op, DspMulOp::Smulbt | DspMulOp::Smultt);
+                        self.half_signed(n, n_hi)
+                            .wrapping_mul(self.half_signed(m, m_hi))
+                    }
+                    DspMulOp::Smulwb | DspMulOp::Smulwt => {
+                        let m_hi = op == DspMulOp::Smulwt;
+                        let product = i64::from(n as i32) * i64::from(self.half_signed(m, m_hi));
+                        (product >> 16) as i32
+                    }
+                    DspMulOp::Smmul | DspMulOp::Smmulr => {
+                        let product = i64::from(n as i32) * i64::from(m as i32);
+                        let rounded = if op == DspMulOp::Smmulr {
+                            product.wrapping_add(0x8000_0000)
+                        } else {
+                            product
+                        };
+                        (rounded >> 32) as i32
+                    }
+                    DspMulOp::Usad8 | DspMulOp::Usada8 => {
+                        let sum = self.sum_abs_diff(n, m);
+                        if op == DspMulOp::Usada8 {
+                            sum.wrapping_add(self.regs.read(ra) as i32)
+                        } else {
+                            sum
+                        }
+                    }
+                };
+                self.regs.write(rd, result as u32);
+                Ok(Next::Advance(pc + 4))
+            }
+            #[allow(
+                clippy::cast_possible_wrap,
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss
+            )]
+            I::DualMul { op, rd, rn, rm, ra } => {
+                if rd == 15 {
+                    return Err(HaltCause::NotImplemented {
+                        what: "dual multiply writes to pc",
+                    });
+                }
+                let n = self.regs.read(rn);
+                let m = self.regs.read(rm);
+                let m_swap = matches!(op, DualMulOp::Smladx | DualMulOp::Smlsdx);
+                match op {
+                    // Word forms write the single `Rd`.
+                    DualMulOp::Smlabb
+                    | DualMulOp::Smlabt
+                    | DualMulOp::Smlatb
+                    | DualMulOp::Smlatt
+                    | DualMulOp::Smlawb
+                    | DualMulOp::Smlawt
+                    | DualMulOp::Smlad
+                    | DualMulOp::Smladx
+                    | DualMulOp::Smlsd
+                    | DualMulOp::Smlsdx
+                    | DualMulOp::Smmla
+                    | DualMulOp::Smmlar
+                    | DualMulOp::Smmls
+                    | DualMulOp::Smmlsr => {
+                        let result = match op {
+                            // Halfword accumulate: `Ra + Rn[x] * Rm[y]`, with
+                            // the wrapping add sticky-setting `Q`.
+                            DualMulOp::Smlabb
+                            | DualMulOp::Smlabt
+                            | DualMulOp::Smlatb
+                            | DualMulOp::Smlatt => {
+                                let nt = matches!(op, DualMulOp::Smlatb | DualMulOp::Smlatt);
+                                let mt = matches!(op, DualMulOp::Smlabt | DualMulOp::Smlatt);
+                                let product = self
+                                    .half_signed(n, nt)
+                                    .wrapping_mul(self.half_signed(m, mt));
+                                self.add_setq(product, self.regs.read(ra) as i32)
+                            }
+                            // Word accumulate of the halfword product's top
+                            // bits; `add_setq` on the truncated sum.
+                            DualMulOp::Smlawb | DualMulOp::Smlawt => {
+                                let mt = op == DualMulOp::Smlawt;
+                                let shifted = if mt { m & 0xFFFF_0000 } else { m << 16 };
+                                let product = i64::from(n as i32) * i64::from(shifted as i32);
+                                let high = (product >> 32) as i32;
+                                self.add_setq(high, self.regs.read(ra) as i32)
+                            }
+                            // `SMLAD`/`SMLADX`, and `SMUAD`/`SMUSD` when
+                            // `Ra == 15`. The accumulate add is 64-bit so the
+                            // `Q` check sees the true overflow.
+                            DualMulOp::Smlad
+                            | DualMulOp::Smladx
+                            | DualMulOp::Smlsd
+                            | DualMulOp::Smlsdx => {
+                                let sub = matches!(op, DualMulOp::Smlsd | DualMulOp::Smlsdx);
+                                let (p_lo, p_hi) = self.smul_dual(n, m, m_swap);
+                                if sub {
+                                    // `p_lo - p_hi` cannot overflow.
+                                    let diff = p_lo.wrapping_sub(p_hi);
+                                    if ra == 15 {
+                                        diff
+                                    } else {
+                                        self.add_setq(diff, self.regs.read(ra) as i32)
+                                    }
+                                } else if ra == 15 {
+                                    self.add_setq(p_lo, p_hi)
+                                } else {
+                                    let sum = i64::from(p_lo)
+                                        + i64::from(p_hi)
+                                        + i64::from(self.regs.read(ra) as i32);
+                                    let lo = sum as i32;
+                                    if (sum >> 32) as i32 != lo >> 31 {
+                                        self.xpsr.set_q(true);
+                                    }
+                                    lo
+                                }
+                            }
+                            // Top word of the 32-by-32 product (no `Q`); the
+                            // `SMMLS` subtract borrows into the high word.
+                            DualMulOp::Smmla
+                            | DualMulOp::Smmlar
+                            | DualMulOp::Smmls
+                            | DualMulOp::Smmlsr => {
+                                let product = i64::from(n as i32) * i64::from(m as i32);
+                                let sub = matches!(op, DualMulOp::Smmls | DualMulOp::Smmlsr);
+                                let round = matches!(op, DualMulOp::Smmlar | DualMulOp::Smmlsr);
+                                if sub {
+                                    let acc = u64::from(self.regs.read(ra)) << 32;
+                                    let result = acc.wrapping_sub(product as u64);
+                                    let mut high = (result >> 32) as u32;
+                                    if round {
+                                        high = high.wrapping_add(result as u32 >> 31);
+                                    }
+                                    high as i32
+                                } else {
+                                    let high = (product >> 32) as u32;
+                                    let mut result = high.wrapping_add(self.regs.read(ra));
+                                    if round {
+                                        result = result.wrapping_add(product as u32 >> 31);
+                                    }
+                                    result as i32
+                                }
+                            }
+                            _ => unreachable!(),
+                        };
+                        self.regs.write(rd, result as u32);
+                    }
+                    // Long forms write `RdLo` (`ra`, bits15:12) and `RdHi`
+                    // (`rd`, bits11:8). None of them touch `Q`.
+                    DualMulOp::Smlalbb
+                    | DualMulOp::Smlalbt
+                    | DualMulOp::Smlaltb
+                    | DualMulOp::Smlaltt
+                    | DualMulOp::Smlald
+                    | DualMulOp::Smlaldx
+                    | DualMulOp::Smlsld
+                    | DualMulOp::Smlsldx
+                    | DualMulOp::Umaal => {
+                        if ra == 15 {
+                            return Err(HaltCause::NotImplemented {
+                                what: "dual long multiply writes to pc",
+                            });
+                        }
+                        let acc = (i64::from(self.regs.read(rd) as i32) << 32)
+                            | i64::from(self.regs.read(ra));
+                        let total = match op {
+                            // 16-by-16 products sign-extended into the pair.
+                            DualMulOp::Smlalbb
+                            | DualMulOp::Smlalbt
+                            | DualMulOp::Smlaltb
+                            | DualMulOp::Smlaltt => {
+                                let nt = matches!(op, DualMulOp::Smlaltb | DualMulOp::Smlaltt);
+                                let mt = matches!(op, DualMulOp::Smlalbt | DualMulOp::Smlaltt);
+                                let product = i64::from(self.half_signed(n, nt))
+                                    * i64::from(self.half_signed(m, mt));
+                                acc.wrapping_add(product)
+                            }
+                            // Dual products summed (or subtracted) and added
+                            // to the accumulator.
+                            DualMulOp::Smlald
+                            | DualMulOp::Smlaldx
+                            | DualMulOp::Smlsld
+                            | DualMulOp::Smlsldx => {
+                                let sub = matches!(op, DualMulOp::Smlsld | DualMulOp::Smlsldx);
+                                let (p_lo, p_hi) = self.smul_dual(n, m, m_swap);
+                                let pair = if sub {
+                                    i64::from(p_lo) - i64::from(p_hi)
+                                } else {
+                                    i64::from(p_lo) + i64::from(p_hi)
+                                };
+                                acc.wrapping_add(pair)
+                            }
+                            // Unsigned product plus both halves of the pair.
+                            DualMulOp::Umaal => {
+                                let mut total = u64::from(n).wrapping_mul(u64::from(m));
+                                total = total.wrapping_add(u64::from(self.regs.read(ra)));
+                                total = total.wrapping_add(u64::from(self.regs.read(rd)));
+                                let lo = total as u32;
+                                let hi = (total >> 32) as u32;
+                                self.regs.write(ra, lo);
+                                self.regs.write(rd, hi);
+                                return Ok(Next::Advance(pc + 4));
+                            }
+                            _ => unreachable!(),
+                        };
+                        let lo = total as u32;
+                        let hi = (total >> 32) as u32;
+                        self.regs.write(ra, lo);
+                        self.regs.write(rd, hi);
                     }
                 }
                 Ok(Next::Advance(pc + 4))
@@ -1051,6 +1379,245 @@ impl<B: PeripheralBus> Core<B> {
                     UnaryOp::Rbit => rbit(v),
                     UnaryOp::Clz => v.leading_zeros(),
                 };
+                self.regs.write(rd, result);
+                Ok(Next::Advance(pc + 4))
+            }
+            #[allow(
+                clippy::cast_possible_wrap,
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss
+            )]
+            I::Qadd { op, rd, rn, rm } => {
+                if rd == 15 {
+                    return Err(HaltCause::NotImplemented {
+                        what: "saturating add writes to pc",
+                    });
+                }
+                let n = self.regs.read(rn);
+                let m = self.regs.read(rm);
+                // Everything is widened to `i64` so the sum of two 32-bit
+                // values cannot wrap before the clamp sees it.
+                let (result, sat) = match op {
+                    QaddOp::Qadd => {
+                        signed_sat(i64::from(n as i32).wrapping_add(i64::from(m as i32)), 32)
+                    }
+                    QaddOp::Qsub => {
+                        signed_sat(i64::from(n as i32).wrapping_sub(i64::from(m as i32)), 32)
+                    }
+                    QaddOp::Qdadd => {
+                        // The doubled operand is clamped to the signed 32-bit
+                        // range before it feeds the addition.
+                        let (d, double_sat) = signed_sat(i64::from(m as i32).wrapping_mul(2), 32);
+                        let (r, add_sat) =
+                            signed_sat(i64::from(n as i32).wrapping_add(i64::from(d)), 32);
+                        (r, double_sat || add_sat)
+                    }
+                    QaddOp::Qdsub => {
+                        let (d, double_sat) = signed_sat(i64::from(m as i32).wrapping_mul(2), 32);
+                        let (r, sub_sat) =
+                            signed_sat(i64::from(n as i32).wrapping_sub(i64::from(d)), 32);
+                        (r, double_sat || sub_sat)
+                    }
+                };
+                if sat {
+                    self.xpsr.set_q(true);
+                }
+                self.regs.write(rd, result as u32);
+                Ok(Next::Advance(pc + 4))
+            }
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                clippy::cast_possible_wrap
+            )]
+            I::Par {
+                op,
+                sat,
+                rd,
+                rn,
+                rm,
+            } => {
+                if rd == 15 {
+                    return Err(HaltCause::NotImplemented {
+                        what: "parallel add/subtract writes to pc",
+                    });
+                }
+                let n = self.regs.read(rn);
+                let m = self.regs.read(rm);
+                let (result, ge) = match op {
+                    ParOp::Add8 | ParOp::Sub8 => {
+                        let add = op == ParOp::Add8;
+                        let mut res = 0u32;
+                        let mut ge = 0u32;
+                        for lane in 0..4 {
+                            let (v, g) = par_lane(
+                                n >> (lane * 8) & 0xFF,
+                                m >> (lane * 8) & 0xFF,
+                                add,
+                                sat,
+                                8,
+                            );
+                            res |= v << (lane * 8);
+                            ge |= u32::from(g) << lane;
+                        }
+                        (res, ge)
+                    }
+                    ParOp::Add16 | ParOp::Sub16 => {
+                        let add = op == ParOp::Add16;
+                        let mut res = 0u32;
+                        let mut ge = 0u32;
+                        for lane in 0..2 {
+                            let (v, g) = par_lane(
+                                n >> (lane * 16) & 0xFFFF,
+                                m >> (lane * 16) & 0xFFFF,
+                                add,
+                                sat,
+                                16,
+                            );
+                            res |= v << (lane * 16);
+                            ge |= (u32::from(g) * 0b11) << (lane * 2);
+                        }
+                        (res, ge)
+                    }
+                    ParOp::Asx | ParOp::Sax => {
+                        // `ASX` subtracts the swapped high half from the low
+                        // lane and adds the swapped low half to the high lane;
+                        // `SAX` mirrors the operations.
+                        let add_lo = op == ParOp::Sax;
+                        let (lo_v, lo_ge) = par_lane(n & 0xFFFF, m >> 16, add_lo, sat, 16);
+                        let (hi_v, hi_ge) = par_lane(n >> 16, m & 0xFFFF, !add_lo, sat, 16);
+                        let ge = (u32::from(lo_ge) * 0b11) | ((u32::from(hi_ge) * 0b11) << 2);
+                        ((lo_v & 0xFFFF) | (hi_v << 16), ge)
+                    }
+                };
+                if matches!(sat, ParSat::S | ParSat::U) {
+                    self.xpsr.set_ge(ge);
+                }
+                self.regs.write(rd, result);
+                Ok(Next::Advance(pc + 4))
+            }
+            I::Sel { rd, rn, rm } => {
+                if rd == 15 {
+                    return Err(HaltCause::NotImplemented {
+                        what: "sel writes to pc",
+                    });
+                }
+                let n = self.regs.read(rn);
+                let m = self.regs.read(rm);
+                let ge = self.xpsr.ge();
+                let mut mask = 0u32;
+                for lane in 0..4 {
+                    if ge & (1 << lane) != 0 {
+                        mask |= 0xFF << (lane * 8);
+                    }
+                }
+                self.regs.write(rd, (n & mask) | (m & !mask));
+                Ok(Next::Advance(pc + 4))
+            }
+            #[allow(
+                clippy::cast_possible_wrap,
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss
+            )]
+            I::ExtendAdd {
+                op,
+                rd,
+                rn,
+                rm,
+                rot,
+            } => {
+                if rd == 15 {
+                    return Err(HaltCause::NotImplemented {
+                        what: "register extend writes to pc",
+                    });
+                }
+                let m = self.regs.read(rm).rotate_right(u32::from(rot) * 8);
+                let ext = match op {
+                    ExtendAddOp::Sxtah => (m as u16 as i16) as u32,
+                    ExtendAddOp::Uxtah => m & 0xFFFF,
+                    ExtendAddOp::Sxtab16 => {
+                        let lo = (m & 0xFF) as u8 as i8 as u32 & 0xFFFF;
+                        let hi = ((m >> 16) & 0xFF) as u8 as i8 as u32 & 0xFFFF;
+                        lo | (hi << 16)
+                    }
+                    ExtendAddOp::Uxtab16 => (m & 0xFF) | ((m >> 16) & 0xFF) << 16,
+                    ExtendAddOp::Sxtab => (m & 0xFF) as u8 as i8 as u32,
+                    ExtendAddOp::Uxtab => m & 0xFF,
+                };
+                // `rn == 15` is the two-operand alias: extend only, no addend.
+                let result = if rn == 15 {
+                    ext
+                } else {
+                    let n = self.regs.read(rn);
+                    match op {
+                        ExtendAddOp::Sxtab16 | ExtendAddOp::Uxtab16 => {
+                            let lo = (n & 0xFFFF).wrapping_add(ext & 0xFFFF) & 0xFFFF;
+                            let hi = (n >> 16).wrapping_add(ext >> 16) & 0xFFFF;
+                            lo | (hi << 16)
+                        }
+                        _ => n.wrapping_add(ext),
+                    }
+                };
+                self.regs.write(rd, result);
+                Ok(Next::Advance(pc + 4))
+            }
+            #[allow(
+                clippy::cast_possible_wrap,
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss
+            )]
+            I::Sat {
+                op,
+                rd,
+                rn,
+                sat_n,
+                sh,
+                shift,
+            } => {
+                if rd == 15 {
+                    return Err(HaltCause::NotImplemented {
+                        what: "saturate writes to pc",
+                    });
+                }
+                let v = self.regs.read(rn);
+                let (result, sat) = match op {
+                    SatOp::Ssat | SatOp::Usat => {
+                        // `sh` selects LSL/ASR; the decoder folds the
+                        // zero-shift `ASR` alias into the 16-bit forms, so a
+                        // nonzero shift is guaranteed here.
+                        let shifted = if sh {
+                            (v as i32) >> shift
+                        } else {
+                            v.wrapping_shl(u32::from(shift)) as i32
+                        };
+                        let signed = op == SatOp::Ssat;
+                        let (r, s) = if signed {
+                            signed_sat(i64::from(shifted), sat_n)
+                        } else {
+                            unsigned_sat(i64::from(shifted), sat_n)
+                        };
+                        (r as u32, s)
+                    }
+                    SatOp::Ssat16 | SatOp::Usat16 => {
+                        let signed = op == SatOp::Ssat16;
+                        let lane = |hw: u32| {
+                            if signed {
+                                signed_sat(i64::from(hw as u16 as i16), sat_n)
+                            } else {
+                                unsigned_sat(i64::from(hw & 0xFFFF), sat_n)
+                            }
+                        };
+                        let (lo, sat_lo) = lane(v);
+                        let (hi, sat_hi) = lane(v >> 16);
+                        (
+                            (u32::from(hi as u16) << 16) | u32::from(lo as u16),
+                            sat_lo || sat_hi,
+                        )
+                    }
+                };
+                if sat {
+                    self.xpsr.set_q(true);
+                }
                 self.regs.write(rd, result);
                 Ok(Next::Advance(pc + 4))
             }
@@ -1442,6 +2009,8 @@ impl<B: PeripheralBus> Core<B> {
         if ex == Exception::HardFault && self.ipsr != 0 {
             return Err(HaltCause::UnhandledException);
         }
+        // Exception entry clears the local exclusive monitor.
+        self.exmon = None;
         let vector_addr = u32::from(ex.number()) * 4;
         let vector = match self.read_word_halt(vector_addr) {
             Ok(v) => v,
@@ -1454,7 +2023,7 @@ impl<B: PeripheralBus> Core<B> {
         // using; the handler then runs on the main stack pointer.
         let use_process = self.sp_is_process();
         let mut sp = self.regs.sp;
-        let mut sxpsr = self.xpsr.get() & (APSR_FLAGS | XPSR_T) | u32::from(self.ipsr);
+        let mut sxpsr = self.xpsr.get() & (APSR_QFLAGS | XPSR_T) | u32::from(self.ipsr);
         // ITSTATE occupies xPSR bits [15:10] (IT[7:2]) and [26:25] (IT[1:0]).
         // It is captured in the frame and cleared for the handler.
         let it = u32::from(self.itstate);
@@ -1534,6 +2103,8 @@ impl<B: PeripheralBus> Core<B> {
         if pc_ret & 1 == 0 {
             return Err(HaltCause::NonThumbTarget);
         }
+        // Exception return clears the local exclusive monitor.
+        self.exmon = None;
         // A return-to-process hands the thread the handler's final main SP,
         // captured before the registers below switch the active pointer.
         let handler_msp = self.regs.sp;
@@ -1548,10 +2119,9 @@ impl<B: PeripheralBus> Core<B> {
         self.regs.write(12, r12);
         self.regs.lr = lr;
         self.regs.pc = pc_ret & !1;
-        self.xpsr.set(sxpsr & (APSR_FLAGS | XPSR_T));
+        self.xpsr.set(sxpsr & (APSR_QFLAGS | XPSR_T));
         // Restore ITSTATE from its xPSR[15:10] / [26:25] slots.
-        self.itstate =
-            ((sxpsr >> 8) & 0xFC) as u8 | ((sxpsr >> 25) & 0x03) as u8;
+        self.itstate = ((sxpsr >> 8) & 0xFC) as u8 | ((sxpsr >> 25) & 0x03) as u8;
         if to_process {
             self.regs.msp = handler_msp;
             self.regs.psp = sp;
@@ -1705,6 +2275,109 @@ const fn rbit(v: u32) -> u32 {
     let v = (v & 0x0F0F_0F0F) << 4 | (v & 0xF0F0_F0F0) >> 4;
     let v = (v & 0x3333_3333) << 2 | (v & 0xCCCC_CCCC) >> 2;
     (v & 0x5555_5555) << 1 | (v & 0xAAAA_AAAA) >> 1
+}
+
+/// Clamp `v` to the signed `n`-bit range `[-2^(n-1), 2^(n-1) - 1]`, reporting
+/// whether the value changed. `n == 32` (the `QADD` family and `SSAT #32`)
+/// clamps to the whole signed 32-bit range.
+#[allow(clippy::cast_possible_truncation)]
+const fn signed_sat(v: i64, n: u8) -> (i32, bool) {
+    if n >= 32 {
+        if v > i32::MAX as i64 {
+            (i32::MAX, true)
+        } else if v < i32::MIN as i64 {
+            (i32::MIN, true)
+        } else {
+            (v as i32, false)
+        }
+    } else {
+        let max = (1i64 << (n as u32 - 1)) - 1;
+        let min = -(1i64 << (n as u32 - 1));
+        if v > max {
+            (max as i32, true)
+        } else if v < min {
+            (min as i32, true)
+        } else {
+            (v as i32, false)
+        }
+    }
+}
+
+/// Clamp `v` to the unsigned `n`-bit range `[0, 2^n - 1]`, reporting whether
+/// the value changed. `n == 32` (USAT #32) clamps only negative values.
+#[allow(clippy::cast_possible_truncation)]
+const fn unsigned_sat(v: i64, n: u8) -> (i32, bool) {
+    if n >= 32 {
+        if v < 0 {
+            (0, true)
+        } else {
+            (v as i32, false)
+        }
+    } else {
+        let max = (1i64 << (n as u32)) - 1;
+        if v > max {
+            (max as i32, true)
+        } else if v < 0 {
+            (0, true)
+        } else {
+            (v as i32, false)
+        }
+    }
+}
+
+/// Sign-extend an `8`- or `16`-bit lane to `i64`.
+#[allow(clippy::cast_lossless)]
+#[must_use]
+const fn sign_ext_lane(v: u32, bits: u8) -> i64 {
+    let v = (v & if bits == 8 { 0xFF } else { 0xFFFF }) as i64;
+    let sign = 1i64 << (bits - 1);
+    if v & sign != 0 {
+        v - (sign << 1)
+    } else {
+        v
+    }
+}
+
+/// Compute one lane of a parallel add/subtract instruction.
+///
+/// `a`/`b` are already lane-extracted operands; `add` selects add over
+/// subtract; `bits` is the lane width (`8` or `16`). Returns the packed lane
+/// result and whether the lane's GE flag is set. The `S` form sets GE when the
+/// exact signed lane result is non-negative; the `U` form sets GE on the add's
+/// carry out (or on the absence of a borrow for subtract). The halving forms
+/// shift the exact result right by one; the saturating forms clamp each lane
+/// to the `bits`-bit signed/unsigned range without touching the sticky Q flag.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_lossless
+)]
+const fn par_lane(a: u32, b: u32, add: bool, sat: ParSat, bits: u8) -> (u32, bool) {
+    let mask = if bits == 8 { 0xFF } else { 0xFFFF };
+    let a = a & mask;
+    let b = b & mask;
+    let (sa, sb) = match sat {
+        ParSat::S | ParSat::Q | ParSat::Sh => (sign_ext_lane(a, bits), sign_ext_lane(b, bits)),
+        _ => (a as i64, b as i64),
+    };
+    let exact = if add { sa + sb } else { sa - sb };
+    let (ge, result) = match sat {
+        ParSat::S => (exact >= 0, exact as u32 & mask),
+        ParSat::U => {
+            let carry = if add { exact > mask as i64 } else { exact >= 0 };
+            (carry, exact as u32 & mask)
+        }
+        ParSat::Sh | ParSat::Uh => (false, (exact >> 1) as u32 & mask),
+        ParSat::Q => {
+            let (r, _) = signed_sat(exact, bits);
+            (false, r as u32 & mask)
+        }
+        ParSat::Uq => {
+            let (r, _) = unsigned_sat(exact, bits);
+            (false, r as u32 & mask)
+        }
+    };
+    (result, ge)
 }
 
 /// Shift `v` by an immediate 5-bit `amount` (LSL/LSR/ASR #n). Returns
@@ -2010,6 +2683,126 @@ mod tests {
     }
 
     #[test]
+    fn exclusive_ldrex_strex_roundtrip() {
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(2, 0x2000_0400);
+        c.regs.write(1, 0xAABB_CCDD);
+        c.mem().write_word(0x2000_0400, 0x1111_1111).unwrap();
+        // ldrex r0, [r2] e852 0f00; strex r3, r1, [r2] e842 1300.
+        load_inst(&mut c, 0x2000_0000, &[0x52, 0xe8, 0x00, 0x0f]);
+        load_inst(&mut c, 0x2000_0004, &[0x42, 0xe8, 0x00, 0x13]);
+        c.step().unwrap();
+        assert_eq!(c.regs.read(0), 0x1111_1111);
+        assert_eq!(c.exmon, Some(0x2000_0400));
+        c.step().unwrap();
+        assert_eq!(c.regs.read(3), 0);
+        assert_eq!(c.mem().read_word(0x2000_0400).unwrap(), 0xAABB_CCDD);
+        assert_eq!(c.exmon, None);
+    }
+
+    #[test]
+    fn exclusive_strex_fails_without_match() {
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(2, 0x2000_0400);
+        c.regs.write(0, 0xAABB_CCDD);
+        c.mem().write_word(0x2000_0400, 0x1111_1111).unwrap();
+        // A lone STREX with an open monitor fails and leaves memory alone.
+        load_inst(&mut c, 0x2000_0000, &[0x42, 0xe8, 0x00, 0x03]); // strex r3, r0, [r2]
+        c.step().unwrap();
+        assert_eq!(c.regs.read(3), 1);
+        assert_eq!(c.mem().read_word(0x2000_0400).unwrap(), 0x1111_1111);
+        // A STREX to a different address than the LDREX tagged also fails.
+        c.regs.write(2, 0x2000_0404);
+        load_inst(&mut c, 0x2000_0004, &[0x52, 0xe8, 0x00, 0x0f]); // ldrex r0, [r2]
+        c.step().unwrap();
+        assert_eq!(c.exmon, Some(0x2000_0404));
+        c.regs.write(2, 0x2000_0400);
+        load_inst(&mut c, 0x2000_0008, &[0x42, 0xe8, 0x00, 0x03]); // strex r3, r0, [r2]
+        c.step().unwrap();
+        assert_eq!(c.regs.read(3), 1);
+        assert_eq!(c.mem().read_word(0x2000_0400).unwrap(), 0x1111_1111);
+        // The mismatched STREX still cleared the monitor, so a retry at the
+        // tagged address now fails too.
+        c.regs.write(2, 0x2000_0404);
+        load_inst(&mut c, 0x2000_000c, &[0x42, 0xe8, 0x00, 0x03]); // strex r3, r0, [r2]
+        c.step().unwrap();
+        assert_eq!(c.regs.read(3), 1);
+    }
+
+    #[test]
+    fn exclusive_clrex_and_byte_half_forms() {
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(2, 0x2000_0400);
+        c.regs.write(1, 0xAABB_CCDD);
+        c.mem().write(0x2000_0400, 0x11).unwrap();
+        c.mem().write_half(0x2000_0410, 0x1122).unwrap();
+        // ldrexb r0, [r2] e8d2 0f4f; strexb r3, r1, [r2] e8c2 1f43.
+        load_inst(&mut c, 0x2000_0000, &[0xd2, 0xe8, 0x4f, 0x0f]);
+        load_inst(&mut c, 0x2000_0004, &[0xc2, 0xe8, 0x43, 0x1f]);
+        c.step().unwrap();
+        assert_eq!(c.regs.read(0), 0x11);
+        c.step().unwrap();
+        assert_eq!(c.regs.read(3), 0);
+        assert_eq!(c.mem().read(0x2000_0400).unwrap(), 0xDD);
+        // ldrexh r0, [r2] e8d2 0f5f at a fresh address, then CLREX
+        // makes the following STREXH fail.
+        load_inst(&mut c, 0x2000_0008, &[0xd2, 0xe8, 0x5f, 0x0f]); // ldrexh r0, [r2]
+        c.regs.write(2, 0x2000_0410);
+        c.step().unwrap();
+        assert_eq!(c.regs.read(0), 0x1122);
+        load_inst(&mut c, 0x2000_000c, &[0xbf, 0xf3, 0x2f, 0x8f]); // clrex
+        c.step().unwrap();
+        assert_eq!(c.exmon, None);
+        load_inst(&mut c, 0x2000_0010, &[0xc2, 0xe8, 0x53, 0x1f]); // strexh r3, r1, [r2]
+        c.step().unwrap();
+        assert_eq!(c.regs.read(3), 1);
+        assert_eq!(c.mem().read_half(0x2000_0410).unwrap(), 0x1122);
+    }
+
+    #[test]
+    fn exclusive_word_offset_and_exception_clears_monitor() {
+        const HANDLER: u32 = 0x2000_0400;
+        let mut c = Core::armv7m(crate::mem::flat::FlatMemory::with_layout(
+            &[0x0000_0000, 0x2000_0000],
+            &[0x1000, 0x1000],
+        ));
+        // SVCall is exception 11: its vector sits at 0x2c in the vector table.
+        c.mem().write_word(0x2c, HANDLER | 1).unwrap();
+        c.regs.sp = 0x2000_0800;
+        c.regs.msp = 0x2000_0800;
+        c.regs.write(2, 0x2000_0000);
+        c.mem().write_word(0x2000_0004, 0xCAFE_F00D).unwrap();
+        c.regs.write(0, 0xDEAD_BEEF);
+        // ldrex r0, [r2, #4] e852 f001: the monitor is tagged with the
+        // effective address.
+        load_inst(&mut c, 0x2000_0100, &[0x52, 0xe8, 0x01, 0x0f]);
+        c.regs.pc = 0x2000_0100;
+        c.step().unwrap();
+        assert_eq!(c.regs.read(0), 0xCAFE_F00D);
+        assert_eq!(c.exmon, Some(0x2000_0004));
+        // svc #10 df0a: entering the handler clears the local monitor, so a
+        // STREX in Thread mode afterwards must fail.
+        load_inst(&mut c, 0x2000_0104, &[0x0a, 0xdf]);
+        c.step().unwrap();
+        assert_eq!(c.exmon, None);
+        assert_eq!(c.ipsr, 11);
+        // Handler returns via bx lr; the monitor stays clear across the
+        // exception return as well.
+        load_inst(&mut c, HANDLER, &[0x70, 0x47]);
+        c.step().unwrap();
+        assert_eq!(c.ipsr, 0);
+        assert_eq!(c.exmon, None);
+        c.regs.pc = 0x2000_0108;
+        c.regs.write(2, 0x2000_0004);
+        load_inst(&mut c, 0x2000_0108, &[0x42, 0xe8, 0x00, 0x03]); // strex r3, r0, [r2]
+        c.step().unwrap();
+        assert_eq!(c.regs.read(3), 1);
+    }
+
+    #[test]
     fn mem_reg_offset_roundtrip() {
         let mut c = armv7m_core();
         c.regs.pc = 0x2000_0000;
@@ -2264,27 +3057,27 @@ mod tests {
 
     #[test]
     fn long_multiply_ops() {
-        // smull r0, r1, r2, r3 (fb82 1003): -7 * 5 = -35 -> r1:r0.
+        // smull r0, r1, r2, r3 (fb82 0103): -7 * 5 = -35 -> r1:r0.
         let mut c = armv7m_core();
         c.regs.pc = 0x2000_0000;
         c.regs.write(2, 0xFFFF_FFF9);
         c.regs.write(3, 5);
-        load_inst(&mut c, 0x2000_0000, &[0x82, 0xfb, 0x03, 0x10]);
+        load_inst(&mut c, 0x2000_0000, &[0x82, 0xfb, 0x03, 0x01]);
         c.step().unwrap();
         assert_eq!(c.regs.r[0], 0xFFFF_FFDD);
         assert_eq!(c.regs.r[1], 0xFFFF_FFFF);
 
-        // umull r0, r1, r9, r2 (fba9 1002): 0x10000 * 0x10000 = 2^32 -> r1 = 1.
+        // umull r0, r1, r9, r2 (fba9 0102): 0x10000 * 0x10000 = 2^32 -> r1 = 1.
         let mut c = armv7m_core();
         c.regs.pc = 0x2000_0000;
         c.regs.write(9, 0x0001_0000);
         c.regs.write(2, 0x0001_0000);
-        load_inst(&mut c, 0x2000_0000, &[0xa9, 0xfb, 0x02, 0x10]);
+        load_inst(&mut c, 0x2000_0000, &[0xa9, 0xfb, 0x02, 0x01]);
         c.step().unwrap();
         assert_eq!(c.regs.r[0], 0);
         assert_eq!(c.regs.r[1], 1);
 
-        // smlal r2, r1, r3, r4 (fbc3 1204): acc r1:r2 = 0x1_0000_0010,
+        // smlal r2, r1, r3, r4 (fbc3 2104): acc r1:r2 = 0x1_0000_0010,
         // product -5 * 4 = -20 -> total = 0xFFFF_FFFC, r1 cleared.
         let mut c = armv7m_core();
         c.regs.pc = 0x2000_0000;
@@ -2292,12 +3085,12 @@ mod tests {
         c.regs.write(4, 4);
         c.regs.write(1, 1);
         c.regs.write(2, 16);
-        load_inst(&mut c, 0x2000_0000, &[0xc3, 0xfb, 0x04, 0x12]);
+        load_inst(&mut c, 0x2000_0000, &[0xc3, 0xfb, 0x04, 0x21]);
         c.step().unwrap();
         assert_eq!(c.regs.r[2], 0xFFFF_FFFC);
         assert_eq!(c.regs.r[1], 0);
 
-        // umlal r2, r1, r3, r4 (fbe3 1204): acc r1:r2 = 0x2_0000_0064,
+        // umlal r2, r1, r3, r4 (fbe3 2104): acc r1:r2 = 0x2_0000_0064,
         // product 1000 * 10 = 10000 -> total = 0x2_0000_2774.
         let mut c = armv7m_core();
         c.regs.pc = 0x2000_0000;
@@ -2305,93 +3098,842 @@ mod tests {
         c.regs.write(4, 10);
         c.regs.write(1, 2);
         c.regs.write(2, 100);
-        load_inst(&mut c, 0x2000_0000, &[0xe3, 0xfb, 0x04, 0x12]);
+        load_inst(&mut c, 0x2000_0000, &[0xe3, 0xfb, 0x04, 0x21]);
         c.step().unwrap();
         assert_eq!(c.regs.r[2], 0x0000_2774);
         assert_eq!(c.regs.r[1], 2);
 
-        // Writing the low result register (a PC) is rejected.
+        // Writing the low result register `RdLo` (a PC) is rejected.
         let mut c = armv7m_core();
         c.regs.pc = 0x2000_0000;
         c.regs.write(2, 3);
         c.regs.write(3, 4);
-        load_inst(&mut c, 0x2000_0000, &[0xa2, 0xfb, 0x03, 0x1f]);
+        load_inst(&mut c, 0x2000_0000, &[0xa2, 0xfb, 0x03, 0xf1]);
         assert!(matches!(c.step(), Err(HaltCause::NotImplemented { .. })));
     }
 
     #[test]
+    fn dsp_mul_ops() {
+        // smulbb r0, r1, r2 (fb11 f002): low*low, both sign-extended. With
+        // r1 = 0xffff0003 the low half is 3, r2 low half is 4 -> 12.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0xffff_0003);
+        c.regs.write(2, 0x0000_0004);
+        load_inst(&mut c, 0x2000_0000, &[0x11, 0xfb, 0x02, 0xf0]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 12);
+
+        // smulbt r0, r1, r2 (fb11 f012): n low * m high. r1 low = 3,
+        // r2 = 0xffff0004 high half = -1 -> -3.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0x0000_0003);
+        c.regs.write(2, 0xffff_0004);
+        load_inst(&mut c, 0x2000_0000, &[0x11, 0xfb, 0x12, 0xf0]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0xffff_fffd);
+
+        // smultb r0, r1, r2 (fb11 f022): n high * m low. r1 high = -1,
+        // r2 low = 4 -> -4.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0xffff_0003);
+        c.regs.write(2, 0x0000_0004);
+        load_inst(&mut c, 0x2000_0000, &[0x11, 0xfb, 0x22, 0xf0]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0xffff_fffc);
+
+        // smultt r0, r1, r2 (fb11 f032): high*high. Both high halves -1 -> 1.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0xffff_0003);
+        c.regs.write(2, 0xffff_0004);
+        load_inst(&mut c, 0x2000_0000, &[0x11, 0xfb, 0x32, 0xf0]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 1);
+
+        // smulwb r0, r1, r2 (fb31 f002): r1 is a full signed word,
+        // r2 high half -32768. 32766 * 32768 = 0x3fff0000, >> 16 = 0x3fff.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0xffff_8002);
+        c.regs.write(2, 0x0000_8000);
+        load_inst(&mut c, 0x2000_0000, &[0x31, 0xfb, 0x02, 0xf0]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0x0000_3fff);
+
+        // smulwt r0, r1, r2 (fb31 f012): -32766 * 3 = -98298; the arithmetic
+        // shift of the 48-bit product rounds toward negative infinity to -2.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0xffff_8002);
+        c.regs.write(2, 0x0003_0000);
+        load_inst(&mut c, 0x2000_0000, &[0x31, 0xfb, 0x12, 0xf0]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0xffff_fffe);
+
+        // smmul r0, r1, r2 (fb51 f002): 0x80000000 * -1 = 0x80000000, and the
+        // top word of that is 0.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0x8000_0000);
+        c.regs.write(2, 0xffff_ffff);
+        load_inst(&mut c, 0x2000_0000, &[0x51, 0xfb, 0x02, 0xf0]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0);
+
+        // smmulr r0, r1, r2 (fb51 f012): the same product, plus 0x80000000
+        // before the shift wraps it into the next word -> 1.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0x8000_0000);
+        c.regs.write(2, 0xffff_ffff);
+        load_inst(&mut c, 0x2000_0000, &[0x51, 0xfb, 0x12, 0xf0]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 1);
+
+        // usad8 r0, r1, r2 (fb71 f002): each byte differs by 255, sum = 1020.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0xff00_ff00);
+        c.regs.write(2, 0x00ff_00ff);
+        load_inst(&mut c, 0x2000_0000, &[0x71, 0xfb, 0x02, 0xf0]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0x3fc);
+
+        // usada8 r0, r1, r2, r3 (fb71 3002): 1020 + 0x12345678.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0xff00_ff00);
+        c.regs.write(2, 0x00ff_00ff);
+        c.regs.write(3, 0x1234_5678);
+        load_inst(&mut c, 0x2000_0000, &[0x71, 0xfb, 0x02, 0x30]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0x1234_5a74);
+
+        // A DSP multiply that targets the PC is rejected.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 2);
+        c.regs.write(2, 3);
+        load_inst(&mut c, 0x2000_0000, &[0x11, 0xfb, 0x02, 0xff]);
+        assert!(matches!(c.step(), Err(HaltCause::NotImplemented { .. })));
+    }
+
+    #[test]
+    fn dual_mul_ops() {
+        // smlad r0, r1, r2, r3 (fb21 3002): p_lo + p_hi + Ra. With both halves
+        // -32768 the products are 2^30 each; Ra = -1 makes the 64-bit sum
+        // 0x7FFFFFFF, so Q is NOT set (a two-step add would wrongly set it).
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0x8000_8000);
+        c.regs.write(2, 0x8000_8000);
+        c.regs.write(3, 0xFFFF_FFFF);
+        load_inst(&mut c, 0x2000_0000, &[0x21, 0xfb, 0x02, 0x30]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0x7FFF_FFFF);
+        assert!(!c.xpsr.q());
+
+        // The same products with Ra = 0x40000000 overflow the 32-bit result,
+        // and the 64-bit check sees it: Q is set.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0x8000_8000);
+        c.regs.write(2, 0x8000_8000);
+        c.regs.write(3, 0x4000_0000);
+        load_inst(&mut c, 0x2000_0000, &[0x21, 0xfb, 0x02, 0x30]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0xC000_0000);
+        assert!(c.xpsr.q());
+
+        // smuad r0, r1, r2 (fb21 f002): the sentinel Ra drops the accumulate,
+        // and the single 32-bit add wraps with Q set.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0x8000_8000);
+        c.regs.write(2, 0x8000_8000);
+        load_inst(&mut c, 0x2000_0000, &[0x21, 0xfb, 0x02, 0xf0]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0x8000_0000);
+        assert!(c.xpsr.q());
+
+        // smladx r0, r1, r2, r3 (fb21 3012) swaps Rm's halves: without the
+        // swap the products cancel, with it r0 = 7 * 1.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0x0000_0007);
+        c.regs.write(2, 0x0001_0000);
+        c.regs.write(3, 0);
+        load_inst(&mut c, 0x2000_0000, &[0x21, 0xfb, 0x12, 0x30]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 7);
+
+        // smlsd r0, r1, r2, r3 (fb41 3002): p_lo - p_hi + Ra, no overflow.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0x8000_8000);
+        c.regs.write(2, 0x8000_8000);
+        c.regs.write(3, 5);
+        load_inst(&mut c, 0x2000_0000, &[0x41, 0xfb, 0x02, 0x30]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 5);
+        assert!(!c.xpsr.q());
+
+        // smusd r0, r1, r2 (fb41 f002): the difference alone, no Q.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0x8000_8000);
+        c.regs.write(2, 0x8000_8000);
+        load_inst(&mut c, 0x2000_0000, &[0x41, 0xfb, 0x02, 0xf0]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0);
+        assert!(!c.xpsr.q());
+
+        // smlabb r0, r1, r2, r3 (fb11 3002): Ra + halfword product.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0xffff_0003);
+        c.regs.write(2, 0x0000_0004);
+        c.regs.write(3, 100);
+        load_inst(&mut c, 0x2000_0000, &[0x11, 0xfb, 0x02, 0x30]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 112);
+
+        // smlabt r0, r1, r2, r3 (fb11 3012): the accumulate add overflows and
+        // wraps, sticky-setting Q.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0x0000_7fff);
+        c.regs.write(2, 0x7fff_0000);
+        c.regs.write(3, 0x7fff_ffff);
+        load_inst(&mut c, 0x2000_0000, &[0x11, 0xfb, 0x12, 0x30]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0xbfff_0000);
+        assert!(c.xpsr.q());
+
+        // smlawb r0, r1, r2, r3 (fb31 3002): (Rn * Rm[15:0]) >> 16 + Ra.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0x0000_1000);
+        c.regs.write(2, 0x0000_ffff);
+        c.regs.write(3, 5);
+        load_inst(&mut c, 0x2000_0000, &[0x31, 0xfb, 0x02, 0x30]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 4);
+
+        // smmla r0, r1, r2, r3 (fb51 3002): top word of the product + Ra.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0x8000_0000);
+        c.regs.write(2, 0x8000_0000);
+        c.regs.write(3, 5);
+        load_inst(&mut c, 0x2000_0000, &[0x51, 0xfb, 0x02, 0x30]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0x4000_0005);
+
+        // smmlar r0, r1, r2, r3 (fb51 3012): adds the low word's bit 31.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0xffff_ffff);
+        c.regs.write(2, 0x8000_0000);
+        c.regs.write(3, 5);
+        load_inst(&mut c, 0x2000_0000, &[0x51, 0xfb, 0x12, 0x30]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 6);
+
+        // smmls r0, r1, r2, r3 (fb61 3002): (Ra << 32) - product, borrow
+        // included, so a tiny product of 6 with Ra = 0 gives -1, not 0.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 2);
+        c.regs.write(2, 3);
+        c.regs.write(3, 0);
+        load_inst(&mut c, 0x2000_0000, &[0x61, 0xfb, 0x02, 0x30]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0xffff_ffff);
+
+        // smmlsr r0, r1, r2, r3 (fb61 3012): the rounding bit borrows back.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 2);
+        c.regs.write(2, 3);
+        c.regs.write(3, 0);
+        load_inst(&mut c, 0x2000_0000, &[0x61, 0xfb, 0x12, 0x30]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0);
+
+        // smlald r2, r1, r3, r4 (fbc3 21c4): the dual sum accumulates into
+        // RdHi:RdLo and never touches Q.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(3, 0x8000_8000);
+        c.regs.write(4, 0x8000_8000);
+        c.regs.write(1, 1);
+        c.regs.write(2, 0);
+        load_inst(&mut c, 0x2000_0000, &[0xc3, 0xfb, 0xc4, 0x21]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[2], 0x8000_0000);
+        assert_eq!(c.regs.r[1], 1);
+        assert!(!c.xpsr.q());
+
+        // smlsld r2, r1, r3, r4 (fbd3 21c4): identical products cancel.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(3, 0x8000_8000);
+        c.regs.write(4, 0x8000_8000);
+        c.regs.write(1, 0x1234_5678);
+        c.regs.write(2, 0x9abc_def0);
+        load_inst(&mut c, 0x2000_0000, &[0xd3, 0xfb, 0xc4, 0x21]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[2], 0x9abc_def0);
+        assert_eq!(c.regs.r[1], 0x1234_5678);
+
+        // smlalbb r2, r1, r3, r4 (fbc3 2184): a sign-extended halfword product
+        // added to the pair.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(3, 0x0000_0003);
+        c.regs.write(4, 0x0000_0004);
+        c.regs.write(1, 1);
+        c.regs.write(2, 100);
+        load_inst(&mut c, 0x2000_0000, &[0xc3, 0xfb, 0x84, 0x21]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[2], 0x0000_0070);
+        assert_eq!(c.regs.r[1], 1);
+
+        // umaal r2, r1, r3, r4 (fbe3 2164): unsigned product plus both halves
+        // of the pair, low to RdLo and high to RdHi.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(3, 0xffff_ffff);
+        c.regs.write(4, 0xffff_ffff);
+        c.regs.write(1, 1);
+        c.regs.write(2, 1);
+        load_inst(&mut c, 0x2000_0000, &[0xe3, 0xfb, 0x64, 0x21]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[2], 3);
+        assert_eq!(c.regs.r[1], 0xffff_fffe);
+
+        // A word form targeting the PC and a long form targeting RdLo=PC are
+        // both rejected.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 2);
+        c.regs.write(2, 3);
+        load_inst(&mut c, 0x2000_0000, &[0x21, 0xfb, 0x02, 0x3f]);
+        assert!(matches!(c.step(), Err(HaltCause::NotImplemented { .. })));
+
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(3, 2);
+        c.regs.write(4, 3);
+        load_inst(&mut c, 0x2000_0000, &[0xc3, 0xfb, 0xc4, 0xf1]);
+        assert!(matches!(c.step(), Err(HaltCause::NotImplemented { .. })));
+    }
+
+    #[test]
+    fn qadd_family_saturates() {
+        // qadd r0, r1, r2 (fa81 f082) without saturation: 2 + 3 = 5, Q stays
+        // clear.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 2);
+        c.regs.write(2, 3);
+        load_inst(&mut c, 0x2000_0000, &[0x81, 0xfa, 0x82, 0xf0]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 5);
+        assert!(!c.xpsr.q());
+
+        // qadd r0, r1, r2 with r1 = INT32_MAX, r2 = 1: the sum clamps to
+        // INT32_MAX and the Q flag latches.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0x7fff_ffff);
+        c.regs.write(2, 1);
+        load_inst(&mut c, 0x2000_0000, &[0x81, 0xfa, 0x82, 0xf0]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0x7fff_ffff);
+        assert!(c.xpsr.q());
+
+        // qadd r0, r1, r2 with r1 = INT32_MIN, r2 = -1: clamps downward and
+        // the Q flag latches again (it is sticky, not re-cleared).
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0x8000_0000);
+        c.regs.write(2, 0xffff_ffff);
+        load_inst(&mut c, 0x2000_0000, &[0x81, 0xfa, 0x82, 0xf0]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0x8000_0000);
+        assert!(c.xpsr.q());
+
+        // qsub r0, r1, r2 (fa81 f0a2): INT32_MIN - 1 clamps to INT32_MIN.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0x8000_0000);
+        c.regs.write(2, 1);
+        load_inst(&mut c, 0x2000_0000, &[0x81, 0xfa, 0xa2, 0xf0]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0x8000_0000);
+        assert!(c.xpsr.q());
+
+        // qdadd r0, r1, r2 (fa81 f192): INT32_MAX + doubled 1 clamps the sum.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0x7fff_ffff);
+        c.regs.write(2, 1);
+        load_inst(&mut c, 0x2000_0000, &[0x81, 0xfa, 0x92, 0xf0]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0x7fff_ffff);
+        assert!(c.xpsr.q());
+
+        // qdadd r0, r1, r2 with r1 = 0, r2 = INT32_MAX: the *doubling*
+        // saturates to INT32_MAX, which also sets Q.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0);
+        c.regs.write(2, 0x7fff_ffff);
+        load_inst(&mut c, 0x2000_0000, &[0x81, 0xfa, 0x92, 0xf0]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0x7fff_ffff);
+        assert!(c.xpsr.q());
+
+        // qdsub r0, r1, r2 (fa81 f1b2): 5 - doubled 2 = 1, no saturation
+        // anywhere.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 5);
+        c.regs.write(2, 2);
+        load_inst(&mut c, 0x2000_0000, &[0x81, 0xfa, 0xb2, 0xf0]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 1);
+        assert!(!c.xpsr.q());
+
+        // qdsub r0, r1, r2 with r1 = INT32_MIN, r2 = 0x40000000: the doubling
+        // clamps to INT32_MAX (Q), and INT32_MIN - that clamps to INT32_MIN
+        // (Q stays latched).
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0x8000_0000);
+        c.regs.write(2, 0x4000_0000);
+        load_inst(&mut c, 0x2000_0000, &[0x81, 0xfa, 0xb2, 0xf0]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0x8000_0000);
+        assert!(c.xpsr.q());
+
+        // A saturating add targeting the PC is rejected.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        load_inst(&mut c, 0x2000_0000, &[0x81, 0xfa, 0x82, 0xff]);
+        assert!(matches!(c.step(), Err(HaltCause::NotImplemented { .. })));
+    }
+
+    #[test]
+    fn parallel_add_sub_executes() {
+        // sadd8 r0, r1, r2 (fa81 f002): per-byte signed add with GE written per
+        // lane on non-negative results.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0x8001_00FF);
+        c.regs.write(2, 0x0000_0200);
+        load_inst(&mut c, 0x2000_0000, &[0x81, 0xfa, 0x02, 0xf0]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0x8001_02FF);
+        assert_eq!(c.xpsr.ge(), 0b0110);
+
+        // ssub8 r0, r1, r2 (fac1 f002): lane 0 borrows, the rest are zero.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0x0102_0304);
+        c.regs.write(2, 0x0102_0305);
+        load_inst(&mut c, 0x2000_0000, &[0xc1, 0xfa, 0x02, 0xf0]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0x0000_00FF);
+        assert_eq!(c.xpsr.ge(), 0b1110);
+
+        // sadd16 r0, r1, r2 (fa91 f002): each halfword lane sets two GE bits.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0x8001_0002);
+        c.regs.write(2, 0x0001_0002);
+        load_inst(&mut c, 0x2000_0000, &[0x91, 0xfa, 0x02, 0xf0]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0x8002_0004);
+        assert_eq!(c.xpsr.ge(), 0b0011);
+
+        // uadd8 r0, r1, r2 (fa81 f042): GE follows the per-byte carry out.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0x0102_80FF);
+        c.regs.write(2, 0x0102_80FF);
+        load_inst(&mut c, 0x2000_0000, &[0x81, 0xfa, 0x42, 0xf0]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0x0204_00FE);
+        assert_eq!(c.xpsr.ge(), 0b0011);
+
+        // qadd8 r0, r1, r2 (fa81 f012): the saturated lane clamps, and neither
+        // the Q flag nor GE is touched.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0x0102_7F80);
+        c.regs.write(2, 0x0000_0101);
+        load_inst(&mut c, 0x2000_0000, &[0x81, 0xfa, 0x12, 0xf0]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0x0102_7F81);
+        assert!(!c.xpsr.q());
+        assert_eq!(c.xpsr.ge(), 0);
+
+        // uqsub8 r0, r1, r2 (fac1 f052): the underflowing lane clamps to zero.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0x0000_0010);
+        c.regs.write(2, 0x0000_0020);
+        load_inst(&mut c, 0x2000_0000, &[0xc1, 0xfa, 0x52, 0xf0]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0);
+        assert!(!c.xpsr.q());
+
+        // shadd16 r0, r1, r2 (fa91 f022): each halfword lane halves the exact
+        // signed result (negative lanes round away from zero).
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0x8001_7FFF);
+        c.regs.write(2, 0x0000_0001);
+        load_inst(&mut c, 0x2000_0000, &[0x91, 0xfa, 0x22, 0xf0]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0xC000_4000);
+
+        // uhsub8 r0, r1, r2 (fac1 f062): 0x10 - 0x20 wraps to 0xF8 after the
+        // halving shift, as on the hardware.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0x0000_0010);
+        c.regs.write(2, 0x0000_0020);
+        load_inst(&mut c, 0x2000_0000, &[0xc1, 0xfa, 0x62, 0xf0]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0x0000_00F8);
+
+        // sasx r0, r1, r2 (faa1 f002): lo = Rn_lo - Rm_hi, hi = Rn_hi + Rm_lo.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0x0001_0002);
+        c.regs.write(2, 0x0004_0008);
+        load_inst(&mut c, 0x2000_0000, &[0xa1, 0xfa, 0x02, 0xf0]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0x0009_FFFE);
+        assert_eq!(c.xpsr.ge(), 0b1100);
+
+        // ssax r0, r1, r2 (fae1 f002): lo = Rn_lo + Rm_hi, hi = Rn_hi - Rm_lo.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0x0001_0002);
+        c.regs.write(2, 0x0004_0008);
+        load_inst(&mut c, 0x2000_0000, &[0xe1, 0xfa, 0x02, 0xf0]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0xFFF9_0006);
+        assert_eq!(c.xpsr.ge(), 0b0011);
+
+        // A parallel op targeting the PC is rejected.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        load_inst(&mut c, 0x2000_0000, &[0x81, 0xfa, 0x02, 0xff]);
+        assert!(matches!(c.step(), Err(HaltCause::NotImplemented { .. })));
+    }
+
+    #[test]
+    fn sel_selects_bytes_by_ge() {
+        // sel r0, r1, r2 (faa1 f082): byte i follows GE flag i.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0x1122_3344);
+        c.regs.write(2, 0xAABB_CCDD);
+        c.xpsr.set_ge(0b0101);
+        load_inst(&mut c, 0x2000_0000, &[0xa1, 0xfa, 0x82, 0xf0]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0xAA22_CC44);
+
+        // Chained after a parallel op: sadd8 then sel, so SEL reads the GE the
+        // parallel op just wrote.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0x8001_00FF);
+        c.regs.write(2, 0x0000_0200);
+        load_inst(
+            &mut c,
+            0x2000_0000,
+            &[0x81, 0xfa, 0x02, 0xf0, 0xa1, 0xfa, 0x82, 0xf3],
+        );
+        c.step().unwrap();
+        c.step().unwrap();
+        // sadd8 wrote GE = 0b0110: bytes 1 and 2 follow r1, the others r2.
+        assert_eq!(c.regs.r[3], 0x0001_0000);
+
+        // sel targeting the PC is rejected.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        load_inst(&mut c, 0x2000_0000, &[0xa1, 0xfa, 0x82, 0xff]);
+        assert!(matches!(c.step(), Err(HaltCause::NotImplemented { .. })));
+    }
+
+    #[test]
+    fn extend_add_executes() {
+        // sxth r0, r1 (fa0f f081): the two-operand alias sign-extends the low
+        // halfword without any addend.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0x0000_ff80);
+        load_inst(&mut c, 0x2000_0000, &[0x0f, 0xfa, 0x81, 0xf0]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0xffff_ff80);
+
+        // sxtab r2, r3, r4 (fa43 f284): 1 + sign-extended byte 0x80.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(3, 1);
+        c.regs.write(4, 0x0000_0080);
+        load_inst(&mut c, 0x2000_0000, &[0x43, 0xfa, 0x84, 0xf2]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[2], 0xffff_ff81);
+
+        // uxtah r5, r6, r7 (fa16 f587): 0x100 + zero-extended halfword 0xff00.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(6, 0x100);
+        c.regs.write(7, 0x0001_ff00);
+        load_inst(&mut c, 0x2000_0000, &[0x16, 0xfa, 0x87, 0xf5]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[5], 0x0001_0000);
+
+        // sxtab16 r8, r9, r10 (fa29 fa88): per-halfword signed byte extends.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(9, 0x0001_0002);
+        c.regs.write(10, 0x80ff_0080);
+        load_inst(&mut c, 0x2000_0000, &[0x29, 0xfa, 0x8a, 0xf8]);
+        c.step().unwrap();
+        // lo = 2 + sext(0x80) = 0xffffff82 & 0xffff = 0xff82; hi = 1 + sext(0xff)
+        // = 0x0000...00, so the result is 0x0000_ff82.
+        assert_eq!(c.regs.r[8], 0x0000_ff82);
+
+        // uxtab16 r0, r1, r2 (fa31 f002): per-halfword add wraps each lane.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0xffff_ffff);
+        c.regs.write(2, 0x0000_0001);
+        load_inst(&mut c, 0x2000_0000, &[0x31, 0xfa, 0x82, 0xf0]);
+        c.step().unwrap();
+        // lo = 0xffff + 1 -> 0x0000; hi = 0xffff + 0 -> 0xffff.
+        assert_eq!(c.regs.r[0], 0xffff_0000);
+
+        // sxtab r0, r1, r2, ror #8 (fa41 f082): the byte that feeds the extend
+        // comes from bit 8 after the rotation.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 1);
+        c.regs.write(2, 0x0000_8000);
+        load_inst(&mut c, 0x2000_0000, &[0x41, 0xfa, 0x92, 0xf0]);
+        c.step().unwrap();
+        // ror #8 turns 0x00008000 into 0x00000080: extend that byte and add 1.
+        assert_eq!(c.regs.r[0], 0xffff_ff81);
+
+        // sxtb16 r0, r1 (fa2f f081): both bytes sign-extend into halfwords.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0x80ff_007f);
+        load_inst(&mut c, 0x2000_0000, &[0x2f, 0xfa, 0x81, 0xf0]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0xffff_007f);
+
+        // A register extend targeting the PC is rejected.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        load_inst(&mut c, 0x2000_0000, &[0x0f, 0xfa, 0x81, 0xff]);
+        assert!(matches!(c.step(), Err(HaltCause::NotImplemented { .. })));
+    }
+
+    #[test]
+    fn saturate_ssat_usat() {
+        // ssat r0, #8, r1, lsl #4 (f301 1007): 0x01 << 4 = 16 fits the signed
+        // 8-bit range, so no Q flag.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0x01);
+        load_inst(&mut c, 0x2000_0000, &[0x01, 0xf3, 0x07, 0x10]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 16);
+        assert!(!c.xpsr.q());
+
+        // ssat r0, #8, r1, lsl #4: 0x08 << 4 = 128 clamps to 127, Q latches.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0x08);
+        load_inst(&mut c, 0x2000_0000, &[0x01, 0xf3, 0x07, 0x10]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0x7f);
+        assert!(c.xpsr.q());
+
+        // ssat r0, #8, r1, asr #1 (f321 0047): -1 stays -1.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0xffff_ffff);
+        load_inst(&mut c, 0x2000_0000, &[0x21, 0xf3, 0x47, 0x00]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0xffff_ffff);
+        assert!(!c.xpsr.q());
+
+        // ssat r0, #8, r1, asr #1: 0x80000000 >> 1 clamps to -128.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0x8000_0000);
+        load_inst(&mut c, 0x2000_0000, &[0x21, 0xf3, 0x47, 0x00]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0xffff_ff80);
+        assert!(c.xpsr.q());
+
+        // usat r2, #8, r3, lsl #2 (f383 0287): 0x10 << 2 = 64 fits [0, 255].
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(3, 0x10);
+        load_inst(&mut c, 0x2000_0000, &[0x83, 0xf3, 0x87, 0x02]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[2], 64);
+        assert!(!c.xpsr.q());
+
+        // usat r2, #8, r3, lsl #2: 0x40 << 2 = 256 clamps to 255, Q latches.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(3, 0x40);
+        load_inst(&mut c, 0x2000_0000, &[0x83, 0xf3, 0x87, 0x02]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[2], 0xff);
+        assert!(c.xpsr.q());
+
+        // usat r2, #8, r3 (f383 2007): a negative value clamps to 0.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(3, 0xffff_ffff);
+        load_inst(&mut c, 0x2000_0000, &[0x83, 0xf3, 0x07, 0x20]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[2], 0);
+        assert!(c.xpsr.q());
+
+        // ssat16 r0, #8, r1 (f321 0007): hi half 0x8001 clamps to -128, the
+        // low half 0x007f fits. Both halves are written and Q latches.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0x8001_007f);
+        load_inst(&mut c, 0x2000_0000, &[0x21, 0xf3, 0x07, 0x00]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0xff80_007f);
+        assert!(c.xpsr.q());
+
+        // usat16 r0, #4, r1 (f3a1 0003): hi half 0x0010 clamps to 15, the
+        // low half 0x000f fits.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0x0010_000f);
+        load_inst(&mut c, 0x2000_0000, &[0xa1, 0xf3, 0x03, 0x00]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0x000f_000f);
+        assert!(c.xpsr.q());
+
+        // A saturate targeting the PC is rejected.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        load_inst(&mut c, 0x2000_0000, &[0x01, 0xf3, 0x07, 0x1f]);
+        assert!(matches!(c.step(), Err(HaltCause::NotImplemented { .. })));
+    }
+
+    #[test]
+    fn sysreg_reads_and_writes_q_flag() {
+        // `msr apsr, r1` writes the Q flag; `mrs r0, apsr` reads it back.
+        // msr apsr, r1 -> f381 8000; mrs r0, apsr -> f3ef 8000.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 0x0800_0000);
+        load_inst(&mut c, 0x2000_0000, &[0x81, 0xf3, 0x00, 0x80]);
+        c.step().unwrap();
+        assert!(c.xpsr.q());
+        load_inst(&mut c, 0x2000_0004, &[0xef, 0xf3, 0x00, 0x80]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0] & 0x0800_0000, 0x0800_0000);
+        assert_eq!(c.regs.r[0] & 0x07f0_0000, 0);
+    }
+
+    #[test]
     fn unary_rev_and_flags() {
-        // rev r0, r1 (fa80 f081): byte-reverse a word, flags untouched.
+        // rev r0, r1 (fa91 f081): byte-reverse a word, flags untouched.
         let mut c = armv7m_core();
         c.regs.pc = 0x2000_0000;
         c.xpsr.set_nzcv(true, true, true, true);
         c.regs.write(1, 0x1234_5678);
-        load_inst(&mut c, 0x2000_0000, &[0x80, 0xfa, 0x81, 0xf0]);
+        load_inst(&mut c, 0x2000_0000, &[0x91, 0xfa, 0x81, 0xf0]);
         c.step().unwrap();
         assert_eq!(c.regs.r[0], 0x7856_3412);
         assert_eq!(c.regs.pc, 0x2000_0004);
         assert!(c.xpsr.n() && c.xpsr.z() && c.xpsr.c() && c.xpsr.v());
 
-        // rev16 r2, r3 (fa80 f293): swap bytes within each halfword.
+        // rev16 r2, r3 (fa93 f293): swap bytes within each halfword.
         let mut c = armv7m_core();
         c.regs.pc = 0x2000_0000;
         c.regs.write(3, 0x1234_5678);
-        load_inst(&mut c, 0x2000_0000, &[0x80, 0xfa, 0x93, 0xf2]);
+        load_inst(&mut c, 0x2000_0000, &[0x93, 0xfa, 0x93, 0xf2]);
         c.step().unwrap();
         assert_eq!(c.regs.r[2], 0x3412_7856);
 
-        // revsh r4, r5 (fa90 f4b5): byte-swap the low half, sign-extend.
+        // revsh r4, r5 (fa95 f4b5): byte-swap the low half, sign-extend.
         let mut c = armv7m_core();
         c.regs.pc = 0x2000_0000;
         c.regs.write(5, 0x0000_1234);
-        load_inst(&mut c, 0x2000_0000, &[0x90, 0xfa, 0xb5, 0xf4]);
+        load_inst(&mut c, 0x2000_0000, &[0x95, 0xfa, 0xb5, 0xf4]);
         c.step().unwrap();
         assert_eq!(c.regs.r[4], 0x0000_3412);
 
         let mut c = armv7m_core();
         c.regs.pc = 0x2000_0000;
         c.regs.write(5, 0x0000_80FF);
-        load_inst(&mut c, 0x2000_0000, &[0x90, 0xfa, 0xb5, 0xf4]);
+        load_inst(&mut c, 0x2000_0000, &[0x95, 0xfa, 0xb5, 0xf4]);
         c.step().unwrap();
         assert_eq!(c.regs.r[4], 0xFFFF_FF80);
     }
 
     #[test]
     fn unary_rbit_clz() {
-        // rbit r6, r7 (fa90 f6a7): mirror all 32 bits.
+        // rbit r6, r7 (fa97 f6a7): mirror all 32 bits.
         let mut c = armv7m_core();
         c.regs.pc = 0x2000_0000;
         c.regs.write(7, 0x1234_5678);
-        load_inst(&mut c, 0x2000_0000, &[0x90, 0xfa, 0xa7, 0xf6]);
+        load_inst(&mut c, 0x2000_0000, &[0x97, 0xfa, 0xa7, 0xf6]);
         c.step().unwrap();
         assert_eq!(c.regs.r[6], 0x1E6A_2C48);
 
-        // clz r8, r9 (fab0 f889).
+        // clz r8, r9 (fab9 f889).
         let mut c = armv7m_core();
         c.regs.pc = 0x2000_0000;
         c.regs.write(9, 0x000F_0000);
-        load_inst(&mut c, 0x2000_0000, &[0xb0, 0xfa, 0x89, 0xf8]);
+        load_inst(&mut c, 0x2000_0000, &[0xb9, 0xfa, 0x89, 0xf8]);
         c.step().unwrap();
         assert_eq!(c.regs.r[8], 12);
 
         let mut c = armv7m_core();
         c.regs.pc = 0x2000_0000;
         c.regs.write(9, 0x8000_0000);
-        load_inst(&mut c, 0x2000_0000, &[0xb0, 0xfa, 0x89, 0xf8]);
+        load_inst(&mut c, 0x2000_0000, &[0xb9, 0xfa, 0x89, 0xf8]);
         c.step().unwrap();
         assert_eq!(c.regs.r[8], 0);
 
         let mut c = armv7m_core();
         c.regs.pc = 0x2000_0000;
         c.regs.write(9, 0);
-        load_inst(&mut c, 0x2000_0000, &[0xb0, 0xfa, 0x89, 0xf8]);
+        load_inst(&mut c, 0x2000_0000, &[0xb9, 0xfa, 0x89, 0xf8]);
         c.step().unwrap();
         assert_eq!(c.regs.r[8], 32);
 
         // Writing the destination register 15 is rejected.
         let mut c = armv7m_core();
         c.regs.pc = 0x2000_0000;
-        load_inst(&mut c, 0x2000_0000, &[0x80, 0xfa, 0x80, 0xff]);
+        load_inst(&mut c, 0x2000_0000, &[0x90, 0xfa, 0x80, 0xff]);
         assert!(matches!(c.step(), Err(HaltCause::NotImplemented { .. })));
     }
 
