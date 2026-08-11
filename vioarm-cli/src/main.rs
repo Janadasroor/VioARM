@@ -58,6 +58,13 @@ struct Args {
     /// Print image layout and exit without running.
     #[arg(long)]
     info: bool,
+
+    /// Serve the machine to `arm-none-eabi-gdb` over a GDB Remote Serial
+    /// Protocol (RSP) TCP listener on this port instead of running it. Boots
+    /// the board to its reset state first, so gdb attaches to a running
+    /// system. `target remote :<port>`.
+    #[arg(long)]
+    gdb: Option<u16>,
 }
 
 fn parse_u32(s: &str) -> Result<u32, String> {
@@ -123,6 +130,19 @@ fn main() {
     if let Err(cause) = m.reset() {
         eprintln!("reset failed: {cause}");
         std::process::exit(3);
+    }
+
+    if let Some(port) = args.gdb {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap_or_else(|e| {
+            eprintln!("error: cannot listen on port {port}: {e}");
+            std::process::exit(3);
+        });
+        println!("gdbserver: waiting for gdb on 127.0.0.1:{port}");
+        if let Err(e) = vioarm_gdb::serve(&mut m, &listener) {
+            eprintln!("gdb session error: {e}");
+            std::process::exit(3);
+        }
+        std::process::exit(0);
     }
 
     if args.trace {

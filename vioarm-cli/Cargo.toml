@@ -10,4 +10,5 @@ workspace = true
 
 [dependencies]
 vioarm-core = { path = "../vioarm-core" }
+vioarm-gdb = { path = "../vioarm-gdb" }
 clap = { version = "4", features = ["derive"] }

@@ -184,11 +184,19 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "vioarm-core",
+ "vioarm-gdb",
 ]
 
 [[package]]
 name = "vioarm-core"
 version = "0.1.0"
+
+[[package]]
+name = "vioarm-gdb"
+version = "0.1.0"
+dependencies = [
+ "vioarm-core",
+]
 
 [[package]]
 name = "vioarm-svd"
