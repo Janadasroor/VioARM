@@ -26,10 +26,14 @@ enum Item {
     Bl { target: String },
     /// Narrow conditional branch `B<c> imm8`, ±256 bytes.
     Bc { cc: u8, target: String },
+    /// Wide conditional branch `B<c>.W imm24`, ±1 MB.
+    BcWide { cc: u8, target: String },
     /// Narrow `CBZ`/`CBNZ`, forward only.
     Cbz { rn: u8, nonzero: bool, target: String },
     /// `LDR Rt, [PC, #imm]` against the literal at `target`.
     LdrLit { rt: u8, target: String },
+    /// `LDRD Rt, Rt2, [PC, #imm]` against the literal pool at `target`.
+    LdrdLit { rt: u8, rt2: u8, target: String },
     /// Pad with `NOP` (2 bytes each) up to a 4-byte boundary.
     PadTo4,
     DcU32(u32),
@@ -40,7 +44,7 @@ fn size_of(item: &Item) -> u32 {
         Item::Label(_) => 0,
         Item::H2(_) => 2,
         Item::H4(_) => 4,
-        Item::B { .. } | Item::Bl { .. } => 4,
+        Item::B { .. } | Item::Bl { .. } | Item::BcWide { .. } | Item::LdrdLit { .. } => 4,
         Item::Bc { .. } | Item::Cbz { .. } | Item::LdrLit { .. } => 2,
         Item::PadTo4 | Item::DcU32(_) => 4,
     }
@@ -372,6 +376,25 @@ impl Asm {
         });
     }
 
+    /// Wide conditional branch `B<c>.W` (T3), ±1 MB.
+    pub fn bc_wide(&mut self, cc: u8, target: impl Into<String>) {
+        self.emit(Item::BcWide {
+            cc,
+            target: target.into(),
+        });
+    }
+
+    /// `TBB [Rn, Rm]`: a byte-indexed table branch. The table is read from
+    /// `Align(pc + 4, 4) + Rm`; `pc` here is the address of the `TBB` itself.
+    pub fn tb(&mut self, rn: u8, rm: u8) {
+        self.raw32((0xE8D0 | u16::from(rn)) as u32 | ((0xF000 | u16::from(rm)) as u32) << 16);
+    }
+
+    /// `TBH [Rn, Rm]`: a halfword-indexed table branch.
+    pub fn tbh(&mut self, rn: u8, rm: u8) {
+        self.raw32((0xE8D0 | u16::from(rn)) as u32 | ((0xF010 | u16::from(rm)) as u32) << 16);
+    }
+
     pub fn bl(&mut self, target: impl Into<String>) {
         self.emit(Item::Bl {
             target: target.into(),
@@ -438,6 +461,15 @@ impl Asm {
     pub fn ldr_lit(&mut self, rt: u8, target: impl Into<String>) {
         self.emit(Item::LdrLit {
             rt,
+            target: target.into(),
+        });
+    }
+
+    /// `LDRD Rt, Rt2, [PC, #imm]` against the literal pool at `target`.
+    pub fn ldrd_lit(&mut self, rt: u8, rt2: u8, target: impl Into<String>) {
+        self.emit(Item::LdrdLit {
+            rt,
+            rt2,
             target: target.into(),
         });
     }
@@ -591,6 +623,42 @@ impl Asm {
         self.raw32(hi as u32 | (list as u32) << 16);
     }
 
+    /// `STRD Rt, Rt2, [Rn, #imm]` / `LDRD` — the imm8 T1 forms. `load`
+    /// selects `LDRD`, `index` the pre-indexed (writeback) over the plain
+    /// offset form, `post` the post-indexed form; `imm` is in bytes.
+    fn dual_mem(&mut self, load: bool, rt: u8, rt2: u8, rn: u8, index: bool, post: bool, imm: u8) {
+        let p = if post { 0 } else { 1 };
+        let w = if post || index { 1 } else { 0 };
+        let hi = 0xE840 | p << 8 | 0x80 | w << 5 | u16::from(load) << 4 | u16::from(rn);
+        let lo = u16::from(rt) << 12 | u16::from(rt2) << 8 | u16::from(imm >> 2);
+        self.raw32(hi as u32 | (lo as u32) << 16);
+    }
+
+    /// `STRD Rt, Rt2, [Rn, #imm]` (offset form, no writeback).
+    pub fn strd(&mut self, rt: u8, rt2: u8, rn: u8, imm: u8) {
+        self.dual_mem(false, rt, rt2, rn, false, false, imm);
+    }
+    /// `LDRD Rt, Rt2, [Rn, #imm]` (offset form; `Rn == 15` is the literal).
+    pub fn ldrd(&mut self, rt: u8, rt2: u8, rn: u8, imm: u8) {
+        self.dual_mem(true, rt, rt2, rn, false, false, imm);
+    }
+    /// `STRD Rt, Rt2, [Rn, #imm]!` (pre-indexed with writeback).
+    pub fn strd_pre(&mut self, rt: u8, rt2: u8, rn: u8, imm: u8) {
+        self.dual_mem(false, rt, rt2, rn, true, false, imm);
+    }
+    /// `LDRD Rt, Rt2, [Rn, #imm]!` (pre-indexed with writeback).
+    pub fn ldrd_pre(&mut self, rt: u8, rt2: u8, rn: u8, imm: u8) {
+        self.dual_mem(true, rt, rt2, rn, true, false, imm);
+    }
+    /// `STRD Rt, Rt2, [Rn], #imm` (post-indexed).
+    pub fn strd_post(&mut self, rt: u8, rt2: u8, rn: u8, imm: u8) {
+        self.dual_mem(false, rt, rt2, rn, false, true, imm);
+    }
+    /// `LDRD Rt, Rt2, [Rn], #imm` (post-indexed).
+    pub fn ldrd_post(&mut self, rt: u8, rt2: u8, rn: u8, imm: u8) {
+        self.dual_mem(true, rt, rt2, rn, false, true, imm);
+    }
+
     pub fn dmb(&mut self) {
         self.raw32(0xF3BF_8F5F);
     }
@@ -712,6 +780,130 @@ impl Asm {
         self.raw32(hi as u32 | (lo as u32) << 16);
     }
 
+    // --------------------------- DSP / dual multiply ---------------------------
+
+    /// The ARMv7E-M DSP multiply family: `SMULBB..SMULTT`, `SMULWB/WT`,
+    /// `SMMUL/R`, `USAD8/USADA8`. `hi_zone` is the `0xFB00`-relative prefix
+    /// nibble (`1`/`3`/`5`/`7`), `sel` the second-halfword selector nibble,
+    /// and `ra` the accumulate register (`0xF` for the no-accumulate forms).
+    fn dsp_mul(&mut self, hi_zone: u16, sel: u16, rd: u8, rn: u8, rm: u8, ra: u8) {
+        let hi = 0xFB00 | hi_zone << 4 | u16::from(rn);
+        let lo = u16::from(ra) << 12 | u16::from(rd) << 8 | (sel & 0xF) << 4 | u16::from(rm);
+        self.raw32(hi as u32 | (lo as u32) << 16);
+    }
+
+    pub fn smulbb(&mut self, rd: u8, rn: u8, rm: u8) {
+        self.dsp_mul(1, 0, rd, rn, rm, 0xF);
+    }
+    pub fn smulbt(&mut self, rd: u8, rn: u8, rm: u8) {
+        self.dsp_mul(1, 1, rd, rn, rm, 0xF);
+    }
+    pub fn smultb(&mut self, rd: u8, rn: u8, rm: u8) {
+        self.dsp_mul(1, 2, rd, rn, rm, 0xF);
+    }
+    pub fn smultt(&mut self, rd: u8, rn: u8, rm: u8) {
+        self.dsp_mul(1, 3, rd, rn, rm, 0xF);
+    }
+    pub fn smulwb(&mut self, rd: u8, rn: u8, rm: u8) {
+        self.dsp_mul(3, 0, rd, rn, rm, 0xF);
+    }
+    pub fn smulwt(&mut self, rd: u8, rn: u8, rm: u8) {
+        self.dsp_mul(3, 1, rd, rn, rm, 0xF);
+    }
+    pub fn smmul(&mut self, rd: u8, rn: u8, rm: u8) {
+        self.dsp_mul(5, 0, rd, rn, rm, 0xF);
+    }
+    pub fn smmulr(&mut self, rd: u8, rn: u8, rm: u8) {
+        self.dsp_mul(5, 1, rd, rn, rm, 0xF);
+    }
+    pub fn usad8(&mut self, rd: u8, rn: u8, rm: u8) {
+        self.dsp_mul(7, 0, rd, rn, rm, 0xF);
+    }
+    pub fn usada8(&mut self, rd: u8, rn: u8, rm: u8, ra: u8) {
+        self.dsp_mul(7, 0, rd, rn, rm, ra);
+    }
+
+    /// The ARMv7E-M dual multiply family: `SMLABB..`, `SMLAD/X`, `SMLAWB/WT`,
+    /// `SMLSD/X`, `SMMLA/R`, `SMMLS/R`, the long `SMLALBB..`, `SMLALD/X`,
+    /// `SMLSLD/X`, and `UMAAL`. `prefix` is the full first-halfword prefix
+    /// (`0xFB10`..`0xFBE0`), `sel` the `lo` selector nibble; long forms pass
+    /// `rdlo`/`rdhi` as `rd`/`ra`.
+    fn dual_mul(&mut self, prefix: u16, sel: u16, rd: u8, rn: u8, rm: u8, ra: u8) {
+        let hi = prefix | u16::from(rn);
+        let lo = u16::from(ra) << 12 | u16::from(rd) << 8 | (sel & 0xF) << 4 | u16::from(rm);
+        self.raw32(hi as u32 | (lo as u32) << 16);
+    }
+
+    pub fn smlabb(&mut self, rd: u8, rn: u8, rm: u8, ra: u8) {
+        self.dual_mul(0xFB10, 0, rd, rn, rm, ra);
+    }
+    pub fn smlabt(&mut self, rd: u8, rn: u8, rm: u8, ra: u8) {
+        self.dual_mul(0xFB10, 1, rd, rn, rm, ra);
+    }
+    pub fn smlatb(&mut self, rd: u8, rn: u8, rm: u8, ra: u8) {
+        self.dual_mul(0xFB10, 2, rd, rn, rm, ra);
+    }
+    pub fn smlatt(&mut self, rd: u8, rn: u8, rm: u8, ra: u8) {
+        self.dual_mul(0xFB10, 3, rd, rn, rm, ra);
+    }
+    pub fn smlad(&mut self, rd: u8, rn: u8, rm: u8, ra: u8) {
+        self.dual_mul(0xFB20, 0, rd, rn, rm, ra);
+    }
+    pub fn smladx(&mut self, rd: u8, rn: u8, rm: u8, ra: u8) {
+        self.dual_mul(0xFB20, 1, rd, rn, rm, ra);
+    }
+    pub fn smlawb(&mut self, rd: u8, rn: u8, rm: u8, ra: u8) {
+        self.dual_mul(0xFB30, 0, rd, rn, rm, ra);
+    }
+    pub fn smlawt(&mut self, rd: u8, rn: u8, rm: u8, ra: u8) {
+        self.dual_mul(0xFB30, 1, rd, rn, rm, ra);
+    }
+    pub fn smlsd(&mut self, rd: u8, rn: u8, rm: u8, ra: u8) {
+        self.dual_mul(0xFB40, 0, rd, rn, rm, ra);
+    }
+    pub fn smlsdx(&mut self, rd: u8, rn: u8, rm: u8, ra: u8) {
+        self.dual_mul(0xFB40, 1, rd, rn, rm, ra);
+    }
+    pub fn smmla(&mut self, rd: u8, rn: u8, rm: u8, ra: u8) {
+        self.dual_mul(0xFB50, 0, rd, rn, rm, ra);
+    }
+    pub fn smmlar(&mut self, rd: u8, rn: u8, rm: u8, ra: u8) {
+        self.dual_mul(0xFB50, 1, rd, rn, rm, ra);
+    }
+    pub fn smmls(&mut self, rd: u8, rn: u8, rm: u8, ra: u8) {
+        self.dual_mul(0xFB60, 0, rd, rn, rm, ra);
+    }
+    pub fn smmlsr(&mut self, rd: u8, rn: u8, rm: u8, ra: u8) {
+        self.dual_mul(0xFB60, 1, rd, rn, rm, ra);
+    }
+    pub fn smlalbb(&mut self, rdlo: u8, rdhi: u8, rn: u8, rm: u8) {
+        self.dual_mul(0xFBC0, 8, rdlo, rn, rm, rdhi);
+    }
+    pub fn smlalbt(&mut self, rdlo: u8, rdhi: u8, rn: u8, rm: u8) {
+        self.dual_mul(0xFBC0, 9, rdlo, rn, rm, rdhi);
+    }
+    pub fn smlaltb(&mut self, rdlo: u8, rdhi: u8, rn: u8, rm: u8) {
+        self.dual_mul(0xFBC0, 0xA, rdlo, rn, rm, rdhi);
+    }
+    pub fn smlaltt(&mut self, rdlo: u8, rdhi: u8, rn: u8, rm: u8) {
+        self.dual_mul(0xFBC0, 0xB, rdlo, rn, rm, rdhi);
+    }
+    pub fn smlald(&mut self, rdlo: u8, rdhi: u8, rn: u8, rm: u8) {
+        self.dual_mul(0xFBC0, 0xC, rdlo, rn, rm, rdhi);
+    }
+    pub fn smlaldx(&mut self, rdlo: u8, rdhi: u8, rn: u8, rm: u8) {
+        self.dual_mul(0xFBC0, 0xD, rdlo, rn, rm, rdhi);
+    }
+    pub fn smlsld(&mut self, rdlo: u8, rdhi: u8, rn: u8, rm: u8) {
+        self.dual_mul(0xFBD0, 0xC, rdlo, rn, rm, rdhi);
+    }
+    pub fn smlsldx(&mut self, rdlo: u8, rdhi: u8, rn: u8, rm: u8) {
+        self.dual_mul(0xFBD0, 0xD, rdlo, rn, rm, rdhi);
+    }
+    pub fn umaal(&mut self, rdlo: u8, rdhi: u8, rn: u8, rm: u8) {
+        self.dual_mul(0xFBE0, 6, rdlo, rn, rm, rdhi);
+    }
+
     // ------------------------------ bitfield ------------------------------
 
     fn bitfield(&mut self, base: u16, rd: u8, rn: u8, lsb: u8, field: u8) {
@@ -801,6 +993,43 @@ impl Asm {
         self.unary(0xFAB0, 0x0080, rd, rm);
     }
 
+    // ------------------------- narrow extend / reverse -------------------------
+
+    /// Thumb-1 `SXTH/SXTB/UXTH/UXTB Rd, Rm`; `kind` is the two-bit
+    /// signedness/size selector (`0` SXTH, `1` SXTB, `2` UXTH, `3` UXTB).
+    fn narrow_extend(&mut self, kind: u8, rd: u8, rm: u8) {
+        self.raw(0xB200 | (u16::from(kind) & 3) << 6 | (u16::from(rm) & 7) << 3 | u16::from(rd) & 7);
+    }
+
+    pub fn sxth(&mut self, rd: u8, rm: u8) {
+        self.narrow_extend(0, rd, rm);
+    }
+    pub fn sxtb(&mut self, rd: u8, rm: u8) {
+        self.narrow_extend(1, rd, rm);
+    }
+    pub fn uxth(&mut self, rd: u8, rm: u8) {
+        self.narrow_extend(2, rd, rm);
+    }
+    pub fn uxtb(&mut self, rd: u8, rm: u8) {
+        self.narrow_extend(3, rd, rm);
+    }
+
+    /// Thumb-1 `REV/REV16/REVSH Rd, Rm`; `kind` is the two-bit selector
+    /// (`0` REV, `1` REV16, `3` REVSH).
+    fn narrow_reverse(&mut self, kind: u8, rd: u8, rm: u8) {
+        self.raw(0xBA00 | (u16::from(kind) & 3) << 6 | (u16::from(rm) & 7) << 3 | u16::from(rd) & 7);
+    }
+
+    pub fn rev(&mut self, rd: u8, rm: u8) {
+        self.narrow_reverse(0, rd, rm);
+    }
+    pub fn rev16(&mut self, rd: u8, rm: u8) {
+        self.narrow_reverse(1, rd, rm);
+    }
+    pub fn revsh(&mut self, rd: u8, rm: u8) {
+        self.narrow_reverse(3, rd, rm);
+    }
+
     // ------------------------- signed extend + add -------------------------
 
     /// Register-extend family with `rotate` in eighths (`ROR #rot*8`).
@@ -833,7 +1062,9 @@ impl Asm {
 
     fn par(&mut self, fam: u16, sel: u16, rd: u8, rn: u8, rm: u8) {
         let hi = 0xFA00 | fam << 4 | u16::from(rn);
-        let lo = 0xF000 | u16::from(rd) << 8 | sel | u16::from(rm);
+        // The selector nibble (`S/Q/SH/U/UQ/UH`, `1000` for `SEL`) sits in
+        // bits[7:4] of the second halfword; `Rm` owns the low nibble.
+        let lo = 0xF000 | u16::from(rd) << 8 | (sel & 0xF) << 4 | u16::from(rm);
         self.raw32(hi as u32 | (lo as u32) << 16);
     }
 
@@ -953,6 +1184,26 @@ impl Asm {
                         &(0xD000 | u16::from(*cc) << 8 | u16::from(imm8)).to_le_bytes(),
                     );
                 }
+                Item::BcWide { cc, target } => {
+                    let t = labels
+                        .get(target)
+                        .copied()
+                        .ok_or_else(|| format!("undefined label {target:?}"))?;
+                    let off = i64::from(t) - i64::from(cur + 4);
+                    if off < -(1 << 20) || off > (1 << 20) - 2 || off % 2 != 0 {
+                        return Err(format!("conditional wide branch to {target:?} out of ±1 MB range"));
+                    }
+                    let u = (off as i32) as u32;
+                    let s = (u >> 20) & 1;
+                    let i1 = (u >> 13) & 1;
+                    let i2 = (u >> 12) & 1;
+                    let j1 = (1 - (i1 ^ s)) as u16;
+                    let j2 = (1 - (i2 ^ s)) as u16;
+                    let hi = 0xF000 | (s << 10) as u16 | u16::from(*cc) << 6 | ((u >> 1) & 0x3F) as u16;
+                    let lo = 0x8000 | j1 << 13 | j2 << 11 | ((u >> 1) & 0x7FF) as u16;
+                    let bytes = [hi as u8, (hi >> 8) as u8, lo as u8, (lo >> 8) as u8];
+                    emit(&mut cur, &bytes);
+                }
                 Item::Cbz {
                     rn,
                     nonzero,
@@ -984,6 +1235,21 @@ impl Asm {
                     }
                     let hw = 0x4800 | (u16::from(*rt) & 7) << 8 | (off / 4) as u16;
                     emit(&mut cur, &hw.to_le_bytes());
+                }
+                Item::LdrdLit { rt, rt2, target } => {
+                    let t = labels
+                        .get(target)
+                        .copied()
+                        .ok_or_else(|| format!("undefined label {target:?}"))?;
+                    let base = (cur + 4) & !3;
+                    let off = i64::from(t) - i64::from(base);
+                    if off < 0 || off > 1020 || off % 4 != 0 {
+                        return Err(format!("ldrd literal to {target:?} out of range"));
+                    }
+                    let hi = 0xE9CF; // LDRD Rt,Rt2,[pc,#imm], P=1 U=1 W=0, rn=15
+                    let lo = u16::from(*rt) << 12 | u16::from(*rt2) << 8 | (off / 4) as u16;
+                    let bytes = [hi as u8, (hi >> 8) as u8, lo as u8, (lo >> 8) as u8];
+                    emit(&mut cur, &bytes);
                 }
                 Item::PadTo4 => {
                     let pad = (4 - (cur % 4)) % 4;
