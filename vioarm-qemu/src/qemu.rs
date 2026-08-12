@@ -49,10 +49,22 @@ pub struct QemuMachine {
 impl QemuMachine {
     #[must_use]
     pub fn detect() -> Option<Self> {
+        Self::for_cpu("cortex-m3", "mps2-an385")
+    }
+
+    /// An ARMv7E-M reference (`Cortex-M4`), for diffing the DSP zone that the
+    /// M3 board faults on.
+    #[must_use]
+    pub fn detect_m4() -> Option<Self> {
+        Self::for_cpu("cortex-m4", "mps2-an386")
+    }
+
+    #[must_use]
+    fn for_cpu(cpu: &str, machine: &str) -> Option<Self> {
         find_qemu().map(|exe| Self {
             exe,
-            machine: "mps2-an385".to_string(),
-            cpu: "cortex-m3".to_string(),
+            machine: machine.to_string(),
+            cpu: cpu.to_string(),
         })
     }
 }
