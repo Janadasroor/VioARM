@@ -669,6 +669,7 @@ fn tables() {
         "tables: vioarm never reached halt @ {stop:#x} (last {})",
         snapshot_like(&vio)
     );
+
     let qemu = qemu_run(&mt, &img.bytes, stop, Duration::from_secs(15));
     assert!(
         !qemu.is_empty() && qemu.last().expect("empty").r[15] & !1 == stop,
@@ -676,4 +677,55 @@ fn tables() {
         qemu.len()
     );
     compare_traces("tables", &vio, &qemu).expect("traces agree");
+}
+
+// ---------------------------------------------------------------------------
+// Load/store double: LDRD/STRD in the offset, pre-indexed (writeback) and
+// post-indexed forms, plus the PC-relative `LDRD` literal. Register pairs must
+// avoid the base when writeback is used, and neither end of a pair may touch
+// the PC or equal the other.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ldrd_strd() {
+    let Some(mt) = qemu() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+
+    a.mov_imm32(4, 0x2000_2000); // r4 = SRAM base
+    a.mov_imm32(0, 0x1111_2222);
+    a.mov_imm32(1, 0x3333_4444);
+    a.mov_imm32(2, 0x5555_6666);
+    a.mov_imm32(3, 0x7777_8888);
+
+    // offset form (no writeback): [r4] = r0:r1, read back into r5:r6
+    a.strd(0, 1, 4, 0);
+    a.ldrd(5, 6, 4, 0);
+    // offset with a non-zero displacement
+    a.strd(2, 3, 4, 16);
+    a.ldrd(9, 10, 4, 16);
+    // pre-indexed with writeback: [r4+32] and r4 += 32
+    a.strd_pre(0, 1, 4, 32);
+    a.ldrd_pre(5, 6, 4, 32);
+    // post-indexed: [r4], then r4 += 8
+    a.strd_post(2, 3, 4, 8);
+    a.ldrd_post(9, 10, 4, 8);
+    // writeback base must not overlap the pair: r0:r1 vs r4 is fine; verify
+    // r4 advanced by the writebacks while the pair registers kept their data.
+    a.mov_imm32(4, 0x2000_2400); // fresh base
+    a.strd(0, 1, 4, 0); // offset store, no writeback
+    a.strd_pre(2, 3, 4, 64); // pre-indexed: [r4+64], r4 += 64
+    a.ldrd_pre(5, 6, 4, 64); // reads the pair just stored, r4 += 64
+    // PC-relative `LDRD` literal from a 4-aligned pool
+    a.ldrd_lit(5, 6, "pair");
+    a.b("past_pair");
+    a.align4();
+    a.label("pair");
+    a.dc_u32(0xAABB_CCDD);
+    a.dc_u32(0xEEFF_0011);
+    a.label("past_pair");
+
+    a.label("halt");
+    a.b("halt");
+    conformance("ldrd_strd", &mut a, "halt", &mt);
 }

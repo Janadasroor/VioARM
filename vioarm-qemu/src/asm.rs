@@ -1246,7 +1246,7 @@ impl Asm {
                     if off < 0 || off > 1020 || off % 4 != 0 {
                         return Err(format!("ldrd literal to {target:?} out of range"));
                     }
-                    let hi = 0xE9CF; // LDRD Rt,Rt2,[pc,#imm], P=1 U=1 W=0, rn=15
+                    let hi = 0xE9DF; // LDRD Rt,Rt2,[pc,#imm], P=1 U=1 L=1 W=0, rn=15
                     let lo = u16::from(*rt) << 12 | u16::from(*rt2) << 8 | (off / 4) as u16;
                     let bytes = [hi as u8, (hi >> 8) as u8, lo as u8, (lo >> 8) as u8];
                     emit(&mut cur, &bytes);
