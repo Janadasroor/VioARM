@@ -1243,7 +1243,13 @@ impl<B: PeripheralBus> Core<B> {
                 }
                 let n = self.regs.read(rn);
                 let m = self.regs.read(rm);
-                let m_swap = matches!(op, DualMulOp::Smladx | DualMulOp::Smlsdx);
+                let m_swap = matches!(
+                    op,
+                    DualMulOp::Smladx
+                        | DualMulOp::Smlsdx
+                        | DualMulOp::Smlaldx
+                        | DualMulOp::Smlsldx
+                );
                 match op {
                     // Word forms write the single `Rd`.
                     DualMulOp::Smlabb
@@ -1446,27 +1452,30 @@ impl<B: PeripheralBus> Core<B> {
                 }
                 let n = self.regs.read(rn);
                 let m = self.regs.read(rm);
-                // Everything is widened to `i64` so the sum of two 32-bit
-                // values cannot wrap before the clamp sees it.
+                // The ARM syntax `Q{D}ADD/Q{D}SUB Rd, Rm, Rn` maps `Rm` to the
+                // low-nibble register (`rm`) and `Rn` to the high-nibble one
+                // (`rn`); the doubling always applies to `Rn`. Everything is
+                // widened to `i64` so the sum of two 32-bit values cannot wrap
+                // before the clamp sees it.
                 let (result, sat) = match op {
                     QaddOp::Qadd => {
-                        signed_sat(i64::from(n as i32).wrapping_add(i64::from(m as i32)), 32)
+                        signed_sat(i64::from(m as i32).wrapping_add(i64::from(n as i32)), 32)
                     }
                     QaddOp::Qsub => {
-                        signed_sat(i64::from(n as i32).wrapping_sub(i64::from(m as i32)), 32)
+                        signed_sat(i64::from(m as i32).wrapping_sub(i64::from(n as i32)), 32)
                     }
                     QaddOp::Qdadd => {
-                        // The doubled operand is clamped to the signed 32-bit
-                        // range before it feeds the addition.
-                        let (d, double_sat) = signed_sat(i64::from(m as i32).wrapping_mul(2), 32);
+                        // `Rd = SAT(Rm + SAT(Rn*2))`.
+                        let (d, double_sat) = signed_sat(i64::from(n as i32).wrapping_mul(2), 32);
                         let (r, add_sat) =
-                            signed_sat(i64::from(n as i32).wrapping_add(i64::from(d)), 32);
+                            signed_sat(i64::from(m as i32).wrapping_add(i64::from(d)), 32);
                         (r, double_sat || add_sat)
                     }
                     QaddOp::Qdsub => {
-                        let (d, double_sat) = signed_sat(i64::from(m as i32).wrapping_mul(2), 32);
+                        // `Rd = SAT(Rm - SAT(Rn*2))`.
+                        let (d, double_sat) = signed_sat(i64::from(n as i32).wrapping_mul(2), 32);
                         let (r, sub_sat) =
-                            signed_sat(i64::from(n as i32).wrapping_sub(i64::from(d)), 32);
+                            signed_sat(i64::from(m as i32).wrapping_sub(i64::from(d)), 32);
                         (r, double_sat || sub_sat)
                     }
                 };
@@ -3634,28 +3643,33 @@ mod tests {
         assert_eq!(c.regs.r[0], 0x8000_0000);
         assert!(c.xpsr.q());
 
-        // qsub r0, r1, r2 (fa81 f0a2): INT32_MIN - 1 clamps to INT32_MIN.
+        // qsub r0, r1, r2 (fa81 f0a2): `Rd = SAT(Rm - Rn)` where the low-nibble
+        // register is Rm (`r2`) and the high-nibble one is Rn (`r1`). With
+        // r2 = INT32_MIN and r1 = 1 the result INT32_MIN - 1 clamps to
+        // INT32_MIN.
         let mut c = armv7m_core();
         c.regs.pc = 0x2000_0000;
-        c.regs.write(1, 0x8000_0000);
-        c.regs.write(2, 1);
+        c.regs.write(1, 1);
+        c.regs.write(2, 0x8000_0000);
         load_inst(&mut c, 0x2000_0000, &[0x81, 0xfa, 0xa2, 0xf0]);
         c.step().unwrap();
         assert_eq!(c.regs.r[0], 0x8000_0000);
         assert!(c.xpsr.q());
 
-        // qdadd r0, r1, r2 (fa81 f192): INT32_MAX + doubled 1 clamps the sum.
+        // qdadd r0, r1, r2 (fa81 f192): `Rd = SAT(Rm + SAT(Rn*2))` with Rm
+        // (`r2`) = INT32_MAX and Rn (`r1`) = 1; 1*2 + INT32_MAX clamps the
+        // sum.
         let mut c = armv7m_core();
         c.regs.pc = 0x2000_0000;
-        c.regs.write(1, 0x7fff_ffff);
-        c.regs.write(2, 1);
+        c.regs.write(1, 1);
+        c.regs.write(2, 0x7fff_ffff);
         load_inst(&mut c, 0x2000_0000, &[0x81, 0xfa, 0x92, 0xf0]);
         c.step().unwrap();
         assert_eq!(c.regs.r[0], 0x7fff_ffff);
         assert!(c.xpsr.q());
 
-        // qdadd r0, r1, r2 with r1 = 0, r2 = INT32_MAX: the *doubling*
-        // saturates to INT32_MAX, which also sets Q.
+        // qdadd r0, r1, r2 with Rn (`r1`) = 0 and Rm (`r2`) = INT32_MAX: the
+        // *doubling* of Rn is 0, so no saturation.
         let mut c = armv7m_core();
         c.regs.pc = 0x2000_0000;
         c.regs.write(1, 0);
@@ -3663,26 +3677,37 @@ mod tests {
         load_inst(&mut c, 0x2000_0000, &[0x81, 0xfa, 0x92, 0xf0]);
         c.step().unwrap();
         assert_eq!(c.regs.r[0], 0x7fff_ffff);
-        assert!(c.xpsr.q());
+        assert!(!c.xpsr.q());
 
-        // qdsub r0, r1, r2 (fa81 f1b2): 5 - doubled 2 = 1, no saturation
-        // anywhere.
+        // qdadd r0, r1, r2 with Rn (`r1`) = INT32_MAX and Rm (`r2`) = 0: the
+        // doubling saturates to INT32_MAX, setting Q.
         let mut c = armv7m_core();
         c.regs.pc = 0x2000_0000;
-        c.regs.write(1, 5);
-        c.regs.write(2, 2);
+        c.regs.write(1, 0x7fff_ffff);
+        c.regs.write(2, 0);
+        load_inst(&mut c, 0x2000_0000, &[0x81, 0xfa, 0x92, 0xf0]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0x7fff_ffff);
+        assert!(c.xpsr.q());
+
+        // qdsub r0, r1, r2 (fa81 f1b2): `Rd = SAT(Rm - SAT(Rn*2))` with Rm
+        // (`r2`) = 5 and Rn (`r1`) = 2: 5 - doubled 2 = 1, no saturation.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(1, 2);
+        c.regs.write(2, 5);
         load_inst(&mut c, 0x2000_0000, &[0x81, 0xfa, 0xb2, 0xf0]);
         c.step().unwrap();
         assert_eq!(c.regs.r[0], 1);
         assert!(!c.xpsr.q());
 
-        // qdsub r0, r1, r2 with r1 = INT32_MIN, r2 = 0x40000000: the doubling
-        // clamps to INT32_MAX (Q), and INT32_MIN - that clamps to INT32_MIN
-        // (Q stays latched).
+        // qdsub r0, r1, r2 with Rn (`r1`) = 0x40000000 and Rm (`r2`) =
+        // INT32_MIN: the doubling of Rn clamps to INT32_MAX (Q), and
+        // INT32_MIN - that clamps to INT32_MIN (Q stays latched).
         let mut c = armv7m_core();
         c.regs.pc = 0x2000_0000;
-        c.regs.write(1, 0x8000_0000);
-        c.regs.write(2, 0x4000_0000);
+        c.regs.write(1, 0x4000_0000);
+        c.regs.write(2, 0x8000_0000);
         load_inst(&mut c, 0x2000_0000, &[0x81, 0xfa, 0xb2, 0xf0]);
         c.step().unwrap();
         assert_eq!(c.regs.r[0], 0x8000_0000);

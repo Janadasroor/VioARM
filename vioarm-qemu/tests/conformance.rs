@@ -55,6 +55,16 @@ fn qemu() -> Option<QemuMachine> {
     mt
 }
 
+/// An ARMv7E-M (Cortex-M4) QEMU reference, for the DSP zone that faults on the
+/// M3 board. Returns `None` when `qemu-system-arm` is missing.
+fn qemu_m4() -> Option<QemuMachine> {
+    let mt = QemuMachine::detect_m4();
+    if mt.is_none() {
+        eprintln!("skipping ARMv7E-M conformance tests: `qemu-system-arm` not found on PATH");
+    }
+    mt
+}
+
 /// Re-encode a `MOVW Rd, #imm16` into the 4 bytes at `addr` of `bytes`. Used
 /// to patch a register form's base address into a place-holder `movw` after
 /// assembly, when the address is only known once labels are resolved.
@@ -728,4 +738,80 @@ fn ldrd_strd() {
     a.label("halt");
     a.b("halt");
     conformance("ldrd_strd", &mut a, "halt", &mt);
+}
+
+// ---------------------------------------------------------------------------
+// ARMv7E-M DSP zone, diffed against a Cortex-M4 (mps2-an386): the dual
+// multiply-accumulate family (SMLAD/X, SMLSD/X, SMLALD/X, SMLSLD/X, SMMLA/R,
+// SMMLS/R), the halfword-picking multiplies (SMULxx, SMLAx, SMLAWB/WT),
+// SMMUL/R, USAD8/USADA8, and the saturating QADD/QDADD/QSUB/QDSUB. These all
+// fault on the M3 board, so this test runs only when a QEMU is available and
+// uses the M4 reference machine.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dsp_m4() {
+    let Some(mt) = qemu_m4() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+
+    // operand registers with interesting halfwords / signs
+    a.mov_imm32(0, 0x8000_0001); // lo hi halves: 0x0001 0x8000
+    a.mov_imm32(1, 0xFFFF_7FFF); // lo hi halves: 0x7FFF 0xFFFF (-1)
+    a.mov_imm32(2, 0x0001_0002);
+    a.mov_imm32(3, 0xFFFF_FFFE);
+    a.mov_imm32(4, 0x7FFF_8000);
+
+    // halfword-picking multiplies
+    a.smulbb(5, 0, 1); // 0x0001 * 0x7FFF
+    a.smulbt(6, 0, 1); // 0x0001 * 0xFFFF
+    a.smultb(7, 0, 1); // 0x8000 * 0x7FFF
+    a.smultt(8, 0, 1); // 0x8000 * 0xFFFF
+    a.smulwb(5, 0, 2); // full r0 * low half r2 >> 16
+    a.smulwt(6, 0, 2); // full r0 * high half r2 >> 16
+
+    // dual multiply-accumulate
+    a.smlabb(7, 0, 1, 4);
+    a.smlabt(8, 0, 1, 4);
+    a.smlatb(9, 0, 1, 4);
+    a.smlatt(10, 0, 1, 4);
+    a.smlawb(11, 0, 2, 4);
+    a.smlawt(12, 0, 2, 4);
+    a.smlad(5, 0, 1, 4);
+    a.smladx(6, 0, 1, 4);
+    a.smlsd(7, 0, 1, 4);
+    a.smlsdx(8, 0, 1, 4);
+
+    // signed most-significant-word multiplies
+    a.smmul(9, 0, 1);
+    a.smmulr(10, 0, 1);
+    a.smmla(11, 0, 1, 4);
+    a.smmlar(12, 0, 1, 4);
+    a.smmls(5, 0, 1, 4);
+    a.smmlsr(6, 0, 1, 4);
+
+    // sum-of-absolute-differences
+    a.usad8(7, 0, 1);
+    a.usada8(8, 0, 1, 4);
+
+    // long dual multiply-accumulate
+    a.smlalbb(5, 6, 0, 1);
+    a.smlalbt(7, 8, 0, 1);
+    a.smlaltb(9, 10, 0, 1);
+    a.smlaltt(11, 12, 0, 1);
+    a.smlald(5, 6, 0, 1);
+    a.smlaldx(7, 8, 0, 1);
+    a.smlsld(9, 10, 0, 1);
+    a.smlsldx(11, 12, 0, 1);
+    a.umaal(5, 6, 0, 1);
+
+    // saturating adds/subs (may set Q)
+    a.qadd(7, 3, 4); // huge + huge -> saturate
+    a.qdadd(8, 0, 1);
+    a.qsub(9, 3, 4);
+    a.qdsub(10, 0, 1);
+
+    a.label("halt");
+    a.b("halt");
+    conformance("dsp_m4", &mut a, "halt", &mt);
 }
