@@ -64,6 +64,9 @@ impl Image {
 #[derive(Clone, Default)]
 pub struct Asm {
     items: Vec<Item>,
+    /// Exception vector-table entries (exception number, handler label).
+    /// `0` and `1` (MSP / reset) are always present; this covers the rest.
+    vectors: Vec<(u32, String)>,
 }
 
 impl Asm {
@@ -86,6 +89,13 @@ impl Asm {
     /// Pad with `NOP`s up to the next 4-byte boundary.
     pub fn align4(&mut self) {
         self.emit(Item::PadTo4);
+    }
+
+    /// Install `handler` as the vector-table entry for exception number `exc`.
+    /// The handler address is written with the Thumb bit set, exactly as the
+    /// reset vector is.
+    pub fn vec(&mut self, exc: u32, handler: impl Into<String>) {
+        self.vectors.push((exc, handler.into()));
     }
 
     /// Emit a raw 32-bit data word (for literal pools).
@@ -591,6 +601,64 @@ impl Asm {
         self.raw32(0xF3BF_8F6F);
     }
 
+    // ------------------------------ exclusive ------------------------------
+
+    /// `LDREX.W Rt, [Rn, #off]` (word, `off` in bytes, 4-aligned).
+    pub fn ldrex(&mut self, rt: u8, rn: u8, off: u8) {
+        let hi = 0xE850 | u16::from(rn);
+        let lo = u16::from(rt) << 12 | 0xF00 | u16::from(off / 4);
+        self.raw32(hi as u32 | (lo as u32) << 16);
+    }
+    /// `STREX.W Rd, Rt, [Rn, #off]` (word); `Rd` receives the success bit.
+    pub fn strex(&mut self, rd: u8, rt: u8, rn: u8, off: u8) {
+        let hi = 0xE840 | u16::from(rn);
+        let lo = u16::from(rt) << 12 | u16::from(rd) << 8 | u16::from(off / 4);
+        self.raw32(hi as u32 | (lo as u32) << 16);
+    }
+    /// `LDREXB Rt, [Rn]`.
+    pub fn ldrexb(&mut self, rt: u8, rn: u8) {
+        let hi = 0xE8D0 | u16::from(rn);
+        let lo = u16::from(rt) << 12 | 0xF4F;
+        self.raw32(hi as u32 | (lo as u32) << 16);
+    }
+    /// `LDREXH Rt, [Rn]`.
+    pub fn ldrexh(&mut self, rt: u8, rn: u8) {
+        let hi = 0xE8D0 | u16::from(rn);
+        let lo = u16::from(rt) << 12 | 0xF5F;
+        self.raw32(hi as u32 | (lo as u32) << 16);
+    }
+    /// `STREXB Rd, Rt, [Rn]`.
+    pub fn strexb(&mut self, rd: u8, rt: u8, rn: u8) {
+        let hi = 0xE8C0 | u16::from(rn);
+        let lo = u16::from(rt) << 12 | 0xF40 | u16::from(rd);
+        self.raw32(hi as u32 | (lo as u32) << 16);
+    }
+    /// `STREXH Rd, Rt, [Rn]`.
+    pub fn strexh(&mut self, rd: u8, rt: u8, rn: u8) {
+        let hi = 0xE8C0 | u16::from(rn);
+        let lo = u16::from(rt) << 12 | 0xF50 | u16::from(rd);
+        self.raw32(hi as u32 | (lo as u32) << 16);
+    }
+
+    // ------------------------- system registers ---------------------------
+
+    /// `MRS Rd, <sysreg>` (`sys` is the `SYSm` 8-bit field, see `SysReg`).
+    pub fn mrs(&mut self, rd: u8, sys: u8) {
+        let lo = 0x8000 | u16::from(rd) << 8 | u16::from(sys);
+        self.raw32(0xF3EF as u32 | (lo as u32) << 16);
+    }
+    /// `MSR <sysreg>, Rn`.
+    pub fn msr(&mut self, sys: u8, rn: u8) {
+        let hi = 0xF380 | u16::from(rn);
+        let lo = 0x8000 | u16::from(sys);
+        self.raw32(hi as u32 | (lo as u32) << 16);
+    }
+
+    /// `SVC #imm` (16-bit).
+    pub fn svc(&mut self, imm: u8) {
+        self.raw(0xDF00 | u16::from(imm));
+    }
+
     // ---------------------------- divide / multiply ----------------------------
 
     pub fn sdiv(&mut self, rd: u8, rn: u8, rm: u8) {
@@ -930,6 +998,16 @@ impl Asm {
         let mut bytes = vec![0u8; CODE_BASE as usize];
         bytes[0..4].copy_from_slice(&sp.to_le_bytes());
         bytes[4..8].copy_from_slice(&(CODE_BASE | 1).to_le_bytes());
+        for (exc, name) in &self.vectors {
+            let handler = labels
+                .get(name)
+                .ok_or_else(|| format!("undefined handler label {name:?}"))?;
+            let idx = (exc * 4) as usize;
+            if idx + 4 > CODE_BASE as usize {
+                return Err(format!("vector {exc} beyond the 0x{CODE_BASE:x} table"));
+            }
+            bytes[idx..idx + 4].copy_from_slice(&(handler | 1).to_le_bytes());
+        }
         bytes.extend_from_slice(&code);
         Ok(Image { bytes, labels })
     }

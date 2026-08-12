@@ -181,6 +181,140 @@ fn memory() {
 }
 
 // ---------------------------------------------------------------------------
+// Exclusive access: LDREX/STREX word, byte and halfword forms, success and
+// (cross-address) failure paths of the local exclusive monitor. Every STREX
+// is preceded by a fresh LDREX so the post-failure monitor state, which
+// implementations may model differently, never feeds a later STREX.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn exclusive() {
+    let Some(mt) = qemu() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+
+    a.mov_imm32(4, 0x2000_1000); // r4 = exclusive region
+    a.mov_imm32(0, 0x1122_3344);
+    a.mov_imm32(1, 0xAABB_CCDD);
+    a.mov_imm32(2, 0x5566_7788);
+    a.str_imm(0, 4, 0); // seed [r4] = 0x11223344
+
+    // word: success at [r4]
+    a.ldrex(3, 4, 0);
+    a.strex(5, 1, 4, 0); // r5 = 0, [r4] = 0xAABBCCDD
+    a.ldr_imm(3, 4, 0); // verify
+
+    // word: STREX to a *different* address fails and does not store
+    a.ldrex(3, 4, 0);
+    a.strex(6, 2, 4, 8); // r6 = 1
+    a.ldr_imm(7, 4, 0); // [r4] still 0xAABBCCDD
+
+    // word: success at [r4+8] after re-tagging
+    a.ldrex(3, 4, 8);
+    a.strex(7, 2, 4, 8); // r7 = 0, [r4+8] = 0x55667788
+
+    // byte forms at [r4+12]
+    a.addw(8, 4, 12);
+    a.ldrexb(3, 8);
+    a.strexb(5, 1, 8); // success r5 = 0
+    a.ldrb_wide(3, 8, 0); // r3 = 0xDD
+
+    // halfword forms at [r4+16]
+    a.addw(9, 4, 16);
+    a.ldrexh(3, 9);
+    a.strexh(5, 1, 9); // success r5 = 0
+    a.ldrh_wide(3, 9, 0); // r3 = 0xCCDD
+
+    a.label("halt");
+    a.b("halt");
+    conformance("exclusive", &mut a, "halt", &mt);
+}
+
+// ---------------------------------------------------------------------------
+// System registers: PRIMASK / BASEPRI / FAULTMASK / CONTROL round-trips and
+// an MRS MSP read. APSR reads are excluded: QEMU's `-d cpu` xPSR dump and
+// VioARM's modeled xPSR already cover the flags, and an MRS APSR would fold
+// those same bits into a general register.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn sysreg() {
+    let Some(mt) = qemu() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+
+    // MSP/PSP bank probe (privileged)
+    a.mov_imm32(5, 0x4000_0000);
+    a.msr(0x08, 5); // MSR MSP, r5
+    a.mrs(2, 0x08); // r2 = MSP
+    a.mrs(6, 0x09); // r6 = PSP
+    a.mov_imm32(5, 0x5000_0000);
+    a.msr(0x09, 5); // MSR PSP, r5
+    a.mrs(7, 0x09); // r7 = PSP
+    a.mrs(3, 0x08); // r3 = MSP
+
+    // PRIMASK 0 -> 0, then 1 -> 1
+    a.movs_imm8(0, 0);
+    a.msr(0x10, 0);
+    a.mrs(1, 0x10);
+    a.movs_imm8(0, 1);
+    a.msr(0x10, 0);
+    a.mrs(1, 0x10);
+    // BASEPRI 0x80
+    a.movs_imm8(0, 0x80);
+    a.msr(0x11, 0);
+    a.mrs(1, 0x11);
+    // FAULTMASK 1 then 0
+    a.movs_imm8(0, 1);
+    a.msr(0x13, 0);
+    a.mrs(1, 0x13);
+    a.movs_imm8(0, 0);
+    a.msr(0x13, 0);
+    a.mrs(1, 0x13);
+    // CONTROL: nPRIV then back to privileged
+    a.movs_imm8(0, 1);
+    a.msr(0x14, 0);
+    a.mrs(1, 0x14);
+    a.movs_imm8(0, 0);
+    a.msr(0x14, 0);
+    a.mrs(1, 0x14);
+    // MSP read (Thread mode, main stack)
+    a.mrs(2, 0x08);
+
+    a.label("halt");
+    a.b("halt");
+    conformance("sysreg", &mut a, "halt", &mt);
+}
+
+// ---------------------------------------------------------------------------
+// Exceptions: an SVC with a real handler in the vector table. Entry pushes
+// the eight-word frame, IPSR becomes 11, and `bx lr` (EXC_RETURN THREAD_MSP)
+// pops it and resumes after the SVC with the interrupted context intact.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn exceptions() {
+    let Some(mt) = qemu() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+
+    a.vec(11, "svc_handler"); // SVC exception 11
+    a.movs_imm8(0, 1);
+    a.svc(0);
+    a.movs_imm8(1, 0x22); // after first return
+    a.movs_imm8(0, 2);
+    a.svc(0);
+    a.movs_imm8(2, 0x33); // after second return
+    a.b("halt");
+    a.label("svc_handler");
+    a.movs_imm8(9, 0x99); // marker
+    a.bx(14);
+    a.label("halt");
+    a.b("halt");
+    conformance("exceptions", &mut a, "halt", &mt);
+}
+
+// ---------------------------------------------------------------------------
 // Control flow: conditional branches, CBZ/CBNZ, IT blocks, BL+BX LR,
 // POP{PC}, and a wide B.W over a large gap.
 // ---------------------------------------------------------------------------

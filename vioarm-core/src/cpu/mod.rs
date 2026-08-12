@@ -288,6 +288,10 @@ impl<B: PeripheralBus> Core<B> {
 
     /// Read a system register for `mrs`.
     fn sysreg_read(&self, sys: SysReg) -> Result<u32, HaltCause> {
+        // In an unprivileged (Thread, nPRIV=1) context only the xPSR subfields
+        // and CONTROL are readable; reads of the remaining special-purpose
+        // registers return 0 (ARMv7-M ARM; matches QEMU's `v7m_mrs`).
+        let unprivileged = self.ipsr == 0 && self.control & 1 != 0;
         let v = match sys {
             // Reads return the whole APSR; the `_g`/`_nzcvqg` qualifiers only
             // constrain the *write* mask.
@@ -302,6 +306,17 @@ impl<B: PeripheralBus> Core<B> {
             }
             SysReg::Ipsr => u32::from(self.ipsr),
             SysReg::Epsr => XPSR_T,
+            // Unprivileged reads of these special-purpose registers are RAZ.
+            SysReg::Msp
+            | SysReg::Psp
+            | SysReg::Primask
+            | SysReg::Basepri
+            | SysReg::BasepriMax
+            | SysReg::Faultmask
+                if unprivileged =>
+            {
+                0
+            }
             SysReg::Msp => {
                 if self.sp_is_process() {
                     self.regs.msp
@@ -372,20 +387,27 @@ impl<B: PeripheralBus> Core<B> {
             }
             SysReg::Faultmask => self.faultmask = v & 1 != 0,
             SysReg::Control => {
-                let new = v & 0x7;
-                let want_process = new & 0x2 != 0;
-                let was_process = self.sp_is_process();
-                if want_process != was_process {
-                    let r = &mut self.regs;
-                    if want_process {
-                        r.msp = r.sp;
-                        r.sp = r.psp;
-                    } else {
-                        r.psp = r.sp;
-                        r.sp = r.msp;
+                // MSR CONTROL is only honored in a privileged context: Handler
+                // mode, or Thread mode while nPRIV is still clear. Once the
+                // thread drops to unprivileged (nPRIV=1), further writes are
+                // ignored, so an unprivileged thread cannot re-privilege
+                // itself.
+                if self.ipsr != 0 || self.control & 1 == 0 {
+                    let new = v & 0x7;
+                    let want_process = new & 0x2 != 0;
+                    let was_process = self.sp_is_process();
+                    if want_process != was_process {
+                        let r = &mut self.regs;
+                        if want_process {
+                            r.msp = r.sp;
+                            r.sp = r.psp;
+                        } else {
+                            r.psp = r.sp;
+                            r.sp = r.msp;
+                        }
                     }
+                    self.control = new;
                 }
-                self.control = new;
             }
             SysReg::Xpsr | SysReg::Ipsr | SysReg::Epsr => {
                 return Err(HaltCause::NotImplemented {
