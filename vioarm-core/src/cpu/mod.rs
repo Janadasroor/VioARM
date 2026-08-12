@@ -915,10 +915,12 @@ impl<B: PeripheralBus> Core<B> {
                     });
                 }
                 let cur = self.regs.read(rd);
+                // MOVW clears the upper half; MOVT preserves it and fills
+                // bits 31:16.
                 let new = if high {
                     (cur & 0xFFFF) | (u32::from(imm) << 16)
                 } else {
-                    (cur & 0xFFFF_0000) | u32::from(imm)
+                    u32::from(imm)
                 };
                 self.regs.write(rd, new);
                 Ok(Next::Advance(pc + 4))
@@ -1842,7 +1844,7 @@ impl<B: PeripheralBus> Core<B> {
                 self.set_nz(res, false);
             }
             AluOp::Neg => {
-                let (res, c, v) = sub_flags(0, a, false);
+                let (res, c, v) = sub_flags(0, b, false);
                 self.regs.write(rd, res);
                 if set_flags {
                     self.set_nzcv(res, c, v);
@@ -1867,7 +1869,8 @@ impl<B: PeripheralBus> Core<B> {
                 let res = a.wrapping_mul(b);
                 self.regs.write(rd, res);
                 if set_flags {
-                    self.set_nzcv(res, false, false);
+                    // MULS on ARMv7-M sets N/Z but leaves C alone.
+                    self.set_nz(res, false);
                 }
             }
             AluOp::Bic => {
@@ -1878,9 +1881,11 @@ impl<B: PeripheralBus> Core<B> {
                 }
             }
             AluOp::Mvn => {
-                let res = !a;
+                let res = !b;
                 self.regs.write(rd, res);
-                self.set_nz(res, false);
+                if set_flags {
+                    self.set_nz(res, false);
+                }
             }
         }
     }
@@ -2419,10 +2424,14 @@ const fn shift_imm(kind: ShiftImm, v: u32, amount: u32) -> (u32, Option<bool>) {
 fn shift_reg(kind: Shift, v: u32, count: u32) -> (u32, Option<bool>) {
     match kind {
         Shift::Ror => {
-            let n = count & 0x1F;
-            if n == 0 {
+            // A zero amount leaves the C flag alone; a nonzero *multiple* of
+            // 32 rotates to no effect but still reports C = bit31.
+            if count == 0 {
                 (v, None)
+            } else if count & 0x1F == 0 {
+                (v, Some(v >> 31 & 1 != 0))
             } else {
+                let n = count & 0x1F;
                 let carry = (v >> (n - 1)) & 1 != 0;
                 (v.rotate_right(n), Some(carry))
             }

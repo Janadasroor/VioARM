@@ -128,11 +128,12 @@ fn mov_sub_mul_arithmetic() {
     assert_eq!(err, Err(HaltCause::FetchAbort));
     let (regs, xpsr, cycles) = m.core.snapshot();
     assert_eq!(cycles, 4);
-    // (7 - 3) * (7 - 3) == 16, positive, non-zero.
+    // (7 - 3) * (7 - 3) == 16, positive, non-zero. The SUBS leaves C set and
+    // MULS (ARMv7-M) preserves it rather than clearing it.
     assert_eq!(regs.r[0], 16);
     assert!(!xpsr.n());
     assert!(!xpsr.z());
-    assert!(!xpsr.c());
+    assert!(xpsr.c());
     assert!(!xpsr.v());
     assert!(xpsr.is_thumb());
 }
