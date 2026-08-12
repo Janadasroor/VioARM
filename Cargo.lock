@@ -199,6 +199,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "vioarm-qemu"
+version = "0.1.0"
+dependencies = [
+ "vioarm-core",
+]
+
+[[package]]
 name = "vioarm-svd"
 version = "0.1.0"
 dependencies = [
