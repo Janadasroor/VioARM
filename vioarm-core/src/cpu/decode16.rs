@@ -583,8 +583,9 @@ pub fn decode16(op: u16) -> Result<Inst16, DecodeError> {
         });
     }
 
-    // B<cond>: 1101 cond imm8, cond != 0xF.
-    if op & 0xF000 == 0xD000 && op & 0x0F00 != 0x0F00 {
+    // B<cond>: 1101 cond imm8, cond != 0xF. `cond == 0b1110` is the
+    // permanently-undefined UDEF space and must fall through to the error path.
+    if op & 0xF000 == 0xD000 && op & 0x0F00 <= 0x0D00 {
         let cond = ((op >> 8) & 0xF) as u8;
         let off = i32::from(op & 0xFF) << 1;
         // Sign-extend the 9-bit offset.

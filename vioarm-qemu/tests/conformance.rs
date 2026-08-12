@@ -308,10 +308,57 @@ fn exceptions() {
     a.b("halt");
     a.label("svc_handler");
     a.movs_imm8(9, 0x99); // marker
+                          // Expose the stacked frame in the trace: r6 = frame base (the handler's
+                          // SP), r7 = the stacked PC. For an `SVC` the interrupt pushes the address
+                          // of the *following* instruction as a plain address (no Thumb bit; the
+                          // T bit lives in the stacked xPSR) -- the same convention as fault frames.
+    a.mov_reg(6, 13);
+    a.ldr_wide(7, 6, 24); // r7 = stacked PC (instruction after the SVC)
     a.bx(14);
     a.label("halt");
     a.b("halt");
     conformance("exceptions", &mut a, "halt", &mt);
+}
+
+// ---------------------------------------------------------------------------
+// Faults: an undefined instruction (0xDE00, permanently-undefined) escalates
+// through UsageFault to HardFault (vector 3). The handler reads the eight-word
+// frame (stacked PC / LR / r0 / xPSR), rewrites the stacked PC to skip the bad
+// opcode, and returns via `bx lr`. The stacked PC must be the address of the
+// *faulting* instruction, not the following one.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn faults() {
+    let Some(mt) = qemu() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+
+    a.vec(3, "hf"); // HardFault vector
+                    // Non-trivial register values so the stacked frame is distinguishable.
+    a.mov_imm32(0, 0x1111_2222);
+    a.mov_imm32(1, 0x3333_4444);
+    a.mov_imm32(2, 0x5555_6666);
+    a.mov_imm32(3, 0x7777_8888);
+    a.mov_imm32(12, 0x9999_AAAA);
+    a.raw(0xDE00); // UDEF -> HardFault
+    a.label("after_udef");
+    a.movs_imm8(0, 0xAA); // reached only once the handler skips the bad opcode
+    a.b("halt");
+
+    a.label("hf");
+    a.mov_reg(6, 13); // r6 = frame base (SP in the handler)
+    a.ldr_wide(7, 6, 24); // r7 = stacked PC (faulting UDEF address | 1)
+    a.ldr_wide(8, 6, 0); // r8 = stacked r0
+    a.ldr_wide(9, 6, 20); // r9 = stacked LR
+    a.ldr_wide(5, 6, 28); // r5 = stacked xPSR
+    a.adds_imm8(7, 2); // resume address = faulting PC + 2 (skip UDEF)
+    a.str_imm(7, 6, 24); // patch the stacked PC
+    a.bx(14); // exception return to the patched PC
+
+    a.label("halt");
+    a.b("halt");
+    conformance("faults", &mut a, "halt", &mt);
 }
 
 // ---------------------------------------------------------------------------

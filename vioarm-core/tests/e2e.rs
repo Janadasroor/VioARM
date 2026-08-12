@@ -263,23 +263,51 @@ fn loop_bl_push_pop_ldm_stm() {
 /// Thread code shared by the exception tests: two setup moves, an undefined
 /// `0xBFFF` (reserved HINT), then `movs r2, #0x22; bkpt`.
 const EXC_THREAD: &[u8] = &[0x20, 0x00, 0x01, 0x21, 0xff, 0xbf, 0x22, 0x22, 0x00, 0xbe];
-/// A `HardFault` handler that sets RAM to `marker` and returns with `bx lr`.
-fn marker_handler(marker: u8) -> Vec<u8> {
+/// Patch the stacked PC forward past the faulting 16-bit instruction, so the
+/// thread resumes after the bad opcode. Real hardware and QEMU stack the
+/// *faulting* address for an undefined-instruction fault; a handler that
+/// returns without fixing the frame re-executes the faulting opcode.
+fn skip_udef() -> Vec<u8> {
+    vec![
+        0x06, 0x9a, // ldr r2, [sp, #24] (stacked PC)
+        0x02, 0x32, // adds r2, #2
+        0x06, 0x92, // str r2, [sp, #24]
+    ]
+}
+/// The `movs r0, #0x20; lsls r0, #24; movs r3, #marker; str r3, [r0]` prologue
+/// that stores `marker` to RAM. Handlers append their return (and, for a
+/// fault, a frame PC fix-up) before the `bx lr`.
+fn marker_store(marker: u8) -> Vec<u8> {
     vec![
         0x20, 0x20, 0x00, 0x06, // movs r0, #0x20; lsls r0, r0, #24 -> r0 = RAM
         marker, 0x23, 0x03, 0x60, // movs r3, #marker; str r3, [r0]
-        0x70, 0x47, // bx lr
     ]
+}
+/// A `HardFault` handler that sets RAM to `marker`, skips the faulting
+/// opcode, and returns with `bx lr`.
+fn fault_handler(marker: u8) -> Vec<u8> {
+    let mut h = marker_store(marker);
+    h.extend(skip_udef());
+    h.extend([0x70, 0x47]); // bx lr
+    h
+}
+/// A `HardFault`/`SVCall` handler that sets RAM to `marker` and returns with
+/// `bx lr`. Exception entry restores the interrupted PC, so this is correct
+/// for faults *and* interrupts alike (no frame patching).
+fn marker_handler(marker: u8) -> Vec<u8> {
+    let mut h = marker_store(marker);
+    h.extend([0x70, 0x47]); // bx lr
+    h
 }
 
 /// An undefined instruction raises a `HardFault`: the frame is pushed, the
 /// handler runs, and `bx lr` (`EXC_RETURN`) restores the thread which resumes
-/// one instruction after the faulting opcode.
+/// after the faulting opcode (the handler patched the stacked PC forward).
 #[test]
 fn hardfault_handler_runs_and_returns() {
     const CODE: u32 = 0x40;
     const HF: u32 = 0x100;
-    let mut m = boot_with_vectors(EXC_THREAD, &marker_handler(0x7a), CODE, HF);
+    let mut m = boot_with_vectors(EXC_THREAD, &fault_handler(0x7a), CODE, HF);
     let err = m.run(16);
     assert_eq!(err, Err(HaltCause::Breakpoint));
     let (regs, _, cycles) = m.core.snapshot();
@@ -292,7 +320,7 @@ fn hardfault_handler_runs_and_returns() {
     assert_eq!(regs.r[2], 0x22);
     assert_eq!(regs.r[3], 0);
     assert_eq!(regs.sp, INIT_SP);
-    assert_eq!(cycles, 9);
+    assert_eq!(cycles, 12);
 }
 
 /// A misaligned thread SP is 8-byte-aligned on exception entry; the stacked
@@ -312,6 +340,9 @@ fn hard_fault_aligns_misaligned_stack() {
         0x09, 0x06, // lsls r1, r1, #24 -> r1 = RAM
         0x07, 0x98, // ldr r0, [sp, #28] (stacked xPSR)
         0x08, 0x60, // str r0, [r1]
+        0x06, 0x9a, // ldr r2, [sp, #24] (stacked PC)
+        0x02, 0x32, // adds r2, #2 (skip the faulting opcode)
+        0x06, 0x92, // str r2, [sp, #24]
         0x70, 0x47, // bx lr
     ];
     let mut m = boot_with_vectors(thread, handler, CODE, HF);
@@ -323,18 +354,28 @@ fn hard_fault_aligns_misaligned_stack() {
     // The thread's SP is restored to its pre-excerpt value.
     assert_eq!(regs.sp, INIT_SP - 4);
     assert_eq!(regs.r[2], 0x22);
-    assert_eq!(cycles, 8);
+    assert_eq!(cycles, 11);
 }
 
 /// An exception taken from a process-stack thread pushes its frame on the
 /// process SP, runs on the main SP, and returns through the PSP `EXC_RETURN`.
+/// The fault handler locates the frame with `mrs r1, psp` to skip the bad
+/// opcode (the live SP is the main SP, not the process SP holding the frame).
 #[test]
 fn exception_from_process_stack_returns_via_psp() {
     const CODE: u32 = 0x40;
     const HF: u32 = 0x100;
     const PSP: u32 = 0x2000_6000;
     const MSP: u32 = 0x2000_7000;
-    let mut m = boot_with_vectors(EXC_THREAD, &marker_handler(0x5a), CODE, HF);
+    let mut handler = marker_store(0x5a);
+    handler.extend_from_slice(&[
+        0xef, 0xf3, 0x09, 0x81, // mrs r1, psp (the frame base)
+        0x8a, 0x69, // ldr r2, [r1, #24] (stacked PC)
+        0x02, 0x32, // adds r2, #2 (skip the faulting opcode)
+        0x8a, 0x61, // str r2, [r1, #24]
+        0x70, 0x47, // bx lr
+    ]);
+    let mut m = boot_with_vectors(EXC_THREAD, &handler, CODE, HF);
     // Run the thread on the process stack: active SP becomes the PSP, and the
     // main stack is banked for the handler.
     m.core.control = 0x2;
@@ -349,7 +390,7 @@ fn exception_from_process_stack_returns_via_psp() {
     assert_eq!(regs.msp, MSP);
     assert_eq!(regs.sp, PSP);
     assert_eq!(regs.r[2], 0x22);
-    assert_eq!(cycles, 9);
+    assert_eq!(cycles, 13);
 }
 
 /// An undefined instruction with no `HardFault` vector configured halts with a
@@ -366,7 +407,7 @@ fn undefined_instruction_without_handler_halts() {
 fn handler_returns_via_pop_pc() {
     const CODE: u32 = 0x40;
     const HF: u32 = 0x100;
-    let mut handler = marker_handler(0x5a);
+    let mut handler = fault_handler(0x5a);
     handler.extend_from_slice(&[0x00, 0xb5, 0x00, 0xbd]); // push {lr}; pop {pc}
     let mut m = boot_with_vectors(EXC_THREAD, &handler, CODE, HF);
     let err = m.run(16);

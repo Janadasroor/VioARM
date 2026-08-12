@@ -2034,10 +2034,11 @@ impl<B: PeripheralBus> Core<B> {
     }
 
     /// Raise a HardFault for an undecodable instruction at `pc`. The stacked
-    /// return address is the following instruction so the handler can skip
-    /// the bad opcode and continue. Returns the branch to the handler entry.
-    fn hardfault_on_undefined(&mut self, pc: u32, size: u32) -> Result<Next, HaltCause> {
-        self.take_exception(Exception::HardFault, pc.wrapping_add(size))?;
+    /// return address is the faulting instruction itself, so the handler can
+    /// repair or skip the bad opcode (it must advance `pc` itself); QEMU and
+    /// real Cortex-M hardware both stack the faulting address here.
+    fn hardfault_on_undefined(&mut self, pc: u32, _size: u32) -> Result<Next, HaltCause> {
+        self.take_exception(Exception::HardFault, pc)?;
         Ok(Next::Advance(self.regs.pc))
     }
 
@@ -2092,7 +2093,9 @@ impl<B: PeripheralBus> Core<B> {
             self.write_word_halt(frame.wrapping_add((i as u32) * 4), self.regs.read(r))?;
         }
         self.write_word_halt(frame.wrapping_add(20), self.regs.lr)?;
-        self.write_word_halt(frame.wrapping_add(24), return_pc | 1)?;
+        // The frame PC is a plain address; the interrupted Thumb state lives
+        // in the stacked xPSR's T bit, matching QEMU and real Cortex-M frames.
+        self.write_word_halt(frame.wrapping_add(24), return_pc)?;
         self.write_word_halt(frame.wrapping_add(28), sxpsr)?;
         self.regs.lr = if self.ipsr != 0 {
             EXC_RETURN_HANDLER
@@ -2154,9 +2157,6 @@ impl<B: PeripheralBus> Core<B> {
         let lr = self.read_word_halt(frame.wrapping_add(20))?;
         let pc_ret = self.read_word_halt(frame.wrapping_add(24))?;
         let sxpsr = self.read_word_halt(frame.wrapping_add(28))?;
-        if pc_ret & 1 == 0 {
-            return Err(HaltCause::NonThumbTarget);
-        }
         // Exception return clears the local exclusive monitor.
         self.exmon = None;
         // A return-to-process hands the thread the handler's final main SP,
@@ -2172,7 +2172,9 @@ impl<B: PeripheralBus> Core<B> {
         self.regs.write(3, r3);
         self.regs.write(12, r12);
         self.regs.lr = lr;
-        self.regs.pc = pc_ret & !1;
+        // The stacked PC is a plain address; Thumb state is restored from the
+        // stacked xPSR's T bit below, not from the PC's LSB.
+        self.regs.pc = pc_ret;
         self.xpsr.set(sxpsr & (APSR_QFLAGS | XPSR_T));
         // Restore ITSTATE from its xPSR[15:10] / [26:25] slots.
         self.itstate = ((sxpsr >> 8) & 0xFC) as u8 | ((sxpsr >> 25) & 0x03) as u8;
@@ -2744,7 +2746,7 @@ mod tests {
         assert_eq!(c.regs.sp, SP - FRAME_BYTES);
         assert_eq!(
             c.mem().read_word(SP - FRAME_BYTES + 24).unwrap(),
-            (SVC_ADDR + 2) | 1
+            SVC_ADDR + 2
         );
         assert_eq!(c.mem().read_word(SP - FRAME_BYTES + 28).unwrap(), XPSR_T);
         c.step().unwrap();
