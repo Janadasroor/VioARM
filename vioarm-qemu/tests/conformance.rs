@@ -55,6 +55,17 @@ fn qemu() -> Option<QemuMachine> {
     mt
 }
 
+/// Re-encode a `MOVW Rd, #imm16` into the 4 bytes at `addr` of `bytes`. Used
+/// to patch a register form's base address into a place-holder `movw` after
+/// assembly, when the address is only known once labels are resolved.
+fn patch_movw(bytes: &mut [u8], addr: usize, rd: u8, imm: u16) {
+    let base: u16 = 0xF240;
+    let hi = base | (u16::from((imm >> 11) & 1)) << 10 | (imm >> 12);
+    let lo = (u16::from((imm >> 8) & 7)) << 12 | (u16::from(rd) << 8) | (imm & 0xFF);
+    let raw = hi as u32 | (lo as u32) << 16;
+    bytes[addr..addr + 4].copy_from_slice(&raw.to_le_bytes());
+}
+
 // ---------------------------------------------------------------------------
 // ARMv6-M / Thumb-1 data processing: moves, adds/subs/cmp, the whole 0x4000
 // ALU family, shifts (register and immediate), and the high-register specials.
@@ -499,4 +510,170 @@ fn thumb2_dp() {
     a.label("halt");
     a.b("halt");
     conformance("thumb2_dp", &mut a, "halt", &mt);
+}
+
+// ---------------------------------------------------------------------------
+// Table branches: TBB/TBH in both addressing flavors.
+//
+// The PC-relative form reads its table from `Align(pc+4, 4) + Rm` with `Rm`
+// holding the index, so the table must sit immediately after the instruction
+// and its entries must be filled in from the resolved case-label addresses
+// *after* assembly. The register form points a base register at a table in
+// flash; its entries are relative to the TBB/TBH instruction itself (case
+// address minus instruction+4), which is what both simulators implement.
+//
+// The whole program is assembled with place-holder tables, then `finish()`
+// resolves every label and the entries are patched into the image bytes
+// before either side runs, so a change in instruction widths can't silently
+// corrupt the table.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn tables() {
+    let Some(mt) = qemu() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+
+    // ---- PC-relative `TBB` (byte table): index in r0 ----
+    // Four branches, one per index; each lands on its case which sets r1 to a
+    // distinct value and branches on to the next section's *entry* label, so
+    // the next branch gets its index re-loaded.
+    for i in 0..4u8 {
+        a.label(&format!("tbb{i}_in")); // entry: re-load the index
+        a.movs_imm8(0, i);
+        a.align4();
+        a.label(&format!("tbb{i}"));
+        a.tb(15, 0);
+        a.dc_u32(0); // patched below
+        let next = if i == 3 { "tbh0_in" } else { &format!("tbb{}_in", i + 1) };
+        for (k, v) in [(0u8, 0x10u8), (1, 0x20), (2, 0x30), (3, 0x40)] {
+            a.label(&format!("tbb{i}_c{k}"));
+            a.movs_imm8(1, v);
+            a.b(next);
+        }
+    }
+
+    // ---- PC-relative `TBH` (halfword table): index in r0 ----
+    for i in 0..4u8 {
+        a.label(&format!("tbh{i}_in"));
+        a.movs_imm8(0, i);
+        a.align4();
+        a.label(&format!("tbh{i}"));
+        a.tbh(15, 0);
+        a.dc_u32(0); // patched below (four halfword entries)
+        a.dc_u32(0);
+        let next = if i == 3 { "rtbb_in" } else { &format!("tbh{}_in", i + 1) };
+        for (k, v) in [(0u8, 0xA0u8), (1, 0xB0), (2, 0xC0), (3, 0xD0)] {
+            a.label(&format!("tbh{i}_c{k}"));
+            a.movs_imm8(1, v);
+            a.b(next);
+        }
+    }
+
+    // ---- Register `TBB` (byte table in flash at `rtbb_tab`) ----
+    a.label("rtbb_in"); // entry: load the base and index
+    a.label("rtbb_base"); // address of the `mov_imm32` immediates
+    a.mov_imm32(5, 0); // patched to the table address below
+    a.movs_imm8(0, 2); // index 2
+    a.align4();
+    a.label("rtbb");
+    a.tb(5, 0);
+    for (k, v) in [(0u8, 0x51u8), (1, 0x52), (2, 0x53), (3, 0x54)] {
+        a.label(&format!("rtbb_c{k}"));
+        a.movs_imm8(3, v);
+        a.b("rtbh_in");
+    }
+    a.align4();
+    a.label("rtbb_tab"); // byte table (4 entries)
+    a.dc_u32(0);
+
+    // ---- Register `TBH` (halfword table in flash at `rtbh_tab`) ----
+    a.label("rtbh_in");
+    a.label("rtbh_base");
+    a.mov_imm32(5, 0); // patched below
+    a.movs_imm8(0, 3); // index 3
+    a.align4();
+    a.label("rtbh");
+    a.tbh(5, 0);
+    for (k, v) in [(0u8, 0x61u8), (1, 0x62), (2, 0x63), (3, 0x64)] {
+        a.label(&format!("rtbh_c{k}"));
+        a.movs_imm8(4, v);
+        a.b("halt");
+    }
+    a.align4();
+    a.label("rtbh_tab"); // halfword table (two words)
+    a.dc_u32(0);
+    a.dc_u32(0);
+
+    a.label("halt");
+    a.b("halt");
+
+    // ---- finish, then patch the table entries from resolved addresses ----
+    let mut img: Image = a.clone().finish(SP).expect("assemble");
+    fn pc4(img: &Image, name: &str) -> u32 {
+        let t = img.addr(name).expect("label");
+        (t + 4) & !3
+    }
+    for i in 0..4u8 {
+        let base = pc4(&img, &format!("tbb{i}"));
+        for (k, c) in [(0u8, '0'), (1, '1'), (2, '2'), (3, '3')] {
+            let target = img.addr(&format!("tbb{i}_c{c}")).expect("case");
+            let entry = (target - base) / 2;
+            img.bytes[(base + u32::from(k)) as usize] = entry as u8;
+        }
+    }
+    for i in 0..4u8 {
+        let base = pc4(&img, &format!("tbh{i}"));
+        for (k, c) in [(0u8, '0'), (1, '1'), (2, '2'), (3, '3')] {
+            let target = img.addr(&format!("tbh{i}_c{c}")).expect("case");
+            let entry = (target - base) / 2;
+            let off = (base + u32::from(2 * k)) as usize;
+            img.bytes[off] = entry as u8;
+            img.bytes[off + 1] = (entry >> 8) as u8;
+        }
+    }
+    // register form: entries are relative to the *instruction*, not the base.
+    // The flash-resident table is loaded into r5 at runtime.
+    {
+        let tab = img.addr("rtbb_tab").expect("table");
+        let bs = img.addr("rtbb").expect("label") + 4;
+        let mut word = 0u32;
+        for (k, c) in [(0u8, '0'), (1, '1'), (2, '2'), (3, '3')] {
+            let target = img.addr(&format!("rtbb_c{c}")).expect("case");
+            let entry = (target - bs) / 2;
+            word |= u32::from(entry) << (8 * u32::from(k));
+        }
+        let mvw = img.addr("rtbb_base").expect("base") as usize;
+        patch_movw(&mut img.bytes[..], mvw, 5, tab as u16);
+        img.bytes[tab as usize..tab as usize + 4].copy_from_slice(&word.to_le_bytes());
+    }
+    {
+        let tab = img.addr("rtbh_tab").expect("table");
+        let bs = img.addr("rtbh").expect("label") + 4;
+        let mut word = 0u64;
+        for (k, c) in [(0u8, '0'), (1, '1'), (2, '2'), (3, '3')] {
+            let target = img.addr(&format!("rtbh_c{c}")).expect("case");
+            let entry = (target - bs) / 2;
+            word |= u64::from(entry) << (16 * u64::from(k));
+        }
+        let mvw = img.addr("rtbh_base").expect("base") as usize;
+        patch_movw(&mut img.bytes[..], mvw, 5, tab as u16);
+        img.bytes[tab as usize..tab as usize + 8].copy_from_slice(&word.to_le_bytes());
+    }
+
+    // ---- run both sides on the patched image and diff ----
+    let stop = img.addr("halt").expect("halt");
+    let (vio, reached) = vio_run(&img.bytes, stop);
+    assert!(
+        reached,
+        "tables: vioarm never reached halt @ {stop:#x} (last {})",
+        snapshot_like(&vio)
+    );
+    let qemu = qemu_run(&mt, &img.bytes, stop, Duration::from_secs(15));
+    assert!(
+        !qemu.is_empty() && qemu.last().expect("empty").r[15] & !1 == stop,
+        "tables: qemu never reached halt @ {stop:#x} (got {} states)",
+        qemu.len()
+    );
+    compare_traces("tables", &vio, &qemu).expect("traces agree");
 }
