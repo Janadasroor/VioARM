@@ -196,6 +196,80 @@ fn loadstore_index() {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn loadstore_small() {
+    let Some(mt) = qemu() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+
+    // Seed known byte/halfword patterns, including sign bits.
+    a.mov_imm32(4, 0x2000_0000);
+    a.mov_imm32(0, 0x4080_0001);
+    a.mov_imm32(1, 0x1234_5678);
+    a.strb_wide(0, 4, 0); // [0] = 0x01
+    a.strb_wide(0, 4, 1); // [1] = 0x80 (LDRSB -> -128)
+    a.strb_wide(0, 4, 2); // [2] = 0x40
+    a.strh_wide(1, 4, 4); // [4] = 0x5678
+    a.strh_wide(1, 4, 6); // [6] = 0x1234
+    a.strh_wide(1, 4, 8); // [8] = 0x1234
+
+    a.mov_imm32(4, 0x2000_0000);
+
+    // Byte pre/post-indexed loads.
+    a.ldrb_pre(3, 4, 1); // r3 = [1] = 0x80 ; r4 = 1
+    a.mov_imm32(4, 0x2000_0000);
+    a.ldrb_post(5, 4, 2); // r5 = [0] = 0x01 ; r4 = 2
+    a.mov_imm32(4, 0x2000_0000);
+    a.ldrsb_pre(3, 4, 1); // r3 = sext([1]) = 0xFFFFFF80 ; r4 = 1
+    a.mov_imm32(4, 0x2000_0000);
+    a.ldrsb_post(5, 4, 2); // r5 = sext([0]) = 1 ; r4 = 2
+    a.mov_imm32(4, 0x2000_0000);
+    a.ldrbt(6, 4, 1); // r6 = [1] = 0x80 ; no write-back
+    a.mov_imm32(4, 0x2000_0000);
+    a.ldrsbt(7, 4, 1); // r7 = sext([1]) = 0xFFFFFF80 ; no write-back
+
+    // Byte pre/post-indexed stores, then read them back.
+    a.mov_imm32(4, 0x2000_0000);
+    a.strb_pre(1, 4, 5); // [5] = r1 & 0xFF ; r4 = 5
+    a.mov_imm32(4, 0x2000_0000);
+    a.strb_post(1, 4, 3); // [0] = r1 & 0xFF ; r4 = 3
+    a.mov_imm32(4, 0x2000_0000);
+    a.strbt(1, 4, 7); // [7] = r1 & 0xFF ; no write-back
+    a.mov_imm32(4, 0x2000_0000);
+    a.ldrb_wide(2, 4, 5); // r2 = [5]
+    a.ldrb_wide(8, 4, 0); // r8 = [0]
+    a.ldrb_wide(2, 4, 7); // r2 = [7]
+
+    a.mov_imm32(4, 0x2000_0000);
+
+    // Halfword pre/post-indexed loads (aligned offsets).
+    a.ldrh_pre(3, 4, 4); // r3 = [4] = 0x5678 ; r4 = 4
+    a.mov_imm32(4, 0x2000_0000);
+    a.ldrh_post(5, 4, 4); // r5 = [0] = 0x0001 (byte leftovers) ; r4 = 4
+    a.mov_imm32(4, 0x2000_0000);
+    a.ldrsh_pre(3, 4, 4); // r3 = sext([4]) = 0x5678 ; r4 = 4
+    a.mov_imm32(4, 0x2000_0000);
+    a.ldrsh_post(5, 4, 6); // r5 = sext([0]) = 1 ; r4 = 6
+    a.mov_imm32(4, 0x2000_0000);
+    a.ldrht(6, 4, 6); // r6 = [6] = 0x1234 ; no write-back
+    a.mov_imm32(4, 0x2000_0000);
+    a.ldrsht(7, 4, 6); // r7 = sext([6]) = 0x1234 ; no write-back
+
+    // Halfword pre/post-indexed stores.
+    a.mov_imm32(4, 0x2000_0000);
+    a.strh_pre(1, 4, 10); // [10] = r1 & 0xFFFF ; r4 = 10
+    a.mov_imm32(4, 0x2000_0000);
+    a.strh_post(1, 4, 12); // [0] = r1 & 0xFFFF ; r4 = 12
+    a.mov_imm32(4, 0x2000_0000);
+    a.strht(1, 4, 14); // [14] = r1 & 0xFFFF ; no write-back
+
+    a.label("halt");
+    a.b("halt");
+    conformance("loadstore_small", &mut a, "halt", &mt);
+}
+
+// ---------------------------------------------------------------------------
+
+#[test]
 fn memory() {
     let Some(mt) = qemu() else { return };
     let mut a = Asm::new();

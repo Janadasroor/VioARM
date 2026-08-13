@@ -605,6 +605,81 @@ impl Asm {
         self.mem_imm8(MemAccess::Ldr, rt, rn, 0b110, imm8);
     }
 
+    /// Byte pre-indexed: `LDRB Rt, [Rn, #imm8]!`.
+    pub fn ldrb_pre(&mut self, rt: u8, rn: u8, imm8: u8) {
+        self.mem_imm8(MemAccess::Ldrb, rt, rn, 0b111, imm8);
+    }
+    /// Byte pre-indexed: `STRB Rt, [Rn, #imm8]!`.
+    pub fn strb_pre(&mut self, rt: u8, rn: u8, imm8: u8) {
+        self.mem_imm8(MemAccess::Strb, rt, rn, 0b111, imm8);
+    }
+    /// Byte post-indexed: `LDRB Rt, [Rn], #imm8`.
+    pub fn ldrb_post(&mut self, rt: u8, rn: u8, imm8: u8) {
+        self.mem_imm8(MemAccess::Ldrb, rt, rn, 0b011, imm8);
+    }
+    /// Byte post-indexed: `STRB Rt, [Rn], #imm8`.
+    pub fn strb_post(&mut self, rt: u8, rn: u8, imm8: u8) {
+        self.mem_imm8(MemAccess::Strb, rt, rn, 0b011, imm8);
+    }
+    /// Unprivileged byte: `LDRBT Rt, [Rn, #imm8]`.
+    pub fn ldrbt(&mut self, rt: u8, rn: u8, imm8: u8) {
+        self.mem_imm8(MemAccess::Ldrb, rt, rn, 0b110, imm8);
+    }
+    /// Unprivileged byte: `STRBT Rt, [Rn, #imm8]`.
+    pub fn strbt(&mut self, rt: u8, rn: u8, imm8: u8) {
+        self.mem_imm8(MemAccess::Strb, rt, rn, 0b110, imm8);
+    }
+
+    /// Halfword pre-indexed: `LDRH Rt, [Rn, #imm8]!`.
+    pub fn ldrh_pre(&mut self, rt: u8, rn: u8, imm8: u8) {
+        self.mem_imm8(MemAccess::Ldrh, rt, rn, 0b111, imm8);
+    }
+    /// Halfword pre-indexed: `STRH Rt, [Rn, #imm8]!`.
+    pub fn strh_pre(&mut self, rt: u8, rn: u8, imm8: u8) {
+        self.mem_imm8(MemAccess::Strh, rt, rn, 0b111, imm8);
+    }
+    /// Halfword post-indexed: `LDRH Rt, [Rn], #imm8`.
+    pub fn ldrh_post(&mut self, rt: u8, rn: u8, imm8: u8) {
+        self.mem_imm8(MemAccess::Ldrh, rt, rn, 0b011, imm8);
+    }
+    /// Halfword post-indexed: `STRH Rt, [Rn], #imm8`.
+    pub fn strh_post(&mut self, rt: u8, rn: u8, imm8: u8) {
+        self.mem_imm8(MemAccess::Strh, rt, rn, 0b011, imm8);
+    }
+    /// Unprivileged halfword: `LDRHT Rt, [Rn, #imm8]`.
+    pub fn ldrht(&mut self, rt: u8, rn: u8, imm8: u8) {
+        self.mem_imm8(MemAccess::Ldrh, rt, rn, 0b110, imm8);
+    }
+    /// Unprivileged halfword: `STRHT Rt, [Rn, #imm8]`.
+    pub fn strht(&mut self, rt: u8, rn: u8, imm8: u8) {
+        self.mem_imm8(MemAccess::Strh, rt, rn, 0b110, imm8);
+    }
+
+    /// Signed byte pre-indexed: `LDRSB Rt, [Rn, #imm8]!`.
+    pub fn ldrsb_pre(&mut self, rt: u8, rn: u8, imm8: u8) {
+        self.mem_imm8(MemAccess::Ldrsb, rt, rn, 0b111, imm8);
+    }
+    /// Signed byte post-indexed: `LDRSB Rt, [Rn], #imm8`.
+    pub fn ldrsb_post(&mut self, rt: u8, rn: u8, imm8: u8) {
+        self.mem_imm8(MemAccess::Ldrsb, rt, rn, 0b011, imm8);
+    }
+    /// Unprivileged signed byte: `LDRSBT Rt, [Rn, #imm8]`.
+    pub fn ldrsbt(&mut self, rt: u8, rn: u8, imm8: u8) {
+        self.mem_imm8(MemAccess::Ldrsb, rt, rn, 0b110, imm8);
+    }
+    /// Signed halfword pre-indexed: `LDRSH Rt, [Rn, #imm8]!`.
+    pub fn ldrsh_pre(&mut self, rt: u8, rn: u8, imm8: u8) {
+        self.mem_imm8(MemAccess::Ldrsh, rt, rn, 0b111, imm8);
+    }
+    /// Signed halfword post-indexed: `LDRSH Rt, [Rn], #imm8`.
+    pub fn ldrsh_post(&mut self, rt: u8, rn: u8, imm8: u8) {
+        self.mem_imm8(MemAccess::Ldrsh, rt, rn, 0b011, imm8);
+    }
+    /// Unprivileged signed halfword: `LDRSHT Rt, [Rn, #imm8]`.
+    pub fn ldrsht(&mut self, rt: u8, rn: u8, imm8: u8) {
+        self.mem_imm8(MemAccess::Ldrsh, rt, rn, 0b110, imm8);
+    }
+
     /// Register-offset wide form: `LDR.W Rt, [Rn, Rm, LSL #shift]`.
     pub fn ldr_reg_wide(&mut self, rt: u8, rn: u8, rm: u8, shift_lsl: u8) {
         let hi = Self::mem_hi(MemAccess::Ldr) | u16::from(rn);
