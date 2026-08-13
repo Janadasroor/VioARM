@@ -1130,11 +1130,12 @@ fn decode_mem(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
         }))
     } else if lo & 0x0FC0 == 0 {
         // The register-offset form's second halfword is `Rt 000000 shimm Rm`:
-        // bits 11..6 are all zero, and the offset is `Rm << (shimm * 2)`
-        // (LSL only, 0/2/4/6). It always adds (`U == 1`) with no write-back.
+        // bits 11..6 are all zero, and the offset is `Rm << shimm` (LSL only,
+        // 0/1/2/3 — the 2-bit field is the shift amount directly). It always
+        // adds (`U == 1`) with no write-back.
         let rt = (lo >> 12) as u8;
         let rm = (lo & 0xF) as u8;
-        let shift = (((lo >> 4) & 0x3) as u8) * 2;
+        let shift = ((lo >> 4) & 0x3) as u8;
         if !is_load && rt == 15 {
             return err();
         }
@@ -2309,7 +2310,7 @@ mod tests {
     #[test]
     fn v7m_load_store_register() {
         // The register-offset second halfword is `Rt 000000 shimm Rm`, where
-        // the offset is `Rm << (shimm * 2)` (LSL only).
+        // the offset is `Rm << shimm` (LSL only, 0..3).
         // ldr.w r0, [r2, r3] -> f852 0003.
         assert_eq!(
             v7m_bytes([0x52, 0xf8, 0x03, 0x00]),
@@ -2320,9 +2321,9 @@ mod tests {
             v7m_bytes([0x54, 0xf8, 0x08, 0x20]),
             Ok(mem_reg(MemOp::Ldr, 2, 4, 8, 0))
         );
-        // str.w r5, [r6, r7, lsl #2] -> f846 5017.
+        // str.w r5, [r6, r7, lsl #2] -> f846 5027 (shimm = 2).
         assert_eq!(
-            v7m_bytes([0x46, 0xf8, 0x17, 0x50]),
+            v7m_bytes([0x46, 0xf8, 0x27, 0x50]),
             Ok(mem_reg(MemOp::Str, 5, 6, 7, 2))
         );
         // strb.w r0, [r1, r2] -> f801 0002.
@@ -2335,25 +2336,25 @@ mod tests {
             v7m_bytes([0x13, 0xf8, 0x04, 0x90]),
             Ok(mem_reg(MemOp::Ldrb, 9, 3, 4, 0))
         );
-        // strh.w r6, [r12, r2, lsl #2] -> f82c 6012.
+        // strh.w r6, [r12, r2, lsl #1] -> f82c 6012 (shimm = 1).
         assert_eq!(
             v7m_bytes([0x2c, 0xf8, 0x12, 0x60]),
-            Ok(mem_reg(MemOp::Strh, 6, 12, 2, 2))
+            Ok(mem_reg(MemOp::Strh, 6, 12, 2, 1))
         );
         // ldrh.w r3, [r10, r4] -> f83a 3004.
         assert_eq!(
             v7m_bytes([0x3a, 0xf8, 0x04, 0x30]),
             Ok(mem_reg(MemOp::Ldrh, 3, 10, 4, 0))
         );
-        // ldrsb.w r7, [r8, r11, lsl #6] -> f918 703b.
+        // ldrsb.w r7, [r8, r11, lsl #3] -> f918 703b (shimm = 3).
         assert_eq!(
             v7m_bytes([0x18, 0xf9, 0x3b, 0x70]),
-            Ok(mem_reg(MemOp::Ldrsb, 7, 8, 11, 6))
+            Ok(mem_reg(MemOp::Ldrsb, 7, 8, 11, 3))
         );
-        // ldrsh.w r0, [r2, r3, lsl #4] -> f932 0023.
+        // ldrsh.w r0, [r2, r3, lsl #2] -> f932 0023 (shimm = 2).
         assert_eq!(
             v7m_bytes([0x32, 0xf9, 0x23, 0x00]),
-            Ok(mem_reg(MemOp::Ldrsh, 0, 2, 3, 4))
+            Ok(mem_reg(MemOp::Ldrsh, 0, 2, 3, 2))
         );
     }
 

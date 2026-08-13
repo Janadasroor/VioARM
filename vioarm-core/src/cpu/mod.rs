@@ -2994,8 +2994,8 @@ mod tests {
         assert_eq!(c.mem().read_word(0x2000_0410).unwrap(), 0xDEAD_BEEF);
         assert_eq!(c.regs.read(2), 0x2000_0400);
         assert_eq!(c.regs.pc, 0x2000_0004);
-        // ldr.w r5, [r2, r3, lsl #2] f852 5013: offset Rm << 2 = 0x40.
-        load_inst(&mut c, 0x2000_0004, &[0x52, 0xf8, 0x13, 0x50]);
+        // ldr.w r5, [r2, r3, lsl #2] f852 5023: offset Rm << 2 = 0x40.
+        load_inst(&mut c, 0x2000_0004, &[0x52, 0xf8, 0x23, 0x50]);
         c.mem().write_word(0x2000_0440, 0x1234_ABCD).unwrap();
         c.step().unwrap();
         assert_eq!(c.regs.read(5), 0x1234_ABCD);
