@@ -580,6 +580,15 @@ impl Asm {
         self.raw32(hi as u32 | (lo as u32) << 16);
     }
 
+    /// Negative pre-indexed (`[Rn, #-imm8]!`, P=1 U=0 W=1).
+    fn mem_neg_pre(&mut self, access: MemAccess, rt: u8, rn: u8, imm8: u8) {
+        self.mem_imm8(access, rt, rn, 0b101, imm8);
+    }
+    /// Negative post-indexed (`[Rn], #-imm8`, P=0 U=0 W=1).
+    fn mem_neg_post(&mut self, access: MemAccess, rt: u8, rn: u8, imm8: u8) {
+        self.mem_imm8(access, rt, rn, 0b001, imm8);
+    }
+
     /// `LDR Rt, [Rn, #imm8]!` (pre-indexed, P=1 U=1 W=1).
     pub fn ldr_pre(&mut self, rt: u8, rn: u8, imm8: u8) {
         self.mem_imm8(MemAccess::Ldr, rt, rn, 0b111, imm8);
@@ -603,6 +612,23 @@ impl Asm {
     /// `LDRT Rt, [Rn, #imm8]`.
     pub fn ldrt(&mut self, rt: u8, rn: u8, imm8: u8) {
         self.mem_imm8(MemAccess::Ldr, rt, rn, 0b110, imm8);
+    }
+
+    /// Negative pre-indexed: `LDR Rt, [Rn, #-imm8]!`.
+    pub fn ldr_pre_neg(&mut self, rt: u8, rn: u8, imm8: u8) {
+        self.mem_neg_pre(MemAccess::Ldr, rt, rn, imm8);
+    }
+    /// Negative pre-indexed: `STR Rt, [Rn, #-imm8]!`.
+    pub fn str_pre_neg(&mut self, rt: u8, rn: u8, imm8: u8) {
+        self.mem_neg_pre(MemAccess::Str, rt, rn, imm8);
+    }
+    /// Negative post-indexed: `LDR Rt, [Rn], #-imm8`.
+    pub fn ldr_post_neg(&mut self, rt: u8, rn: u8, imm8: u8) {
+        self.mem_neg_post(MemAccess::Ldr, rt, rn, imm8);
+    }
+    /// Negative post-indexed: `STR Rt, [Rn], #-imm8`.
+    pub fn str_post_neg(&mut self, rt: u8, rn: u8, imm8: u8) {
+        self.mem_neg_post(MemAccess::Str, rt, rn, imm8);
     }
 
     /// Byte pre-indexed: `LDRB Rt, [Rn, #imm8]!`.
@@ -629,6 +655,22 @@ impl Asm {
     pub fn strbt(&mut self, rt: u8, rn: u8, imm8: u8) {
         self.mem_imm8(MemAccess::Strb, rt, rn, 0b110, imm8);
     }
+    /// Negative pre-indexed byte: `LDRB Rt, [Rn, #-imm8]!`.
+    pub fn ldrb_pre_neg(&mut self, rt: u8, rn: u8, imm8: u8) {
+        self.mem_neg_pre(MemAccess::Ldrb, rt, rn, imm8);
+    }
+    /// Negative pre-indexed byte: `STRB Rt, [Rn, #-imm8]!`.
+    pub fn strb_pre_neg(&mut self, rt: u8, rn: u8, imm8: u8) {
+        self.mem_neg_pre(MemAccess::Strb, rt, rn, imm8);
+    }
+    /// Negative post-indexed byte: `LDRB Rt, [Rn], #-imm8`.
+    pub fn ldrb_post_neg(&mut self, rt: u8, rn: u8, imm8: u8) {
+        self.mem_neg_post(MemAccess::Ldrb, rt, rn, imm8);
+    }
+    /// Negative post-indexed byte: `STRB Rt, [Rn], #-imm8`.
+    pub fn strb_post_neg(&mut self, rt: u8, rn: u8, imm8: u8) {
+        self.mem_neg_post(MemAccess::Strb, rt, rn, imm8);
+    }
 
     /// Halfword pre-indexed: `LDRH Rt, [Rn, #imm8]!`.
     pub fn ldrh_pre(&mut self, rt: u8, rn: u8, imm8: u8) {
@@ -654,6 +696,22 @@ impl Asm {
     pub fn strht(&mut self, rt: u8, rn: u8, imm8: u8) {
         self.mem_imm8(MemAccess::Strh, rt, rn, 0b110, imm8);
     }
+    /// Negative pre-indexed halfword: `LDRH Rt, [Rn, #-imm8]!`.
+    pub fn ldrh_pre_neg(&mut self, rt: u8, rn: u8, imm8: u8) {
+        self.mem_neg_pre(MemAccess::Ldrh, rt, rn, imm8);
+    }
+    /// Negative pre-indexed halfword: `STRH Rt, [Rn, #-imm8]!`.
+    pub fn strh_pre_neg(&mut self, rt: u8, rn: u8, imm8: u8) {
+        self.mem_neg_pre(MemAccess::Strh, rt, rn, imm8);
+    }
+    /// Negative post-indexed halfword: `LDRH Rt, [Rn], #-imm8`.
+    pub fn ldrh_post_neg(&mut self, rt: u8, rn: u8, imm8: u8) {
+        self.mem_neg_post(MemAccess::Ldrh, rt, rn, imm8);
+    }
+    /// Negative post-indexed halfword: `STRH Rt, [Rn], #-imm8`.
+    pub fn strh_post_neg(&mut self, rt: u8, rn: u8, imm8: u8) {
+        self.mem_neg_post(MemAccess::Strh, rt, rn, imm8);
+    }
 
     /// Signed byte pre-indexed: `LDRSB Rt, [Rn, #imm8]!`.
     pub fn ldrsb_pre(&mut self, rt: u8, rn: u8, imm8: u8) {
@@ -678,6 +736,22 @@ impl Asm {
     /// Unprivileged signed halfword: `LDRSHT Rt, [Rn, #imm8]`.
     pub fn ldrsht(&mut self, rt: u8, rn: u8, imm8: u8) {
         self.mem_imm8(MemAccess::Ldrsh, rt, rn, 0b110, imm8);
+    }
+    /// Negative pre-indexed signed byte: `LDRSB Rt, [Rn, #-imm8]!`.
+    pub fn ldrsb_pre_neg(&mut self, rt: u8, rn: u8, imm8: u8) {
+        self.mem_neg_pre(MemAccess::Ldrsb, rt, rn, imm8);
+    }
+    /// Negative post-indexed signed byte: `LDRSB Rt, [Rn], #-imm8`.
+    pub fn ldrsb_post_neg(&mut self, rt: u8, rn: u8, imm8: u8) {
+        self.mem_neg_post(MemAccess::Ldrsb, rt, rn, imm8);
+    }
+    /// Negative pre-indexed signed halfword: `LDRSH Rt, [Rn, #-imm8]!`.
+    pub fn ldrsh_pre_neg(&mut self, rt: u8, rn: u8, imm8: u8) {
+        self.mem_neg_pre(MemAccess::Ldrsh, rt, rn, imm8);
+    }
+    /// Negative post-indexed signed halfword: `LDRSH Rt, [Rn], #-imm8`.
+    pub fn ldrsh_post_neg(&mut self, rt: u8, rn: u8, imm8: u8) {
+        self.mem_neg_post(MemAccess::Ldrsh, rt, rn, imm8);
     }
 
     /// Register-offset wide form: `LDR.W Rt, [Rn, Rm, LSL #shift]`.

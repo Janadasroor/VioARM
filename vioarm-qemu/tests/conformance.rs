@@ -270,6 +270,55 @@ fn loadstore_small() {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn loadstore_neg() {
+    let Some(mt) = qemu() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+
+    // Seed distinct values at addresses we will reach by stepping down.
+    a.mov_imm32(4, 0x2000_0008);
+    a.mov_imm32(0, 0xDEAD_BEEF);
+    a.mov_imm32(1, 0x1122_3344);
+    a.str_wide(0, 4, 0); // [8] = BEEF
+    a.str_wide(1, 4, -4i32 as u16); // [4] = 3344
+    a.str_wide(0, 4, -8i32 as u16); // [0] = BEEF
+
+    // Negative pre-indexed: load at Rn - imm, then Rn -= imm.
+    a.mov_imm32(4, 0x2000_0008);
+    a.ldr_pre_neg(5, 4, 4); // r5 = [4] = 0x1122_3344 ; r4 = 0x2000_0004
+    a.str_pre_neg(1, 4, 4); // [0] = 0x1122_3344 ; r4 = 0x2000_0000
+    a.mov_imm32(4, 0x2000_0008);
+    a.ldr_post_neg(6, 4, 4); // r6 = [8] = 0xDEAD_BEEF ; r4 = 0x2000_0004
+    a.str_post_neg(0, 4, 4); // [4] = 0xDEAD_BEEF ; r4 = 0x2000_0000
+
+    // Byte/halfword/signed negative forms.
+    a.mov_imm32(0, 0x0000_0061); // ASCII 'a' at byte offset
+    a.mov_imm32(1, 0x0000_00FF);
+    a.mov_imm32(4, 0x2000_0004);
+    a.strb_wide(1, 4, 0); // [4] = 0xFF
+    a.strh_wide(0, 4, 0); // [4] = 0x0061
+
+    a.mov_imm32(4, 0x2000_0008);
+    a.ldrb_pre_neg(7, 4, 4); // r7 = byte[4] = 0x61 ; r4 = 0x2000_0004
+    a.strb_pre_neg(1, 4, 4); // byte[0] = 0xFF ; r4 = 0x2000_0000
+    a.mov_imm32(4, 0x2000_0008);
+    a.ldrh_post_neg(8, 4, 4); // r8 = hword[8] = 0xDEAD ; r4 = 0x2000_0004
+    a.strh_post_neg(0, 4, 4); // hword[4] = 0x0061 ; r4 = 0x2000_0000
+    a.mov_imm32(4, 0x2000_0008);
+    a.ldrsb_pre_neg(9, 4, 4); // r9 = sext(byte[4]) = 0x61 ; r4 = 0x2000_0004
+    a.ldrsh_post_neg(5, 4, 4); // r5 = sext(hword[4]) = 0x0061 ; r4 = 0x2000_0000
+    a.mov_imm32(4, 0x2000_0008);
+    a.ldrsb_post_neg(6, 4, 4); // r6 = sext(byte[8]) = sext(0xEF0F) ... ; r4 = 0x2000_0004
+    a.ldrsh_pre_neg(7, 4, 4); // r7 = sext(hword[4]) = 0x0061 ; r4 = 0x2000_0000
+
+    a.label("halt");
+    a.b("halt");
+    conformance("loadstore_neg", &mut a, "halt", &mt);
+}
+
+// ---------------------------------------------------------------------------
+
+#[test]
 fn memory() {
     let Some(mt) = qemu() else { return };
     let mut a = Asm::new();
