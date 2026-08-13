@@ -931,19 +931,37 @@ impl Asm {
 
     // -------------------------------- saturate --------------------------------
 
-    fn sat(&mut self, base: u16, rd: u8, rn: u8, sat_n: u8, shift_amt: u8, sh: bool) {
+    /// `SSAT/USAT` shared encode. `field` is the raw 5-bit `sat_imm`; `SSAT`
+    /// (imm 1..=32) stores `imm - 1`, `USAT` (imm 0..=31) stores it directly.
+    fn sat(&mut self, base: u16, rd: u8, rn: u8, field: u8, shift_amt: u8, sh: bool) {
         let hi = base | (u16::from(sh)) << 5 | u16::from(rn);
-        let lo = u16::from(shift_amt >> 2) << 12 | u16::from(rd) << 8 | u16::from(shift_amt & 3) << 6 | u16::from(sat_n - 1);
+        let lo = u16::from(shift_amt >> 2) << 12 | u16::from(rd) << 8 | u16::from(shift_amt & 3) << 6 | u16::from(field) & 0x1F;
         self.raw32(hi as u32 | (lo as u32) << 16);
     }
 
     /// `SSAT Rd, #n, Rn`.
     pub fn ssat(&mut self, rd: u8, rn: u8, n: u8, shift_amt: u8) {
-        self.sat(0xF300, rd, rn, n, shift_amt, false);
+        self.sat(0xF300, rd, rn, n - 1, shift_amt, false);
     }
     /// `USAT Rd, #n, Rn`.
     pub fn usat(&mut self, rd: u8, rn: u8, n: u8, shift_amt: u8) {
         self.sat(0xF380, rd, rn, n, shift_amt, false);
+    }
+    /// `SSAT Rd, #n, Rn, ASR #shift_amt`.
+    pub fn ssat_asr(&mut self, rd: u8, rn: u8, n: u8, shift_amt: u8) {
+        self.sat(0xF300, rd, rn, n - 1, shift_amt, true);
+    }
+    /// `USAT Rd, #n, Rn, ASR #shift_amt`.
+    pub fn usat_asr(&mut self, rd: u8, rn: u8, n: u8, shift_amt: u8) {
+        self.sat(0xF380, rd, rn, n, shift_amt, true);
+    }
+    /// `SSAT16 Rd, #n, Rn` (per-halfword signed saturate, no shift).
+    pub fn ssat16(&mut self, rd: u8, rn: u8, n: u8) {
+        self.sat(0xF300, rd, rn, n - 1, 0, true);
+    }
+    /// `USAT16 Rd, #n, Rn` (per-halfword unsigned saturate, no shift).
+    pub fn usat16(&mut self, rd: u8, rn: u8, n: u8) {
+        self.sat(0xF380, rd, rn, n, 0, true);
     }
 
     // ------------------------------ qadd / qsub ------------------------------

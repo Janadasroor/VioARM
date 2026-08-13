@@ -968,3 +968,87 @@ fn extend() {
     a.b("halt");
     conformance("extend", &mut a, "halt", &mt);
 }
+
+// ---------------------------------------------------------------------------
+// Saturate and bitfield family: `SSAT`/`USAT` (LSL and ASR shifts), the
+// per-halfword `SSAT16`/`USAT16` (the `sh==1, shift==0` alias), and
+// `SBFX`/`UBFX`/`BFI`/`BFC` at edge-adjacent lsb/width combinations. The
+// saturating ops exercise the sticky Q flag, which the snapshot compares via
+// xPSR[27]. Runs on the M4 reference machine (the `SSAT16`/`USAT16` alias
+// encodings are faulted by the M3 board).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn sat_bitfield() {
+    let Some(mt) = qemu_m4() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+
+    // operands at the signed/unsigned extremes and with distinct halfwords
+    a.mov_imm32(0, 0x8000_0000); // min signed
+    a.mov_imm32(1, 0x7FFF_FFFF); // max signed
+    a.mov_imm32(2, 0x0000_FFFF);
+    a.mov_imm32(3, 0xFFFF_8000); // halfwords: -1 -32768
+    a.mov_imm32(4, 0x7FFF_0000); // halfwords: +32767 0
+
+    // signed/unsigned saturate, LSL shifts
+    a.ssat(5, 0, 1, 0);
+    a.ssat(6, 1, 32, 0);
+    a.ssat(7, 2, 8, 4);
+    a.ssat(8, 3, 16, 0);
+    a.ssat(5, 1, 12, 16);
+    a.usat(6, 0, 1, 0);
+    a.usat(7, 1, 31, 0);
+    a.usat(8, 2, 16, 4);
+    a.usat(5, 3, 8, 0);
+    a.usat(6, 0, 24, 8);
+
+    // signed/unsigned saturate, ASR shifts
+    a.ssat_asr(7, 0, 8, 4);
+    a.ssat_asr(8, 1, 8, 16);
+    a.ssat_asr(9, 3, 1, 4);
+    a.usat_asr(5, 0, 8, 4);
+    a.usat_asr(6, 3, 16, 16);
+    a.usat_asr(7, 1, 12, 8);
+
+    // per-halfword saturate
+    a.ssat16(8, 3, 1);
+    a.ssat16(9, 4, 16);
+    a.ssat16(5, 0, 8);
+    a.ssat16(6, 1, 4);
+    a.usat16(7, 3, 1);
+    a.usat16(8, 4, 15);
+    a.usat16(9, 2, 12);
+
+    // bitfield extracts
+    a.sbfx(5, 0, 0, 1);
+    a.sbfx(6, 1, 0, 32);
+    a.sbfx(7, 2, 4, 8);
+    a.sbfx(8, 3, 16, 8);
+    a.sbfx(9, 0, 31, 1);
+    a.sbfx(10, 1, 24, 8);
+    a.sbfx(11, 2, 8, 16);
+    a.ubfx(5, 0, 0, 1);
+    a.ubfx(6, 1, 0, 32);
+    a.ubfx(7, 2, 4, 8);
+    a.ubfx(8, 3, 16, 8);
+    a.ubfx(9, 0, 31, 1);
+    a.ubfx(10, 2, 8, 16);
+    a.ubfx(11, 1, 1, 16);
+
+    // bitfield inserts / clears
+    a.bfi(5, 0, 0, 32);
+    a.bfi(6, 1, 4, 8);
+    a.bfi(7, 2, 16, 16);
+    a.bfi(8, 3, 24, 8);
+    a.bfi(9, 0, 1, 31);
+    a.bfc(5, 0, 32);
+    a.bfc(6, 4, 8);
+    a.bfc(7, 16, 16);
+    a.bfc(8, 24, 8);
+    a.bfc(9, 31, 1);
+
+    a.label("halt");
+    a.b("halt");
+    conformance("sat_bitfield", &mut a, "halt", &mt);
+}

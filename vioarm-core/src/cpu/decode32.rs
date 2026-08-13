@@ -1752,7 +1752,15 @@ const fn decode_sat(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
     let rd = ((lo >> 8) & 0xF) as u8;
     let rn = (hi & 0xF) as u8;
     let shift = ((((lo >> 12) & 0x7) as u8) << 2) | (((lo >> 6) & 0x3) as u8);
-    let sat_n = (lo & 0x1F) as u8 + 1;
+    // `SSAT` (imm 1..=32) stores `sat_imm - 1`, but `USAT` (imm 0..=31) stores
+    // the saturation width directly. The alias to the 16-bit forms inherits
+    // the same convention, so the decode applies per-op.
+    let field = (lo & 0x1F) as u8;
+    let sat_n = match op {
+        SatOp::Ssat => field + 1,
+        SatOp::Usat => field,
+        _ => unreachable!(),
+    };
     // `sh == 1` with `imm3:imm2 == 0` is the SEE alias to the 16-bit form,
     // which never shifts.
     if sh && shift == 0 {
@@ -3527,9 +3535,10 @@ mod tests {
                 shift: 2,
             })
         );
-        // usat r2, #8, r3, lsl #2 -> f383 0287.
+        // usat r2, #8, r3, lsl #2 -> f383 0288: `USAT` stores the imm
+        // directly, so `sat_imm` = 8.
         assert_eq!(
-            v7m_bytes([0x83, 0xf3, 0x87, 0x02]),
+            v7m_bytes([0x83, 0xf3, 0x88, 0x02]),
             Ok(Inst32::Sat {
                 op: SatOp::Usat,
                 rd: 2,
@@ -3551,9 +3560,9 @@ mod tests {
                 shift: 0,
             })
         );
-        // usat16 r6, #4, r7 -> f3a7 0603.
+        // usat16 r6, #4, r7 -> f3a7 0604.
         assert_eq!(
-            v7m_bytes([0xa7, 0xf3, 0x03, 0x06]),
+            v7m_bytes([0xa7, 0xf3, 0x04, 0x06]),
             Ok(Inst32::Sat {
                 op: SatOp::Usat16,
                 rd: 6,

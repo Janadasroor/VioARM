@@ -1661,10 +1661,14 @@ impl<B: PeripheralBus> Core<B> {
                     SatOp::Ssat16 | SatOp::Usat16 => {
                         let signed = op == SatOp::Ssat16;
                         let lane = |hw: u32| {
+                            let s = i64::from(hw as u16 as i16);
                             if signed {
-                                signed_sat(i64::from(hw as u16 as i16), sat_n)
+                                signed_sat(s, sat_n)
                             } else {
-                                unsigned_sat(i64::from(hw & 0xFFFF), sat_n)
+                                // `USAT16` saturates a *signed* halfword into
+                                // the unsigned range `[0, 2^sat_n - 1]`, so a
+                                // negative halfword clamps to zero.
+                                unsigned_sat(s, sat_n)
                             }
                         };
                         let (lo, sat_lo) = lane(v);
@@ -3995,16 +3999,16 @@ mod tests {
         let mut c = armv7m_core();
         c.regs.pc = 0x2000_0000;
         c.regs.write(3, 0x40);
-        load_inst(&mut c, 0x2000_0000, &[0x83, 0xf3, 0x87, 0x02]);
+        load_inst(&mut c, 0x2000_0000, &[0x83, 0xf3, 0x88, 0x02]);
         c.step().unwrap();
         assert_eq!(c.regs.r[2], 0xff);
         assert!(c.xpsr.q());
 
-        // usat r2, #8, r3 (f383 2007): a negative value clamps to 0.
+        // usat r2, #8, r3 (f383 2208): a negative value clamps to 0.
         let mut c = armv7m_core();
         c.regs.pc = 0x2000_0000;
         c.regs.write(3, 0xffff_ffff);
-        load_inst(&mut c, 0x2000_0000, &[0x83, 0xf3, 0x07, 0x20]);
+        load_inst(&mut c, 0x2000_0000, &[0x83, 0xf3, 0x08, 0x22]);
         c.step().unwrap();
         assert_eq!(c.regs.r[2], 0);
         assert!(c.xpsr.q());
@@ -4019,12 +4023,12 @@ mod tests {
         assert_eq!(c.regs.r[0], 0xff80_007f);
         assert!(c.xpsr.q());
 
-        // usat16 r0, #4, r1 (f3a1 0003): hi half 0x0010 clamps to 15, the
+        // usat16 r0, #4, r1 (f3a1 0004): hi half 0x0010 clamps to 15, the
         // low half 0x000f fits.
         let mut c = armv7m_core();
         c.regs.pc = 0x2000_0000;
         c.regs.write(1, 0x0010_000f);
-        load_inst(&mut c, 0x2000_0000, &[0xa1, 0xf3, 0x03, 0x00]);
+        load_inst(&mut c, 0x2000_0000, &[0xa1, 0xf3, 0x04, 0x00]);
         c.step().unwrap();
         assert_eq!(c.regs.r[0], 0x000f_000f);
         assert!(c.xpsr.q());
