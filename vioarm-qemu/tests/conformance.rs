@@ -145,6 +145,57 @@ fn alu_flags() {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn loadstore_index() {
+    let Some(mt) = qemu() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+
+    // Base plus distinct bytes at each offset so every load is observable.
+    a.mov_imm32(4, 0x2000_0000); // r4 = SRAM base
+    a.mov_imm32(0, 0xAA01_2345);
+    a.mov_imm32(1, 0xBB11_3456);
+    a.mov_imm32(2, 0xCC22_4567);
+    a.mov_imm32(3, 0xDD33_5678);
+    a.str_wide(0, 4, 0);
+    a.str_wide(1, 4, 4);
+    a.str_wide(2, 4, 8);
+    a.str_wide(3, 4, 12);
+
+    // Pre-indexed forms (P=1 U=1 W=1): load/store then write back the address.
+    a.ldr_pre(5, 4, 4); // r5 = [r4+4]; r4 = r4+4
+    a.str_pre(0, 4, 8); // [r4+8] = r0; r4 = r4+8
+    a.ldr_pre(6, 4, 4); // r6 = [r4+4]; r4 = r4+4
+    a.str_pre(1, 4, 0); // [r4] = r1; r4 = r4
+
+    // Post-indexed forms (P=0 U=1 W=1): load/store then add the offset.
+    a.ldr_post(7, 4, 4); // r7 = [r4]; r4 = r4+4
+    a.str_post(2, 4, 8); // [r4] = r2; r4 = r4+8
+    a.ldr_post(8, 4, 4); // r8 = [r4]; r4 = r4+4
+    a.str_post(3, 4, 0); // [r4] = r3; r4 = r4
+
+    // Unprivileged forms (P=1 U=1 W=0): no write back.
+    a.ldrt(9, 4, 4); // r9 = [r4+4]
+    a.strt(3, 4, 8); // [r4+8] = r3
+    a.ldrt(0, 4, 8); // r0 = [r4+8]
+
+    // Wide register-offset form: LDR.W Rt, [Rn, Rm, LSL #shift].
+    a.mov_imm32(1, 2); // r1 = 2 (index)
+    a.ldr_reg_wide(2, 4, 1, 2); // r2 = [r4 + 2<<2] = [r4+8]
+    a.ldr_reg_wide(3, 4, 1, 1); // r3 = [r4 + 2<<1] = [r4+4]
+    a.mov_imm32(4, 0x2000_0000); // back to base
+    a.ldr_wide(1, 4, 4); // pre-indexed str_pre target
+    a.ldr_wide(2, 4, 8); // strt target
+    a.ldr_wide(3, 4, 12); // str_post target
+    a.ldr_wide(0, 4, 8);
+
+    a.label("halt");
+    a.b("halt");
+    conformance("loadstore_index", &mut a, "halt", &mt);
+}
+
+// ---------------------------------------------------------------------------
+
+#[test]
 fn memory() {
     let Some(mt) = qemu() else { return };
     let mut a = Asm::new();

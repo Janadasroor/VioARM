@@ -580,10 +580,9 @@ impl Asm {
         self.raw32(hi as u32 | (lo as u32) << 16);
     }
 
-    /// `LDR Rt, [Rn, #imm8]` (offset form, P=1 U=1 W=0 — the unprivileged
-    /// `LDRT`).
+    /// `LDR Rt, [Rn, #imm8]!` (pre-indexed, P=1 U=1 W=1).
     pub fn ldr_pre(&mut self, rt: u8, rn: u8, imm8: u8) {
-        self.mem_imm8(MemAccess::Ldr, rt, rn, 0b110, imm8);
+        self.mem_imm8(MemAccess::Ldr, rt, rn, 0b111, imm8);
     }
     /// `STR Rt, [Rn, #imm8]!` (pre-indexed, P=1 U=1 W=1).
     pub fn str_pre(&mut self, rt: u8, rn: u8, imm8: u8) {
@@ -592,6 +591,10 @@ impl Asm {
     /// `LDR Rt, [Rn], #imm8` (post-indexed, P=0 U=1 W=1).
     pub fn ldr_post(&mut self, rt: u8, rn: u8, imm8: u8) {
         self.mem_imm8(MemAccess::Ldr, rt, rn, 0b011, imm8);
+    }
+    /// `STR Rt, [Rn], #imm8` (post-indexed, P=0 U=1 W=1).
+    pub fn str_post(&mut self, rt: u8, rn: u8, imm8: u8) {
+        self.mem_imm8(MemAccess::Str, rt, rn, 0b011, imm8);
     }
     /// `STRT Rt, [Rn, #imm8]` (unprivileged, P=1 U=1 W=0).
     pub fn strt(&mut self, rt: u8, rn: u8, imm8: u8) {
@@ -605,8 +608,8 @@ impl Asm {
     /// Register-offset wide form: `LDR.W Rt, [Rn, Rm, LSL #shift]`.
     pub fn ldr_reg_wide(&mut self, rt: u8, rn: u8, rm: u8, shift_lsl: u8) {
         let hi = Self::mem_hi(MemAccess::Ldr) | u16::from(rn);
-        // Second halfword: `Rt 000000 shimm Rm` (shimm = shift/2).
-        let lo = u16::from(rt) << 12 | u16::from(shift_lsl / 2) << 4 | u16::from(rm);
+        // Second halfword: `Rt 000000 shimm Rm` (shimm = the shift itself).
+        let lo = u16::from(rt) << 12 | u16::from(shift_lsl) << 4 | u16::from(rm);
         self.raw32(hi as u32 | (lo as u32) << 16);
     }
 
