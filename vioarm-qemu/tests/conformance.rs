@@ -463,6 +463,28 @@ fn exclusive() {
     a.strexh(5, 1, 9); // success r5 = 0
     a.ldrh_wide(3, 9, 0); // r3 = 0xCCDD
 
+    // CLREX clears the local monitor: a STREX immediately after must fail
+    // and must not store, even at the same address that was just tagged.
+    a.ldrex(3, 4, 0); // tag [r4]
+    a.clrex(); // clear the monitor
+    a.strex(5, 1, 4, 0); // r5 = 1, [r4] unchanged
+    a.ldr_imm(7, 4, 0); // [r4] still 0xAABBCCDD
+    a.dmb();
+    // A fresh LDREX re-tags and the store succeeds again.
+    a.ldrex(3, 4, 0);
+    a.strex(5, 1, 4, 0); // r5 = 0, [r4] = 0xAABBCCDD
+    a.dsb();
+
+    // Barriers are architectural no-ops: the register file must be untouched
+    // across a DMB/DSB/ISB run (verify by summing r1+r7 into r0, which must
+    // round-trip unchanged through the barriers).
+    a.adds_reg(0, 1, 7); // r0 = r1 + r7
+    a.dmb();
+    a.dsb();
+    a.isb();
+    a.adds_wide(6, 0, 0); // r6 = r0 (same value through barriers)
+    a.dmb();
+
     a.label("halt");
     a.b("halt");
     conformance("exclusive", &mut a, "halt", &mt);

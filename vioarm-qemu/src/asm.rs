@@ -891,13 +891,16 @@ impl Asm {
     }
 
     pub fn dmb(&mut self) {
-        self.raw32(0xF3BF_8F5F);
+        self.raw32(0x8F5F_F3BF);
     }
     pub fn dsb(&mut self) {
-        self.raw32(0xF3BF_8F4F);
+        self.raw32(0x8F4F_F3BF);
     }
     pub fn isb(&mut self) {
-        self.raw32(0xF3BF_8F6F);
+        self.raw32(0x8F6F_F3BF);
+    }
+    pub fn clrex(&mut self) {
+        self.raw32(0x8F2F_F3BF);
     }
 
     // ------------------------------ exclusive ------------------------------
