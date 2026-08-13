@@ -897,3 +897,74 @@ fn par_m4() {
     a.b("halt");
     conformance("par_m4", &mut a, "halt", &mt);
 }
+
+// ---------------------------------------------------------------------------
+// Extend family: the Thumb-1 `SXTH/SXTB/UXTH/UXTB` and `REV/REV16/REVSH` narrow
+// unary forms, exercised against rotation `ROR #rot*8` of the 32-bit
+// `SXTAH/UXTAH/SXTAB16/UXTAB16/SXTAB/UXTAB` (extend + add) forms across all
+// four rotations. Rotation 0 also re-checks the alias-free versions already
+// sampled by `thumb2_dp`, but with different operands. The `SXTAB16/UXTAB16`
+// pair are DSP-extension instructions that fault on the M3 board, so the whole
+// family runs on the M4 reference machine.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn extend() {
+    let Some(mt) = qemu_m4() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+
+    // byte/halfword patterns with mixed signs, plus an addend with distinct
+    // top/bottom halves to expose per-halfword (b16) behavior.
+    a.mov_imm32(0, 0x8012_7FFE); // bytes -128 +18 +127 -2
+    a.mov_imm32(1, 0x0123_4567); // bytes +1 +35 +69 +103
+    a.mov_imm32(2, 0xFFFF_8000); // halfwords -1 -32768
+
+    // narrow unary reverse
+    a.rev(5, 0);
+    a.rev16(6, 0);
+    a.revsh(7, 0);
+    a.rev(8, 1);
+    a.rev16(9, 1);
+    a.revsh(10, 1);
+
+    // narrow unary sign/zero extend
+    a.sxth(5, 0);
+    a.sxtb(6, 0);
+    a.uxth(7, 0);
+    a.uxtb(8, 0);
+    a.sxth(5, 1);
+    a.sxtb(6, 1);
+    a.uxth(7, 1);
+    a.uxtb(8, 1);
+
+    // extend + add across all four rotations
+    a.sxtah(5, 2, 0, 0);
+    a.sxtah(6, 2, 0, 1);
+    a.sxtah(7, 2, 0, 2);
+    a.sxtah(8, 2, 0, 3);
+    a.uxtah(5, 2, 0, 0);
+    a.uxtah(6, 2, 0, 1);
+    a.uxtah(7, 2, 0, 2);
+    a.uxtah(8, 2, 0, 3);
+    a.sxtab16(9, 2, 0, 0);
+    a.sxtab16(10, 2, 0, 1);
+    a.sxtab16(11, 2, 0, 2);
+    a.sxtab16(5, 2, 0, 3);
+    a.uxtab16(6, 2, 0, 0);
+    a.uxtab16(7, 2, 0, 1);
+    a.uxtab16(8, 2, 0, 2);
+    a.uxtab16(9, 2, 0, 3);
+    a.sxtab(10, 2, 0, 0);
+    a.sxtab(11, 2, 0, 1);
+    a.sxtab(5, 2, 0, 2);
+    a.sxtab(6, 2, 0, 3);
+    a.uxtab(7, 2, 0, 0);
+    a.uxtab(8, 2, 0, 1);
+    a.uxtab(9, 2, 0, 2);
+    a.uxtab(10, 2, 0, 3);
+
+    a.label("halt");
+    a.b("halt");
+    conformance("extend", &mut a, "halt", &mt);
+}
