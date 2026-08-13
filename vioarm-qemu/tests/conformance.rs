@@ -894,6 +894,16 @@ fn ldrd_strd() {
     // post-indexed: [r4], then r4 += 8
     a.strd_post(2, 3, 4, 8);
     a.ldrd_post(9, 10, 4, 8);
+    // negative pre/post-indexed: same forms, but the offset is subtracted.
+    // r4 is 0x2000_2020 here after the writebacks above (32+32+8+8).
+    a.mov_imm32(4, 0x2000_2400); // fresh base
+    a.strd_pre_neg(0, 1, 4, 32); // [r4-32], r4 -= 32
+    a.mov_imm32(4, 0x2000_2400);
+    a.ldrd_pre_neg(5, 6, 4, 32); // [r4-32], r4 -= 32
+    a.mov_imm32(4, 0x2000_2420);
+    a.strd_post_neg(2, 3, 4, 16); // [r4], r4 -= 16
+    a.mov_imm32(4, 0x2000_2420);
+    a.ldrd_post_neg(9, 10, 4, 16); // [r4], r4 -= 16
     // writeback base must not overlap the pair: r0:r1 vs r4 is fine; verify
     // r4 advanced by the writebacks while the pair registers kept their data.
     a.mov_imm32(4, 0x2000_2400); // fresh base

@@ -777,38 +777,66 @@ impl Asm {
 
     /// `STRD Rt, Rt2, [Rn, #imm]` / `LDRD` — the imm8 T1 forms. `load`
     /// selects `LDRD`, `index` the pre-indexed (writeback) over the plain
-    /// offset form, `post` the post-indexed form; `imm` is in bytes.
-    fn dual_mem(&mut self, load: bool, rt: u8, rt2: u8, rn: u8, index: bool, post: bool, imm: u8) {
+    /// offset form, `post` the post-indexed form, `negative` the `U == 0`
+    /// subtract form; `imm` is in bytes.
+    fn dual_mem(
+        &mut self,
+        load: bool,
+        rt: u8,
+        rt2: u8,
+        rn: u8,
+        index: bool,
+        post: bool,
+        negative: bool,
+        imm: u8,
+    ) {
         let p = if post { 0 } else { 1 };
         let w = if post || index { 1 } else { 0 };
-        let hi = 0xE840 | p << 8 | 0x80 | w << 5 | u16::from(load) << 4 | u16::from(rn);
+        // Bit 7 (`0x80`) is the `U` bit: set for `+imm`, clear for `-imm`.
+        let hi = 0xE840 | p << 8 | u16::from(!negative) << 7 | w << 5 | u16::from(load) << 4 | u16::from(rn);
         let lo = u16::from(rt) << 12 | u16::from(rt2) << 8 | u16::from(imm >> 2);
         self.raw32(hi as u32 | (lo as u32) << 16);
     }
 
     /// `STRD Rt, Rt2, [Rn, #imm]` (offset form, no writeback).
     pub fn strd(&mut self, rt: u8, rt2: u8, rn: u8, imm: u8) {
-        self.dual_mem(false, rt, rt2, rn, false, false, imm);
+        self.dual_mem(false, rt, rt2, rn, false, false, false, imm);
     }
     /// `LDRD Rt, Rt2, [Rn, #imm]` (offset form; `Rn == 15` is the literal).
     pub fn ldrd(&mut self, rt: u8, rt2: u8, rn: u8, imm: u8) {
-        self.dual_mem(true, rt, rt2, rn, false, false, imm);
+        self.dual_mem(true, rt, rt2, rn, false, false, false, imm);
     }
     /// `STRD Rt, Rt2, [Rn, #imm]!` (pre-indexed with writeback).
     pub fn strd_pre(&mut self, rt: u8, rt2: u8, rn: u8, imm: u8) {
-        self.dual_mem(false, rt, rt2, rn, true, false, imm);
+        self.dual_mem(false, rt, rt2, rn, true, false, false, imm);
     }
     /// `LDRD Rt, Rt2, [Rn, #imm]!` (pre-indexed with writeback).
     pub fn ldrd_pre(&mut self, rt: u8, rt2: u8, rn: u8, imm: u8) {
-        self.dual_mem(true, rt, rt2, rn, true, false, imm);
+        self.dual_mem(true, rt, rt2, rn, true, false, false, imm);
     }
     /// `STRD Rt, Rt2, [Rn], #imm` (post-indexed).
     pub fn strd_post(&mut self, rt: u8, rt2: u8, rn: u8, imm: u8) {
-        self.dual_mem(false, rt, rt2, rn, false, true, imm);
+        self.dual_mem(false, rt, rt2, rn, false, true, false, imm);
     }
     /// `LDRD Rt, Rt2, [Rn], #imm` (post-indexed).
     pub fn ldrd_post(&mut self, rt: u8, rt2: u8, rn: u8, imm: u8) {
-        self.dual_mem(true, rt, rt2, rn, false, true, imm);
+        self.dual_mem(true, rt, rt2, rn, false, true, false, imm);
+    }
+    /// `STRD Rt, Rt2, [Rn, #-imm]!` (negative pre-indexed).
+    pub fn strd_pre_neg(&mut self, rt: u8, rt2: u8, rn: u8, imm: u8) {
+        self.dual_mem(false, rt, rt2, rn, true, false, true, imm);
+    }
+    /// `LDRD Rt, Rt2, [Rn, #-imm]!` (negative pre-indexed).
+    pub fn ldrd_pre_neg(&mut self, rt: u8, rt2: u8, rn: u8, imm: u8) {
+        self.dual_mem(true, rt, rt2, rn, true, false, true, imm);
+    }
+    /// `STRD Rt, Rt2, [Rn], #-imm` (negative post-indexed).
+    pub fn strd_post_neg(&mut self, rt: u8, rt2: u8, rn: u8, imm: u8) {
+        self.dual_mem(false, rt, rt2, rn, false, true, true, imm);
+    }
+    /// `LDRD Rt, Rt2, [Rn], #-imm` (negative post-indexed).
+    pub fn ldrd_post_neg(&mut self, rt: u8, rt2: u8, rn: u8, imm: u8) {
+        self.dual_mem(true, rt, rt2, rn, false, true, true, imm);
     }
 
     pub fn dmb(&mut self) {
