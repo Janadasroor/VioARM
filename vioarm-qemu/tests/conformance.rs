@@ -633,6 +633,50 @@ fn unaligned() {
     conformance("unaligned", &mut a, "halt", &mt);
 }
 
+#[test]
+fn data_faults() {
+    let Some(mt) = qemu() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+
+    // Reads and writes to an unmapped address raise a (Hard)Fault; reads and
+    // writes inside the mapped flash/SRAM regions must not. Each faulting
+    // case runs into the shared handler, which skips the 2-byte access using
+    // the stacked r12 skip hint (r12 is one of the eight stacked registers).
+    a.vec(3, "hf");
+    a.mov_imm32(0, 0x1122_3344);
+
+    // Reserved read -> fault.
+    a.mov_imm32(5, 0x9000_0000);
+    a.mov_imm32(12, 2);
+    a.ldr_imm(1, 5, 0);
+    // Reserved write -> fault.
+    a.mov_imm32(12, 2);
+    a.str_imm(0, 5, 0);
+    // Flash write is ignored, not a fault (matching mps2-an385).
+    a.mov_imm32(5, 0x0000_0400);
+    a.mov_imm32(12, 2);
+    a.str_imm(0, 5, 0);
+    // Mapping-covered accesses must not fault: SRAM write+read.
+    a.mov_imm32(5, 0x2000_0400);
+    a.mov_imm32(12, 2);
+    a.str_imm(0, 5, 0);
+    a.ldr_imm(1, 5, 0); // r1 = 0x11223344
+    a.movs_imm8(2, 0x99);
+
+    a.label("halt");
+    a.b("halt");
+
+    a.label("hf");
+    a.mov_reg(6, 13); // r6 = frame base
+    a.ldr_wide(7, 6, 24); // r7 = stacked PC (faulting access)
+    a.ldr_wide(8, 6, 16); // r8 = stacked r12 (skip bytes)
+    a.adds_wide(7, 7, 8); // r7 += r12
+    a.str_imm(7, 6, 24); // patch stacked PC
+    a.bx(14);
+    conformance("data_faults", &mut a, "halt", &mt);
+}
+
 // ---------------------------------------------------------------------------
 // Faults: an undefined instruction (0xDE00, permanently-undefined) escalates
 
