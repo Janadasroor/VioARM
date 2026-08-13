@@ -34,6 +34,14 @@ enum Item {
     LdrLit { rt: u8, target: String },
     /// `LDRD Rt, Rt2, [PC, #imm]` against the literal pool at `target`.
     LdrdLit { rt: u8, rt2: u8, target: String },
+    /// T32 wide `LDR* Rt, [PC, #±imm]` against the literal at `target`; `neg`
+    /// clears the `U` bit for a subtract. `access` selects the width/sign.
+    MemLit {
+        access: MemAccess,
+        rt: u8,
+        neg: bool,
+        target: String,
+    },
     /// Pad with `NOP` (2 bytes each) up to a 4-byte boundary.
     PadTo4,
     DcU32(u32),
@@ -44,7 +52,8 @@ fn size_of(item: &Item) -> u32 {
         Item::Label(_) => 0,
         Item::H2(_) => 2,
         Item::H4(_) => 4,
-        Item::B { .. } | Item::Bl { .. } | Item::BcWide { .. } | Item::LdrdLit { .. } => 4,
+        Item::B { .. } | Item::Bl { .. } | Item::BcWide { .. } | Item::LdrdLit { .. }
+        | Item::MemLit { .. } => 4,
         Item::Bc { .. } | Item::Cbz { .. } | Item::LdrLit { .. } => 2,
         Item::PadTo4 | Item::DcU32(_) => 4,
     }
@@ -472,6 +481,48 @@ impl Asm {
             rt2,
             target: target.into(),
         });
+    }
+
+    /// T32-wide PC-relative literal `LDR* Rt, [PC, #±imm12]` against the
+    /// literal at `target`. The offset is in bytes (must be 4-aligned and
+    /// within ±4095); `neg` selects `[PC, #-imm]` (`U == 0`).
+    fn mem_lit(&mut self, access: MemAccess, rt: u8, neg: bool, target: impl Into<String>) {
+        self.emit(Item::MemLit {
+            access,
+            rt,
+            neg,
+            target: target.into(),
+        });
+    }
+    pub fn ldr_lit_wide(&mut self, rt: u8, target: impl Into<String>) {
+        self.mem_lit(MemAccess::Ldr, rt, false, target);
+    }
+    pub fn ldrb_lit_wide(&mut self, rt: u8, target: impl Into<String>) {
+        self.mem_lit(MemAccess::Ldrb, rt, false, target);
+    }
+    pub fn ldrh_lit_wide(&mut self, rt: u8, target: impl Into<String>) {
+        self.mem_lit(MemAccess::Ldrh, rt, false, target);
+    }
+    pub fn ldrsb_lit_wide(&mut self, rt: u8, target: impl Into<String>) {
+        self.mem_lit(MemAccess::Ldrsb, rt, false, target);
+    }
+    pub fn ldrsh_lit_wide(&mut self, rt: u8, target: impl Into<String>) {
+        self.mem_lit(MemAccess::Ldrsh, rt, false, target);
+    }
+    pub fn ldr_lit_neg(&mut self, rt: u8, target: impl Into<String>) {
+        self.mem_lit(MemAccess::Ldr, rt, true, target);
+    }
+    pub fn ldrb_lit_neg(&mut self, rt: u8, target: impl Into<String>) {
+        self.mem_lit(MemAccess::Ldrb, rt, true, target);
+    }
+    pub fn ldrh_lit_neg(&mut self, rt: u8, target: impl Into<String>) {
+        self.mem_lit(MemAccess::Ldrh, rt, true, target);
+    }
+    pub fn ldrsb_lit_neg(&mut self, rt: u8, target: impl Into<String>) {
+        self.mem_lit(MemAccess::Ldrsb, rt, true, target);
+    }
+    pub fn ldrsh_lit_neg(&mut self, rt: u8, target: impl Into<String>) {
+        self.mem_lit(MemAccess::Ldrsh, rt, true, target);
     }
 
     /// Register-offset load/store; `kind` is the 3-bit `LsReg` selector
@@ -1530,6 +1581,32 @@ impl Asm {
                     }
                     let hi = 0xE9DF; // LDRD Rt,Rt2,[pc,#imm], P=1 U=1 L=1 W=0, rn=15
                     let lo = u16::from(*rt) << 12 | u16::from(*rt2) << 8 | (off / 4) as u16;
+                    let bytes = [hi as u8, (hi >> 8) as u8, lo as u8, (lo >> 8) as u8];
+                    emit(&mut cur, &bytes);
+                }
+                Item::MemLit {
+                    access,
+                    rt,
+                    neg,
+                    target,
+                } => {
+                    let t = labels
+                        .get(target)
+                        .copied()
+                        .ok_or_else(|| format!("undefined label {target:?}"))?;
+                    let base = (cur + 4) & !3;
+                    let off = i64::from(t) - i64::from(base);
+                    let mag = off.abs();
+                    if mag > 0xFFF || off.abs() % 4 != 0 {
+                        return Err(format!(
+                            "literal to {target:?} out of range (off {off})"
+                        ));
+                    }
+                    if *neg && off > 0 || !*neg && off < 0 {
+                        return Err(format!("literal {target:?} on wrong side of the load"));
+                    }
+                    let hi = Self::mem_hi(*access) | u16::from(!*neg) << 7 | 0x000F;
+                    let lo = u16::from(*rt) << 12 | mag as u16;
                     let bytes = [hi as u8, (hi >> 8) as u8, lo as u8, (lo >> 8) as u8];
                     emit(&mut cur, &bytes);
                 }

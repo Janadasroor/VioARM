@@ -1069,7 +1069,9 @@ fn decode_mem(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
             off: u32::from(lo & 0xFFF),
             rm: None,
             shift: 0,
-            add: true,
+            // The literal form's `U` bit is bit 7 of the first halfword
+            // (`0xF8DF` adds, `0xF85F` subtracts).
+            add: hi & 0x80 != 0,
             index: true,
             writeback: false,
             unprivileged: false,
@@ -2299,6 +2301,17 @@ mod tests {
         assert_eq!(
             v7m_bytes([0xbf, 0xf8, 0x04, 0x50]),
             Ok(mem(MemOp::Ldrh, 5, 15, 4, true, true, false))
+        );
+        // ldr.w r4, [pc, #-8] -> f85f 4008: the literal `U` bit (bit 7 of the
+        // first halfword) is clear, so `add` is false.
+        assert_eq!(
+            v7m_bytes([0x5f, 0xf8, 0x08, 0x40]),
+            Ok(mem(MemOp::Ldr, 4, 15, 8, false, true, false))
+        );
+        // ldrb.w r2, [pc, #-4] -> f81f 2004: negative byte literal.
+        assert_eq!(
+            v7m_bytes([0x1f, 0xf8, 0x04, 0x20]),
+            Ok(mem(MemOp::Ldrb, 2, 15, 4, false, true, false))
         );
         // ldrsb.w r9, [r6, #-1] -> f916 9c01 (imm8 offset, subtract).
         assert_eq!(

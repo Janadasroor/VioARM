@@ -311,6 +311,49 @@ fn loadstore_neg() {
     a.ldrsb_post_neg(6, 4, 4); // r6 = sext(byte[8]) = sext(0xEF0F) ... ; r4 = 0x2000_0004
     a.ldrsh_pre_neg(7, 4, 4); // r7 = sext(hword[4]) = 0x0061 ; r4 = 0x2000_0000
 
+    // T32 PC-relative literals with negative offsets (pool placed before the
+    // loads, so `U == 0`). The imm12 offset is absolute bytes from the
+    // 4-aligned literal base, so every slot is 4-aligned even for narrow loads.
+    a.b("past_pool");
+    a.align4();
+    a.label("litpool"); // +0: word slot
+    a.dc_u32(0x3344_5566);
+    a.label("litpool4"); // +4: byte slot (LE low byte 0x99)
+    a.dc_u32(0x7700_8899);
+    a.label("litpool8"); // +8: hword slot (LE value 0xCCDD)
+    a.dc_u32(0xAABB_CCDD);
+    a.label("litpool12"); // +12: dword slot
+    a.dc_u32(0xEEFF_0011);
+    a.label("litpool16"); // +16: another word
+    a.dc_u32(0x8899_AABB);
+    a.label("past_pool");
+    a.ldr_lit_neg(0, "litpool"); // r0 = word = 0x33445566
+    a.ldrb_lit_neg(1, "litpool4"); // r1 = byte[+4] = 0x99
+    a.ldrsb_lit_neg(2, "litpool4"); // r2 = sext(byte[+4]) = 0x99
+    a.ldrh_lit_neg(3, "litpool8"); // r3 = hword[+8] = 0xCCDD
+    a.ldrsh_lit_neg(4, "litpool8"); // r4 = sext(hword[+8]) = 0xFFFFCCDD
+    a.ldr_lit_neg(5, "litpool12"); // r5 = word = 0xEEFF0011
+    a.ldrsh_lit_neg(6, "litpool16"); // r6 = sext(hword[+16]) = 0xFFFFAABB
+    // Positive literal with the pool after the loads (`U == 1`).
+    a.ldr_lit_wide(7, "pospool");
+    a.ldrb_lit_wide(8, "pospool4");
+    a.ldrsb_lit_wide(9, "pospool8");
+    a.ldrh_lit_wide(8, "pospool12");
+    a.ldrsh_lit_wide(9, "pospool16");
+    a.b("past_pospool");
+    a.align4();
+    a.label("pospool"); // +0: word slot
+    a.dc_u32(0x0102_0304);
+    a.label("pospool4"); // +4: byte slot (LE low byte 0x00)
+    a.dc_u32(0x80FF_FF00);
+    a.label("pospool8"); // +8: hword slot (LE value 0x00FF)
+    a.dc_u32(0x7FF0_00FF);
+    a.label("pospool12"); // +12: dword slot
+    a.dc_u32(0x1122_3344);
+    a.label("pospool16"); // +16: another word
+    a.dc_u32(0x7765_5443);
+    a.label("past_pospool");
+
     a.label("halt");
     a.b("halt");
     conformance("loadstore_neg", &mut a, "halt", &mt);
