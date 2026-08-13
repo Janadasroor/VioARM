@@ -1101,6 +1101,90 @@ impl Asm {
         self.par(0xA, 0x8, rd, rn, rm);
     }
 
+    // 16-bit add, ASX/SAX, and byte/halfword sub families: Q/SH/U/UQ/UH are the
+    // relabeled `S` selector modes of the same encoding.
+    pub fn qadd16(&mut self, rd: u8, rn: u8, rm: u8) {
+        self.par(0x9, 0x1, rd, rn, rm);
+    }
+    pub fn shadd16(&mut self, rd: u8, rn: u8, rm: u8) {
+        self.par(0x9, 0x2, rd, rn, rm);
+    }
+    pub fn uadd16(&mut self, rd: u8, rn: u8, rm: u8) {
+        self.par(0x9, 0x4, rd, rn, rm);
+    }
+    pub fn uqadd16(&mut self, rd: u8, rn: u8, rm: u8) {
+        self.par(0x9, 0x5, rd, rn, rm);
+    }
+    pub fn uhadd16(&mut self, rd: u8, rn: u8, rm: u8) {
+        self.par(0x9, 0x6, rd, rn, rm);
+    }
+    pub fn qasx(&mut self, rd: u8, rn: u8, rm: u8) {
+        self.par(0xA, 0x1, rd, rn, rm);
+    }
+    pub fn shasx(&mut self, rd: u8, rn: u8, rm: u8) {
+        self.par(0xA, 0x2, rd, rn, rm);
+    }
+    pub fn uasx(&mut self, rd: u8, rn: u8, rm: u8) {
+        self.par(0xA, 0x4, rd, rn, rm);
+    }
+    pub fn uqasx(&mut self, rd: u8, rn: u8, rm: u8) {
+        self.par(0xA, 0x5, rd, rn, rm);
+    }
+    pub fn uhasx(&mut self, rd: u8, rn: u8, rm: u8) {
+        self.par(0xA, 0x6, rd, rn, rm);
+    }
+    pub fn ssub8(&mut self, rd: u8, rn: u8, rm: u8) {
+        self.par(0xC, 0x0, rd, rn, rm);
+    }
+    pub fn qsub8(&mut self, rd: u8, rn: u8, rm: u8) {
+        self.par(0xC, 0x1, rd, rn, rm);
+    }
+    pub fn shsub8(&mut self, rd: u8, rn: u8, rm: u8) {
+        self.par(0xC, 0x2, rd, rn, rm);
+    }
+    pub fn usub8(&mut self, rd: u8, rn: u8, rm: u8) {
+        self.par(0xC, 0x4, rd, rn, rm);
+    }
+    pub fn uqsub8(&mut self, rd: u8, rn: u8, rm: u8) {
+        self.par(0xC, 0x5, rd, rn, rm);
+    }
+    pub fn uhsub8(&mut self, rd: u8, rn: u8, rm: u8) {
+        self.par(0xC, 0x6, rd, rn, rm);
+    }
+    pub fn ssub16(&mut self, rd: u8, rn: u8, rm: u8) {
+        self.par(0xD, 0x0, rd, rn, rm);
+    }
+    pub fn qsub16(&mut self, rd: u8, rn: u8, rm: u8) {
+        self.par(0xD, 0x1, rd, rn, rm);
+    }
+    pub fn shsub16(&mut self, rd: u8, rn: u8, rm: u8) {
+        self.par(0xD, 0x2, rd, rn, rm);
+    }
+    pub fn usub16(&mut self, rd: u8, rn: u8, rm: u8) {
+        self.par(0xD, 0x4, rd, rn, rm);
+    }
+    pub fn uqsub16(&mut self, rd: u8, rn: u8, rm: u8) {
+        self.par(0xD, 0x5, rd, rn, rm);
+    }
+    pub fn uhsub16(&mut self, rd: u8, rn: u8, rm: u8) {
+        self.par(0xD, 0x6, rd, rn, rm);
+    }
+    pub fn qsax(&mut self, rd: u8, rn: u8, rm: u8) {
+        self.par(0xE, 0x1, rd, rn, rm);
+    }
+    pub fn shsax(&mut self, rd: u8, rn: u8, rm: u8) {
+        self.par(0xE, 0x2, rd, rn, rm);
+    }
+    pub fn usax(&mut self, rd: u8, rn: u8, rm: u8) {
+        self.par(0xE, 0x4, rd, rn, rm);
+    }
+    pub fn uqsax(&mut self, rd: u8, rn: u8, rm: u8) {
+        self.par(0xE, 0x5, rd, rn, rm);
+    }
+    pub fn uhsax(&mut self, rd: u8, rn: u8, rm: u8) {
+        self.par(0xE, 0x6, rd, rn, rm);
+    }
+
     // -------------------------------- finish --------------------------------
 
     /// Lay out the program, resolve all labels and branch/literal immediates,

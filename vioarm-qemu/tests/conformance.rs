@@ -815,3 +815,85 @@ fn dsp_m4() {
     a.b("halt");
     conformance("dsp_m4", &mut a, "halt", &mt);
 }
+
+// ---------------------------------------------------------------------------
+// Parallel add/subtract family (ARMv7E-M): SADD8/SSUB8/SADD16/SSUB16/SASX/SSAX
+// in every packing (S/U/Q/SH/UQ/UH) plus the GE-driven byte `SEL`. The signed
+// `S` and unsigned `U` forms write the per-lane GE bits of APSR (which the
+// snapshot compares via xPSR[19:16]); the saturating and halving forms must
+// leave GE alone. Runs on the M4 reference machine.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn par_m4() {
+    let Some(mt) = qemu_m4() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+
+    // byte operands with mixed signs (+128..-128 extremes), halfword operands
+    // with mixed signs, and all-identical magnitudes to force out-of-range
+    // sums/subtracts.
+    a.mov_imm32(0, 0x8081_7F80); // bytes: -128 -127 +127 -128
+    a.mov_imm32(1, 0x0102_0001); // bytes: +1 +2 0 +1
+    a.mov_imm32(2, 0x0002_0001); // halfwords: +2 +1
+    a.mov_imm32(3, 0x7FFF_FFFF); // halfwords: +32767 -1
+    a.mov_imm32(4, 0x7F7F_7F7F); // all +127 / +32639
+    a.mov_imm32(5, 0x8080_8080); // all -128 / -32512
+    a.mov_imm32(6, 0xFFFF_FFFF); // all -1 / max unsigned
+    a.mov_imm32(7, 0x0000_0001);
+
+    // GE-setting byte adds/subs (S and U modes)
+    a.sadd8(8, 0, 1);
+    a.ssub8(9, 0, 1);
+    a.uadd8(10, 0, 6);
+    a.usub8(11, 0, 1);
+    a.sel(8, 0, 1); // byte-select on GE left by usub8
+
+    // GE-setting halfword add/sub/swap families
+    a.sadd16(9, 2, 3);
+    a.ssub16(10, 2, 3);
+    a.sasx(11, 2, 3);
+    a.ssax(8, 2, 3);
+    a.uadd16(9, 2, 6);
+    a.usub16(10, 2, 3);
+    a.uasx(11, 2, 3);
+    a.usax(9, 2, 3);
+    a.sel(10, 0, 1);
+
+    // saturating add/sub (may light Q, must leave GE alone)
+    a.qadd8(11, 4, 4); // 127+127 lanes saturate
+    a.qadd16(8, 4, 6);
+    a.qsub8(9, 5, 5); // -128 - -128 == 0
+    a.qsub16(10, 4, 4);
+    a.qasx(11, 3, 5);
+    a.qsax(8, 2, 6);
+    a.sel(9, 0, 1); // GE untouched by the Q ops
+
+    // signed halving add/sub
+    a.shadd8(10, 4, 4);
+    a.shadd16(11, 2, 3);
+    a.shsub8(8, 4, 4);
+    a.shsub16(9, 2, 3);
+    a.shasx(10, 2, 3);
+    a.shsax(11, 2, 3);
+
+    // unsigned saturating add/sub
+    a.uqadd8(8, 6, 1);
+    a.uqadd16(9, 2, 6);
+    a.uqsub8(10, 6, 1);
+    a.uqsub16(11, 2, 3);
+    a.uqasx(8, 2, 6);
+    a.uqsax(9, 2, 6);
+
+    // unsigned halving add/sub
+    a.uhadd8(10, 4, 4);
+    a.uhadd16(11, 2, 3);
+    a.uhsub8(8, 4, 4);
+    a.uhsub16(9, 2, 3);
+    a.uhasx(10, 2, 3);
+    a.uhsax(11, 2, 3);
+
+    a.label("halt");
+    a.b("halt");
+    conformance("par_m4", &mut a, "halt", &mt);
+}
