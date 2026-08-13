@@ -580,13 +580,61 @@ fn exceptions() {
     conformance("exceptions", &mut a, "halt", &mt);
 }
 
+#[test]
+fn unaligned() {
+    let Some(mt) = qemu() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+
+    // ARMv7-M requires LDM/STM/LDRD/STRD to be word-aligned. An unaligned
+    // base on any of them is an alignment UsageFault (escalated to HardFault
+    // on this machine). Each case sets r12 = skip-bytes before faulting; the
+    // shared handler reads r12 and the stacked PC off the frame (r12 is one
+    // of the eight stacked registers), patches the PC past the faulting
+    // instruction, and returns.
+    a.vec(3, "hf");
+    a.mov_imm32(4, 0x2000_0002); // misaligned base
+    a.mov_imm32(0, 0x1122_3344);
+    a.mov_imm32(1, 0xAABB_CCDD);
+
+    // 16-bit STMIA r4! at a misaligned base.
+    a.mov_imm32(12, 2);
+    a.stmia(4, 0b0000_0011); // {r0,r1} @ 0x20000002 -> fault
+    a.mov_imm32(12, 4);
+    a.stm_wide(4, false, false, 0b0000_0011); // T32 STM @ misaligned -> fault
+    a.mov_imm32(12, 4);
+    a.strd(0, 1, 4, 4); // STRD r0,r1, [r4] @ misaligned -> fault
+    a.mov_imm32(12, 2);
+    a.ldmia(4, 0b0000_0011); // LDMIA r4!, {r0,r1} @ misaligned -> fault
+    a.mov_imm32(12, 4);
+    a.ldm_wide(4, false, false, 0b0000_0011); // T32 LDM @ misaligned -> fault
+    a.mov_imm32(12, 4);
+    a.ldrd(0, 1, 4, 4); // LDRD r0,r1, [r4] @ misaligned -> fault
+
+    // Aligned controls must NOT fault.
+    a.mov_imm32(5, 0x2000_0020);
+    a.stmia(5, 0b0000_0011); // ok
+    a.ldmia(5, 0b0000_0011); // ok
+    a.strd(0, 1, 5, 4); // ok
+    a.ldrd(0, 1, 5, 4); // ok
+    a.addw(12, 5, 8); // r12 = past the aligned transfers, a non-trivial marker
+
+    a.label("halt");
+    a.b("halt");
+
+    // Shared handler: patch the stacked PC past the faulting instruction.
+    a.label("hf");
+    a.mov_reg(6, 13); // r6 = frame base
+    a.ldr_wide(7, 6, 24); // r7 = stacked PC (faulting instruction)
+    a.ldr_wide(8, 6, 16); // r8 = stacked r12 (skip bytes)
+    a.adds_wide(7, 7, 8); // r7 += r12
+    a.str_imm(7, 6, 24); // patch stacked PC
+    a.bx(14);
+    conformance("unaligned", &mut a, "halt", &mt);
+}
+
 // ---------------------------------------------------------------------------
 // Faults: an undefined instruction (0xDE00, permanently-undefined) escalates
-// through UsageFault to HardFault (vector 3). The handler reads the eight-word
-// frame (stacked PC / LR / r0 / xPSR), rewrites the stacked PC to skip the bad
-// opcode, and returns via `bx lr`. The stacked PC must be the address of the
-// *faulting* instruction, not the following one.
-// ---------------------------------------------------------------------------
 
 #[test]
 fn faults() {

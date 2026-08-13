@@ -749,6 +749,12 @@ impl<B: PeripheralBus> Core<B> {
             }
             I::LdmStm { is_load, rn, regs } => {
                 let base = self.regs.read(rn);
+                // Thumb-1 LDM/STM require the base to be word-aligned; an
+                // unaligned address is an alignment UsageFault (escalates to
+                // HardFault here, per ARMv6-M folding), not a silent transfer.
+                if base & 3 != 0 {
+                    return self.data_fault(base, pc);
+                }
                 let mut addr = base;
                 if is_load {
                     for r in 0..8 {
@@ -1000,6 +1006,12 @@ impl<B: PeripheralBus> Core<B> {
                     base.wrapping_add(4 * words)
                 };
                 let mut addr = if dec_before { wb_addr } else { base };
+                // T32 LDM/STM require a word-aligned address; the
+                // least-significant two bits of the base are ignored for the
+                // transfer, but a non-zero value is an alignment fault.
+                if addr & 3 != 0 {
+                    return self.data_fault(addr, pc);
+                }
                 if is_load {
                     let mut pc_target = None;
                     for r in 0..16 {
@@ -1058,6 +1070,12 @@ impl<B: PeripheralBus> Core<B> {
                     base.wrapping_sub(imm)
                 };
                 let address = if index { offset_addr } else { base };
+                // LDRD/STRD require a word-aligned address (the literal form's
+                // `(pc+4) & !3` base is always aligned); an unaligned access
+                // is an alignment fault.
+                if address & 3 != 0 {
+                    return self.data_fault(address, pc);
+                }
                 if is_load {
                     // The low word lands in `rt`, the high word in `rt2`;
                     // the decoder guarantees they are distinct registers.
@@ -3061,6 +3079,65 @@ mod tests {
         assert_eq!(c.regs.read(0), 0x2000_0200);
         assert_eq!(c.mem().read_word(0x2000_0200).unwrap(), 0xC0FF_EE00);
         assert_eq!(c.mem().read_word(0x2000_0204).unwrap(), 0x00FF_00FF);
+    }
+
+    #[test]
+    fn mem_unaligned_ldm_stm_faults() {
+        use crate::mem::flat::FlatMemory;
+        // A misaligned multiple transfer is an alignment fault, not a silent
+        // transfer. Hard-fault paths for Thumb-1 LDM/STM, T32 LDM/STM, and
+        // LDRD/STRD, plus aligned controls that must not fault.
+        const HF: u32 = 0x2000_0100; // HardFault handler
+        let new = || {
+            let mut c = Core::armv7m(FlatMemory::with_layout(
+                &[0x0000_0000, 0x2000_0000],
+                &[0x1000, 0x1000],
+            ));
+            c.mem().write_word(3 * 4, HF | 1).unwrap(); // vector table in flash
+            c.regs.sp = 0x2000_0800;
+            c.regs.msp = 0x2000_0800;
+            c
+        };
+        let expect_hardfault = |c: &mut Core<FlatMemory>| {
+            assert_eq!(c.ipsr, 3);
+            assert_eq!(c.regs.pc, HF);
+            assert_eq!(c.regs.sp, 0x2000_0800 - 0x20);
+        };
+
+        // Thumb-1 stmia r4!, {r0, r1, r3} (c403) at an unaligned base.
+        let mut c = new();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(4, 0x2000_0002);
+        load_inst(&mut c, 0x2000_0000, &[0x03, 0xc4]);
+        c.step().unwrap();
+        expect_hardfault(&mut c);
+
+        // T32 stm r4, {r0, r1} (e884 0003) at an unaligned base.
+        let mut c = new();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(4, 0x2000_0002);
+        load_inst(&mut c, 0x2000_0000, &[0x84, 0xe8, 0x03, 0x00]);
+        c.step().unwrap();
+        expect_hardfault(&mut c);
+
+        // T32 strd r0, r1, [r4, #4] (e9c4 0101) at an unaligned base.
+        let mut c = new();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(4, 0x2000_0002);
+        load_inst(&mut c, 0x2000_0000, &[0xc4, 0xe9, 0x01, 0x01]);
+        c.step().unwrap();
+        expect_hardfault(&mut c);
+
+        // Aligned controls must not fault: T32 stm r4, {r0, r1}.
+        let mut c = new();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(4, 0x2000_0000);
+        c.regs.write(0, 0xAABB_CCDD);
+        c.regs.write(1, 0x1122_3344);
+        load_inst(&mut c, 0x2000_0000, &[0x84, 0xe8, 0x03, 0x00]);
+        c.step().unwrap();
+        assert_eq!(c.mem().read_word(0x2000_0000).unwrap(), 0xAABB_CCDD);
+        assert_eq!(c.mem().read_word(0x2000_0004).unwrap(), 0x1122_3344);
     }
 
     #[test]
