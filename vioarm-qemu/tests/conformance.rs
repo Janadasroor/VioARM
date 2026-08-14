@@ -598,6 +598,69 @@ fn exceptions() {
 }
 
 // ---------------------------------------------------------------------------
+// An exception taken while the thread runs on the process stack: CONTROL.SPSEL
+// switches the active SP to PSP, so the SVC frame is pushed there; the handler
+// runs on the main stack; `bx lr` returns via EXC_RETURN_THREAD_PSP
+// (0xfffffffd), handing the thread back its PSP with both banks intact.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn svc_on_process_stack() {
+    let Some(mt) = qemu() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+    a.vec(11, "svc_handler"); // SVC vector
+    a.mov_imm32(0, 0x1111_2222);
+    // CONTROL.SPSEL = 1, then give PSP a known value.
+    a.movs_imm8(0, 2); // 0b10: SPSEL
+    a.msr(0x14, 0); // MSR CONTROL, r0
+    a.mov_imm32(0, 0x2000_3ff0); // PSP value
+    a.msr(0x09, 0); // MSR PSP, r0
+    a.mrs(2, 0x09); // r2 = PSP
+    a.mrs(3, 0x08); // r3 = MSP
+    a.svc(0); // taken from Thread mode on the process stack
+    a.mrs(4, 0x09); // r4 = PSP after return
+    a.mrs(5, 0x08); // r5 = MSP after return
+    a.movs_imm8(6, 0xAA);
+    a.b("halt");
+    a.label("svc_handler");
+    a.movs_imm8(7, 0x99); // marker
+    a.bx(14); // return via EXC_RETURN_THREAD_PSP
+    a.label("halt");
+    a.b("halt");
+    conformance("svc_on_process_stack", &mut a, "halt", &mt);
+}
+
+#[test]
+fn hardfault_on_process_stack() {
+    let Some(mt) = qemu() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+    a.vec(3, "hf"); // HardFault vector
+    a.mov_imm32(0, 0x1111_2222);
+    a.movs_imm8(0, 2); // CONTROL.SPSEL = 1
+    a.msr(0x14, 0);
+    a.mov_imm32(0, 0x2000_3ff0); // PSP value
+    a.msr(0x09, 0);
+    a.mrs(2, 0x09); // r2 = PSP
+    a.raw(0xDE00); // UDEF -> HardFault, frame pushed on the process stack
+    a.mrs(3, 0x08); // r3 = MSP after return
+    a.mrs(4, 0x09); // r4 = PSP after return
+    a.movs_imm8(5, 0xAA);
+    a.b("halt");
+    a.label("hf");
+    // Handler runs on the main stack; the frame lives at PSP - 32.
+    a.mov_imm32(6, 0x2000_3fd0); // frame base
+    a.ldr_wide(7, 6, 24); // stacked PC (the UDEF)
+    a.adds_imm8(7, 2); // skip it
+    a.str_imm(7, 6, 24);
+    a.bx(14); // return to process-thread via EXC_RETURN_THREAD_PSP
+    a.label("halt");
+    a.b("halt");
+    conformance("hardfault_on_process_stack", &mut a, "halt", &mt);
+}
+
+// ---------------------------------------------------------------------------
 // A SVC executed while a SVC handler is already active has the same priority
 // as the handler it runs inside, so it cannot preempt it: real ARMv7-M
 // escalates the offending SVC to a UsageFault (folded to HardFault here). The
