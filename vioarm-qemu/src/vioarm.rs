@@ -54,7 +54,14 @@ pub fn run_until_pc(bin: &[u8], stop_pc: u32) -> (Vec<CpuState>, bool) {
     for _ in 0..budget {
         // A halt (undefined instruction, fault, ...) is a divergence finding
         // and must surface as a trace that never reaches the landing loop.
+        // Record the halted state so it can be diffed against QEMU's lockup
+        // frame; a halt that does not advance the PC produces a state identical
+        // to the previous one, which is collapsed exactly like QEMU's parser.
         if m.step().is_err() {
+            let s = snapshot(&m);
+            if states.last() != Some(&s) {
+                states.push(s);
+            }
             return (states, false);
         }
         states.push(snapshot(&m));

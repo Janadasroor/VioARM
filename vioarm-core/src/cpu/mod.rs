@@ -671,6 +671,16 @@ impl<B: PeripheralBus> Core<B> {
                     // the *normal* SVC semantics (the instruction after the
                     // SVC): the SVC itself executes, only its exception entry
                     // cannot be honored.
+                    //
+                    // FAULTMASK is special: it raises the current priority to
+                    // -1, so the escalated HardFault (also priority -1) cannot
+                    // activate at all and the core locks up. The SVC still
+                    // executes (the PC advances past it) before the lockup,
+                    // matching QEMU's halted frame at svc+2.
+                    if self.faultmask {
+                        self.regs.pc = pc.wrapping_add(2);
+                        return Err(HaltCause::UnhandledException);
+                    }
                     self.take_exception(Exception::HardFault, pc + 2)?;
                     return Ok(Next::Advance(self.regs.pc));
                 }
@@ -2114,7 +2124,15 @@ impl<B: PeripheralBus> Core<B> {
         // all priority >= 0), stacking a second frame and returning through
         // it. The interrupt controller only offers exceptions that outrank
         // the currently running one.
-        if ex == Exception::HardFault && self.ipsr == Exception::HardFault.number() {
+        //
+        // FAULTMASK raises the current priority to -1, so with it set even
+        // HardFault (priority -1) cannot activate: an escalated fault then
+        // locks the core up (QEMU: "Lockup: can't escalate 3 to HardFault
+        // (current priority -1)"). PRIMASK only raises it to 0, so HardFault
+        // still preempts under PRIMASK.
+        if ex == Exception::HardFault
+            && (self.ipsr == Exception::HardFault.number() || self.faultmask)
+        {
             return Err(HaltCause::UnhandledException);
         }
         // Exception entry clears the local exclusive monitor.
@@ -2969,6 +2987,31 @@ mod tests {
         assert_eq!(c.ipsr, 0);
         assert_eq!(c.regs.pc, SVC_ADDR + 2);
         assert_eq!(c.regs.sp, SP);
+    }
+
+    #[test]
+    fn svc_locked_up_by_faultmask() {
+        const SVC_ADDR: u32 = 0x2000_0100;
+        const SVC_HANDLER: u32 = 0x2000_0400;
+        const HF_HANDLER: u32 = 0x2000_0600;
+        let mut c = Core::armv7m(crate::mem::flat::FlatMemory::with_layout(
+            &[0x0000_0000, 0x2000_0000],
+            &[0x1000, 0x1000],
+        ));
+        c.mem().write_word(0x2c, SVC_HANDLER | 1).unwrap();
+        c.mem().write_word(0xc, HF_HANDLER | 1).unwrap();
+        c.regs.sp = 0x2000_0800;
+        c.regs.msp = 0x2000_0800;
+        c.sysreg_write(SysReg::Faultmask, 1).unwrap();
+        load_inst(&mut c, SVC_ADDR, &[0x00, 0xdf]); // svc #0
+        c.regs.pc = SVC_ADDR;
+        // FAULTMASK raises the current priority to -1, so the escalated
+        // HardFault (also -1) cannot activate: the core locks up. The SVC
+        // itself still executes, so the halted PC sits past it.
+        assert_eq!(c.step(), Err(HaltCause::UnhandledException));
+        assert_eq!(c.regs.pc, SVC_ADDR + 2);
+        assert_eq!(c.ipsr, 0);
+        assert_eq!(c.regs.sp, 0x2000_0800); // no frame was pushed
     }
 
     #[test]

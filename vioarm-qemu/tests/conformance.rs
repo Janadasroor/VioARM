@@ -774,6 +774,34 @@ fn svc_masked_by_primask_escalates() {
 }
 
 #[test]
+fn svc_locked_up_by_faultmask() {
+    // FAULTMASK is stronger than PRIMASK: it raises the current priority to
+    // -1, so when a masked SVC escalates to HardFault (also priority -1) the
+    // escalation itself cannot activate. Both simulators lock the core up
+    // (QEMU: "Lockup: can't escalate 3 to HardFault (current priority -1)").
+    let Some(mt) = qemu() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+    a.vec(11, "svc_handler"); // SVC vector (must not be reached)
+    a.vec(3, "hf"); // HardFault vector (must not be reached)
+    a.mov_imm32(0, 0x1111_2222);
+    a.movs_imm8(0, 1);
+    a.msr(0x13, 0); // MSR FAULTMASK, r0
+    a.svc(1); // masked -> escalates to HardFault -> HardFault masked -> lockup
+    a.movs_imm8(2, 0xAA); // never reached
+    a.b("halt");
+    a.label("svc_handler");
+    a.movs_imm8(5, 0x99); // marker; must NOT be reached
+    a.bx(14);
+    a.label("hf");
+    a.movs_imm8(6, 0x66); // marker; must NOT be reached
+    a.b("halt");
+    a.label("halt");
+    a.b("halt");
+    conformance_halt("svc_locked_up_by_faultmask", &mut a, "halt", &mt);
+}
+
+#[test]
 fn unaligned() {
     let Some(mt) = qemu() else { return };
     let mut a = Asm::new();
