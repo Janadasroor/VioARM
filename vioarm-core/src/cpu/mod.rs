@@ -2087,12 +2087,13 @@ impl<B: PeripheralBus> Core<B> {
     /// interrupted context's stack and switching to the main stack pointer.
     /// `return_pc` is where execution resumes on exception return.
     fn take_exception(&mut self, ex: Exception, return_pc: u32) -> Result<(), HaltCause> {
-        // ARMv6-M faults do not nest in the set we model: taking a HardFault
-        // while a handler is already active is a double fault, which halts.
-        // Interrupts preempt legitimately and are always legal here; the
-        // interrupt controller only offers exceptions that outrank the
-        // currently running one.
-        if ex == Exception::HardFault && self.ipsr != 0 {
+        // A fault taken while a fault handler is already active is a double
+        // fault, which locks the core up. HardFault (priority -1) may however
+        // always preempt a non-fault handler (SVC, PendSV, SysTick, an IRQ:
+        // all priority >= 0), stacking a second frame and returning through
+        // it. The interrupt controller only offers exceptions that outrank
+        // the currently running one.
+        if ex == Exception::HardFault && self.ipsr == Exception::HardFault.number() {
             return Err(HaltCause::UnhandledException);
         }
         // Exception entry clears the local exclusive monitor.
@@ -2786,6 +2787,70 @@ mod tests {
         assert_eq!(c.ipsr, 0);
         assert_eq!(c.regs.pc, SVC_ADDR + 2);
         assert_eq!(c.regs.sp, SP);
+    }
+
+    #[test]
+    fn hardfault_preempts_svc_and_double_fault_halts() {
+        const SVC_ADDR: u32 = 0x2000_0100;
+        const SVC_HANDLER: u32 = 0x2000_0400;
+        const HF_HANDLER: u32 = 0x2000_0600;
+        const SP: u32 = 0x2000_0800;
+        let mut c = Core::armv7m(crate::mem::flat::FlatMemory::with_layout(
+            &[0x0000_0000, 0x2000_0000],
+            &[0x1000, 0x1000],
+        ));
+        // SVCall vector 11 at 0x2c; HardFault vector 3 at 0xc.
+        c.mem().write_word(0x2c, SVC_HANDLER | 1).unwrap();
+        c.mem().write_word(0xc, HF_HANDLER | 1).unwrap();
+        c.regs.sp = SP;
+        c.regs.msp = SP;
+        load_inst(&mut c, SVC_ADDR, &[0x00, 0xdf]); // svc #0
+        load_inst(&mut c, SVC_HANDLER, &[0x00, 0xde]); // udf (0xDE00) -> HardFault
+        load_inst(&mut c, SVC_HANDLER + 2, &[0x70, 0x47]); // bx lr
+        // HardFault handler: bx lr (returns to SVC).
+        load_inst(&mut c, HF_HANDLER, &[0x70, 0x47]); // bx lr
+        c.regs.pc = SVC_ADDR;
+        c.step().unwrap(); // take SVC
+        assert_eq!(c.ipsr, 11);
+        c.step().unwrap(); // the UDEF in SVC takes a HardFault preempting it
+        // HardFault nests on top: ipsr = 3, a second frame is stacked (32
+        // bytes), and LR points back into Handler mode via EXC_RETURN_HANDLER.
+        assert_eq!(c.ipsr, 3);
+        assert_eq!(c.regs.pc, HF_HANDLER);
+        assert_eq!(c.regs.lr, EXC_RETURN_HANDLER);
+        assert_eq!(c.regs.sp, SP - FRAME_BYTES * 2);
+        // Patch the stacked SVC-handler PC so the fault handler's return skips
+        // the UDEF (the way firmware would repair the fault).
+        let hf_sp = c.regs.sp;
+        c.mem()
+            .write_word(hf_sp + 24, SVC_HANDLER + 2)
+            .unwrap();
+        c.step().unwrap(); // bx lr -> return to SVC
+        assert_eq!(c.ipsr, 11);
+        assert_eq!(c.regs.sp, SP - FRAME_BYTES);
+        assert_eq!(c.regs.pc, SVC_HANDLER + 2);
+        c.step().unwrap(); // bx lr -> SVC returns to Thread mode
+        assert_eq!(c.ipsr, 0);
+        assert_eq!(c.regs.pc, SVC_ADDR + 2);
+        assert_eq!(c.regs.sp, SP);
+        // A fault inside the HardFault handler itself is a double fault: the
+        // core must halt rather than stack a third frame.
+        let mut d = Core::armv7m(crate::mem::flat::FlatMemory::with_layout(
+            &[0x0000_0000, 0x2000_0000],
+            &[0x1000, 0x1000],
+        ));
+        d.mem().write_word(0xc, HF_HANDLER | 1).unwrap();
+        d.mem().write_word(0x2c, SVC_HANDLER | 1).unwrap();
+        d.regs.sp = SP;
+        d.regs.msp = SP;
+        load_inst(&mut d, SVC_ADDR, &[0x00, 0xdf]); // svc #0
+        load_inst(&mut d, SVC_HANDLER, &[0x00, 0xde]); // udf -> HardFault
+        load_inst(&mut d, HF_HANDLER, &[0x00, 0xde]); // udf inside HardFault
+        d.regs.pc = SVC_ADDR;
+        d.step().unwrap(); // SVC
+        d.step().unwrap(); // HardFault (preempts SVC)
+        assert_eq!(d.ipsr, 3);
+        assert_eq!(d.step(), Err(HaltCause::UnhandledException));
     }
 
     #[test]

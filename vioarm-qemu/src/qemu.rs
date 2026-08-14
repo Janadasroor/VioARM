@@ -173,6 +173,7 @@ pub fn run_until_pc(mt: &QemuMachine, bin: &[u8], stop_pc: u32, timeout: Duratio
 
     let deadline = Instant::now() + timeout;
     let mut states = Vec::new();
+    let mut stall = Instant::now();
     loop {
         std::thread::sleep(Duration::from_millis(15));
         if let Ok(text) = std::fs::read_to_string(&log_path) {
@@ -181,7 +182,17 @@ pub fn run_until_pc(mt: &QemuMachine, bin: &[u8], stop_pc: u32, timeout: Duratio
                 states = parsed[..=idx].to_vec();
                 break;
             }
-            states = parsed;
+            if parsed.len() != states.len() {
+                states = parsed;
+                stall = Instant::now();
+            }
+        }
+        // A locked-up core (double fault) stops emitting state dumps entirely;
+        // once the trace goes quiet past the boot preamble, give up early
+        // instead of holding the QEMU process until the deadline — under
+        // parallel load a resident QEMU starves the other test spawns.
+        if states.len() > 1 && Instant::now().duration_since(stall) > Duration::from_millis(300) {
+            break;
         }
         if Instant::now() > deadline {
             break;

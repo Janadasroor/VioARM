@@ -13,6 +13,23 @@ use vioarm_qemu::qemu::{run_until_pc as qemu_run, QemuMachine};
 use vioarm_qemu::vioarm::run_until_pc as vio_run;
 use vioarm_qemu::{compare_traces, CpuState};
 
+/// Run `bin` in QEMU up to `stop`, retrying up to three times when the spawn
+/// produces no state at all. Under parallel test load that many QEMU processes
+/// boot simultaneously and a straggler can be starved; an empty trace is a
+/// spawn failure, never a legitimate result.
+fn qemu_run_retry(mt: &QemuMachine, bin: &[u8], stop: u32) -> Vec<CpuState> {
+    for attempt in 0..3 {
+        let states = qemu_run(mt, bin, stop, Duration::from_secs(15));
+        if !states.is_empty() {
+            return states;
+        }
+        if attempt == 2 {
+            return states;
+        }
+    }
+    unreachable!("loop always returns")
+}
+
 /// A test harness that assembles `a`, picks the halt address, runs both
 /// simulators, and diffs.
 fn conformance(name: &str, a: &mut Asm, halt: &str, mt: &QemuMachine) {
@@ -26,7 +43,7 @@ fn conformance(name: &str, a: &mut Asm, halt: &str, mt: &QemuMachine) {
         "{name}: vioarm never reached halt @ {stop:#x} (last {})",
         snapshot_like(&vio)
     );
-    let qemu = qemu_run(mt, &img.bytes, stop, Duration::from_secs(15));
+    let qemu = qemu_run_retry(mt, &img.bytes, stop);
     assert!(
         !qemu.is_empty() && qemu.last().expect("empty").r[15] & !1 == stop,
         "{name}: qemu never reached halt @ {stop:#x} (got {} states)",
@@ -677,6 +694,103 @@ fn data_faults() {
     conformance("data_faults", &mut a, "halt", &mt);
 }
 
+
+/// Like [`conformance`], but for programs that are *supposed* to halt before
+/// ever reaching the landing loop: a double fault (HardFault taken while a
+/// HardFault handler is active) locks the core up. Both implementations must
+/// stop executing at the same instruction with identical state, and neither
+/// may reach `halt`.
+fn conformance_halt(name: &str, a: &mut Asm, halt: &str, mt: &QemuMachine) {
+    let img: Image = a.clone().finish(SP).expect("assemble");
+    let stop = img
+        .addr(halt)
+        .unwrap_or_else(|| panic!("{name}: no label {halt:?}"));
+    let (vio, reached) = vio_run(&img.bytes, stop);
+    assert!(
+        !reached,
+        "{name}: vioarm reached halt @ {stop:#x} instead of locking up (last {})",
+        snapshot_like(&vio)
+    );
+    // The lockup ends QEMU's instruction stream, so the target PC never shows
+    // up in the log; the run returns once the trace goes quiet past the boot
+    // preamble. It must at least have produced the reset state and reached
+    // the (failed) handler entry.
+    let qemu = qemu_run_retry(mt, &img.bytes, stop);
+    assert!(
+        !qemu.is_empty(),
+        "{name}: qemu produced no state (failed to boot under load)"
+    );
+    assert!(
+        !qemu
+            .last()
+            .map(|s| s.r[15] & !1 == stop)
+            .unwrap_or(false),
+        "{name}: qemu reached halt @ {stop:#x} instead of locking up (got {} states)",
+        qemu.len()
+    );
+    compare_traces(name, &vio, &qemu).expect("traces agree");
+}
+
+// ---------------------------------------------------------------------------
+// A fault taken while a HardFault handler is already active is a double fault:
+// ARMv7-M locks the core up (no exception can preempt HardFault). The first
+// UDEF escalates to the handler; the second UDEF inside the handler must stop
+// both simulators at the identical stacked state, never reaching the landing
+// loop.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn double_fault() {
+    let Some(mt) = qemu() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+    a.vec(3, "hf"); // HardFault vector
+    a.mov_imm32(0, 0x1111_2222);
+    a.mov_imm32(1, 0x3333_4444);
+    a.raw(0xDE00); // UDEF -> HardFault
+    a.movs_imm8(2, 0xAA); // never reached
+    a.b("halt");
+    a.label("hf");
+    a.raw(0xDE00); // UDEF inside the handler -> double fault -> lockup
+    a.bx(14); // would return, but never executes
+    a.label("halt");
+    a.b("halt");
+    conformance_halt("double_fault", &mut a, "halt", &mt);
+}
+
+// ---------------------------------------------------------------------------
+// Unlike a double fault, a fault taken inside a *non-fault* handler
+// legitimately preempts it: HardFault has fixed priority -1, strictly
+// outranking SVC (and PendSV/SysTick/IRQ). The fault handler runs, patches the
+// SVC frame, and the two stacked frames unwind in order.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn hardfault_preempts_svc() {
+    let Some(mt) = qemu() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+    a.vec(11, "svc"); // SVC vector
+    a.vec(3, "hf"); // HardFault vector
+    a.mov_imm32(0, 0x1111_2222);
+    a.mov_imm32(1, 0x3333_4444);
+    a.svc(0); // enter the SVC handler
+    a.movs_imm8(2, 0xAA); // reached once SVC returns
+    a.b("halt");
+    a.label("svc");
+    a.movs_imm8(3, 0x33); // marker in the SVC handler
+    a.raw(0xDE00); // UDEF inside SVC -> HardFault preempts
+    a.bx(14); // SVC return to Thread mode
+    a.label("hf");
+    a.mov_reg(6, 13); // frame base
+    a.ldr_wide(7, 6, 24); // stacked SVC-handler PC (faulting UDEF)
+    a.adds_imm8(7, 2); // skip the UDEF
+    a.str_imm(7, 6, 24);
+    a.bx(14); // return to the SVC handler (EXC_RETURN_HANDLER)
+    a.label("halt");
+    a.b("halt");
+    conformance("hardfault_preempts_svc", &mut a, "halt", &mt);
+}
 // ---------------------------------------------------------------------------
 // Faults: an undefined instruction (0xDE00, permanently-undefined) escalates
 
