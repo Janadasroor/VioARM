@@ -660,6 +660,35 @@ fn hardfault_on_process_stack() {
     conformance("hardfault_on_process_stack", &mut a, "halt", &mt);
 }
 
+#[test]
+fn exception_msp_align() {
+    let Some(mt) = qemu() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+    a.vec(11, "svc_handler");
+    a.mov_imm32(0, 0x1111_2222);
+    // A non-word-aligned MSP write is silently word-aligned (low 2 bits
+    // dropped), so MSR MSP, #0x20002002 yields MSP == 0x20002000.
+    a.mov_imm32(0, 0x2000_2002);
+    a.msr(0x08, 0); // MSR MSP, r0
+    a.mrs(1, 0x08); // r1 = 0x20002000
+    // A word-aligned but 8-misaligned MSP (0x20002004): exception entry must
+    // decrement SP by 4 (setting xPSR.ALIGN), push the frame at 0x20001fe0,
+    // and the handler's THREAD_MSP return must re-align SP back to 0x20002004.
+    a.mov_imm32(0, 0x2000_2004);
+    a.msr(0x08, 0); // MSR MSP, r0
+    a.svc(0); // taken with SP%8 == 4 -> ALIGN adjustment
+    a.mrs(2, 0x08); // r2 = MSP after return
+    a.movs_imm8(3, 0x55);
+    a.b("halt");
+    a.label("svc_handler");
+    a.movs_imm8(4, 0x99); // marker
+    a.bx(14); // EXC_RETURN_THREAD_MSP: un-align back to 0x20002004
+    a.label("halt");
+    a.b("halt");
+    conformance("exception_msp_align", &mut a, "halt", &mt);
+}
+
 // ---------------------------------------------------------------------------
 // A SVC executed while a SVC handler is already active has the same priority
 // as the handler it runs inside, so it cannot preempt it: real ARMv7-M

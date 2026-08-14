@@ -361,6 +361,7 @@ impl<B: PeripheralBus> Core<B> {
                     .set((self.xpsr.get() & !APSR_QFLAGS) | (v & APSR_QFLAGS));
             }
             SysReg::Msp => {
+                let v = v & !3;
                 if self.sp_is_process() {
                     self.regs.msp = v;
                 } else {
@@ -368,6 +369,7 @@ impl<B: PeripheralBus> Core<B> {
                 }
             }
             SysReg::Psp => {
+                let v = v & !3;
                 if self.sp_is_process() {
                     self.regs.sp = v;
                 } else {
@@ -2764,6 +2766,23 @@ mod tests {
         c.step().unwrap();
         assert!(c.xpsr.n() && c.xpsr.c() && c.xpsr.q());
         assert_eq!(c.xpsr.ge(), 0xF);
+    }
+
+    #[test]
+    fn msr_sp_writes_word_align() {
+        // A non-word-aligned MSP/PSP write is silently word-aligned: the low
+        // two bits of the written value are dropped, matching QEMU.
+        let mut c = armv7m_core();
+        c.regs.write(0, 0x2000_0002);
+        c.sysreg_write(SysReg::Msp, c.regs.read(0)).unwrap();
+        assert_eq!(c.sysreg_read(SysReg::Msp).unwrap(), 0x2000_0000);
+        c.regs.write(0, 0x2000_0003);
+        c.sysreg_write(SysReg::Psp, c.regs.read(0)).unwrap();
+        assert_eq!(c.sysreg_read(SysReg::Psp).unwrap(), 0x2000_0000);
+        // Word-aligned (but not 8-aligned) values pass through untouched.
+        c.regs.write(0, 0x2000_0004);
+        c.sysreg_write(SysReg::Msp, c.regs.read(0)).unwrap();
+        assert_eq!(c.sysreg_read(SysReg::Msp).unwrap(), 0x2000_0004);
     }
 
     #[test]
