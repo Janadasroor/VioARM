@@ -653,6 +653,22 @@ impl<B: PeripheralBus> Core<B> {
                 // stacked return address is the instruction after the SVC so
                 // the handler can continue with `bx lr`. The immediate is
                 // service data for software only.
+                //
+                // A SVC executed while a handler is already active cannot
+                // complete: it has priority 0 (or higher) while any handler in
+                // the set we model runs at priority <= 0, so taking it would
+                // not preempt. Real hardware escalates this to a UsageFault
+                // (and with faults disabled, to HardFault) faulting at the
+                // SVC itself. Matching that here keeps the handler from
+                // re-entering itself recursively.
+                if self.ipsr != 0 {
+                    // Escalate to HardFault. The stacked return address keeps
+                    // the *normal* SVC semantics (the instruction after the
+                    // SVC): the SVC itself executes, only its exception entry
+                    // cannot preempt the active handler.
+                    self.take_exception(Exception::HardFault, pc + 2)?;
+                    return Ok(Next::Advance(self.regs.pc));
+                }
                 self.take_exception(Exception::SvCall, pc + 2)?;
                 Ok(Next::Advance(self.regs.pc))
             }
@@ -2851,6 +2867,51 @@ mod tests {
         d.step().unwrap(); // HardFault (preempts SVC)
         assert_eq!(d.ipsr, 3);
         assert_eq!(d.step(), Err(HaltCause::UnhandledException));
+    }
+
+    #[test]
+    fn svc_inside_svc_handler_escalates_to_hardfault() {
+        const SVC_ADDR: u32 = 0x2000_0100;
+        const SVC_HANDLER: u32 = 0x2000_0400;
+        const HF_HANDLER: u32 = 0x2000_0600;
+        const SP: u32 = 0x2000_0800;
+        let mut c = Core::armv7m(crate::mem::flat::FlatMemory::with_layout(
+            &[0x0000_0000, 0x2000_0000],
+            &[0x1000, 0x1000],
+        ));
+        // SVCall vector 11 at 0x2c; HardFault vector 3 at 0xc.
+        c.mem().write_word(0x2c, SVC_HANDLER | 1).unwrap();
+        c.mem().write_word(0xc, HF_HANDLER | 1).unwrap();
+        c.regs.sp = SP;
+        c.regs.msp = SP;
+        // svc #0; svc #0 again in the handler; the handler's bx lr (with the
+        // escalated HardFault handler's bx lr returning into the SVC frame).
+        load_inst(&mut c, SVC_ADDR, &[0x00, 0xdf]);
+        load_inst(&mut c, SVC_HANDLER, &[0x00, 0xdf]); // nesting SVC
+        load_inst(&mut c, SVC_HANDLER + 2, &[0x70, 0x47]); // bx lr
+        load_inst(&mut c, HF_HANDLER, &[0x70, 0x47]); // bx lr (fault skipped)
+        c.regs.pc = SVC_ADDR;
+        c.step().unwrap(); // take SVC
+        assert_eq!(c.ipsr, 11);
+        c.step().unwrap(); // SVC in the handler: cannot preempt -> HardFault
+        // HardFault nests on top of the SVC frame; the stacked return address
+        // keeps SVC semantics (instruction *after* the offending SVC), so a
+        // bare `bx lr` returns straight into the SVC handler.
+        assert_eq!(c.ipsr, 3);
+        assert_eq!(c.regs.pc, HF_HANDLER);
+        assert_eq!(c.regs.lr, EXC_RETURN_HANDLER);
+        assert_eq!(c.regs.sp, SP - FRAME_BYTES * 2);
+        assert_eq!(
+            c.mem().read_word(SP - FRAME_BYTES * 2 + 24).unwrap(),
+            SVC_HANDLER + 2
+        );
+        c.step().unwrap(); // bx lr -> back into the SVC handler
+        assert_eq!(c.ipsr, 11);
+        assert_eq!(c.regs.pc, SVC_HANDLER + 2);
+        c.step().unwrap(); // bx lr -> SVC returns to Thread mode
+        assert_eq!(c.ipsr, 0);
+        assert_eq!(c.regs.pc, SVC_ADDR + 2);
+        assert_eq!(c.regs.sp, SP);
     }
 
     #[test]

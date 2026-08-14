@@ -597,6 +597,39 @@ fn exceptions() {
     conformance("exceptions", &mut a, "halt", &mt);
 }
 
+// ---------------------------------------------------------------------------
+// A SVC executed while a SVC handler is already active has the same priority
+// as the handler it runs inside, so it cannot preempt it: real ARMv7-M
+// escalates the offending SVC to a UsageFault (folded to HardFault here). The
+// stacked return address keeps the normal SVC convention (the instruction
+// after the SVC), so the HardFault handler returns straight into the SVC
+// handler, which then returns to Thread mode.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn svc_does_not_preempt_svc() {
+    let Some(mt) = qemu() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+    a.vec(11, "svc_handler"); // SVC vector
+    a.vec(3, "hf"); // HardFault vector
+    a.mov_imm32(0, 0x1111_2222);
+    a.mov_imm32(1, 0x3333_4444);
+    a.svc(0); // enter the SVC handler
+    a.movs_imm8(2, 0xAA); // reached once SVC returns
+    a.b("halt");
+    a.label("svc_handler");
+    a.movs_imm8(3, 0x33); // marker in the SVC handler
+    a.svc(0); // SVC inside SVC: cannot preempt -> HardFault
+    a.movs_imm8(4, 0x44); // reached once the fault is skipped
+    a.bx(14); // SVC return to Thread mode
+    a.label("hf");
+    a.bx(14); // stacked PC already points past the SVC; just return
+    a.label("halt");
+    a.b("halt");
+    conformance("svc_does_not_preempt_svc", &mut a, "halt", &mt);
+}
+
 #[test]
 fn unaligned() {
     let Some(mt) = qemu() else { return };
@@ -793,6 +826,10 @@ fn hardfault_preempts_svc() {
 }
 // ---------------------------------------------------------------------------
 // Faults: an undefined instruction (0xDE00, permanently-undefined) escalates
+// through UsageFault to HardFault. The handler reads the stacked frame, skips
+// the bad opcode, and returns via `bx lr`; the stacked xPSR, LR, and data
+// registers must match QEMU's frame layout exactly.
+// ---------------------------------------------------------------------------
 
 #[test]
 fn faults() {
