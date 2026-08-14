@@ -1036,6 +1036,42 @@ fn faults() {
 }
 
 // ---------------------------------------------------------------------------
+// A BKPT with debug disabled is a fault, not a debug halt: it escalates to
+// HardFault, stacking the BKPT's own address (so a handler can skip it) and
+// the pre-fault context. Both the frame layout and the retry-through-the-
+// handler path must match QEMU's.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn bkpt() {
+    let Some(mt) = qemu() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+
+    a.vec(13, "dbg"); // DebugMon vector (never taken: debug is disabled)
+    a.vec(3, "hf"); // HardFault vector
+    a.mov_imm32(0, 0x1111_2222);
+    a.mov_imm32(1, 0x3333_4444);
+    a.raw(0xBE00); // bkpt #0 -> HardFault
+    a.movs_imm8(2, 0xAA); // reached once the handler skips the BKPT
+    a.b("halt");
+    a.label("dbg");
+    a.movs_imm8(5, 0x55); // marker; must NOT be reached
+    a.bx(14);
+    a.label("hf");
+    // The stacked PC is the BKPT instruction itself: read it, skip past the
+    // BKPT, patch the frame, and return like the `faults` handler does.
+    a.mov_reg(6, 13); // frame base
+    a.ldr_wide(7, 6, 24); // stacked PC (the BKPT)
+    a.adds_imm8(7, 2); // skip the BKPT
+    a.str_imm(7, 6, 24);
+    a.bx(14); // return to Thread mode, past the BKPT
+    a.label("halt");
+    a.b("halt");
+    conformance("bkpt", &mut a, "halt", &mt);
+}
+
+// ---------------------------------------------------------------------------
 // Control flow: conditional branches, CBZ/CBNZ, IT blocks, BL+BX LR,
 // POP{PC}, and a wide B.W over a large gap.
 // ---------------------------------------------------------------------------

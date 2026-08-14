@@ -237,7 +237,7 @@ fn clang_compiled_firmware_runs() {
     }
     m.reset().expect("reset from vector table");
     let err = m.run(10_000);
-    assert_eq!(err, Err(HaltCause::Breakpoint));
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
     // sum(7) = 1+2+3+4+5+6+7 == 28.
     assert_eq!(m.core.mem().read_word(SUM_ADDR).unwrap(), 28);
     assert_eq!(m.core.mem().read_word(TAG_ADDR).unwrap(), 0xdead_beef);
@@ -280,7 +280,7 @@ fn systick_handler_fires_and_returns() {
     }
     m.reset().expect("reset from vector table");
     let err = m.run(100_000);
-    assert_eq!(err, Err(HaltCause::Breakpoint));
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
     // The handler ran at least three times before the firmware stopped it.
     let ticks = m.core.mem().read_word(RAM).unwrap();
     assert!(ticks >= 3, "handler ran only {ticks} times");
@@ -315,7 +315,7 @@ fn virtual_board_io_round_trips() {
         device.drive_inputs(0x0000_5A00);
     }
     let err = m.run(10_000);
-    assert_eq!(err, Err(HaltCause::Breakpoint));
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
     // GPIO: the output latch was driven and read back; the host-driven inputs
     // were observed on the IN register.
     assert_eq!(m.core.mem().read_word(board::RAM).unwrap(), 0xAA);
@@ -467,7 +467,7 @@ fn run_stm32_firmware_with_includes(
         device.drive_inputs(0x5A);
     }
     let err = m.run(200_000);
-    assert_eq!(err, Err(HaltCause::Breakpoint));
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
     // GPIO: PA0 was driven high through BSRR and read back on ODR.
     let odr = m.core.mem().read_word(board::RAM).unwrap();
     // USART1: the interrupt handler latched the received byte.

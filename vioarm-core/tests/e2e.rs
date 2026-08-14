@@ -240,7 +240,7 @@ fn loop_bl_push_pop_ldm_stm() {
     ]);
     // `bl` lands at the `bkpt`, so the machine halts on the breakpoint.
     let err = m.run(64);
-    assert_eq!(err, Err(HaltCause::Breakpoint));
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
     let (regs, _, cycles) = m.core.snapshot();
     // 26 instructions retire; the bkpt halts before it is counted.
     assert_eq!(cycles, 26);
@@ -261,8 +261,10 @@ fn loop_bl_push_pop_ldm_stm() {
 }
 
 /// Thread code shared by the exception tests: two setup moves, an undefined
-/// `0xBFFF` (reserved HINT), then `movs r2, #0x22; bkpt`.
-const EXC_THREAD: &[u8] = &[0x20, 0x00, 0x01, 0x21, 0xff, 0xbf, 0x22, 0x22, 0x00, 0xbe];
+/// `0xBFFF` (reserved HINT), then `movs r2, #0x22; svc #0`. The trailing `svc`
+/// is the stop sentinel: no SVCall vector is configured, so taking it halts
+/// the machine (a bare `bkpt` would re-fault into the HardFault handler).
+const EXC_THREAD: &[u8] = &[0x20, 0x00, 0x01, 0x21, 0xff, 0xbf, 0x22, 0x22, 0x00, 0xdf];
 /// Patch the stacked PC forward past the faulting 16-bit instruction, so the
 /// thread resumes after the bad opcode. Real hardware and QEMU stack the
 /// *faulting* address for an undefined-instruction fault; a handler that
@@ -309,7 +311,7 @@ fn hardfault_handler_runs_and_returns() {
     const HF: u32 = 0x100;
     let mut m = boot_with_vectors(EXC_THREAD, &fault_handler(0x7a), CODE, HF);
     let err = m.run(16);
-    assert_eq!(err, Err(HaltCause::Breakpoint));
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
     let (regs, _, cycles) = m.core.snapshot();
     // Handler ran, visible through its RAM store...
     assert_eq!(m.core.mem().read_word(RAM).unwrap(), 0x7a);
@@ -333,7 +335,7 @@ fn hard_fault_aligns_misaligned_stack() {
     // `sub sp, #4` (26 b1); restore checks the stacked xPSR.
     let thread = &[
         0x81, 0xb0, // sub sp, #4
-        0xff, 0xbf, 0x22, 0x22, 0x00, 0xbe,
+        0xff, 0xbf, 0x22, 0x22, 0x00, 0xdf, // 0xbfff UDEF; movs r2,#0x22; svc #0
     ];
     let handler = &[
         0x20, 0x21, // movs r1, #0x20
@@ -347,7 +349,7 @@ fn hard_fault_aligns_misaligned_stack() {
     ];
     let mut m = boot_with_vectors(thread, handler, CODE, HF);
     let err = m.run(12);
-    assert_eq!(err, Err(HaltCause::Breakpoint));
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
     let (regs, _, cycles) = m.core.snapshot();
     // The stacked xPSR carries Thumb plus the ALIGN bit.
     assert_eq!(m.core.mem().read_word(RAM).unwrap(), (1 << 24) | (1 << 9));
@@ -383,7 +385,7 @@ fn exception_from_process_stack_returns_via_psp() {
     m.core.regs.psp = PSP;
     m.core.regs.msp = MSP;
     let err = m.run(16);
-    assert_eq!(err, Err(HaltCause::Breakpoint));
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
     let (regs, _, cycles) = m.core.snapshot();
     assert_eq!(m.core.mem().read_word(RAM).unwrap(), 0x5a);
     // The handler ran on, and preserved, the banked main SP.
@@ -411,7 +413,7 @@ fn handler_returns_via_pop_pc() {
     handler.extend_from_slice(&[0x00, 0xb5, 0x00, 0xbd]); // push {lr}; pop {pc}
     let mut m = boot_with_vectors(EXC_THREAD, &handler, CODE, HF);
     let err = m.run(16);
-    assert_eq!(err, Err(HaltCause::Breakpoint));
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
     let (regs, _, _) = m.core.snapshot();
     assert_eq!(m.core.mem().read_word(RAM).unwrap(), 0x5a);
     assert_eq!(regs.r[2], 0x22);
@@ -444,7 +446,7 @@ fn svc_takes_svcall_and_returns() {
     }
     m.reset().expect("reset from vector table");
     let err = m.run(16);
-    assert_eq!(err, Err(HaltCause::Breakpoint));
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
     let (regs, _, _) = m.core.snapshot();
     // The handler ran and stored its marker; the exception return undid its
     // register clobbers, and the thread resumed after the SVC.
@@ -526,7 +528,7 @@ fn pendsv_handler_runs_and_returns() {
     // Pend PendSV after reset, since reset clears the SCB's latches.
     m.core.mem().write_word(0xE000_ED04, 0x1000_0000).unwrap();
     let err = m.run(16);
-    assert_eq!(err, Err(HaltCause::Breakpoint));
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
     let (regs, _, _) = m.core.snapshot();
     // The handler ran and stored its marker; the exception return undid its
     // register clobbers, and the thread resumed and advanced r3.
@@ -546,7 +548,7 @@ fn divide_on_armv7m() {
         0xbe,
     ]);
     let err = m.run(10);
-    assert_eq!(err, Err(HaltCause::Breakpoint));
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
     let (regs, _, cycles) = m.core.snapshot();
     // Two movs, two udiv, then the stopping bkpt (which costs no cycle).
     assert_eq!(cycles, 5);
@@ -570,7 +572,7 @@ fn multiply_on_armv7m() {
         0xfb, 0x01, 0x25, 0x80, 0xfb, 0x01, 0x67, 0xa0, 0xfb, 0x01, 0x89, 0x00, 0xbe,
     ]);
     let err = m.run(10);
-    assert_eq!(err, Err(HaltCause::Breakpoint));
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
     let (regs, xpsr, cycles) = m.core.snapshot();
     // Eight instructions retire before the stopping bkpt.
     assert_eq!(cycles, 8);
@@ -604,7 +606,7 @@ fn dual_multiply_on_armv7m() {
         0x00, 0xbe,
     ]);
     let err = m.run(10);
-    assert_eq!(err, Err(HaltCause::Breakpoint));
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
     let (regs, xpsr, cycles) = m.core.snapshot();
     // Nine instructions retire before the stopping bkpt.
     assert_eq!(cycles, 9);
@@ -636,7 +638,7 @@ fn unary_data_processing_on_armv7m() {
         0xf3, 0x00, 0xbe,
     ]);
     let err = m.run(10);
-    assert_eq!(err, Err(HaltCause::Breakpoint));
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
     let (regs, xpsr, cycles) = m.core.snapshot();
     // Five instructions retire before the stopping bkpt.
     assert_eq!(cycles, 5);
@@ -664,7 +666,7 @@ fn bitfield_on_armv7m() {
         0x10, 0x00, 0xbe,
     ]);
     let err = m.run(10);
-    assert_eq!(err, Err(HaltCause::Breakpoint));
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
     let (regs, xpsr, cycles) = m.core.snapshot();
     // Five instructions retire before the stopping bkpt.
     assert_eq!(cycles, 5);
@@ -691,7 +693,7 @@ fn parallel_add_sub_and_sel_on_armv7m() {
         0xfa, 0x54, 0xf5, 0x00, 0xbe,
     ]);
     let err = m.run(10);
-    assert_eq!(err, Err(HaltCause::Breakpoint));
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
     let (regs, xpsr, cycles) = m.core.snapshot();
     // Six instructions retire before the stopping bkpt.
     assert_eq!(cycles, 6);
@@ -723,7 +725,7 @@ fn extend_add_on_armv7m() {
         0xf4, 0x0f, 0xfa, 0x80, 0xf5, 0x00, 0xbe,
     ]);
     let err = m.run(10);
-    assert_eq!(err, Err(HaltCause::Breakpoint));
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
     let (regs, _, cycles) = m.core.snapshot();
     // Six instructions retire before the stopping bkpt.
     assert_eq!(cycles, 6);
@@ -752,7 +754,7 @@ fn ldrd_strd_on_armv7m() {
         0x01, 0xfd, 0xe8, 0x02, 0x45, 0x00, 0xbe,
     ]);
     let err = m.run(10);
-    assert_eq!(err, Err(HaltCause::Breakpoint));
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
     let (regs, _, cycles) = m.core.snapshot();
     // Six instructions retire before the stopping bkpt.
     assert_eq!(cycles, 6);
@@ -780,7 +782,7 @@ fn extend_and_reverse_on_v6m() {
         0xbe,
     ]);
     let err = m.run(10);
-    assert_eq!(err, Err(HaltCause::Breakpoint));
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
     let (regs, xpsr, cycles) = m.core.snapshot();
     // Seven instructions retire before the stopping bkpt.
     assert_eq!(cycles, 7);
@@ -811,7 +813,7 @@ fn it_blocks_on_armv7m() {
         0x34, 0x00, 0xbe,
     ]);
     let err = m.run(10);
-    assert_eq!(err, Err(HaltCause::Breakpoint));
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
     let (regs, xpsr, cycles) = m.core.snapshot();
     // The stopping bkpt does not count toward cycles.
     assert_eq!(cycles, 8);
@@ -845,7 +847,7 @@ fn itstate_round_trips_exception_on_armv7m() {
         mem.write(0x51, 0x47).unwrap();
     }
     let err = m.run(10);
-    assert_eq!(err, Err(HaltCause::Breakpoint));
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
     let (regs, _, cycles) = m.core.snapshot();
     // The stopping bkpt does not count toward cycles.
     assert_eq!(cycles, 6);
@@ -863,7 +865,7 @@ fn t32_bw_forward_skips_instruction() {
         0x05, 0x20, 0x00, 0xf0, 0x01, 0xb8, 0x01, 0x21, 0x02, 0x22, 0x00, 0xbe,
     ]);
     let err = m.run(10);
-    assert_eq!(err, Err(HaltCause::Breakpoint));
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
     let (regs, _, cycles) = m.core.snapshot();
     assert_eq!(cycles, 3);
     assert_eq!(regs.r[0], 5);
@@ -882,7 +884,7 @@ fn t32_bw_backward_loop_backedge() {
         0x23, 0x00, 0xbe,
     ]);
     let err = m.run(12);
-    assert_eq!(err, Err(HaltCause::Breakpoint));
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
     let (regs, _, cycles) = m.core.snapshot();
     // movs r0, movs r2, subs, cmp, beq, b.w, subs, cmp, beq, movs r3.
     assert_eq!(cycles, 10);
@@ -903,7 +905,7 @@ fn t32_bcc_wide_taken_and_fallthrough() {
         0x22, 0x03, 0x23, 0x00, 0xbe,
     ]);
     let err = m.run(10);
-    assert_eq!(err, Err(HaltCause::Breakpoint));
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
     let (regs, _, cycles) = m.core.snapshot();
     assert_eq!(cycles, 6);
     assert_eq!(regs.r[0], 0);
@@ -923,7 +925,7 @@ fn t32_bne_wide_loop() {
         0xbe,
     ]);
     let err = m.run(10);
-    assert_eq!(err, Err(HaltCause::Breakpoint));
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
     let (regs, _, cycles) = m.core.snapshot();
     // movs r0, movs r2, subs, cmp, bne.w, subs, cmp, bne.w, movs r3.
     assert_eq!(cycles, 9);
@@ -974,7 +976,7 @@ fn t32_bl_far_with_j2_zero() {
         mem.write(0x1019, 0xbe).unwrap();
     }
     let err = m.run(10);
-    assert_eq!(err, Err(HaltCause::Breakpoint));
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
     let (regs, _, cycles) = m.core.snapshot();
     assert_eq!(cycles, 3);
     assert_eq!(regs.r[0], 5);

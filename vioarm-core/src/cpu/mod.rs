@@ -687,7 +687,10 @@ impl<B: PeripheralBus> Core<B> {
                 self.take_exception(Exception::SvCall, pc + 2)?;
                 Ok(Next::Advance(self.regs.pc))
             }
-            I::Bkpt { .. } => Ok(Next::Stop(HaltCause::Breakpoint)),
+            // A BKPT when debug is not enabled takes the same path as an
+            // undefined instruction: it escalates to HardFault stacking the
+            // BKPT's own address (so the handler can skip it), matching QEMU.
+            I::Bkpt { .. } => self.hardfault_on_undefined(pc, 2),
             I::Hint { .. } => Ok(Next::Advance(pc + 2)),
             I::Cps { disable, im } => {
                 // The `i` bit (bit1) controls PRIMASK. On ARMv7-M the `f` bit
