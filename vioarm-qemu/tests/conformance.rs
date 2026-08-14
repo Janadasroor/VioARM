@@ -723,6 +723,57 @@ fn svc_does_not_preempt_svc() {
 }
 
 #[test]
+fn svc_from_unprivileged_thread() {
+    let Some(mt) = qemu() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+    a.vec(11, "svc_handler");
+    a.mov_imm32(0, 0x1111_2222);
+    a.movs_imm8(0, 1); // CONTROL.nPRIV = 1 (drop to unprivileged)
+    a.msr(0x14, 0); // MSR CONTROL, r0
+    a.mrs(1, 0x14); // r1 = CONTROL (should be 1)
+    a.svc(0); // SVC from unprivileged thread
+    a.mrs(2, 0x14); // r2 = CONTROL after return (back to 1)
+    a.movs_imm8(3, 0xAA);
+    a.b("halt");
+    a.label("svc_handler");
+    a.mrs(4, 0x14); // r4 = CONTROL in handler
+    a.movs_imm8(5, 0x99);
+    a.bx(14); // EXC_RETURN_THREAD
+    a.label("halt");
+    a.b("halt");
+    conformance("svc_from_unprivileged_thread", &mut a, "halt", &mt);
+}
+
+#[test]
+fn svc_masked_by_primask_escalates() {
+    let Some(mt) = qemu() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+    a.vec(11, "svc_handler"); // SVC (priority 0)
+    a.vec(3, "hf"); // HardFault (priority -1)
+    a.mov_imm32(0, 0x1111_2222);
+    // PRIMASK = 1 masks every configurable-priority exception, including SVC.
+    // A synchronous exception that cannot be taken is escalated to HardFault
+    // (the stacked return address is the instruction after the SVC), so the
+    // thread reaches the HardFault handler, not the SVC handler.
+    a.movs_imm8(0, 1);
+    a.msr(0x10, 0); // MSR PRIMASK, r0
+    a.svc(1); // masked -> escalates to HardFault
+    a.movs_imm8(2, 0xAA); // not reached (fault entry happens first)
+    a.b("halt");
+    a.label("svc_handler");
+    a.movs_imm8(5, 0x99); // marker; must NOT be reached
+    a.bx(14);
+    a.label("hf");
+    a.movs_imm8(6, 0x66); // marker in the HardFault handler
+    a.b("halt"); // stop here; both sides converge on the halt loop
+    a.label("halt");
+    a.b("halt");
+    conformance("svc_masked_by_primask_escalates", &mut a, "halt", &mt);
+}
+
+#[test]
 fn unaligned() {
     let Some(mt) = qemu() else { return };
     let mut a = Asm::new();

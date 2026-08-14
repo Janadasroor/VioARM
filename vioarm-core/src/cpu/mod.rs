@@ -659,15 +659,18 @@ impl<B: PeripheralBus> Core<B> {
                 // A SVC executed while a handler is already active cannot
                 // complete: it has priority 0 (or higher) while any handler in
                 // the set we model runs at priority <= 0, so taking it would
-                // not preempt. Real hardware escalates this to a UsageFault
-                // (and with faults disabled, to HardFault) faulting at the
-                // SVC itself. Matching that here keeps the handler from
-                // re-entering itself recursively.
-                if self.ipsr != 0 {
+                // not preempt. Likewise, a SVC masked by PRIMASK (or FAULTMASK)
+                // is a synchronous exception that cannot be taken, so it can
+                // never simply drain from the nesting stack. Real hardware
+                // escalates both cases to a HardFault faulting at the SVC
+                // itself. Matching that here keeps the handler from
+                // re-entering itself recursively (or the thread from
+                // launching a SVC that must be deferred forever).
+                if self.ipsr != 0 || self.primask || self.faultmask {
                     // Escalate to HardFault. The stacked return address keeps
                     // the *normal* SVC semantics (the instruction after the
                     // SVC): the SVC itself executes, only its exception entry
-                    // cannot preempt the active handler.
+                    // cannot be honored.
                     self.take_exception(Exception::HardFault, pc + 2)?;
                     return Ok(Next::Advance(self.regs.pc));
                 }
@@ -2928,6 +2931,41 @@ mod tests {
         assert_eq!(c.ipsr, 11);
         assert_eq!(c.regs.pc, SVC_HANDLER + 2);
         c.step().unwrap(); // bx lr -> SVC returns to Thread mode
+        assert_eq!(c.ipsr, 0);
+        assert_eq!(c.regs.pc, SVC_ADDR + 2);
+        assert_eq!(c.regs.sp, SP);
+    }
+
+    #[test]
+    fn svc_masked_by_primask_escalates_to_hardfault() {
+        const SVC_ADDR: u32 = 0x2000_0100;
+        const SVC_HANDLER: u32 = 0x2000_0400;
+        const HF_HANDLER: u32 = 0x2000_0600;
+        const SP: u32 = 0x2000_0800;
+        let mut c = Core::armv7m(crate::mem::flat::FlatMemory::with_layout(
+            &[0x0000_0000, 0x2000_0000],
+            &[0x1000, 0x1000],
+        ));
+        c.mem().write_word(0x2c, SVC_HANDLER | 1).unwrap();
+        c.mem().write_word(0xc, HF_HANDLER | 1).unwrap();
+        c.regs.sp = SP;
+        c.regs.msp = SP;
+        c.sysreg_write(SysReg::Primask, 1).unwrap();
+        load_inst(&mut c, SVC_ADDR, &[0x00, 0xdf]); // svc #0
+        load_inst(&mut c, HF_HANDLER, &[0x70, 0x47]); // bx lr (fault skipped)
+        c.regs.pc = SVC_ADDR;
+        c.step().unwrap(); // masked SVC cannot be taken -> HardFault
+        // Priority -1 HardFault still preempts Thread mode; the stacked return
+        // address keeps SVC semantics (instruction *after* the offending SVC).
+        assert_eq!(c.ipsr, 3);
+        assert_eq!(c.regs.pc, HF_HANDLER);
+        assert_eq!(c.regs.lr, EXC_RETURN_THREAD_MSP);
+        assert_eq!(c.regs.sp, SP - FRAME_BYTES);
+        assert_eq!(
+            c.mem().read_word(SP - FRAME_BYTES + 24).unwrap(),
+            SVC_ADDR + 2
+        );
+        c.step().unwrap(); // bx lr -> return to Thread mode, past the SVC
         assert_eq!(c.ipsr, 0);
         assert_eq!(c.regs.pc, SVC_ADDR + 2);
         assert_eq!(c.regs.sp, SP);
