@@ -394,6 +394,123 @@ pub enum Inst32 {
         rm: u8,
         rot: u8,
     },
+    /// VFP single-precision three-operand arithmetic on `S` registers. `op`
+    /// selects the operation; the FMA family is only legal where the VFPv4
+    /// extension is present.
+    Vfp3 {
+        op: Vfp3Op,
+        vd: u8,
+        vn: u8,
+        vm: u8,
+    },
+    /// VFP single-precision two-operand data processing (`VMOV`/`VABS`/
+    /// `VNEG`/`VSQRT` on `S` registers).
+    Vfp2 {
+        op: Vfp2Op,
+        vd: u8,
+        vm: u8,
+    },
+    /// VFP comparison `VCMP`/`VCMPE.F32`. `e` selects the signaling form
+    /// (`VCMPE`); `z` selects the compare-against-zero form, which reads `+0.0`
+    /// for the second operand. The `NZCV` flags in FPSCR are written.
+    VfpCmp {
+        vd: u8,
+        vm: u8,
+        e: bool,
+        z: bool,
+    },
+    /// VFP round-to-integral (`VRINTR`/`VRINTZ`/`VRINTX`).
+    VfpVrint {
+        op: VrintOp,
+        vd: u8,
+        vm: u8,
+    },
+    /// VFP convert between single and integer: `VCVT.F32.{S,U}32`
+    /// (`to_float`) or `VCVT{R}.{S,U}32.F32` (to integer; `rz` selects the
+    /// `R` form). `signed` selects the signed forms.
+    VfpCvtInt {
+        to_float: bool,
+        signed: bool,
+        rz: bool,
+        vd: u8,
+        vm: u8,
+    },
+    /// VFP fixed-point convert: `VCVT.F32.{S,U}{16,32}.{fbits}` and the
+    /// `VCVT{R}.{S,U}{16,32}.{fbits}.F32` forms. `opc` is the `sx:op:u` field
+    /// (bit18, bit16, bit7) that selects signedness and operand width;
+    /// `frac` is the fixed-point fraction length (16 or 32 minus `imm`). The
+    /// source is the destination register: the convert is in place on `S{vd}`.
+    VfpCvtFix {
+        opc: u8,
+        frac: u8,
+        vd: u8,
+    },
+    /// `VMOV.F32 S{vd}, #imm` where `imm` is the already-expanded float bits.
+    VfpMovImm {
+        vd: u8,
+        imm: u32,
+    },
+    /// `VMOV S{vd}, Rt` / `VMOV Rt, S{vd}`: single-word VFP/GP move.
+    VfpMov {
+        to_gp: bool,
+        vd: u8,
+        rt: u8,
+    },
+    /// `VMOV D{vm}, Rt, Rt2` / `VMOV Rt, Rt2, D{vm}`: doubleword VFP/GP move
+    /// (also the two-S form). On FPv4-SP (no double arithmetic) the D16-D31
+    /// forms are undefined.
+    VfpMov64 {
+        to_gp: bool,
+        vm: u8,
+        rt: u8,
+        rt2: u8,
+        is_dp: bool,
+    },
+    /// `VMRS Rt, FPSCR` / `VMSR FPSCR, Rt`. On FPv4-SP only `reg == 1`
+    /// (FPSCR) is legal.
+    VfpMrsVmsr {
+        is_read: bool,
+        rt: u8,
+    },
+    /// `VLDR`/`VSTR S{vd}, [Rn, #±imm]` with `imm` the already-scaled byte
+    /// offset (`imm8 << 2`). `add` selects `+`/`-`.
+    VfpLdSt {
+        is_load: bool,
+        vd: u8,
+        rn: u8,
+        add: bool,
+        imm: u32,
+    },
+    /// `VLDR`/`VSTR D{vd}, [Rn, #±imm]` with `imm` the already-scaled byte
+    /// offset (`imm8 << 3`). On FPv4-SP the D16-D31 forms are undefined.
+    VfpLdStD {
+        is_load: bool,
+        vd: u8,
+        rn: u8,
+        add: bool,
+        imm: u32,
+    },
+    /// `VLDM`/`VSTM` S-register list: `{S{vd}-S{vd+n-1}}`, ascending (IA) or
+    /// decrement-before (DB). `writeback` is the `!`; `rn == 15` marks the
+    /// `VPOP`/`VPUSH` aliases (write-back only).
+    VfpLdStMult {
+        is_load: bool,
+        vd: u8,
+        rn: u8,
+        n: u8,
+        writeback: bool,
+        dec_before: bool,
+    },
+    /// `VLDM`/`VSTM` D-register list: `{D{vd}-D{vd+n-1}}`. On FPv4-SP the
+    /// D16-D31 range is undefined.
+    VfpLdStMultD {
+        is_load: bool,
+        vd: u8,
+        rn: u8,
+        n: u8,
+        writeback: bool,
+        dec_before: bool,
+    },
 }
 
 /// ARMv7-M multiply-family opcode. The long forms read their `RdHi:RdLo`
@@ -643,7 +760,63 @@ pub enum ExtendAddOp {
     Uxtab,
 }
 
-/// True when `hw` is the first halfword of a 32-bit ARMv6-M instruction.
+/// VFP single-precision three-operand arithmetic (FPv4-SP). Every op takes
+/// `S{vd}`, `S{vn}`, `S{vm}`. The multiply-accumulate forms are non-fused:
+/// the product is rounded before the add/subtract.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Vfp3Op {
+    /// `VMLA`: `S{vd} = S{vd} + S{vn} * S{vm}`.
+    Vmla,
+    /// `VMLS`: `S{vd} = S{vd} - S{vn} * S{vm}`.
+    Vmls,
+    /// `VNMLS`: `S{vd} = -S{vn} * S{vm} + S{vd}`.
+    Vnmls,
+    /// `VNMLA`: `S{vd} = -(S{vn} * S{vm} + S{vd})`.
+    Vnmla,
+    /// `VMUL`: `S{vd} = S{vn} * S{vm}`.
+    Vmul,
+    /// `VNMUL`: `S{vd} = -(S{vn} * S{vm})`.
+    Vnmul,
+    /// `VADD`: `S{vd} = S{vn} + S{vm}`.
+    Vadd,
+    /// `VSUB`: `S{vd} = S{vn} - S{vm}`.
+    Vsub,
+    /// `VDIV`: `S{vd} = S{vn} / S{vm}`.
+    Vdiv,
+    /// `VFMA`: `S{vd} = S{vd} + S{vn} * S{vm}` (fused).
+    Vfma,
+    /// `VFMS`: `S{vd} = S{vd} - S{vn} * S{vm}` (fused).
+    Vfms,
+    /// `VFNMS`: `S{vd} = -S{vn} * S{vm} + S{vd}` (fused).
+    Vfnms,
+    /// `VFNMA`: `S{vd} = -(S{vn} * S{vm} + S{vd})` (fused).
+    Vfnma,
+}
+
+/// VFP single-precision two-operand opcode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Vfp2Op {
+    /// `VMOV S{vd}, S{vm}`.
+    Vmov,
+    /// `VABS S{vd}, S{vm}`.
+    Vabs,
+    /// `VNEG S{vd}, S{vm}`.
+    Vneg,
+    /// `VSQRT S{vd}, S{vm}`.
+    Vsqrt,
+}
+
+/// VFP round-to-integral mode (VFPv4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VrintOp {
+    /// `VRINTR`: round to integer using the FPSCR rounding mode.
+    R,
+    /// `VRINTZ`: round to integer, towards zero.
+    Z,
+    /// `VRINTX`: round to integer using the FPSCR mode, always inexact on
+    /// change (the QEMU behavior is identical to `R`).
+    X,
+}
 /// The first halfword always starts `11110` (0xF000-0xF7FF), which no 16-bit
 /// encoding uses.
 #[inline]
@@ -744,6 +917,7 @@ pub fn decode32_v7m(hi: u16, lo: u16) -> Result<Inst32, DecodeError> {
         .or_else(|| decode_unary(hi, lo))
         .or_else(|| decode_bitfield(hi, lo))
         .or_else(|| decode_sat(hi, lo))
+        .or_else(|| decode_vfp(hi, lo))
         .unwrap_or_else(|| Err(err_for(hi)))
 }
 
@@ -1834,6 +2008,472 @@ const fn decode_bitfield(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>
         lsb,
         field,
     }))
+}
+
+// ---------------------------------------------------------------------------
+// VFP (FPv4-SP) decode.
+//
+// The T32 VFP encodings live in the `1110 110x` (memory) and `1110 1110`
+// (data-processing) halfword spaces, i.e. `0xEC00`..=`0xEEFF`. The `0xEF00`
+// block is not VFP. Single-precision registers alias `S{2d}:S{2d+1}` for the
+// Dn register used by the doubleword moves and loads.
+//
+// Field aliases (following qemu's `vfp.decode`):
+//   - `%vd_sp` = `vd<4:1>` in bits[15:12] with D = bit22 (vd = bits[15:12]<<1
+//     | bit22), `%vn_sp` = bits[19:16]<<1 | bit7, `%vm_sp` = bits[3:0]<<1 |
+//     bit5.
+//   - `%vd_dp` = `vd<3:0>` in bits[15:12] with D = bit22 folded in (vd =
+//     bits[15:12] | bit22<<4), `%vm_dp` = `vm<3:0>` in bits[3:0] with M = bit5
+//     (vm = bits[3:0] | bit5<<4).
+// ---------------------------------------------------------------------------
+
+/// VFP single-register Dn field: `vd<4:1>` in bits[15:12], D = bit22.
+#[allow(clippy::cast_possible_truncation)]
+const fn vd_sp(w: u32) -> u8 {
+    ((((w >> 12) & 0xF) << 1) as u8) | ((w >> 22) & 1) as u8
+}
+
+/// VFP single-register Vn field: `bits[19:16]<<1 : bit7`.
+#[allow(clippy::cast_possible_truncation)]
+const fn vn_sp(w: u32) -> u8 {
+    (((w >> 16) & 0xF) << 1) as u8 | ((w >> 7) & 1) as u8
+}
+
+/// VFP single-register Vm field: `bits[3:0]<<1 : bit5`.
+#[allow(clippy::cast_possible_truncation)]
+const fn vm_sp(w: u32) -> u8 {
+    (((w & 0xF) << 1) as u8) | ((w >> 5) & 1) as u8
+}
+
+/// VFP double-register Vd field: `vd<3:0>` in bits[15:12], D = bit22.
+const fn vd_dp(w: u32) -> u8 {
+    (((w >> 12) & 0xF) as u8) | ((((w >> 22) & 1) as u8) << 4)
+}
+
+/// VFP double-register Vm field: `bits[3:0] : bit5`.
+const fn vm_dp(w: u32) -> u8 {
+    (w & 0xF) as u8 | ((((w >> 5) & 1) as u8) << 4)
+}
+
+/// Decode the VFP (FPv4-SP) halfword pair. Returns `None` when the pair is
+/// not VFP at all (e.g. the `0xEF00` unallocated block); `Some(Err)`
+/// otherwise marks a VFP-space encoding that is undefined on FPv4-SP (double
+/// precision, half precision, the doubleword moves to D16-D31, etc).
+fn decode_vfp(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
+    if hi & 0xFC00 != 0xEC00 || hi & 0x0F00 == 0x0F00 {
+        return None;
+    }
+    let w = (u32::from(hi) << 16) | u32::from(lo);
+    // Split on bits[27:24] of the 32-bit instruction (hi bits[11:8]).
+    match (hi >> 8) & 0xF {
+        // 1100: VMOV (64-bit) and VLDM/VSTM IA.
+        0xC => decode_vfp_mov64_ldm(hi, lo, w),
+        // 1101: VLDR/VSTR and VLDM/VSTM DB.
+        0xD => decode_vfp_ldr_str_ldmdb(hi, lo, w),
+        // 1110: data-processing.
+        0xE => decode_vfp_dp(hi, lo, w),
+        _ => None,
+    }
+}
+
+/// Decode the `1110 1100` VFP space: VMOV (doubleword) and the ascending
+/// VLDM/VSTM forms.
+fn decode_vfp_mov64_ldm(hi: u16, lo: u16, w: u32) -> Option<Result<Inst32, DecodeError>> {
+    // VMOV Dm, Rt, Rt2 / VMOV Rt, Rt2, Dm: `1110 1100 010 op Rt2 Rt 1010 001`.
+    if hi & 0x0FE0 == 0x0C40 && lo & 0x0FD0 == 0x0A10 {
+        let to_gp = (w >> 20) & 1 == 1;
+        let vm = vm_sp(w);
+        return Some(Ok(Inst32::VfpMov64 {
+            to_gp,
+            vm,
+            rt: ((w >> 12) & 0xF) as u8,
+            rt2: ((w >> 16) & 0xF) as u8,
+            is_dp: false,
+        }));
+    }
+    if hi & 0x0FE0 == 0x0C40 && lo & 0x0FD0 == 0x0B10 {
+        let to_gp = (w >> 20) & 1 == 1;
+        let vm = vm_dp(w);
+        if vm & 0x10 != 0 {
+            // D16-D31 do not exist on FPv4-SP.
+            return Some(Err(err_for(hi)));
+        }
+        return Some(Ok(Inst32::VfpMov64 {
+            to_gp,
+            vm,
+            rt: ((w >> 12) & 0xF) as u8,
+            rt2: ((w >> 16) & 0xF) as u8,
+            is_dp: true,
+        }));
+    }
+    // VLDM/VSTM (IA): `1110 1100 1 . w l Rn Vd 1010 imm8`.
+    if hi & 0x0F80 == 0x0C80 {
+        let is_load = (w >> 20) & 1 == 1;
+        let writeback = (w >> 21) & 1 == 1;
+        let rn = (hi & 0xF) as u8;
+        let imm = (lo & 0xFF) as u8;
+        if lo & 0x0F00 == 0x0A00 {
+            let vd = vd_sp(w);
+            let n = imm;
+            if n == 0 || u32::from(vd) + u32::from(n) > 32 {
+                return Some(Err(err_for(hi)));
+            }
+            return Some(Ok(Inst32::VfpLdStMult {
+                is_load,
+                vd,
+                rn,
+                n,
+                writeback,
+                dec_before: false,
+            }));
+        }
+        if lo & 0x0F00 == 0x0B00 {
+            let vd = vd_dp(w);
+            let n = imm >> 1;
+            if n == 0 || u32::from(vd) + u32::from(n) > 16 {
+                return Some(Err(err_for(hi)));
+            }
+            return Some(Ok(Inst32::VfpLdStMultD {
+                is_load,
+                vd,
+                rn,
+                n,
+                writeback,
+                dec_before: false,
+            }));
+        }
+        return Some(Err(err_for(hi)));
+    }
+    None
+}
+
+/// Decode the `1110 1101` VFP space: VLDR/VSTR and the decrement-before
+/// VLDM/VSTM forms (VPUSH).
+fn decode_vfp_ldr_str_ldmdb(hi: u16, lo: u16, w: u32) -> Option<Result<Inst32, DecodeError>> {
+    // VLDM/VSTM (DB): `1110 1101 0 . 1 l Rn Vd 1010 imm8`.
+    if hi & 0x0FA0 == 0x0D20 {
+        let is_load = (w >> 20) & 1 == 1;
+        let rn = (hi & 0xF) as u8;
+        let imm = (lo & 0xFF) as u8;
+        if lo & 0x0F00 == 0x0A00 {
+            let vd = vd_sp(w);
+            let n = imm;
+            if n == 0 || u32::from(vd) + u32::from(n) > 32 {
+                return Some(Err(err_for(hi)));
+            }
+            return Some(Ok(Inst32::VfpLdStMult {
+                is_load,
+                vd,
+                rn,
+                n,
+                writeback: true,
+                dec_before: true,
+            }));
+        }
+        if lo & 0x0F00 == 0x0B00 {
+            let vd = vd_dp(w);
+            let n = imm >> 1;
+            if n == 0 || u32::from(vd) + u32::from(n) > 16 {
+                return Some(Err(err_for(hi)));
+            }
+            return Some(Ok(Inst32::VfpLdStMultD {
+                is_load,
+                vd,
+                rn,
+                n,
+                writeback: true,
+                dec_before: true,
+            }));
+        }
+        return Some(Err(err_for(hi)));
+    }
+    // VLDR/VSTR: `1110 1101 u . 0 l Rn Vd 1010 imm8`. The `imm8` is scaled by
+    // 4 (S) or 8 (D).
+    if hi & 0x0F20 == 0x0D00 {
+        let is_load = (w >> 20) & 1 == 1;
+        let add = (w >> 23) & 1 == 1;
+        let rn = (hi & 0xF) as u8;
+        let imm = (lo & 0xFF) as u32;
+        if lo & 0x0F00 == 0x0A00 {
+            return Some(Ok(Inst32::VfpLdSt {
+                is_load,
+                vd: vd_sp(w),
+                rn,
+                add,
+                imm: imm << 2,
+            }));
+        }
+        if lo & 0x0F00 == 0x0B00 {
+            let vd = vd_dp(w);
+            if vd & 0x10 != 0 {
+                return Some(Err(err_for(hi)));
+            }
+            return Some(Ok(Inst32::VfpLdStD {
+                is_load,
+                vd,
+                rn,
+                add,
+                imm: imm << 3,
+            }));
+        }
+        return Some(Err(err_for(hi)));
+    }
+    None
+}
+
+/// Decode the `1110 1110` VFP data-processing space.
+fn decode_vfp_dp(hi: u16, lo: u16, w: u32) -> Option<Result<Inst32, DecodeError>> {
+    // VMSR/VMRS: `1110 1110 111 l reg Rt 1010 0001 0000`.
+    if hi & 0x0FE0 == 0x0EE0 && lo & 0x0FFF == 0x0A10 {
+        let reg = (w >> 16) & 0xF;
+        if reg != 1 {
+            // FPSID/MVFR reads and FPSCR aliases are UNDEFINED here; only
+            // reg == 1 (FPSCR) exists on FPv4-SP.
+            return Some(Err(err_for(hi)));
+        }
+        return Some(Ok(Inst32::VfpMrsVmsr {
+            is_read: (w >> 20) & 1 == 1,
+            rt: ((w >> 12) & 0xF) as u8,
+        }));
+    }
+    // VMOV single: `1110 1110 000 l Vn Rt 1010 . 001 0000`.
+    if hi & 0x0FE0 == 0x0E00 && lo & 0x0F7F == 0x0A10 {
+        return Some(Ok(Inst32::VfpMov {
+            to_gp: (w >> 20) & 1 == 1,
+            vd: vn_sp(w),
+            rt: ((w >> 12) & 0xF) as u8,
+        }));
+    }
+    // The remaining data-processing uses bits[11:8] to select the register
+    // size. Only `1010` (single) is implemented on FPv4-SP; `1001` (half)
+    // and `1011` (double) are undefined.
+    match (lo >> 8) & 0xF {
+        0xA => decode_vfp_sp(hi, lo, w),
+        0x9 | 0xB => Some(Err(err_for(hi))),
+        _ => None,
+    }
+}
+
+/// Decode the VFP single-precision data-processing space
+/// (`bits[11:8] == 1010`).
+fn decode_vfp_sp(hi: u16, lo: u16, w: u32) -> Option<Result<Inst32, DecodeError>> {
+    // VMOV immediate: `1110 1110 1.11 imm4 Vd 1010 0000 imm4`. The `1.11` tag
+    // on bits[23:20] (hi bits[7:4] == 1011) is what separates it from the
+    // three-operand forms, which also leave bits[7:4] == 0000.
+    if hi & 0x00B0 == 0x00B0 && lo & 0x0FF0 == 0x0A00 {
+        let imm8 = (((w >> 16) & 0xF) << 4) as u32 | (w & 0xF) as u32;
+        return Some(Ok(Inst32::VfpMovImm {
+            vd: vd_sp(w),
+            imm: vfp_expand_imm(imm8),
+        }));
+    }
+    // Every remaining op has bit4 clear.
+    if lo & 0x0010 != 0 {
+        return Some(Err(err_for(hi)));
+    }    let b23 = (w >> 23) & 1;
+    let b21 = (w >> 21) & 1;
+    let b20 = (w >> 20) & 1;
+    let b19_16 = (w >> 16) & 0xF;
+    let bit6 = (w >> 6) & 1;
+    let bit7 = (w >> 7) & 1;
+    // The three-operand zone is everything that is not `1.11` (bit23, bit21,
+    // bit20 all set).
+    if !(b23 == 1 && b21 == 1 && b20 == 1) {
+        let op = (b23 << 3) | (b21 << 2) | (b20 << 1) | bit6;
+        let vd = vd_sp(w);
+        let vn = vn_sp(w);
+        let vm = vm_sp(w);
+        return match op {
+            0 => Some(Ok(Inst32::Vfp3 {
+                op: Vfp3Op::Vmla,
+                vd,
+                vn,
+                vm,
+            })),
+            1 => Some(Ok(Inst32::Vfp3 {
+                op: Vfp3Op::Vmls,
+                vd,
+                vn,
+                vm,
+            })),
+            2 => Some(Ok(Inst32::Vfp3 {
+                op: Vfp3Op::Vnmls,
+                vd,
+                vn,
+                vm,
+            })),
+            3 => Some(Ok(Inst32::Vfp3 {
+                op: Vfp3Op::Vnmla,
+                vd,
+                vn,
+                vm,
+            })),
+            4 => Some(Ok(Inst32::Vfp3 {
+                op: Vfp3Op::Vmul,
+                vd,
+                vn,
+                vm,
+            })),
+            5 => Some(Ok(Inst32::Vfp3 {
+                op: Vfp3Op::Vnmul,
+                vd,
+                vn,
+                vm,
+            })),
+            6 => Some(Ok(Inst32::Vfp3 {
+                op: Vfp3Op::Vadd,
+                vd,
+                vn,
+                vm,
+            })),
+            7 => Some(Ok(Inst32::Vfp3 {
+                op: Vfp3Op::Vsub,
+                vd,
+                vn,
+                vm,
+            })),
+            8 => Some(Ok(Inst32::Vfp3 {
+                op: Vfp3Op::Vdiv,
+                vd,
+                vn,
+                vm,
+            })),
+            10 => Some(Ok(Inst32::Vfp3 {
+                op: Vfp3Op::Vfnms,
+                vd,
+                vn,
+                vm,
+            })),
+            11 => Some(Ok(Inst32::Vfp3 {
+                op: Vfp3Op::Vfnma,
+                vd,
+                vn,
+                vm,
+            })),
+            12 => Some(Ok(Inst32::Vfp3 {
+                op: Vfp3Op::Vfma,
+                vd,
+                vn,
+                vm,
+            })),
+            13 => Some(Ok(Inst32::Vfp3 {
+                op: Vfp3Op::Vfms,
+                vd,
+                vn,
+                vm,
+            })),
+            // opcode 9 (VDIV with bit6 set) is unallocated.
+            _ => Some(Err(err_for(hi))),
+        };
+    }
+    // The `1.11` two-operand/convert zone: every op here has bit6 set (the
+    // immediate form with bit6 clear was handled above).
+    if bit6 != 1 {
+        return Some(Err(err_for(hi)));
+    }
+    let vd = vd_sp(w);
+    let vm = vm_sp(w);
+    match b19_16 {
+        // 0000: VMOV (register) / VABS, selected by bit7.
+        0x0 => {
+            if bit7 == 0 {
+                Some(Ok(Inst32::Vfp2 {
+                    op: Vfp2Op::Vmov,
+                    vd,
+                    vm,
+                }))
+            } else {
+                Some(Ok(Inst32::Vfp2 {
+                    op: Vfp2Op::Vabs,
+                    vd,
+                    vm,
+                }))
+            }
+        }
+        // 0001: VNEG / VSQRT, selected by bit7.
+        0x1 => {
+            if bit7 == 0 {
+                Some(Ok(Inst32::Vfp2 {
+                    op: Vfp2Op::Vneg,
+                    vd,
+                    vm,
+                }))
+            } else {
+                Some(Ok(Inst32::Vfp2 {
+                    op: Vfp2Op::Vsqrt,
+                    vd,
+                    vm,
+                }))
+            }
+        }
+        // 0010/0011: VCVT half/single (fp16), undefined on FPv4-SP.
+        0x2 | 0x3 => Some(Err(err_for(hi))),
+        // 010z: VCMP/VCMPE. `bit5` is the Vm<0> field, not an opcode bit.
+        0x4 | 0x5 => Some(Ok(Inst32::VfpCmp {
+            vd,
+            vm,
+            e: bit7 == 1,
+            z: b19_16 & 1 == 1,
+        })),
+        // 0110: VRINTR/VRINTZ, selected by bit7.
+        0x6 => {
+            let op = if bit7 == 0 { VrintOp::R } else { VrintOp::Z };
+            Some(Ok(Inst32::VfpVrint { op, vd, vm }))
+        }
+        // 0111: VRINTX / VCVT (F64.F32, needs double precision), selected by
+        // bit7.
+        0x7 => {
+            if bit7 == 0 {
+                Some(Ok(Inst32::VfpVrint {
+                    op: VrintOp::X,
+                    vd,
+                    vm,
+                }))
+            } else {
+                Some(Err(err_for(hi)))
+            }
+        }
+        // 1000: VCVT from integer (VCVT.F32.{S,U}32), `s` = bit7.
+        0x8 => Some(Ok(Inst32::VfpCvtInt {
+            to_float: true,
+            signed: bit7 == 1,
+            rz: false,
+            vd,
+            vm,
+        })),
+        // 1001: VJCVT (double) — undefined on FPv4-SP.
+        0x9 => Some(Err(err_for(hi))),
+        // 1100/1101: VCVT to integer (VCVT.{S,U}32.F32 / VCVTR), `s` = bit16,
+        // `rz` = bit7.
+        0xC | 0xD => Some(Ok(Inst32::VfpCvtInt {
+            to_float: false,
+            signed: b19_16 & 1 == 1,
+            rz: bit7 == 1,
+            vd,
+            vm,
+        })),
+        // 101x/111x: VCVT to/from fixed-point. `opc` = bit18<<2 | bit16<<1 |
+        // bit7; the number of fraction bits comes from the `imm` field in the
+        // Vm slot (`imm` = bits[3:0]<<1 | bit5): 16 - imm for the 16-bit
+        // form, 32 - imm for the 32-bit form.
+        0xA | 0xB | 0xE | 0xF => {
+            let opc = ((((w >> 18) & 1) << 2) | ((b19_16 & 1) << 1) | bit7) as u8;
+            let imm = (((w & 0xF) << 1) as u8) | ((w >> 5) & 1) as u8;
+            let frac = if opc & 1 == 0 { 16 - imm } else { 32 - imm };
+            Some(Ok(Inst32::VfpCvtFix { opc, frac, vd }))
+        }
+        _ => Some(Err(err_for(hi))),
+    }
+}
+
+/// Expand a VFP `imm8` into the float bits of `VMOV.F32 Sd, #imm`, following
+/// qemu's `vfp_expand_imm(MO_32, imm8)`:
+/// `f = (bit7 ? 0x8000 : 0) | (bit6 ? 0x3e00 : 0x4000) | (imm8 & 0x3f) << 3`,
+/// placed in the high halfword. The value is the ARM `VFPExpandImm` result.
+const fn vfp_expand_imm(imm8: u32) -> u32 {
+    let f = ((imm8 >> 7) & 1) * 0x8000 | (((imm8 >> 6) & 1) * 0x3E00) | (((imm8 >> 6) & 1 ^ 1) * 0x4000)
+        | ((imm8 & 0x3F) << 3);
+    f << 16
 }
 
 #[cfg(test)]
@@ -3850,5 +4490,334 @@ mod tests {
         assert!(v7m_bytes([0xc2, 0xe8, 0x70, 0x01]).is_err()); // STREXD
         assert!(decode32_bytes([0xc2, 0xe8, 0x41, 0x0f]).is_err());
         assert!(decode32_bytes([0xbf, 0xf3, 0x2f, 0x8f]).is_err()); // no CLREX on v6-M
+    }
+
+    #[test]
+    fn vfp_load_store_decode() {
+        // `vldmia r0!, {s0-s3}` (increment-after, writeback).
+        assert_eq!(
+            v7m_bytes([0xb0, 0xec, 0x04, 0x0a]),
+            Ok(Inst32::VfpLdStMult {
+                is_load: true,
+                vd: 0,
+                rn: 0,
+                n: 4,
+                writeback: true,
+                dec_before: false,
+            })
+        );
+        // `vpop {s0-s3}` = increment-after with rn=SP.
+        assert_eq!(
+            v7m_bytes([0xbd, 0xec, 0x04, 0x0a]),
+            Ok(Inst32::VfpLdStMult {
+                is_load: true,
+                vd: 0,
+                rn: 13,
+                n: 4,
+                writeback: true,
+                dec_before: false,
+            })
+        );
+        // `vpush {s0-s3}` = decrement-before store with rn=SP.
+        assert_eq!(
+            v7m_bytes([0x2d, 0xed, 0x04, 0x0a]),
+            Ok(Inst32::VfpLdStMult {
+                is_load: false,
+                vd: 0,
+                rn: 13,
+                n: 4,
+                writeback: true,
+                dec_before: true,
+            })
+        );
+        // `vldr s0, [r0]`.
+        assert_eq!(
+            v7m_bytes([0x90, 0xed, 0x00, 0x0a]),
+            Ok(Inst32::VfpLdSt {
+                is_load: true,
+                vd: 0,
+                rn: 0,
+                add: true,
+                imm: 0,
+            })
+        );
+        // `vstr s0, [r0, #-4]`.
+        assert_eq!(
+            v7m_bytes([0x00, 0xed, 0x01, 0x0a]),
+            Ok(Inst32::VfpLdSt {
+                is_load: false,
+                vd: 0,
+                rn: 0,
+                add: false,
+                imm: 4,
+            })
+        );
+        // `vldr s5, [r1, #8]` exercises a non-zero `vd` (bits[15:12]=2, D=1)
+        // and offset: imm8 = 2 scaled by 4.
+        assert_eq!(
+            v7m_bytes([0xd1, 0xed, 0x02, 0x2a]),
+            Ok(Inst32::VfpLdSt {
+                is_load: true,
+                vd: 5,
+                rn: 1,
+                add: true,
+                imm: 8,
+            })
+        );
+    }
+
+    #[test]
+    fn vfp_move_and_misc_decode() {
+        // `vmov s0, r0` / `vmov r0, s0`.
+        assert_eq!(
+            v7m_bytes([0x00, 0xee, 0x10, 0x0a]),
+            Ok(Inst32::VfpMov {
+                to_gp: false,
+                vd: 0,
+                rt: 0,
+            })
+        );
+        assert_eq!(
+            v7m_bytes([0x10, 0xee, 0x10, 0x0a]),
+            Ok(Inst32::VfpMov {
+                to_gp: true,
+                vd: 0,
+                rt: 0,
+            })
+        );
+        // `vmov r6, s31` (Vn field = 15<<1 | 1 = 31).
+        assert_eq!(
+            v7m_bytes([0x1f, 0xee, 0x90, 0x6a]),
+            Ok(Inst32::VfpMov {
+                to_gp: true,
+                vd: 31,
+                rt: 6,
+            })
+        );
+        // `vmov r0, r1, s1` (doubleword move; Vm = 0<<1 | 1 = 1).
+        assert_eq!(
+            v7m_bytes([0x50, 0xec, 0x30, 0x0a]),
+            Ok(Inst32::VfpMov64 {
+                to_gp: true,
+                vm: 1,
+                rt: 0,
+                rt2: 0,
+                is_dp: false,
+            })
+        );
+        // `vmov.f32 s1, #1.0` (Vd = 0<<1 | 1 = 1, imm8 = 0x70).
+        assert_eq!(
+            v7m_bytes([0xf7, 0xee, 0x00, 0x0a]),
+            Ok(Inst32::VfpMovImm {
+                vd: 1,
+                imm: 0x3f80_0000,
+            })
+        );
+        // VMRS APSR_nzcv, FPSCR.
+        assert_eq!(
+            v7m_bytes([0xf1, 0xee, 0x10, 0xfa]),
+            Ok(Inst32::VfpMrsVmsr {
+                is_read: true,
+                rt: 15,
+            })
+        );
+        // Undefined VFP spaces on FPv4-SP.
+        assert!(v7m_bytes([0xf2, 0xee, 0x40, 0x0a]).is_err()); // VCVT f16
+        assert!(v7m_bytes([0xf3, 0xee, 0x40, 0x0a]).is_err()); // VCVT f16
+        assert!(v7m_bytes([0xb0, 0xee, 0x20, 0x0a]).is_err()); // 2-op, bit6 clear
+        assert!(v7m_bytes([0xf9, 0xee, 0x40, 0x0a]).is_err()); // VJCVT
+    }
+
+    #[test]
+    fn vfp_three_op_decode() {
+        // `vadd.f32 s0, s1, s2`: Vd=0, Vn=1, Vm=2.
+        assert_eq!(
+            v7m_bytes([0x30, 0xee, 0x81, 0x0a]),
+            Ok(Inst32::Vfp3 {
+                op: Vfp3Op::Vadd,
+                vd: 0,
+                vn: 1,
+                vm: 2,
+            })
+        );
+        // `vfma.f32 s5, s6, s7`: Vd=5, Vn=6, Vm=7.
+        assert_eq!(
+            v7m_bytes([0xe3, 0xee, 0x23, 0x2a]),
+            Ok(Inst32::Vfp3 {
+                op: Vfp3Op::Vfma,
+                vd: 5,
+                vn: 6,
+                vm: 7,
+            })
+        );
+        // `vmla.f32 s0, s0, s0` (0xEE00 0x0A00) must decode as VMLA, NOT as
+        // the VMOV-immediate form (which needs bits[23:20] == 1.11).
+        assert_eq!(
+            v7m_bytes([0x00, 0xee, 0x00, 0x0a]),
+            Ok(Inst32::Vfp3 {
+                op: Vfp3Op::Vmla,
+                vd: 0,
+                vn: 0,
+                vm: 0,
+            })
+        );
+        // `vdiv.f32 s2, s6, s4`.
+        assert_eq!(
+            v7m_bytes([0x83, 0xee, 0x02, 0x1a]),
+            Ok(Inst32::Vfp3 {
+                op: Vfp3Op::Vdiv,
+                vd: 2,
+                vn: 6,
+                vm: 4,
+            })
+        );
+        // VFMS: op = 1101 (bit6 set).
+        assert_eq!(
+            v7m_bytes([0xe3, 0xee, 0x63, 0x2a]),
+            Ok(Inst32::Vfp3 {
+                op: Vfp3Op::Vfms,
+                vd: 5,
+                vn: 6,
+                vm: 7,
+            })
+        );
+        // VFNMA: op = 1011.
+        assert_eq!(
+            v7m_bytes([0x93, 0xee, 0x63, 0x2a]),
+            Ok(Inst32::Vfp3 {
+                op: Vfp3Op::Vfnma,
+                vd: 4,
+                vn: 6,
+                vm: 7,
+            })
+        );
+    }
+
+    #[test]
+    fn vfp_two_op_decode() {
+        // `vabs.f32 s3, s4`: bit7 selects VABS, Vd = 1<<1|1 = 3, Vm = 2<<1|0 = 4.
+        assert_eq!(
+            v7m_bytes([0xf0, 0xee, 0xc2, 0x1a]),
+            Ok(Inst32::Vfp2 {
+                op: Vfp2Op::Vabs,
+                vd: 3,
+                vm: 4,
+            })
+        );
+        // `vneg.f32 s3, s4`.
+        assert_eq!(
+            v7m_bytes([0xf1, 0xee, 0x42, 0x1a]),
+            Ok(Inst32::Vfp2 {
+                op: Vfp2Op::Vneg,
+                vd: 3,
+                vm: 4,
+            })
+        );
+        // `vsqrt.f32 s3, s4`.
+        assert_eq!(
+            v7m_bytes([0xf1, 0xee, 0xc2, 0x1a]),
+            Ok(Inst32::Vfp2 {
+                op: Vfp2Op::Vsqrt,
+                vd: 3,
+                vm: 4,
+            })
+        );
+        // `vmov.f32 s3, s4` (bit7 clear).
+        assert_eq!(
+            v7m_bytes([0xf0, 0xee, 0x42, 0x1a]),
+            Ok(Inst32::Vfp2 {
+                op: Vfp2Op::Vmov,
+                vd: 3,
+                vm: 4,
+            })
+        );
+    }
+
+    #[test]
+    fn vfp_compare_and_convert_decode() {
+        // `vcmp.f32 s0, s0` — even Vm (bit5 = 0) must still decode.
+        assert_eq!(
+            v7m_bytes([0xb4, 0xee, 0x40, 0x0a]),
+            Ok(Inst32::VfpCmp {
+                vd: 0,
+                vm: 0,
+                e: false,
+                z: false,
+            })
+        );
+        // `vcmpe.f32 s1, s3` (signaling, Vm odd).
+        assert_eq!(
+            v7m_bytes([0xf4, 0xee, 0xe1, 0x0a]),
+            Ok(Inst32::VfpCmp {
+                vd: 1,
+                vm: 3,
+                e: true,
+                z: false,
+            })
+        );
+        // `vcvt.f32.s32 s1, s2` (int -> float, signed).
+        assert_eq!(
+            v7m_bytes([0xf8, 0xee, 0xc1, 0x0a]),
+            Ok(Inst32::VfpCvtInt {
+                to_float: true,
+                signed: true,
+                rz: false,
+                vd: 1,
+                vm: 2,
+            })
+        );
+        // `vcvt.s32.f32 s1, s2` (float -> int, signed, FPSCR rounding).
+        assert_eq!(
+            v7m_bytes([0xfd, 0xee, 0x41, 0x0a]),
+            Ok(Inst32::VfpCvtInt {
+                to_float: false,
+                signed: true,
+                rz: false,
+                vd: 1,
+                vm: 2,
+            })
+        );
+        // `vcvtr.u32.f32 s1, s2` (float -> int, unsigned, round-to-zero).
+        assert_eq!(
+            v7m_bytes([0xfc, 0xee, 0xc1, 0x0a]),
+            Ok(Inst32::VfpCvtInt {
+                to_float: false,
+                signed: false,
+                rz: true,
+                vd: 1,
+                vm: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn vfp_fixed_point_convert_decode() {
+        // `vcvt.f32.s16 s1, s1, #4`: in place on S1, imm = 4, frac = 16-4.
+        assert_eq!(
+            v7m_bytes([0xfa, 0xee, 0x42, 0x0a]),
+            Ok(Inst32::VfpCvtFix {
+                opc: 0,
+                frac: 12,
+                vd: 1,
+            })
+        );
+        // `vcvt.s32.f32 s1, s1, #4`: opc = 101, frac = 32-4 = 28.
+        assert_eq!(
+            v7m_bytes([0xfe, 0xee, 0xc2, 0x0a]),
+            Ok(Inst32::VfpCvtFix {
+                opc: 5,
+                frac: 28,
+                vd: 1,
+            })
+        );
+        // `vcvt.u16.f32 s1, s1, #8`: opc = 110, frac = 16-8 = 8.
+        assert_eq!(
+            v7m_bytes([0xff, 0xee, 0x44, 0x0a]),
+            Ok(Inst32::VfpCvtFix {
+                opc: 6,
+                frac: 8,
+                vd: 1,
+            })
+        );
     }
 }

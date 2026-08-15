@@ -262,7 +262,13 @@ fn parts_canonicalize(p: &mut Parts, status: &mut FloatStatus) {
         p.cls = FloatClass::Inf;
     } else {
         frac_shl(&mut p.frac, F32_FRAC_SHIFT);
-        p.cls = FloatClass::SNaN;
+        // The float32 quiet bit (raw bit 22) lands on bit 62 in the
+        // decomposed fraction, just below the implicit bit.
+        p.cls = if p.frac & (DECOMPOSED_IMPLICIT_BIT >> 1) != 0 {
+            FloatClass::QNaN
+        } else {
+            FloatClass::SNaN
+        };
     }
 }
 
@@ -1783,6 +1789,27 @@ pub fn uint32_to_float32_scalbn(a: u32, shift: i32, status: &mut FloatStatus) ->
     };
     parts_uint_to_float(&mut p, a as u64, -shift);
     round_pack_canonical(&mut p, status)
+}
+
+/// float32 -> int32 with a scale, round-to-zero (QEMU
+/// `float32_to_int32_scalbn`; used by VCVT to fixed-point).
+pub fn to_int32_scalbn(a: u32, shift: i32, status: &mut FloatStatus) -> i32 {
+    let mut p = unpack_canonical_bits(a, status);
+    parts_float_to_sint(
+        &mut p,
+        RoundMode::ToZero,
+        shift,
+        i32::MIN as i64,
+        i32::MAX as i64,
+        status,
+    ) as i32
+}
+
+/// float32 -> uint32 with a scale, round-to-zero (QEMU
+/// `float32_to_uint32_scalbn`).
+pub fn to_uint32_scalbn(a: u32, shift: i32, status: &mut FloatStatus) -> u32 {
+    let mut p = unpack_canonical_bits(a, status);
+    parts_float_to_uint(&mut p, RoundMode::ToZero, shift, u32::MAX as u64, status) as u32
 }
 
 #[cfg(test)]

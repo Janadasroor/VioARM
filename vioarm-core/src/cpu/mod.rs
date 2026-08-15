@@ -18,7 +18,7 @@ use decode16::{
 use decode32::{
     decode32, decode32_v7m, is_thumb2, is_thumb2_v7m, thumb_expand_imm, BitfieldOp, DpOp, DspMulOp,
     DualMulOp, ExSize, ExtendAddOp, Inst32, MemOp, MulOp, ParOp, ParSat, QaddOp, SatOp, ShiftType,
-    SysReg, UnaryOp,
+    SysReg, UnaryOp, Vfp2Op, Vfp3Op, VrintOp,
 };
 use registers::{Registers, Xpsr, APSR_FLAGS, APSR_GE, APSR_Q, APSR_QFLAGS, XPSR_T};
 
@@ -57,10 +57,135 @@ enum Next {
     Stop(HaltCause),
 }
 
+/// FPSCR bit positions (architectural A32/A32VFP layout).
+pub mod fpscr {
+    /// Invalid-operation cumulative exception flag (bit 0).
+    pub const IOC: u32 = 1 << 0;
+    /// Divide-by-zero cumulative exception flag (bit 1).
+    pub const DZC: u32 = 1 << 1;
+    /// Overflow cumulative exception flag (bit 2).
+    pub const OFC: u32 = 1 << 2;
+    /// Underflow cumulative exception flag (bit 3).
+    pub const UFC: u32 = 1 << 3;
+    /// Inexact cumulative exception flag (bit 4).
+    pub const IXC: u32 = 1 << 4;
+    /// Input-denormal cumulative exception flag (bit 7).
+    pub const IDC: u32 = 1 << 7;
+    /// The six cumulative exception flags.
+    pub const CEXC: u32 = IOC | DZC | OFC | UFC | IXC | IDC;
+    /// Rounding-mode field, bits [23:22] (`0`=nearest-even, `1`=+inf,
+    /// `2`=-inf, `3`=towards zero).
+    pub const RMODE: u32 = 3 << 22;
+    /// Flush-to-zero enable (bit 24): denormal results are flushed.
+    pub const FZ: u32 = 1 << 24;
+    /// Default-NaN enable (bit 25).
+    pub const DN: u32 = 1 << 25;
+    /// The condition flags, bits [31:28], written by VFP comparisons.
+    pub const NZCV: u32 = 0xF << 28;
+}
+
+/// True if the raw float32 bits denote a NaN (exponent all ones, fraction
+/// non-zero), matching QEMU's `float32_is_any_nan`.
+#[inline]
+#[must_use]
+fn is_f32_nan(raw: u32) -> bool {
+    raw & 0x7f80_0000 == 0x7f80_0000 && raw & 0x007f_ffff != 0
+}
+
+/// VFP (FPv4-SP) architectural state: the S0-S31 single-precision register
+/// bank and FPSCR. D0-D15 alias the S pairs (`Dn` == `S{2n}:S{2n+1}`) for the
+/// 64-bit move and load/store instructions.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct VfpState {
+    pub s: [u32; 32],
+    pub fpscr: u32,
+}
+
+impl VfpState {
+    /// Read single-precision register `Sd`.
+    #[inline]
+    #[must_use]
+    pub fn read_s(&self, d: u8) -> u32 {
+        self.s[d as usize]
+    }
+
+    /// Write single-precision register `Sd`.
+    #[inline]
+    pub fn write_s(&mut self, d: u8, v: u32) {
+        self.s[d as usize] = v;
+    }
+
+    /// Read doubleword register `Dd` (the `S{2d}:S{2d+1}` pair).
+    #[inline]
+    #[must_use]
+    pub fn read_d(&self, d: u8) -> u64 {
+        let lo = u64::from(self.s[(2 * d) as usize]);
+        let hi = u64::from(self.s[(2 * d + 1) as usize]);
+        lo | (hi << 32)
+    }
+
+    /// Write doubleword register `Dd` (the `S{2d}:S{2d+1}` pair).
+    #[inline]
+    pub fn write_d(&mut self, d: u8, v: u64) {
+        self.s[(2 * d) as usize] = v as u32;
+        self.s[(2 * d + 1) as usize] = (v >> 32) as u32;
+    }
+
+    /// Rounding mode encoded in FPSCR bits [23:22], as a `RoundMode`.
+    #[inline]
+    #[must_use]
+    pub fn rounding_mode(&self) -> fpu::RoundMode {
+        match (self.fpscr >> 22) & 0b11 {
+            0b01 => fpu::RoundMode::Up,
+            0b10 => fpu::RoundMode::Down,
+            0b11 => fpu::RoundMode::ToZero,
+            _ => fpu::RoundMode::NearestEven,
+        }
+    }
+
+    /// Build the softfloat status word from the control bits of FPSCR.
+    #[inline]
+    #[must_use]
+    pub fn float_status(&self) -> fpu::FloatStatus {
+        let mut status = fpu::FloatStatus::new(self.rounding_mode());
+        status.flush_to_zero = self.fpscr & fpscr::FZ != 0;
+        status.flush_inputs_to_zero = self.fpscr & fpscr::FZ != 0;
+        status.default_nan_mode = self.fpscr & fpscr::DN != 0;
+        status
+    }
+
+    /// Fold a softfloat exception word into FPSCR's cumulative exception
+    /// flags. `flags` is a `FLAG_*` bitmask from [`fpu`].
+    pub fn fold_flags(&mut self, flags: u32) {
+        let mut bits = 0;
+        if flags & fpu::FLAG_INVALID != 0 {
+            bits |= fpscr::IOC;
+        }
+        if flags & fpu::FLAG_DIVBYZERO != 0 {
+            bits |= fpscr::DZC;
+        }
+        if flags & fpu::FLAG_OVERFLOW != 0 {
+            bits |= fpscr::OFC;
+        }
+        if flags & (fpu::FLAG_UNDERFLOW | fpu::FLAG_OUTPUT_DENORMAL_FLUSHED) != 0 {
+            bits |= fpscr::UFC;
+        }
+        if flags & fpu::FLAG_INEXACT != 0 {
+            bits |= fpscr::IXC;
+        }
+        if flags & fpu::FLAG_INPUT_DENORMAL_FLUSHED != 0 {
+            bits |= fpscr::IDC;
+        }
+        self.fpscr |= bits;
+    }
+}
+
 /// The core CPU state plus its bus.
 pub struct Core<B: PeripheralBus> {
     pub regs: Registers,
     pub xpsr: Xpsr,
+    /// VFP (FPv4-SP) registers and FPSCR.
+    pub vfp: VfpState,
     /// The ISA this core was constructed for. Immutable after construction.
     pub isa: Isa,
     /// PRIMASK (interrupt masking). Only bit `i` of `CPSIE/CPSID` touches it
@@ -101,6 +226,7 @@ impl<B: PeripheralBus> Core<B> {
         Self {
             regs: Registers::default(),
             xpsr: Xpsr::new(XPSR_T),
+            vfp: VfpState::default(),
             isa,
             primask: false,
             basepri: 0,
@@ -1788,6 +1914,395 @@ impl<B: PeripheralBus> Core<B> {
                         };
                         self.regs.write(rd, base | inserted);
                     }
+                }
+                Ok(Next::Advance(pc + 4))
+            }
+            // ---- VFP (FPv4-SP) ----
+            I::Vfp3 { op, vd, vn, vm } => {
+                let mut st = self.vfp.float_status();
+                let a = self.vfp.read_s(vn);
+                let b = self.vfp.read_s(vm);
+                let c = self.vfp.read_s(vd);
+                // The VMLA-family forms are non-fused: the product rounds
+                // before the add/subtract. The fused forms negate an input by
+                // flipping its sign bit before the fused multiply-add, exactly
+                // as hardware does for a NaN input too.
+                let result = match op {
+                    Vfp3Op::Vmla => {
+                        let prod = fpu::mul(a, b, &mut st);
+                        fpu::add(c, prod, &mut st)
+                    }
+                    Vfp3Op::Vmls => {
+                        let prod = fpu::mul(a, b, &mut st);
+                        fpu::add(c, prod ^ 0x8000_0000, &mut st)
+                    }
+                    Vfp3Op::Vnmls => {
+                        let prod = fpu::mul(a, b, &mut st);
+                        fpu::add(c ^ 0x8000_0000, prod, &mut st)
+                    }
+                    Vfp3Op::Vnmla => {
+                        let prod = fpu::mul(a, b, &mut st);
+                        fpu::add(c ^ 0x8000_0000, prod ^ 0x8000_0000, &mut st)
+                    }
+                    Vfp3Op::Vmul => fpu::mul(a, b, &mut st),
+                    Vfp3Op::Vnmul => fpu::mul(a, b, &mut st) ^ 0x8000_0000,
+                    Vfp3Op::Vadd => fpu::add(a, b, &mut st),
+                    Vfp3Op::Vsub => fpu::sub(a, b, &mut st),
+                    Vfp3Op::Vdiv => fpu::div(a, b, &mut st),
+                    Vfp3Op::Vfma => fpu::muladd(a, b, c, &mut st),
+                    Vfp3Op::Vfms => fpu::muladd(a ^ 0x8000_0000, b, c, &mut st),
+                    Vfp3Op::Vfnma => fpu::muladd(a, b, c ^ 0x8000_0000, &mut st),
+                    Vfp3Op::Vfnms => fpu::muladd(a ^ 0x8000_0000, b, c ^ 0x8000_0000, &mut st),
+                };
+                self.vfp.write_s(vd, result);
+                self.vfp.fold_flags(st.flags);
+                Ok(Next::Advance(pc + 4))
+            }
+            I::Vfp2 { op, vd, vm } => {
+                let m = self.vfp.read_s(vm);
+                // VMOV/VABS/VNEG are plain register moves that neither
+                // consume denormals nor raise exceptions.
+                let result = match op {
+                    Vfp2Op::Vmov => m,
+                    Vfp2Op::Vabs => m & 0x7fff_ffff,
+                    Vfp2Op::Vneg => m ^ 0x8000_0000,
+                    Vfp2Op::Vsqrt => {
+                        let mut st = self.vfp.float_status();
+                        let r = fpu::sqrt(m, &mut st);
+                        self.vfp.fold_flags(st.flags);
+                        r
+                    }
+                };
+                self.vfp.write_s(vd, result);
+                Ok(Next::Advance(pc + 4))
+            }
+            I::VfpCmp { vd, vm, e, z } => {
+                // VCMP compares `S{vd}` against `S{vm}` (or `+0.0` for the
+                // `z` form) and writes FPSCR bits[31:28]. `e` selects VCMPE,
+                // the signaling compare that raises Invalid on any NaN.
+                let a = self.vfp.read_s(vd);
+                let b = if z { 0x0000_0000 } else { self.vfp.read_s(vm) };
+                let mut st = self.vfp.float_status();
+                let rel = if e {
+                    fpu::compare(a, b, &mut st)
+                } else {
+                    fpu::compare_signal(a, b, &mut st)
+                };
+                self.vfp.fold_flags(st.flags);
+                let nzcv = match rel {
+                    fpu::FloatRelation::Equal => 0b0110,
+                    fpu::FloatRelation::Less => 0b1000,
+                    fpu::FloatRelation::Greater => 0b0010,
+                    fpu::FloatRelation::Unordered => 0b0011,
+                };
+                self.vfp.fpscr = (self.vfp.fpscr & !fpscr::NZCV) | (nzcv << 28);
+                Ok(Next::Advance(pc + 4))
+            }
+            I::VfpVrint { op, vd, vm } => {
+                let a = self.vfp.read_s(vm);
+                let mut st = self.vfp.float_status();
+                let result = match op {
+                    VrintOp::Z => {
+                        let prev = st.rounding_mode;
+                        st.rounding_mode = fpu::RoundMode::ToZero;
+                        let r = fpu::round_to_int(a, &mut st);
+                        st.rounding_mode = prev;
+                        r
+                    }
+                    VrintOp::R | VrintOp::X => fpu::round_to_int(a, &mut st),
+                };
+                self.vfp.write_s(vd, result);
+                self.vfp.fold_flags(st.flags);
+                Ok(Next::Advance(pc + 4))
+            }
+            #[allow(
+                clippy::cast_possible_wrap,
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss
+            )]
+            I::VfpCvtInt { to_float, signed, rz, vd, vm } => {
+                let a = self.vfp.read_s(vm);
+                let mut st = self.vfp.float_status();
+                let result = if to_float {
+                    if signed {
+                        fpu::int32_to_float32(a as i32, &mut st)
+                    } else {
+                        fpu::uint32_to_float32(a, &mut st)
+                    }
+                } else {
+                    // NaN converts to zero with Invalid Operation.
+                    if is_f32_nan(a) {
+                        st.flags |= fpu::FLAG_INVALID;
+                        0
+                    } else if signed {
+                        if rz {
+                            fpu::to_int32_round_to_zero(a, &mut st) as u32
+                        } else {
+                            fpu::to_int32(a, &mut st) as u32
+                        }
+                    } else if rz {
+                        fpu::to_uint32_round_to_zero(a, &mut st)
+                    } else {
+                        fpu::to_uint32(a, &mut st)
+                    }
+                };
+                self.vfp.write_s(vd, result);
+                self.vfp.fold_flags(st.flags);
+                Ok(Next::Advance(pc + 4))
+            }
+            #[allow(
+                clippy::cast_possible_wrap,
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss
+            )]
+            I::VfpCvtFix { opc, frac, vd } => {
+                // The convert is in place: source and destination are both
+                // `S{vd}`. `opc` = bit18<<2 | bit16<<1 | bit7: bit18 = `op`
+                // (1 = float-to-int), bit16 = `u` (0 = signed), bit7 = `sx`
+                // (0 = 16-bit).
+                let a = self.vfp.read_s(vd);
+                let mut st = self.vfp.float_status();
+                let to_int = opc & 4 != 0;
+                let is_16 = opc & 1 == 0;
+                let signed = opc & 2 == 0;
+                let result = if to_int {
+                    if is_f32_nan(a) {
+                        st.flags |= fpu::FLAG_INVALID;
+                        0
+                    } else if signed {
+                        if is_16 {
+                            fpu::to_int16_scalbn(a, i32::from(frac), &mut st) as u32
+                        } else {
+                            fpu::to_int32_scalbn(a, i32::from(frac), &mut st) as u32
+                        }
+                    } else if is_16 {
+                        u32::from(fpu::to_uint16_scalbn(a, i32::from(frac), &mut st))
+                    } else {
+                        fpu::to_uint32_scalbn(a, i32::from(frac), &mut st)
+                    }
+                } else {
+                    // Fixed-point to float rounds to nearest even regardless
+                    // of the FPSCR rounding mode.
+                    let prev = st.rounding_mode;
+                    st.rounding_mode = fpu::RoundMode::NearestEven;
+                    let r = if signed {
+                        if is_16 {
+                            fpu::int16_to_float32_scalbn(a as u16 as i16, i32::from(frac), &mut st)
+                        } else {
+                            fpu::int32_to_float32_scalbn(a as i32, i32::from(frac), &mut st)
+                        }
+                    } else if is_16 {
+                        fpu::uint16_to_float32_scalbn(a as u16, i32::from(frac), &mut st)
+                    } else {
+                        fpu::uint32_to_float32_scalbn(a, i32::from(frac), &mut st)
+                    };
+                    st.rounding_mode = prev;
+                    r
+                };
+                self.vfp.write_s(vd, result);
+                self.vfp.fold_flags(st.flags);
+                Ok(Next::Advance(pc + 4))
+            }
+            I::VfpMovImm { vd, imm } => {
+                self.vfp.write_s(vd, imm);
+                Ok(Next::Advance(pc + 4))
+            }
+            I::VfpMov { to_gp, vd, rt } => {
+                if to_gp {
+                    if rt == 15 {
+                        // VMOV APSR_nzcv, Sd: copy the FPSCR condition flags.
+                        let nzcv = (self.vfp.fpscr >> 28) & 0xF;
+                        self.xpsr.set_nzcv(
+                            nzcv & 0b1000 != 0,
+                            nzcv & 0b0100 != 0,
+                            nzcv & 0b0010 != 0,
+                            nzcv & 0b0001 != 0,
+                        );
+                    } else {
+                        self.regs.write(rt, self.vfp.read_s(vd));
+                    }
+                } else {
+                    self.vfp.write_s(vd, self.regs.read(rt));
+                }
+                Ok(Next::Advance(pc + 4))
+            }
+            I::VfpMov64 {
+                to_gp,
+                vm,
+                rt,
+                rt2,
+                is_dp,
+            } => {
+                // The single-register form moves `S{vm}`/`S{vm+1}`; the
+                // double-precision form moves `S{2*vm}`/`S{2*vm+1}`.
+                let lo = if is_dp {
+                    self.vfp.read_s(2 * vm)
+                } else {
+                    self.vfp.read_s(vm)
+                };
+                let hi = if is_dp {
+                    self.vfp.read_s(2 * vm + 1)
+                } else {
+                    self.vfp.read_s(vm + 1)
+                };
+                if to_gp {
+                    self.regs.write(rt, lo);
+                    self.regs.write(rt2, hi);
+                } else {
+                    self.vfp.write_s(if is_dp { 2 * vm } else { vm }, self.regs.read(rt));
+                    self.vfp.write_s(if is_dp { 2 * vm + 1 } else { vm + 1 }, self.regs.read(rt2));
+                }
+                Ok(Next::Advance(pc + 4))
+            }
+            I::VfpMrsVmsr { is_read, rt } => {
+                if is_read {
+                    if rt == 15 {
+                        // VMRS APSR_nzcv, FPSCR: copy the condition flags only.
+                        let nzcv = (self.vfp.fpscr >> 28) & 0xF;
+                        self.xpsr.set_nzcv(
+                            nzcv & 0b1000 != 0,
+                            nzcv & 0b0100 != 0,
+                            nzcv & 0b0010 != 0,
+                            nzcv & 0b0001 != 0,
+                        );
+                    } else {
+                        self.regs.write(rt, self.vfp.fpscr);
+                    }
+                } else {
+                    if rt == 15 {
+                        // VMSR FPSCR, R15 is undefined.
+                        return self.hardfault_on_undefined(pc, 4);
+                    }
+                    // The condition flags are read-only to VMSR; the write
+                    // updates the control and cumulative-exception bits.
+                    let v = self.regs.read(rt);
+                    self.vfp.fpscr = (self.vfp.fpscr & fpscr::NZCV)
+                        | (v & (fpscr::CEXC | fpscr::RMODE | fpscr::FZ | fpscr::DN));
+                }
+                Ok(Next::Advance(pc + 4))
+            }
+            I::VfpLdSt { is_load, vd, rn, add, imm } => {
+                // VLDR/VSTR (single). `Rn == 15` is the literal form, whose
+                // base is the word-aligned `pc + 4`.
+                let base = if rn == 15 {
+                    (pc.wrapping_add(4)) & !3
+                } else {
+                    self.regs.read(rn)
+                };
+                let addr = if add {
+                    base.wrapping_add(imm)
+                } else {
+                    base.wrapping_sub(imm)
+                };
+                if addr & 3 != 0 {
+                    return self.data_fault(addr, pc);
+                }
+                if is_load {
+                    let v = self.read_word_halt(addr)?;
+                    self.vfp.write_s(vd, v);
+                } else {
+                    self.write_word_halt(addr, self.vfp.read_s(vd))?;
+                }
+                Ok(Next::Advance(pc + 4))
+            }
+            I::VfpLdStD { is_load, vd, rn, add, imm } => {
+                let base = if rn == 15 {
+                    (pc.wrapping_add(4)) & !3
+                } else {
+                    self.regs.read(rn)
+                };
+                let addr = if add {
+                    base.wrapping_add(imm)
+                } else {
+                    base.wrapping_sub(imm)
+                };
+                if addr & 7 != 0 {
+                    return self.data_fault(addr, pc);
+                }
+                if is_load {
+                    let lo = self.read_word_halt(addr)?;
+                    let hi = self.read_word_halt(addr.wrapping_add(4))?;
+                    self.vfp.write_s(2 * vd, lo);
+                    self.vfp.write_s(2 * vd + 1, hi);
+                } else {
+                    self.write_word_halt(addr, self.vfp.read_s(2 * vd))?;
+                    self.write_word_halt(addr.wrapping_add(4), self.vfp.read_s(2 * vd + 1))?;
+                }
+                Ok(Next::Advance(pc + 4))
+            }
+            #[allow(clippy::cast_possible_truncation)]
+            I::VfpLdStMult { is_load, vd, rn, n, writeback, dec_before } => {
+                // VLDM/VSTM with `Rn == PC` and write-back is UNPREDICTABLE.
+                if writeback && rn == 15 {
+                    return self.hardfault_on_undefined(pc, 4);
+                }
+                let base = if rn == 15 {
+                    pc.wrapping_add(4)
+                } else {
+                    self.regs.read(rn)
+                };
+                let count = u32::from(n) * 4;
+                let start = if dec_before { base.wrapping_sub(count) } else { base };
+                if start & 3 != 0 {
+                    return self.data_fault(start, pc);
+                }
+                let mut addr = start;
+                for i in 0..u32::from(n) {
+                    let s = vd.wrapping_add(i as u8);
+                    if is_load {
+                        let v = self.read_word_halt(addr)?;
+                        self.vfp.write_s(s, v);
+                    } else {
+                        self.write_word_halt(addr, self.vfp.read_s(s))?;
+                    }
+                    addr = addr.wrapping_add(4);
+                }
+                if writeback {
+                    let wb = if dec_before {
+                        start
+                    } else {
+                        base.wrapping_add(count)
+                    };
+                    self.regs.write(rn, wb);
+                }
+                Ok(Next::Advance(pc + 4))
+            }
+            #[allow(clippy::cast_possible_truncation)]
+            I::VfpLdStMultD { is_load, vd, rn, n, writeback, dec_before } => {
+                if writeback && rn == 15 {
+                    return self.hardfault_on_undefined(pc, 4);
+                }
+                let base = if rn == 15 {
+                    pc.wrapping_add(4)
+                } else {
+                    self.regs.read(rn)
+                };
+                let count = u32::from(n) * 8;
+                let start = if dec_before { base.wrapping_sub(count) } else { base };
+                if start & 7 != 0 {
+                    return self.data_fault(start, pc);
+                }
+                let mut addr = start;
+                for i in 0..u32::from(n) {
+                    let d = vd.wrapping_add(i as u8);
+                    if is_load {
+                        let lo = self.read_word_halt(addr)?;
+                        let hi = self.read_word_halt(addr.wrapping_add(4))?;
+                        self.vfp.write_s(2 * d, lo);
+                        self.vfp.write_s(2 * d + 1, hi);
+                    } else {
+                        self.write_word_halt(addr, self.vfp.read_s(2 * d))?;
+                        self.write_word_halt(addr.wrapping_add(4), self.vfp.read_s(2 * d + 1))?;
+                    }
+                    addr = addr.wrapping_add(8);
+                }
+                if writeback {
+                    let wb = if dec_before {
+                        start
+                    } else {
+                        base.wrapping_add(count)
+                    };
+                    self.regs.write(rn, wb);
                 }
                 Ok(Next::Advance(pc + 4))
             }
@@ -4676,5 +5191,197 @@ mod tests {
         // Returning pops the frame and revives the block.
         c.exception_return(EXC_RETURN_THREAD_MSP).unwrap();
         assert_eq!(c.itstate, 0x0C);
+    }
+
+    #[test]
+    fn vfp_arith_exec() {
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        // vadd.f32 s0, s1, s2: 1.0 + 2.0 = 3.0.
+        c.vfp.write_s(1, 0x3f80_0000);
+        c.vfp.write_s(2, 0x4000_0000);
+        load_inst(&mut c, 0x2000_0000, &[0x30, 0xee, 0x81, 0x0a]);
+        c.step().unwrap();
+        assert_eq!(c.vfp.read_s(0), 0x4040_0000);
+        // vmul.f32 s0, s1, s2: 2.0 * 3.0 = 6.0.
+        c.vfp.write_s(1, 0x4000_0000);
+        c.vfp.write_s(2, 0x4040_0000);
+        load_inst(&mut c, 0x2000_0004, &[0x20, 0xee, 0x81, 0x0a]);
+        c.step().unwrap();
+        assert_eq!(c.vfp.read_s(0), 0x40c0_0000);
+        // vsub.f32 s0, s1, s2: 2.0 - 3.0 = -1.0.
+        load_inst(&mut c, 0x2000_0008, &[0x30, 0xee, 0xc1, 0x0a]);
+        c.step().unwrap();
+        assert_eq!(c.vfp.read_s(0), 0xbf80_0000);
+        // vmla.f32 s0, s1, s2 (non-fused): 2.0 * 3.0 + 4.0 = 10.0.
+        c.vfp.write_s(0, 0x4080_0000);
+        c.vfp.write_s(1, 0x4000_0000);
+        c.vfp.write_s(2, 0x4040_0000);
+        load_inst(&mut c, 0x2000_000c, &[0x00, 0xee, 0x81, 0x0a]);
+        c.step().unwrap();
+        assert_eq!(c.vfp.read_s(0), 0x4120_0000);
+        // vfma.f32 s0, s1, s2 (fused): vn*vm + vd = 2.0*3.0 + 4.0 = 10.0, and
+        // NOT vd*vm + vn (which would be 14.0).
+        c.vfp.write_s(0, 0x4080_0000);
+        c.vfp.write_s(1, 0x4000_0000);
+        c.vfp.write_s(2, 0x4040_0000);
+        load_inst(&mut c, 0x2000_0010, &[0xa0, 0xee, 0x81, 0x0a]);
+        c.step().unwrap();
+        assert_eq!(c.vfp.read_s(0), 0x4120_0000);
+        // vfnma.f32 s0, s1, s2: vn*vm - vd = 2.0*3.0 - 4.0 = 2.0.
+        c.vfp.write_s(0, 0x4080_0000);
+        load_inst(&mut c, 0x2000_0014, &[0x90, 0xee, 0xc1, 0x0a]);
+        c.step().unwrap();
+        assert_eq!(c.vfp.read_s(0), 0x4000_0000);
+        // vfnms.f32 s0, s1, s2: -(vn*vm) - vd = -(2.0*3.0) - 4.0 = -10.0.
+        c.vfp.write_s(0, 0x4080_0000);
+        load_inst(&mut c, 0x2000_0018, &[0x90, 0xee, 0x81, 0x0a]);
+        c.step().unwrap();
+        assert_eq!(c.vfp.read_s(0), 0xc120_0000);
+    }
+
+    #[test]
+    fn vfp_two_op_exec() {
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        // vneg.f32 s0, s1.
+        c.vfp.write_s(1, 0x4000_0000); // 2.0
+        load_inst(&mut c, 0x2000_0000, &[0xb1, 0xee, 0x60, 0x0a]);
+        c.step().unwrap();
+        assert_eq!(c.vfp.read_s(0), 0xc000_0000);
+        // vabs.f32 s0, s1.
+        load_inst(&mut c, 0x2000_0004, &[0xb0, 0xee, 0x60, 0x0a]);
+        c.step().unwrap();
+        assert_eq!(c.vfp.read_s(0), 0x4000_0000);
+        // vsqrt.f32 s0, s1: sqrt(4.0) = 2.0.
+        c.vfp.write_s(1, 0x4080_0000);
+        load_inst(&mut c, 0x2000_0008, &[0xb1, 0xee, 0xe0, 0x0a]);
+        c.step().unwrap();
+        assert_eq!(c.vfp.read_s(0), 0x4000_0000);
+    }
+
+    #[test]
+    fn vfp_move_imm_exec() {
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        // vmov.f32 s1, #1.0.
+        load_inst(&mut c, 0x2000_0000, &[0xf7, 0xee, 0x00, 0x0a]);
+        c.step().unwrap();
+        assert_eq!(c.vfp.read_s(1), 0x3f80_0000);
+        // vmov s1, r0 (gp -> vfp).
+        c.regs.write(0, 0x1122_3344);
+        load_inst(&mut c, 0x2000_0004, &[0x00, 0xee, 0x90, 0x0a]);
+        c.step().unwrap();
+        assert_eq!(c.vfp.read_s(1), 0x1122_3344);
+        // vmov r6, s1 (vfp -> gp).
+        load_inst(&mut c, 0x2000_0008, &[0x10, 0xee, 0x90, 0x6a]);
+        c.step().unwrap();
+        assert_eq!(c.regs.read(6), 0x1122_3344);
+        // vmov r0, r1, s1 (two single regs -> gp): S1 -> r0, S2 -> r1.
+        c.vfp.write_s(1, 0x1122_3344);
+        c.vfp.write_s(2, 0xaabb_ccdd);
+        load_inst(&mut c, 0x2000_000c, &[0x51, 0xec, 0x30, 0x0a]);
+        c.step().unwrap();
+        assert_eq!(c.regs.read(0), 0x1122_3344);
+        assert_eq!(c.regs.read(1), 0xaabb_ccdd);
+    }
+
+    #[test]
+    fn vfp_convert_exec() {
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        // vcvt.f32.s32 s1, s2: int -3 -> -3.0.
+        c.vfp.write_s(2, 0xffff_fffd);
+        load_inst(&mut c, 0x2000_0000, &[0xf8, 0xee, 0xc1, 0x0a]);
+        c.step().unwrap();
+        assert_eq!(c.vfp.read_s(1), 0xc040_0000);
+        // vcvt.s32.f32 s1, s2: 1.75 -> 2 (FPSCR round-to-nearest).
+        c.vfp.write_s(2, 0x3fe0_0000);
+        load_inst(&mut c, 0x2000_0004, &[0xfd, 0xee, 0x41, 0x0a]);
+        c.step().unwrap();
+        assert_eq!(c.vfp.read_s(1), 2);
+        // vcvt.u32.f32 s1, s2: 1.5 -> 2.
+        c.vfp.write_s(2, 0x3fc0_0000);
+        load_inst(&mut c, 0x2000_0008, &[0xfc, 0xee, 0x41, 0x0a]);
+        c.step().unwrap();
+        assert_eq!(c.vfp.read_s(1), 2);
+        // vcvtr.s32.f32 s1, s2: 1.75 -> 1 (round toward zero).
+        c.vfp.write_s(2, 0x3fe0_0000);
+        load_inst(&mut c, 0x2000_000c, &[0xfd, 0xee, 0xc1, 0x0a]);
+        c.step().unwrap();
+        assert_eq!(c.vfp.read_s(1), 1);
+        // NaN -> 0 with the Invalid Operation flag set.
+        c.vfp.fpscr = 0;
+        c.vfp.write_s(2, 0x7fc0_0000);
+        load_inst(&mut c, 0x2000_0010, &[0xfd, 0xee, 0x41, 0x0a]);
+        c.step().unwrap();
+        assert_eq!(c.vfp.read_s(1), 0);
+        assert_ne!(c.vfp.fpscr & fpscr::IOC, 0);
+    }
+
+    #[test]
+    fn vfp_compare_exec() {
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        // vcmp.f32 s0, s0: equal -> NZCV = 0110 (Z, C).
+        c.vfp.write_s(0, 0x3f80_0000);
+        c.vfp.fpscr = 0;
+        load_inst(&mut c, 0x2000_0000, &[0xb4, 0xee, 0x40, 0x0a]);
+        c.step().unwrap();
+        assert_eq!((c.vfp.fpscr >> 28) & 0xF, 0b0110);
+        // vcmp.f32 s0, s1: 1.0 vs 2.0 -> less than (NZCV = 1000).
+        c.vfp.write_s(0, 0x3f80_0000);
+        c.vfp.write_s(1, 0x4000_0000);
+        c.vfp.fpscr = 0;
+        load_inst(&mut c, 0x2000_0004, &[0xb4, 0xee, 0x60, 0x0a]);
+        c.step().unwrap();
+        assert_eq!((c.vfp.fpscr >> 28) & 0xF, 0b1000);
+        // vcmp.f32 s0, #0.0: 1.0 vs +0 -> greater than (NZCV = 0010).
+        c.vfp.write_s(0, 0x3f80_0000);
+        c.vfp.fpscr = 0;
+        load_inst(&mut c, 0x2000_0008, &[0xb5, 0xee, 0x40, 0x0a]);
+        c.step().unwrap();
+        assert_eq!((c.vfp.fpscr >> 28) & 0xF, 0b0010);
+        // vcmp.f32 s0, s0 with a quiet NaN -> unordered (NZCV = 0011), and a
+        // quiet compare does not raise Invalid.
+        c.vfp.write_s(0, 0x7fc0_0000);
+        c.vfp.fpscr = 0;
+        load_inst(&mut c, 0x2000_000c, &[0xb4, 0xee, 0x40, 0x0a]);
+        c.step().unwrap();
+        assert_eq!((c.vfp.fpscr >> 28) & 0xF, 0b0011);
+        assert_eq!(c.vfp.fpscr & fpscr::IOC, 0);
+    }
+
+    #[test]
+    fn vfp_load_store_exec() {
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(0, 0x2000_0800);
+        c.mem().write_word(0x2000_0800, 0x3f80_0000).unwrap();
+        // vldr s0, [r0].
+        load_inst(&mut c, 0x2000_0000, &[0x90, 0xed, 0x00, 0x0a]);
+        c.step().unwrap();
+        assert_eq!(c.vfp.read_s(0), 0x3f80_0000);
+        // vstr s0, [r0, #8].
+        load_inst(&mut c, 0x2000_0004, &[0x80, 0xed, 0x02, 0x0a]);
+        c.step().unwrap();
+        assert_eq!(c.mem().read_word(0x2000_0808).unwrap(), 0x3f80_0000);
+        // vpush {s0-s3} at SP.
+        c.regs.sp = 0x2000_0400;
+        c.vfp.write_s(0, 0x4000_0000);
+        c.vfp.write_s(3, 0x4040_0000);
+        load_inst(&mut c, 0x2000_0008, &[0x2d, 0xed, 0x04, 0x0a]);
+        c.step().unwrap();
+        assert_eq!(c.mem().read_word(0x2000_03f0).unwrap(), 0x4000_0000);
+        assert_eq!(c.mem().read_word(0x2000_03fc).unwrap(), 0x4040_0000);
+        assert_eq!(c.regs.sp, 0x2000_03f0);
+        // vpop {s0-s3} back into s0-s3.
+        c.vfp.write_s(0, 0);
+        c.vfp.write_s(3, 0);
+        load_inst(&mut c, 0x2000_000c, &[0xbd, 0xec, 0x04, 0x0a]);
+        c.step().unwrap();
+        assert_eq!(c.vfp.read_s(0), 0x4000_0000);
+        assert_eq!(c.vfp.read_s(3), 0x4040_0000);
+        assert_eq!(c.regs.sp, 0x2000_0400);
     }
 }
