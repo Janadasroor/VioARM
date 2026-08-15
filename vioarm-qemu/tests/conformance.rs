@@ -2283,4 +2283,33 @@ fn fp_ctx_handler_uses_high_registers() {
     conformance("fp_ctx_handler_uses_high_registers", &mut a, "halt", &mt);
 }
 
+// ---------------------------------------------------------------------------
+// FPDSCR supplies the control bits a fresh FP context's FPSCR is loaded from.
+// Firmware writes round-towards-zero (`RMODE = 0b11`) to `0xE000_EF3C`; the
+// first FP instruction then creates a context whose FPSCR carries that mode,
+// and a `VCVT.S32.F32` rounds 1.75 to 1 instead of the round-to-nearest 2.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fp_ctx_fpdscr_supplies_new_context() {
+    let Some(mt) = qemu_m4() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+    a.enable_fpu();
+
+    a.mov_imm32(0, 0xE000_EF3C);
+    a.mov_imm32(1, 0x00C0_0000); // FPDSCR: RMODE = 0b11 (round towards zero)
+    a.str_imm(1, 0, 0);
+    a.mov_imm32(1, 0x00C0_0000); // r1 = the written FPDSCR bits
+
+    a.mov_imm32(0, 0x3FE0_0000); // 1.75
+    a.vmov_s_gpr(1, 0); // first FP insn: create the context, FPSCR = FPDSCR
+    a.vcvt_s32_f32(2, 1); // 1.75 towards zero -> 1 (not 2)
+    a.vmrs(0, 1); // r0 = FPSCR (RMODE = 0b11)
+    a.movs_imm8(3, 0xAA);
+    a.label("halt");
+    a.b("halt");
+    conformance("fp_ctx_fpdscr_supplies_new_context", &mut a, "halt", &mt);
+}
+
 
