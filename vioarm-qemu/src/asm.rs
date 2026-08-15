@@ -1,4 +1,4 @@
-//! A tiny byte-level Thumb/Thumb-2 assembler for building conformance test
+﻿//! A tiny byte-level Thumb/Thumb-2 assembler for building conformance test
 //! images.
 //!
 //! Every encoder in this file is the inverse of a decoder whose encoding is
@@ -24,9 +24,9 @@ enum Item {
     /// Unconditional `B.W` (always the 4-byte wide form).
     B { target: String },
     Bl { target: String },
-    /// Narrow conditional branch `B<c> imm8`, ±256 bytes.
+    /// Narrow conditional branch `B<c> imm8`, Â±256 bytes.
     Bc { cc: u8, target: String },
-    /// Wide conditional branch `B<c>.W imm24`, ±1 MB.
+    /// Wide conditional branch `B<c>.W imm24`, Â±1 MB.
     BcWide { cc: u8, target: String },
     /// Narrow `CBZ`/`CBNZ`, forward only.
     Cbz { rn: u8, nonzero: bool, target: String },
@@ -34,7 +34,7 @@ enum Item {
     LdrLit { rt: u8, target: String },
     /// `LDRD Rt, Rt2, [PC, #imm]` against the literal pool at `target`.
     LdrdLit { rt: u8, rt2: u8, target: String },
-    /// T32 wide `LDR* Rt, [PC, #±imm]` against the literal at `target`; `neg`
+    /// T32 wide `LDR* Rt, [PC, #Â±imm]` against the literal at `target`; `neg`
     /// clears the `U` bit for a subtract. `access` selects the width/sign.
     MemLit {
         access: MemAccess,
@@ -385,7 +385,7 @@ impl Asm {
         });
     }
 
-    /// Wide conditional branch `B<c>.W` (T3), ±1 MB.
+    /// Wide conditional branch `B<c>.W` (T3), Â±1 MB.
     pub fn bc_wide(&mut self, cc: u8, target: impl Into<String>) {
         self.emit(Item::BcWide {
             cc,
@@ -483,9 +483,9 @@ impl Asm {
         });
     }
 
-    /// T32-wide PC-relative literal `LDR* Rt, [PC, #±imm12]` against the
+    /// T32-wide PC-relative literal `LDR* Rt, [PC, #Â±imm12]` against the
     /// literal at `target`. The offset is in bytes (must be 4-aligned and
-    /// within ±4095); `neg` selects `[PC, #-imm]` (`U == 0`).
+    /// within Â±4095); `neg` selects `[PC, #-imm]` (`U == 0`).
     fn mem_lit(&mut self, access: MemAccess, rt: u8, neg: bool, target: impl Into<String>) {
         self.emit(Item::MemLit {
             access,
@@ -826,7 +826,7 @@ impl Asm {
         self.raw32(hi as u32 | (list as u32) << 16);
     }
 
-    /// `STRD Rt, Rt2, [Rn, #imm]` / `LDRD` — the imm8 T1 forms. `load`
+    /// `STRD Rt, Rt2, [Rn, #imm]` / `LDRD` â€” the imm8 T1 forms. `load`
     /// selects `LDRD`, `index` the pre-indexed (writeback) over the plain
     /// offset form, `post` the post-indexed form, `negative` the `U == 0`
     /// subtract form; `imm` is in bytes.
@@ -1437,6 +1437,356 @@ impl Asm {
         self.par(0xE, 0x6, rd, rn, rm);
     }
 
+    // ------------------------------ VFP (FPv4-SP) ------------------------------
+
+    /// Enable the FPU by granting full access to coprocessors 10/11 in `CPACR`
+    /// (`0xE000ED88`). Every Cortex-M4 firmware image does this; VioARM stores
+    /// the write and QEMU actually gates on it. Clobbers `r0` and `r1`.
+    pub fn enable_fpu(&mut self) {
+        self.mov_imm32(0, 0xE000_ED88);
+        self.movs_imm8(1, 0x0F);
+        self.lsls_imm(1, 1, 20);
+        self.str_imm(1, 0, 0);
+    }
+
+    /// `VADD.F32 S{vd}, S{vn}, S{vm}` (non-cond).
+    pub fn vadd_f32(&mut self, vd: u8, vn: u8, vm: u8) {
+        self.vfp3(6, vd, vn, vm);
+    }
+
+    /// `VSUB.F32 S{vd}, S{vn}, S{vm}`.
+    pub fn vsub_f32(&mut self, vd: u8, vn: u8, vm: u8) {
+        self.vfp3(7, vd, vn, vm);
+    }
+
+    /// `VMUL.F32 S{vd}, S{vn}, S{vm}`.
+    pub fn vmul_f32(&mut self, vd: u8, vn: u8, vm: u8) {
+        self.vfp3(4, vd, vn, vm);
+    }
+
+    /// `VDIV.F32 S{vd}, S{vn}, S{vm}`.
+    pub fn vdiv_f32(&mut self, vd: u8, vn: u8, vm: u8) {
+        self.vfp3(8, vd, vn, vm);
+    }
+
+    /// `VMLA.F32 S{vd}, S{vn}, S{vm}`.
+    pub fn vmla_f32(&mut self, vd: u8, vn: u8, vm: u8) {
+        self.vfp3(0, vd, vn, vm);
+    }
+
+    /// `VMLS.F32 S{vd}, S{vn}, S{vm}`.
+    pub fn vmls_f32(&mut self, vd: u8, vn: u8, vm: u8) {
+        self.vfp3(1, vd, vn, vm);
+    }
+
+    /// `VNMLS.F32 S{vd}, S{vn}, S{vm}`.
+    pub fn vnmls_f32(&mut self, vd: u8, vn: u8, vm: u8) {
+        self.vfp3(2, vd, vn, vm);
+    }
+
+    /// `VNMLA.F32 S{vd}, S{vn}, S{vm}`.
+    pub fn vnmla_f32(&mut self, vd: u8, vn: u8, vm: u8) {
+        self.vfp3(3, vd, vn, vm);
+    }
+
+    /// `VFMA.F32 S{vd}, S{vn}, S{vm}`.
+    pub fn vfma_f32(&mut self, vd: u8, vn: u8, vm: u8) {
+        self.vfp3(12, vd, vn, vm);
+    }
+
+    /// `VFMS.F32 S{vd}, S{vn}, S{vm}`.
+    pub fn vfms_f32(&mut self, vd: u8, vn: u8, vm: u8) {
+        self.vfp3(13, vd, vn, vm);
+    }
+
+    /// `VFNMA.F32 S{vd}, S{vn}, S{vm}`.
+    pub fn vfnma_f32(&mut self, vd: u8, vn: u8, vm: u8) {
+        self.vfp3(11, vd, vn, vm);
+    }
+
+    /// `VFNMS.F32 S{vd}, S{vn}, S{vm}`.
+    pub fn vfnms_f32(&mut self, vd: u8, vn: u8, vm: u8) {
+        self.vfp3(10, vd, vn, vm);
+    }
+
+    /// `VABS.F32 S{vd}, S{vm}`.
+    pub fn vabs_f32(&mut self, vd: u8, vm: u8) {
+        self.vfp2(0, 1, vd, vm);
+    }
+
+    /// `VNEG.F32 S{vd}, S{vm}`.
+    pub fn vneg_f32(&mut self, vd: u8, vm: u8) {
+        self.vfp2(1, 0, vd, vm);
+    }
+
+    /// `VSQRT.F32 S{vd}, S{vm}`.
+    pub fn vsqrt_f32(&mut self, vd: u8, vm: u8) {
+        self.vfp2(1, 1, vd, vm);
+    }
+
+    /// `VMOV.F32 S{vd}, S{vm}` (register form).
+    pub fn vmov_reg(&mut self, vd: u8, vm: u8) {
+        self.vfp2(0, 0, vd, vm);
+    }
+
+    /// `VMRS Rt, FPSCR` â€” read the FPSCR into a general-purpose register.
+    /// (`reg = 1` is the FPSCR; the only register FPv4-SP exposes.)
+    pub fn vmrs(&mut self, rt: u8, reg: u8) {
+        let w = 0xEE000000
+            | (0b111 << 21)
+            | (1 << 20)
+            | (u32::from(reg) << 16)
+            | (u32::from(rt) << 12)
+            | 0x0A10;
+        self.raw32(w.rotate_left(16));
+    }
+
+    /// `VCMP.F32 S{vd}, S{vm}` (quiet compare against a register).
+    pub fn vcmp_f32(&mut self, vd: u8, vm: u8) {
+        self.vfp_cmp(vd, vm, false, false);
+    }
+
+    /// `VCMPE.F32 S{vd}, S{vm}` (signaling compare).
+    pub fn vcmpe_f32(&mut self, vd: u8, vm: u8) {
+        self.vfp_cmp(vd, vm, true, false);
+    }
+
+    /// `VCMP.F32 S{vd}, #0.0`.
+    pub fn vcmpz_f32(&mut self, vd: u8) {
+        self.vfp_cmp(vd, 0, false, true);
+    }
+
+    /// `VCVTE.F32.S32 S{vd}, S{vm}` (int32 -> float, FPSCR rounding).
+    pub fn vcvt_f32_s32(&mut self, vd: u8, vm: u8) {
+        self.vfp_conv_int(vd, vm, true, true);
+    }
+
+    /// `VCVTE.S32.F32 S{vd}, S{vm}` (float -> int32, FPSCR rounding).
+    pub fn vcvt_s32_f32(&mut self, vd: u8, vm: u8) {
+        self.vfp_conv_int(vd, vm, false, true);
+    }
+
+    /// `VCVTE.U32.F32 S{vd}, S{vm}` (float -> uint32, FPSCR rounding).
+    pub fn vcvt_u32_f32(&mut self, vd: u8, vm: u8) {
+        self.vfp_conv_int(vd, vm, false, false);
+    }
+
+    /// `VCVTR.S32.F32 S{vd}, S{vm}` (float -> int32, round toward zero).
+    pub fn vcvtr_s32_f32(&mut self, vd: u8, vm: u8) {
+        self.vfp_conv_int_rz(vd, vm);
+    }
+
+    /// `VMOV S{vd}, Rt` (general-purpose to single-precision register).
+    pub fn vmov_s_gpr(&mut self, vd: u8, rt: u8) {
+        self.vfp_mov_s(vd, rt, false);
+    }
+
+    /// `VMOV Rt, S{vd}` (single-precision to general-purpose register).
+    pub fn vmov_gpr_s(&mut self, rt: u8, vd: u8) {
+        self.vfp_mov_s(vd, rt, true);
+    }
+
+    /// `VMOV S{vd}, Rt, Rt2` â€” two adjacent single-precision registers from
+    /// two general-purpose registers (`S{vd}` from `Rt`, `S{vd+1}` from `Rt2`).
+    pub fn vmov_s_pair_from_gpr(&mut self, vd: u8, rt: u8, rt2: u8) {
+        self.vfp_mov64(vd, rt, rt2, false);
+    }
+
+    /// `VMOV Rt, Rt2, S{vd}` â€” two general-purpose registers from two adjacent
+    /// single-precision registers (`Rt` from `S{vd}`, `Rt2` from `S{vd+1}`).
+    pub fn vmov_gpr_pair_from_s(&mut self, rt: u8, rt2: u8, vd: u8) {
+        self.vfp_mov64(vd, rt, rt2, true);
+    }
+
+    /// `VLDR S{vd}, [Rn, #imm]` (word-aligned `imm`, scaled by 4).
+    pub fn vldr_s(&mut self, vd: u8, rn: u8, imm: u16) {
+        self.vfp_ldr_str(vd, rn, imm, true);
+    }
+
+    /// `VSTR S{vd}, [Rn, #imm]` (word-aligned `imm`, scaled by 4).
+    pub fn vstr_s(&mut self, vd: u8, rn: u8, imm: u16) {
+        self.vfp_ldr_str(vd, rn, imm, false);
+    }
+
+    /// `VPUSH {S{first}-S{last}}` (descending store with writeback to SP).
+    pub fn vpush(&mut self, first: u8, last: u8) {
+        self.vfp_ldmstm(0xD, first, last, false);
+    }
+
+    /// `VPOP {S{first}-S{last}}` (ascending load with writeback to SP).
+    pub fn vpop(&mut self, first: u8, last: u8) {
+        self.vfp_ldmstm(0xC, first, last, true);
+    }
+
+    /// `VMOV.F32 S{vd}, #imm` â€” immediate form, `imm8` is the raw ARM
+    /// `VFPExpandImm` byte (e.g. `0x70` = 1.0, `0x60` = 0.5, `0x00` = 2.0).
+    pub fn vmov_f32_imm(&mut self, vd: u8, imm8: u8) {
+        let w = 0xEE000000
+            | (1 << 23)
+            | (u32::from(vd & 1) << 22)
+            | (0b11 << 20)
+            | (u32::from(imm8 >> 4) << 16)
+            | (u32::from(vd >> 1) << 12)
+            | 0xA00
+            | u32::from(imm8 & 0xF);
+        self.raw32(w.rotate_left(16));
+    }
+
+    // --- VFP encoders ----------------------------------------------------------
+
+    /// Three-operand `VFP` data processing (single precision). `op` is the
+    /// four-bit `op` the decoder extracts â€” `(b23,b21,b20,bit6)` â€” so
+    /// `VMLA=0, VMLS=1, VNMLS=2, VNMLA=3, VMUL=4, VNMUL=5, VADD=6, VSUB=7,
+    /// VDIV=8, VFNMS=10, VFNMA=11, VFMA=12, VFMS=13`.
+    fn vfp3(&mut self, op: u16, vd: u8, vn: u8, vm: u8) {
+        let w = 0xEE000000
+            | (u32::from((op >> 3) & 1) << 23)
+            | (u32::from(vd & 1) << 22)
+            | (u32::from((op >> 2) & 1) << 21)
+            | (u32::from((op >> 1) & 1) << 20)
+            | (u32::from(vn >> 1) << 16)
+            | (u32::from(vd >> 1) << 12)
+            | 0xA00
+            | (u32::from(vn & 1) << 7)
+            | (u32::from(op & 1) << 6)
+            | (u32::from(vm & 1) << 5)
+            | u32::from(vm >> 1);
+        self.raw32(w.rotate_left(16));
+    }
+
+    /// Two-operand `VFP` (the `1.11` zone with `bit6` set): `VABS`/`VNEG`/
+    /// `VSQRT`. `sel` is the `bits[19:16]` field (`0` = `VABS`/`VMOV`,
+    /// `1` = `VNEG`/`VSQRT`), `bit` is `bit7` (`0` = non-bit7 op, `1` = `VABS`
+    /// /`VSQRT`).
+    fn vfp2(&mut self, sel: u8, bit: u8, vd: u8, vm: u8) {
+        let w = 0xEE000000
+            | (1 << 23)
+            | (u32::from(vd & 1) << 22)
+            | (0b11 << 20)
+            | (u32::from(sel) << 16)
+            | (u32::from(vd >> 1) << 12)
+            | 0xA00
+            | (u32::from(bit) << 7)
+            | (1 << 6)
+            | (u32::from(vm & 1) << 5)
+            | u32::from(vm >> 1);
+        self.raw32(w.rotate_left(16));
+    }
+
+    /// `VCMP`/`VCMPE.F32 S{vd}, S{vm}` (`z` = compare against `#0.0`, in which
+    /// case `vm` is ignored and the ARM encoding requires it to be zero).
+    fn vfp_cmp(&mut self, vd: u8, vm: u8, e: bool, z: bool) {
+        let sel = 0x4 | u32::from(z);
+        let w = 0xEE000000
+            | (1 << 23)
+            | (u32::from(vd & 1) << 22)
+            | (0b11 << 20)
+            | (sel << 16)
+            | (u32::from(vd >> 1) << 12)
+            | 0xA00
+            | (u32::from(e) << 7)
+            | (1 << 6)
+            | (u32::from(vm & 1) << 5)
+            | u32::from(vm >> 1);
+        self.raw32(w.rotate_left(16));
+    }
+
+    /// `VCVTE.F32.{S,U}32` (int -> float, `to_float`) and
+    /// `VCVTE.{S,U}32.F32` (float -> int, FPSCR rounding). `signed` picks the
+    /// signed or unsigned variant.
+    fn vfp_conv_int(&mut self, vd: u8, vm: u8, to_float: bool, signed: bool) {
+        let (sel, bit7) = if to_float {
+            (0x8u32, u32::from(signed) << 7)
+        } else {
+            (0xC | u32::from(signed), 0)
+        };
+        let w = 0xEE000000
+            | (1 << 23)
+            | (u32::from(vd & 1) << 22)
+            | (0b11 << 20)
+            | (sel << 16)
+            | (u32::from(vd >> 1) << 12)
+            | 0xA00
+            | bit7
+            | (1 << 6)
+            | (u32::from(vm & 1) << 5)
+            | u32::from(vm >> 1);
+        self.raw32(w.rotate_left(16));
+    }
+
+    /// `VCVTR.S32.F32` â€” float -> int32 with round-toward-zero.
+    fn vfp_conv_int_rz(&mut self, vd: u8, vm: u8) {
+        let w = 0xEE000000
+            | (1 << 23)
+            | (u32::from(vd & 1) << 22)
+            | (0b11 << 20)
+            | (0xD << 16)
+            | (u32::from(vd >> 1) << 12)
+            | 0xA00
+            | (1 << 7)
+            | (1 << 6)
+            | (u32::from(vm & 1) << 5)
+            | u32::from(vm >> 1);
+        self.raw32(w.rotate_left(16));
+    }
+
+    /// `VMOV S{vd}, Rt` / `VMOV Rt, S{vd}`. The VFP single register lives in
+    /// the `Vn` field (`bits[19:16]<<1 : bit7`).
+    fn vfp_mov_s(&mut self, vd: u8, rt: u8, to_gp: bool) {
+        let w = 0xEE000000
+            | (u32::from(to_gp) << 20)
+            | (u32::from(vd >> 1) << 16)
+            | (u32::from(rt) << 12)
+            | 0xA10
+            | (u32::from(vd & 1) << 7);
+        self.raw32(w.rotate_left(16));
+    }
+
+    /// `VMOV` between two general-purpose registers and two adjacent
+    /// single-precision registers (`S{vd}`/`S{vd+1}`, the `VFP 64-bit move`).
+    /// `to_gp` picks the direction.
+    fn vfp_mov64(&mut self, vd: u8, rt: u8, rt2: u8, to_gp: bool) {
+        let w = 0xEC000000
+            | (1 << 22)
+            | (u32::from(to_gp) << 20)
+            | (u32::from(rt2) << 16)
+            | (u32::from(rt) << 12)
+            | 0x0A10
+            | (u32::from(vd & 1) << 5)
+            | u32::from(vd >> 1);
+        self.raw32(w.rotate_left(16));
+    }
+
+    /// `VLDR`/`VSTR S{vd}, [Rn, #imm]` with `U=1` (add). `imm` must be a
+    /// multiple of 4; the 8-bit field is the byte offset shifted right by 2.
+    fn vfp_ldr_str(&mut self, vd: u8, rn: u8, imm: u16, is_load: bool) {
+        debug_assert_eq!(imm % 4, 0, "VFP load/store offset must be word-aligned");
+        let w = 0xED000000
+            | (1 << 23)
+            | (u32::from(vd & 1) << 22)
+            | (u32::from(is_load) << 20)
+            | (u32::from(rn) << 16)
+            | (u32::from(vd >> 1) << 12)
+            | 0xA00
+            | u32::from((imm >> 2) & 0xFF);
+        self.raw32(w.rotate_left(16));
+    }
+
+    /// `VLDM`/`VSTM` for `S{first}` through `S{last}` with `Rn = 13` (SP) and
+    /// writeback: `0xC` = ascending (VPOP), `0xD` = descending (VPUSH).
+    fn vfp_ldmstm(&mut self, op: u16, first: u8, last: u8, is_load: bool) {
+        let n = u32::from(last) - u32::from(first) + 1;
+        let w = if op == 0xC { 0xEC800000 } else { 0xED000000 }
+            | (u32::from(first & 1) << 22)
+            | (1 << 21)
+            | (u32::from(is_load) << 20)
+            | (13 << 16)
+            | (u32::from(first >> 1) << 12)
+            | 0xA00
+            | n;
+        self.raw32(w.rotate_left(16));
+    }
+
     // -------------------------------- finish --------------------------------
 
     /// Lay out the program, resolve all labels and branch/literal immediates,
@@ -1512,7 +1862,7 @@ impl Asm {
                         .ok_or_else(|| format!("undefined label {target:?}"))?;
                     let off = i64::from(t) - i64::from(cur + 4);
                     if off < -256 || off > 254 || off % 2 != 0 {
-                        return Err(format!("conditional branch to {target:?} out of ±256-byte range"));
+                        return Err(format!("conditional branch to {target:?} out of Â±256-byte range"));
                     }
                     let imm8 = ((off >> 1) as i16) as u8;
                     emit(
@@ -1527,7 +1877,7 @@ impl Asm {
                         .ok_or_else(|| format!("undefined label {target:?}"))?;
                     let off = i64::from(t) - i64::from(cur + 4);
                     if off < -(1 << 20) || off > (1 << 20) - 2 || off % 2 != 0 {
-                        return Err(format!("conditional wide branch to {target:?} out of ±1 MB range"));
+                        return Err(format!("conditional wide branch to {target:?} out of Â±1 MB range"));
                     }
                     let u = (off as i32) as u32;
                     let s = (u >> 20) & 1;
@@ -1674,4 +2024,127 @@ enum MemAccess {
     Ldrh,
     Ldrsb,
     Ldrsh,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Assemble an empty program (vector table + `NOP`) and return the code
+    /// bytes only, i.e. everything after the 0x100-byte vector table.
+    fn code_bytes(a: Asm) -> Vec<u8> {
+        let img = a.finish(0x2000_2000).unwrap();
+        img.bytes[CODE_BASE as usize..].to_vec()
+    }
+
+    /// The in-memory bytes of a 32-bit Thumb-2 instruction with high halfword
+    /// `W >> 16`: the high halfword sits at the lower address, so
+    /// `thumb4(0xEEB1_0A60) = [0xb1, 0xee, 0x60, 0x0a]`.
+    fn thumb4(w: u32) -> Vec<u8> {
+        vec![
+            ((w >> 16) & 0xFF) as u8,
+            (w >> 24) as u8,
+            (w & 0xFF) as u8,
+            ((w >> 8) & 0xFF) as u8,
+        ]
+    }
+
+    /// A bare single VFP instruction, padded to a full 32-bit slot, as little-
+    /// endian halfword pairs â€” the byte order `vioarm-core`'s decoder tests use
+    /// (`[hi_lo_byte0, hi_byte1, lo_byte0, lo_byte1]`).
+    fn vfp_bytes(a: Asm) -> Vec<u8> {
+        code_bytes(a)
+    }
+
+    #[test]
+    fn vfp_three_op_encodings() {
+        let mut a = Asm::new();
+        a.vadd_f32(0, 1, 2);
+        a.vfma_f32(5, 6, 7);
+        a.vmla_f32(0, 0, 0);
+        a.vdiv_f32(2, 6, 4);
+        a.vfms_f32(5, 6, 7);
+        a.vfnma_f32(5, 6, 7);
+        a.vfnms_f32(5, 6, 7);
+        assert_eq!(
+            vfp_bytes(a),
+            [
+                thumb4(0xEE30_0A81), // vadd.f32 s0, s1, s2
+                thumb4(0xEEE3_2A23), // vfma.f32 s5, s6, s7
+                thumb4(0xEE00_0A00), // vmla.f32 s0, s0, s0
+                thumb4(0xEE83_1A02), // vdiv.f32 s2, s6, s4
+                thumb4(0xEEE3_2A63), // vfms.f32 s5, s6, s7
+                thumb4(0xEED3_2A63), // vfnma.f32 s5, s6, s7
+                thumb4(0xEED3_2A23), // vfnms.f32 s5, s6, s7
+            ]
+            .concat()
+        );
+    }
+
+    #[test]
+    fn vfp_two_op_and_misc_encodings() {
+        let mut a = Asm::new();
+        a.vneg_f32(0, 1);
+        a.vabs_f32(0, 1);
+        a.vsqrt_f32(0, 1);
+        a.vmov_f32_imm(1, 0x70); // #1.0
+        a.vmov_s_gpr(1, 0);
+        a.vmov_gpr_s(6, 1);
+        a.vmov_s_pair_from_gpr(1, 0, 1);
+        a.vmov_gpr_pair_from_s(0, 1, 1);
+        a.vmov_reg(0, 1);
+        a.vmrs(15, 1);
+        a.vcmp_f32(0, 1);
+        a.vcmpz_f32(0);
+        a.vcvt_f32_s32(1, 2);
+        a.vcvt_s32_f32(1, 2);
+        a.vcvt_u32_f32(1, 2);
+        a.vcvtr_s32_f32(1, 2);
+        a.vldr_s(0, 0, 0);
+        a.vstr_s(0, 0, 8);
+        a.vpush(0, 3);
+        a.vpop(0, 3);
+        assert_eq!(
+            vfp_bytes(a),
+            [
+                thumb4(0xEEB1_0A60), // vneg.f32 s0, s1
+                thumb4(0xEEB0_0AE0), // vabs.f32 s0, s1
+                thumb4(0xEEB1_0AE0), // vsqrt.f32 s0, s1
+                thumb4(0xEEF7_0A00), // vmov.f32 s1, #1.0
+                thumb4(0xEE00_0A90), // vmov s1, r0
+                thumb4(0xEE10_6A90), // vmov r6, s1
+                thumb4(0xEC41_0A30), // vmov s1, r0, r1
+                thumb4(0xEC51_0A30), // vmov r0, r1, s1
+                thumb4(0xEEB0_0A60), // vmov.f32 s0, s1 (register)
+                thumb4(0xEEF1_FA10), // vmrs r15, fpscr
+                thumb4(0xEEB4_0A60), // vcmp.f32 s0, s1
+                thumb4(0xEEB5_0A40), // vcmp.f32 s0, #0.0
+                thumb4(0xEEF8_0AC1), // vcvt.f32.s32 s1, s2
+                thumb4(0xEEFD_0A41), // vcvt.s32.f32 s1, s2
+                thumb4(0xEEFC_0A41), // vcvt.u32.f32 s1, s2
+                thumb4(0xEEFD_0AC1), // vcvtr.s32.f32 s1, s2
+                thumb4(0xED90_0A00), // vldr s0, [r0]
+                thumb4(0xED80_0A02), // vstr s0, [r0, #8]
+                thumb4(0xED2D_0A04), // vpush {s0-s3}
+                thumb4(0xECBD_0A04), // vpop {s0-s3}
+            ]
+            .concat()
+        );
+    }
+
+    #[test]
+    fn enable_fpu_writes_cpacr() {
+        let mut a = Asm::new();
+        a.enable_fpu();
+        assert_eq!(
+            code_bytes(a),
+            [
+                0x4e, 0xf6, 0x88, 0x50, // movw r0, #0xED88
+                0xce, 0xf2, 0x00, 0x00, // movt r0, #0xE000
+                0x0f, 0x21, // movs r1, #0x0F
+                0x09, 0x05, // lsls r1, r1, #20
+                0x01, 0x60, // str r1, [r0]
+            ]
+        );
+    }
 }

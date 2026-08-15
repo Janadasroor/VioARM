@@ -1,26 +1,31 @@
 //! Running binaries under the `vioarm-core` backend for the conformance suite.
 //!
-//! The VioARM side uses a bare `FlatMemory` (flash at `0x0000_0000`, SRAM at
-//! `0x2000_0000`, matching the `mps2-an385` machine) with no peripherals, so
-//! no interrupt can ever be taken and the instruction stream is deterministic
-//! — exactly parallel to QEMU, where everything on the board sits idle.
+//! The VioARM side uses a `SystemMemory` over a bare `FlatMemory` (flash at
+//! `0x0000_0000`, SRAM at `0x2000_0000`, matching the `mps2-an385` machine)
+//! with no peripherals attached, so no interrupt can ever be taken and the
+//! instruction stream is deterministic — exactly parallel to QEMU, where
+//! everything on the board sits idle. The system bus's `SCB` claims the
+//! `CPACR` window so firmware that enables the FPU (as Cortex-M4 images do)
+//! does not fault; the VFP register bank and FPSCR are captured in every
+//! snapshot for the ARMv7E-M conformance tests.
 
-use crate::CpuState;
+use crate::{CpuState, VfpState};
 use vioarm_core::loader::load_flat;
 use vioarm_core::machine::Machine;
 use vioarm_core::mem::flat::FlatMemory;
+use vioarm_core::mem::system::SystemMemory;
 
 pub const FLASH_LEN: u32 = 0x0020_0000;
 pub const SRAM_LEN: u32 = 0x0020_0000;
 
 /// Build an ARMv7-M machine over a bare memory and load `bin` at address 0.
 #[must_use]
-pub fn new_machine(bin: &[u8]) -> Machine<FlatMemory> {
-    let mem = FlatMemory::with_layout(
+pub fn new_machine(bin: &[u8]) -> Machine<SystemMemory<FlatMemory>> {
+    let backing = FlatMemory::with_layout(
         &[0x0000_0000, 0x2000_0000],
         &[FLASH_LEN, SRAM_LEN],
     );
-    let mut m = Machine::armv7m(mem);
+    let mut m = Machine::armv7m(SystemMemory::new(backing));
     m.load_image(&load_flat(0x0000_0000, bin));
     m
 }
@@ -30,7 +35,7 @@ pub fn new_machine(bin: &[u8]) -> Machine<FlatMemory> {
 /// bits plus the CPU's live `ITSTATE` folded in at bits [26:25]/[15:10], the
 /// same positions QEMU's `XPSR=` dump uses, so IT-block execution is diffed.
 #[must_use]
-pub fn snapshot(m: &Machine<FlatMemory>) -> CpuState {
+pub fn snapshot(m: &Machine<SystemMemory<FlatMemory>>) -> CpuState {
     let regs = m.core.regs;
     let mut r = [0u32; 16];
     r[..13].copy_from_slice(&regs.r);
@@ -39,7 +44,15 @@ pub fn snapshot(m: &Machine<FlatMemory>) -> CpuState {
     r[15] = regs.pc;
     let it = u32::from(m.core.itstate);
     let xpsr = m.core.xpsr.get() | ((it & 0xFC) << 8) | ((it & 0x03) << 25);
-    CpuState { r, xpsr }
+    let vfp = VfpState {
+        s: m.core.vfp.s,
+        fpscr: m.core.vfp.fpscr,
+    };
+    CpuState {
+        r,
+        xpsr,
+        vfp: Some(vfp),
+    }
 }
 
 /// Run `bin` under VioARM, collecting the state after every instruction until

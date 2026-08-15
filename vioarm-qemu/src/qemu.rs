@@ -9,7 +9,7 @@
 //! the harness can poll the log while QEMU spins on the test's landing loop
 //! and stop the instant the target PC appears.
 
-use crate::CpuState;
+use crate::{CpuState, VfpState};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -38,38 +38,57 @@ pub fn find_qemu() -> Option<PathBuf> {
 
 /// The QEMU invocation parameters for one conformance run. Defaults to an
 /// ARMv7-M Cortex-M3 board (`mps2-an385`), the machine that matches
-/// `Machine::armv7m` on the VioARM side.
+/// `Machine::armv7m` on the VioARM side. `fpu` adds the `fpu` log item so the
+/// per-instruction dumps also carry the VFP register bank and FPSCR (only the
+/// Cortex-M4 board has an FPU to report).
 #[derive(Clone, Debug)]
 pub struct QemuMachine {
     pub exe: PathBuf,
     pub machine: String,
     pub cpu: String,
+    pub fpu: bool,
 }
 
 impl QemuMachine {
     #[must_use]
     pub fn detect() -> Option<Self> {
-        Self::for_cpu("cortex-m3", "mps2-an385")
+        Self::for_cpu("cortex-m3", "mps2-an385", false)
     }
 
-    /// An ARMv7E-M reference (`Cortex-M4`), for diffing the DSP zone that the
-    /// M3 board faults on.
+    /// An ARMv7E-M reference (`Cortex-M4`), for diffing the DSP zone and the
+    /// VFP zone that the M3 board faults on. The FPU is enabled in the program
+    /// via `CPACR`, so the `-d fpu` dump reports the VFP state every step.
     #[must_use]
     pub fn detect_m4() -> Option<Self> {
-        Self::for_cpu("cortex-m4", "mps2-an386")
+        Self::for_cpu("cortex-m4", "mps2-an386", true)
     }
 
     #[must_use]
-    fn for_cpu(cpu: &str, machine: &str) -> Option<Self> {
+    fn for_cpu(cpu: &str, machine: &str, fpu: bool) -> Option<Self> {
         find_qemu().map(|exe| Self {
             exe,
             machine: machine.to_string(),
             cpu: cpu.to_string(),
+            fpu,
         })
+    }
+
+    /// The `-d` log items for this machine: `cpu,nochain` plus `fpu` when the
+    /// reference has an FPU.
+    #[must_use]
+    fn dump_flags(&self) -> String {
+        if self.fpu {
+            "cpu,fpu,nochain".to_string()
+        } else {
+            "cpu,nochain".to_string()
+        }
     }
 }
 
-/// Parse the raw `-d cpu` log text into a sequence of CPU states.
+/// Parse the raw `-d cpu` log text into a sequence of CPU states. When the log
+/// was produced with the `fpu` item, each state's VFP bank and FPSCR (the 16
+/// `sXX=... dNN=...` lines and the `FPSCR:` line after `XPSR=`) are parsed
+/// too; otherwise `vfp` is `None`.
 #[must_use]
 pub fn parse_log(text: &str) -> Vec<CpuState> {
     let lines: Vec<&str> = text.lines().collect();
@@ -112,7 +131,12 @@ pub fn parse_log(text: &str) -> Vec<CpuState> {
             .and_then(|hex| u32::from_str_radix(hex, 16).ok());
         match xpsr {
             Some(x) if parse_ok => {
-                let state = CpuState { r, xpsr: x };
+                let vfp = parse_vfp_block(&lines, i + 5);
+                let state = CpuState {
+                    r,
+                    xpsr: x,
+                    vfp,
+                };
                 // QEMU dumps the reset state once per core (re)initialization,
                 // which can repeat identical frames for a multi-phase board
                 // reset. A real program can never produce two consecutive
@@ -122,12 +146,47 @@ pub fn parse_log(text: &str) -> Vec<CpuState> {
                 if states.last() != Some(&state) {
                     states.push(state);
                 }
-                i += 5;
+                // Advance past the FPU block (17 lines) when it was parsed.
+                i += if vfp.is_some() { 22 } else { 5 };
             }
             _ => i += 1,
         }
     }
     states
+}
+
+/// Parse the FPU block that follows the `XPSR=` line: 16 lines of
+/// `s{2n}=xxxxxxxx s{2n+1}=xxxxxxxx d{n}=xxxxxxxxxxxxxxxx` and a
+/// `FPSCR: xxxxxxxx` line. Returns `None` when the block is absent.
+fn parse_vfp_block(lines: &[&str], start: usize) -> Option<VfpState> {
+    if start + 16 >= lines.len() || !lines[start].starts_with("s00=") {
+        return None;
+    }
+    let mut s = [0u32; 32];
+    for row in 0..16 {
+        let line = lines[start + row];
+        let mut ok = true;
+        for (token, idx) in line.split_whitespace().zip([row * 2, row * 2 + 1]) {
+            if let Some((_, hex)) = token.split_once('=') {
+                if let Ok(v) = u32::from_str_radix(hex, 16) {
+                    s[idx] = v;
+                } else {
+                    ok = false;
+                }
+            } else {
+                ok = false;
+            }
+        }
+        if !ok {
+            return None;
+        }
+    }
+    let fpscr = lines
+        .get(start + 16)
+        .and_then(|l| l.strip_prefix("FPSCR:"))
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|hex| u32::from_str_radix(hex, 16).ok())?;
+    Some(VfpState { s, fpscr })
 }
 
 /// Run `bin` in QEMU, capturing the per-instruction state, and return the
@@ -161,7 +220,7 @@ pub fn run_until_pc(mt: &QemuMachine, bin: &[u8], stop_pc: u32, timeout: Duratio
         .arg("-accel")
         .arg("tcg,one-insn-per-tb=on")
         .arg("-d")
-        .arg("cpu,nochain")
+        .arg(mt.dump_flags())
         .arg("-D")
         .arg(&log_path)
         .arg("-device")
@@ -222,5 +281,31 @@ mod tests {
         assert_eq!(states.len(), 1);
         assert_eq!(states[0].r[15], 0x80);
         assert_eq!(states[0].xpsr, 0x4100_0000);
+        assert!(states[0].vfp.is_none());
+    }
+
+    #[test]
+    fn parses_the_fpu_block() {
+        let mut text = String::from(
+            "R00=00000000 R01=00000000 R02=00000000 R03=00000000\n\
+             R04=00000000 R05=00000000 R06=00000000 R07=00000000\n\
+             R08=00000000 R09=00000000 R10=00000000 R11=00000000\n\
+             R12=00000000 R13=20002000 R14=ffffffff R15=00000100\n\
+             XPSR=41000000 -Z-- T priv-thread\n",
+        );
+        for row in 0..16 {
+            text.push_str(&format!(
+                "s{:02}=00000000 s{:02}=00000000 d{:02}=0000000000000000\n",
+                row * 2,
+                row * 2 + 1,
+                row
+            ));
+        }
+        text.push_str("FPSCR: 00000000\n");
+        let states = parse_log(&text);
+        assert_eq!(states.len(), 1);
+        let vfp = states[0].vfp.expect("fpu block parsed");
+        assert_eq!(vfp.s, [0u32; 32]);
+        assert_eq!(vfp.fpscr, 0);
     }
 }

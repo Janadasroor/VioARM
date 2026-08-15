@@ -20,12 +20,37 @@ use std::fmt;
 /// anyway — as are the reserved bits.
 pub const XPSR_MASK: u32 = 0xF90F_0000 | 0x0600_FC00;
 
+/// The FPSCR bits VioARM models and the conformance diff should agree on:
+/// `N:Z:C:V`, `DN`, `FZ`, `RMode` (bits 23:22), and the sticky exception
+/// flags `IDC`, `IXC`, `UFC`, `OFC`, `DZC`, `IOC`. Bits VioARM does not track
+/// (e.g. `AHP`, `QC`) are masked out of the diff.
+pub const FPSCR_MASK: u32 = 0xF000_0000 | (1 << 25) | (1 << 24) | (0b11 << 22) | (1 << 7) | (1 << 4) | (1 << 3) | (1 << 2) | (1 << 1) | (1 << 0);
+
+/// VFP (FPv4-SP) architectural state: the S0-S31 single-precision bank and
+/// FPSCR.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VfpState {
+    pub s: [u32; 32],
+    pub fpscr: u32,
+}
+
+impl VfpState {
+    /// The FPSCR bits both implementations model and agree on.
+    #[must_use]
+    pub const fn masked_fpscr(self) -> u32 {
+        self.fpscr & FPSCR_MASK
+    }
+}
+
 /// A single architectural register snapshot: `r0..r12`, `r13` = SP,
-/// `r14` = LR, `r15` = PC, plus the `xPSR`.
+/// `r14` = LR, `r15` = PC, the `xPSR`, and — when the oracle runs with
+/// `-d fpu` — the VFP state. `None` means the reference did not report it,
+/// and the diff skips it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CpuState {
     pub r: [u32; 16],
     pub xpsr: u32,
+    pub vfp: Option<VfpState>,
 }
 
 impl CpuState {
@@ -60,7 +85,11 @@ impl fmt::Display for CpuState {
             self.r[10],
             self.r[11],
             self.r[12],
-        )
+        )?;
+        if let Some(v) = self.vfp {
+            write!(f, " fpscr(masked)={:08x} s0={:08x} s1={:08x} s2={:08x} s3={:08x}", v.masked_fpscr(), v.s[0], v.s[1], v.s[2], v.s[3])?;
+        }
+        Ok(())
     }
 }
 
@@ -69,7 +98,9 @@ impl fmt::Display for CpuState {
 /// Index 0 is the reset state. The two implementations legitimately differ in
 /// the *initial flags* (QEMU boots the Cortex-M3 with `Z` set, VioARM with all
 /// flags clear) so index 0 must agree on every register but not on `xPSR`.
-/// Every later index must agree on all registers and the modeled xPSR bits.
+/// Every later index must agree on all registers, the modeled xPSR bits, and —
+/// when both traces report it — the VFP state (`S0`-`S31` and the modeled
+/// FPSCR bits).
 ///
 /// # Errors
 ///
@@ -108,6 +139,20 @@ pub fn compare_traces(label: &str, vio: &[CpuState], qemu: &[CpuState]) -> Resul
                 a.masked_xpsr(),
                 b.masked_xpsr()
             ));
+        }
+        if let (Some(av), Some(bv)) = (a.vfp, b.vfp) {
+            for i in 0..32 {
+                if av.s[i] != bv.s[i] {
+                    diffs.push(format!("s{i}: vio={:08x} qemu={:08x}", av.s[i], bv.s[i]));
+                }
+            }
+            if av.masked_fpscr() != bv.masked_fpscr() {
+                diffs.push(format!(
+                    "fpscr: vio={:08x} qemu={:08x}",
+                    av.masked_fpscr(),
+                    bv.masked_fpscr()
+                ));
+            }
         }
         if !diffs.is_empty() {
             return Err(format!(

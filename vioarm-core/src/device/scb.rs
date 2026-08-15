@@ -1,10 +1,13 @@
 //! The ARMv7-M System Control Block (subset).
 //!
-//! Models the three fields the core actually uses: the `ICSR` `PendSV`
-//! set/clear bits, and the `SHPR2`/`SHPR3` configurable exception priorities
-//! (`SVCall`, `PendSV`, `SysTick`). The remaining `SCB` registers (`AIRCR`,
-//! `SCR`, `CCR`, ...) are not modeled; the device only claims its three
-//! windows so writes elsewhere fall through to the NVIC or backing memory.
+//! Models the `ICSR` `PendSV` set/clear bits, the `SHPR2`/`SHPR3` configurable
+//! exception priorities (`SVCall`, `PendSV`, `SysTick`), and the `CPACR`
+//! coprocessor access-control register. The `CPACR` value is stored but does
+//! not gate VFP execution (the core implements FPv4-SP unconditionally); the
+//! window exists so firmware that enables the FPU (as every Cortex-M4 image
+//! does) does not fault. The remaining `SCB` registers (`AIRCR`, `SCR`, `CCR`,
+//! ...) are not modeled; the device only claims its four windows so writes
+//! elsewhere fall through to the NVIC or backing memory.
 //!
 //! Priority encoding follows the architecture: lower value == higher
 //! priority, with the `SVCall` byte in `SHPR2` and the `PendSV`/`SysTick`
@@ -17,17 +20,20 @@ use crate::mem::bus::Region;
 const ICSR: u32 = 0xE000_ED04;
 const SHPR2: u32 = 0xE000_ED1C;
 const SHPR3: u32 = 0xE000_ED20;
+const CPACR: u32 = 0xE000_ED88;
 
 const PENDSVSET: u8 = 0x10; // ICSR byte 3, bit 28: write 1 to pend.
 const PENDSVCLR: u8 = 0x08; // ICSR byte 3, bit 27: write 1 to clear.
 
-/// The System Control Block: interrupt control state and exception priorities.
+/// The System Control Block: interrupt control state, exception priorities,
+/// and the coprocessor access-control register.
 #[derive(Debug, Clone)]
 pub struct Scb {
-    ranges: [Region; 3],
+    ranges: [Region; 4],
     pendsv: bool,
     shpr2: u32,
     shpr3: u32,
+    cpacr: u32,
 }
 
 impl Scb {
@@ -38,10 +44,12 @@ impl Scb {
                 Region::new(ICSR, 4),
                 Region::new(SHPR2, 4),
                 Region::new(SHPR3, 4),
+                Region::new(CPACR, 4),
             ],
             pendsv: false,
             shpr2: 0,
             shpr3: 0,
+            cpacr: 0,
         }
     }
 
@@ -68,6 +76,7 @@ impl Scb {
             ICSR => u32::from(self.pendsv) << 28,
             SHPR2 => self.shpr2,
             SHPR3 => self.shpr3,
+            CPACR => self.cpacr,
             _ => 0,
         };
         ((reg >> (8 * offset)) & 0xFF) as u8
@@ -92,6 +101,10 @@ impl Scb {
             SHPR3 => {
                 let shift = 8 * offset;
                 self.shpr3 = (self.shpr3 & !(0xFF << shift)) | (u32::from(val) << shift);
+            }
+            CPACR => {
+                let shift = 8 * offset;
+                self.cpacr = (self.cpacr & !(0xFF << shift)) | (u32::from(val) << shift);
             }
             _ => {}
         }
@@ -132,6 +145,7 @@ impl Peripheral for Scb {
         self.pendsv = false;
         self.shpr2 = 0;
         self.shpr3 = 0;
+        self.cpacr = 0;
     }
 
     fn name(&self) -> &'static str {
@@ -209,5 +223,15 @@ mod tests {
         s.reset();
         assert!(!s.pendsv_pending());
         assert_eq!(s.priority(11), 0);
+    }
+
+    #[test]
+    fn cpacr_stores_and_resets() {
+        let mut s = Scb::new();
+        // Full access to CP10/CP11, as firmware enabling the FPU writes.
+        write_word(&mut s, 0xE000_ED88, 0x00F0_0000);
+        assert_eq!(read_word(&mut s, 0xE000_ED88), 0x00F0_0000);
+        s.reset();
+        assert_eq!(read_word(&mut s, 0xE000_ED88), 0);
     }
 }

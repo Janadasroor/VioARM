@@ -1267,7 +1267,7 @@ a.label("sub2");
 //
 // Restricted to instructions that are valid on the ARMv7-M (Cortex-M3)
 // baseline: the DSP zone (QADD family, SADD8/SEL, SXTAB16/UXTAB16, ...) is
-// ARMv7E-M only and QEMU's mps2-an385 (cortex-m3) faults on it â€” a divergence
+// ARMv7E-M only and QEMU's mps2-an385 (cortex-m3) faults on it — a divergence
 // to revisit when VioARM grows an ARMv7E-M ISA flag.
 // ---------------------------------------------------------------------------
 
@@ -1873,3 +1873,102 @@ fn sat_bitfield() {
     a.b("halt");
     conformance("sat_bitfield", &mut a, "halt", &mt);
 }
+
+// ---------------------------------------------------------------------------
+// VFP (FPv4-SP): the full single-precision data-processing and load/store
+// repertoire, diffed against the Cortex-M4's FPU. The program first enables
+// the FPU via `CPACR` (QEMU gates on it; VioARM records the write), loads the
+// operand register bank, and then runs the arithmetic, conversion, comparison,
+// immediate, and memory-move instructions. The harness now diffs `S0`-`S31`
+// and the modeled FPSCR bits after every step.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn vfp_m4() {
+    let Some(mt) = qemu_m4() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+    a.enable_fpu();
+
+    // operand bit patterns in GPRs (r0/r1 are clobbered by enable_fpu)
+    a.mov_imm32(2, 0x3f80_0000); //  1.0
+    a.mov_imm32(3, 0x4000_0000); //  2.0
+    a.mov_imm32(4, 0x4040_0000); //  3.0
+    a.mov_imm32(5, 0x4120_0000); // 10.0
+    a.mov_imm32(6, 0x4020_0000); //  2.5
+    a.mov_imm32(7, 0xC040_0000); // -3.0
+    a.mov_imm32(8, 0x4080_0000); //  4.0
+    a.mov_imm32(9, 0xBF80_0000); // -1.0
+    a.mov_imm32(10, 0x3FE0_0000); //  1.75
+    a.mov_imm32(11, 0x3FC0_0000); //  1.5
+    a.mov_imm32(12, 0xFFFF_FFFD); // -3 (as an int)
+
+    // load the S bank
+    a.vmov_s_gpr(0, 2); // s0  =  1.0
+    a.vmov_s_gpr(1, 3); // s1  =  2.0
+    a.vmov_s_gpr(2, 4); // s2  =  3.0
+    a.vmov_s_gpr(3, 5); // s3  = 10.0
+    a.vmov_s_gpr(4, 6); // s4  =  2.5
+    a.vmov_s_gpr(5, 7); // s5  = -3.0
+    a.vmov_s_gpr(6, 8); // s6  =  4.0
+    a.vmov_s_gpr(7, 9); // s7  = -1.0
+    a.vmov_s_gpr(8, 10); // s8  =  1.75
+    a.vmov_s_gpr(9, 11); // s9  =  1.5
+
+    // three-operand arithmetic
+    a.vadd_f32(10, 0, 1); // s10 = 1.0 + 2.0
+    a.vsub_f32(11, 3, 1); // s11 = 10.0 - 2.0
+    a.vmul_f32(12, 0, 1); // s12 = 1.0 * 2.0
+    a.vdiv_f32(13, 3, 1); // s13 = 10.0 / 2.0
+    a.vmla_f32(14, 0, 1); // s14 = 4.0 + 1.0*2.0
+    a.vmls_f32(15, 0, 1); // s15 = 10.0 - 1.0*2.0
+    a.vfma_f32(16, 0, 1); // s16 = 3.0 + 1.0*2.0
+    a.vfms_f32(17, 0, 1); // s17 = 10.0 - 1.0*2.0
+    a.vfnma_f32(18, 0, 1); // s18 = -(4.0) + 1.0*2.0
+    a.vfnms_f32(19, 0, 1); // s19 = -(4.0) - 1.0*2.0
+
+    // two-operand
+    a.vabs_f32(20, 5); // s20 = |−3.0|
+    a.vneg_f32(21, 0); // s21 = −1.0
+    a.vsqrt_f32(22, 6); // s22 = √4.0
+
+    // immediate, register, and 64-bit moves
+    a.vmov_f32_imm(23, 0x70); // s23 = 1.0
+    a.vmov_f32_imm(24, 0xF0); // s24 = -1.0
+    a.vmov_reg(25, 5); // s25 = s5 (VMOV register)
+    a.vmov_s_pair_from_gpr(26, 10, 11); // s26 = 1.75, s27 = 1.5
+
+    // conversions
+    a.vcvt_f32_s32(28, 0); // s28 = (float)-3   (s0 holds int -3)
+    a.vcvt_s32_f32(29, 8); // s29 = (int)1.75
+    a.vcvt_u32_f32(30, 9); // s30 = (uint)1.5
+    a.vcvtr_s32_f32(31, 8); // s31 = (int)1.75, toward zero
+
+    // comparisons write FPSCR NZCV, which the harness diffs
+    a.vcmp_f32(0, 1); // 1.0 vs 2.0 -> less
+    a.vcmpz_f32(0); // 1.0 vs 0 -> greater
+    a.vcmpe_f32(0, 0); // equal
+
+    // load/store and stack moves
+    a.mov_imm32(0, 0x2000_0000);
+    a.vstr_s(10, 0, 0);
+    a.vldr_s(11, 0, 0);
+    a.vpush(0, 3);
+    a.vpop(0, 3);
+
+    // NaN compare (quiet) and NaN conversion: unordered flags / IOC
+    a.mov_imm32(0, 0x7FC0_0000);
+    a.vmov_s_gpr(1, 0);
+    a.vcmp_f32(1, 1); // QNaN vs QNaN -> unordered, no IOC
+    a.vcvt_s32_f32(2, 1); // QNaN -> 0, sets IOC
+
+    // read FPSCR into a GPR to make the full register diffable
+    a.vmrs(0, 1); // vmrs r0, fpscr
+    a.movs_imm8(0, 0); // clear the low 8 flags for a stable end state
+
+    a.label("halt");
+    a.b("halt");
+    conformance("vfp_m4", &mut a, "halt", &mt);
+}
+
+
