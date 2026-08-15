@@ -7,6 +7,7 @@
 pub mod decode;
 pub mod decode16;
 pub mod decode32;
+pub mod fpu;
 pub mod registers;
 
 use crate::error::{Exception, HaltCause};
