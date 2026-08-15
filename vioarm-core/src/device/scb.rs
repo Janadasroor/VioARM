@@ -1,13 +1,14 @@
 //! The ARMv7-M System Control Block (subset).
 //!
 //! Models the `ICSR` `PendSV` set/clear bits, the `SHPR2`/`SHPR3` configurable
-//! exception priorities (`SVCall`, `PendSV`, `SysTick`), and the `CPACR`
-//! coprocessor access-control register. The `CPACR` value is stored but does
-//! not gate VFP execution (the core implements FPv4-SP unconditionally); the
-//! window exists so firmware that enables the FPU (as every Cortex-M4 image
-//! does) does not fault. The remaining `SCB` registers (`AIRCR`, `SCR`, `CCR`,
-//! ...) are not modeled; the device only claims its windows so writes
-//! elsewhere fall through to the NVIC or backing memory.
+//! exception priorities (`SVCall`, `PendSV`, `SysTick`), the `CPACR`
+//! coprocessor access-control register, and the reset/control registers
+//! `AIRCR`, `SCR`, and `CCR`. The `CPACR` value is stored but does not gate
+//! VFP execution (the core implements FPv4-SP unconditionally); the window
+//! exists so firmware that enables the FPU (as every Cortex-M4 image does)
+//! does not fault. `AIRCR.SYSRESETREQ` latches a reset request the machine
+//! honors; `SCR.SLEEPONEXIT` and `CCR.STKALIGN`/`DIV_0_TRP` drive the core's
+//! exception-return and exception-entry behavior.
 //!
 //! The `FPCCR` (`0xE000_EF34`) and `FPCAR` (`0xE000_EF38`) windows expose the
 //! M-profile lazy-FP-stacking control to firmware. Their state lives in the
@@ -25,6 +26,9 @@ use crate::mem::bus::Region;
 use std::sync::{Arc, Mutex};
 
 const ICSR: u32 = 0xE000_ED04;
+const AIRCR: u32 = 0xE000_ED0C;
+const SCR: u32 = 0xE000_ED10;
+const CCR: u32 = 0xE000_ED14;
 const SHPR2: u32 = 0xE000_ED1C;
 const SHPR3: u32 = 0xE000_ED20;
 const CPACR: u32 = 0xE000_ED88;
@@ -35,15 +39,44 @@ const FPDSCR: u32 = 0xE000_EF3C;
 const PENDSVSET: u8 = 0x10; // ICSR byte 3, bit 28: write 1 to pend.
 const PENDSVCLR: u8 = 0x08; // ICSR byte 3, bit 27: write 1 to clear.
 
+// AIRCR: bits 31:16 carry the write `VECTKEY` (0x05FA) and read back as
+// `VECTKEYSTAT` (0xFA05); bit 15 `ENDIANNESS` is read-only zero.
+const AIRCR_VECTKEY: u32 = 0x05FA_0000;
+const AIRCR_PRIGROUP: u32 = 0x0000_0700;
+const AIRCR_SYSRESETREQ: u32 = 0x0000_0004;
+const AIRCR_VECTCLRACTIVE: u32 = 0x0000_0002;
+const AIRCR_VECTRESET: u32 = 0x0000_0001;
+
+// SCR: SEVONPEND (4), SLEEPONEXIT (1). The deep-sleep bits (SLEEPDEEP 2,
+// SLEEPDEEPS 3) are RAZ/WI: neither this model nor the QEMU oracle
+// implements deep sleep, which the architecture permits.
+const SCR_MASK: u32 = 0x0000_0012;
+
+// CCR: STKALIGN (9), BFHFNMIGN (8), DIV_0_TRP (4), UNALIGN_TRP (3),
+// USERSETMPEND (1), NONBASETHRDENA (0). STKALIGN is set at reset.
+const CCR_MASK: u32 = 0x0000_033B;
+const CCR_RESET: u32 = 0x0000_0200;
+
 /// The System Control Block: interrupt control state, exception priorities,
-/// the coprocessor access-control register, and the FP context control.
+/// the reset/control registers (`AIRCR`/`SCR`/`CCR`), the coprocessor
+/// access-control register, and the FP context control.
 #[derive(Debug, Clone)]
 pub struct Scb {
-    ranges: [Region; 7],
+    ranges: [Region; 10],
     pendsv: bool,
     shpr2: u32,
     shpr3: u32,
     cpacr: u32,
+    /// The last `AIRCR` word written (key bytes included), so a 32-bit store's
+    /// `VECTKEY` is recognized across its four byte-writes. Reads always
+    /// report `VECTKEYSTAT`, never the stored key.
+    aircr: u32,
+    /// `SCR` (`SEVONPEND`/`SLEEPDEEP`/`SLEEPONEXIT`), written by firmware.
+    scr: u32,
+    /// `CCR` (`STKALIGN`, `DIV_0_TRP`, ...), written by firmware.
+    ccr: u32,
+    /// Latched by `AIRCR.SYSRESETREQ`; the machine performs the reset.
+    reset_requested: bool,
     /// Shared `FPCCR`/`FPCAR`/`FPDSCR` state; the core holds the same `Rc`.
     fpu_ctx: Arc<Mutex<FpuCtx>>,
 }
@@ -54,6 +87,9 @@ impl Scb {
         Self {
             ranges: [
                 Region::new(ICSR, 4),
+                Region::new(AIRCR, 4),
+                Region::new(SCR, 4),
+                Region::new(CCR, 4),
                 Region::new(SHPR2, 4),
                 Region::new(SHPR3, 4),
                 Region::new(CPACR, 4),
@@ -65,6 +101,10 @@ impl Scb {
             shpr2: 0,
             shpr3: 0,
             cpacr: 0,
+            aircr: 0,
+            scr: 0,
+            ccr: CCR_RESET,
+            reset_requested: false,
             fpu_ctx: Arc::new(Mutex::new(FpuCtx::new())),
         }
     }
@@ -93,9 +133,46 @@ impl Scb {
         }
     }
 
+    /// `AIRCR.PRIGROUP` (0..7): the number of subpriority bits the interrupt
+    /// controller uses to split each priority byte into group and
+    /// subpriority parts. Only visible after a write that carried the
+    /// `VECTKEY`.
+    #[must_use]
+    pub const fn prig(&self) -> u8 {
+        if self.aircr & 0xFFFF_0000 == AIRCR_VECTKEY {
+            ((self.aircr & AIRCR_PRIGROUP) >> 8) as u8
+        } else {
+            0
+        }
+    }
+
+    /// `SCR`: `SEVONPEND`, `SLEEPDEEP`, and `SLEEPONEXIT`.
+    #[must_use]
+    pub const fn scr(&self) -> u32 {
+        self.scr
+    }
+
+    /// `CCR`: `STKALIGN`, `BFHFNMIGN`, `DIV_0_TRP`, `UNALIGN_TRP`,
+    /// `USERSETMPEND`, and `NONBASETHRDENA`.
+    #[must_use]
+    pub const fn ccr(&self) -> u32 {
+        self.ccr
+    }
+
+    /// Whether `AIRCR.SYSRESETREQ` has been written since the last reset.
+    #[must_use]
+    pub const fn reset_requested(&self) -> bool {
+        self.reset_requested
+    }
+
     fn read_reg(&self, base: u32, offset: u32) -> u8 {
         let reg = match base {
             ICSR => u32::from(self.pendsv) << 28,
+            // The read reports VECTKEYSTAT; the stored key bytes are never
+            // echoed back.
+            AIRCR => 0xFA05_0000 | (u32::from(self.prig()) << 8),
+            SCR => self.scr,
+            CCR => self.ccr,
             SHPR2 => self.shpr2,
             SHPR3 => self.shpr3,
             CPACR => self.cpacr,
@@ -118,6 +195,32 @@ impl Scb {
                         self.pendsv = false;
                     }
                 }
+            }
+            AIRCR => {
+                // Only a store whose bits 31:16 carry `VECTKEY` (0x05FA) is
+                // honored. The key bytes may arrive in any of the store's
+                // byte-writes, so the last word written (key included) is
+                // remembered; reads always report `VECTKEYSTAT`.
+                let shift = 8 * offset;
+                self.aircr = (self.aircr & !(0xFF << shift)) | (u32::from(val) << shift);
+                if self.aircr & 0xFFFF_0000 == AIRCR_VECTKEY {
+                    // `VECTRESET` (bit 0) is reserved on the M3/M4 and
+                    // `VECTCLRACTIVE` (bit 1) is only meaningful inside a fault
+                    // handler; neither is modeled.
+                    if self.aircr & AIRCR_SYSRESETREQ != 0 {
+                        self.reset_requested = true;
+                    }
+                }
+            }
+            SCR => {
+                let shift = 8 * offset;
+                self.scr = (self.scr & !(0xFF << shift)) | (u32::from(val) << shift);
+                self.scr &= SCR_MASK;
+            }
+            CCR => {
+                let shift = 8 * offset;
+                self.ccr = (self.ccr & !(0xFF << shift)) | (u32::from(val) << shift);
+                self.ccr &= CCR_MASK;
             }
             SHPR2 => {
                 let shift = 8 * offset;
@@ -191,6 +294,10 @@ impl Peripheral for Scb {
         self.shpr2 = 0;
         self.shpr3 = 0;
         self.cpacr = 0;
+        self.aircr = 0;
+        self.scr = 0;
+        self.ccr = CCR_RESET;
+        self.reset_requested = false;
         *self.fpu_ctx.lock().unwrap() = FpuCtx::new();
     }
 
@@ -342,5 +449,67 @@ mod tests {
         s.reset();
         assert_eq!(read_word(&mut s, 0xE000_EF34), 0xC780_0004);
         assert!(fpu_ctx.lock().unwrap().lspen);
+    }
+
+    #[test]
+    fn aircr_requires_vectkey_and_stores_prigroup() {
+        let mut s = Scb::new();
+        assert_eq!(read_word(&mut s, 0xE000_ED0C), 0xFA05_0000);
+        assert_eq!(s.prig(), 0);
+        // A write without VECTKEY is ignored entirely.
+        write_word(&mut s, 0xE000_ED0C, 0x0000_0700);
+        assert_eq!(read_word(&mut s, 0xE000_ED0C), 0xFA05_0000);
+        assert_eq!(s.prig(), 0);
+        // With VECTKEY the PRIGROUP field is stored; reads show VECTKEYSTAT.
+        write_word(&mut s, 0xE000_ED0C, 0x05FA_0700);
+        assert_eq!(read_word(&mut s, 0xE000_ED0C), 0xFA05_0700);
+        assert_eq!(s.prig(), 7);
+    }
+
+    #[test]
+    fn aircr_sysresetreq_latches_only_under_vectkey() {
+        let mut s = Scb::new();
+        // No key: the request never latches.
+        write_word(&mut s, 0xE000_ED0C, 0x0000_0004);
+        assert!(!s.reset_requested());
+        // Properly keyed: SYSRESETREQ latches a reset request.
+        write_word(&mut s, 0xE000_ED0C, 0x05FA_0004);
+        assert!(s.reset_requested());
+        // `reset()` clears it, along with the stored PRIGROUP.
+        s.reset();
+        assert!(!s.reset_requested());
+        assert_eq!(read_word(&mut s, 0xE000_ED0C), 0xFA05_0000);
+    }
+
+    #[test]
+    fn scr_stores_masked_and_resets() {
+        let mut s = Scb::new();
+        assert_eq!(read_word(&mut s, 0xE000_ED10), 0);
+        // SEVONPEND (4) and SLEEPONEXIT (1) are the implemented bits.
+        write_word(&mut s, 0xE000_ED10, 0x0000_0012);
+        assert_eq!(read_word(&mut s, 0xE000_ED10), 0x0000_0012);
+        assert_eq!(s.scr(), 0x0000_0012);
+        // The deep-sleep bits (SLEEPDEEP 2, SLEEPDEEPS 3) are RAZ/WI.
+        write_word(&mut s, 0xE000_ED10, 0x0000_001E);
+        assert_eq!(read_word(&mut s, 0xE000_ED10), 0x0000_0012);
+        s.reset();
+        assert_eq!(read_word(&mut s, 0xE000_ED10), 0);
+    }
+
+    #[test]
+    fn ccr_resets_with_stkalign_and_masks_writes() {
+        let mut s = Scb::new();
+        // STKALIGN is set at reset.
+        assert_eq!(read_word(&mut s, 0xE000_ED14), 0x0000_0200);
+        assert_eq!(s.ccr(), 0x0000_0200);
+        // Write DIV_0_TRP only: STKALIGN is cleared, DIV_0_TRP sticks.
+        write_word(&mut s, 0xE000_ED14, 0x0000_0010);
+        assert_eq!(read_word(&mut s, 0xE000_ED14), 0x0000_0010);
+        assert_eq!(s.ccr(), 0x0000_0010);
+        // Reserved bits (here bit 7) are dropped on write.
+        write_word(&mut s, 0xE000_ED14, 0x0000_0090);
+        assert_eq!(read_word(&mut s, 0xE000_ED14), 0x0000_0010);
+        s.reset();
+        assert_eq!(read_word(&mut s, 0xE000_ED14), 0x0000_0200);
     }
 }

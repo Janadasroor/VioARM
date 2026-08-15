@@ -97,6 +97,13 @@ impl<M: Bus> SystemMemory<M> {
         }
     }
 
+    /// Whether `AIRCR.SYSRESETREQ` has been latched since the last reset; the
+    /// `Machine` performs a full reset when set.
+    #[must_use]
+    pub const fn reset_requested(&self) -> bool {
+        self.scb.reset_requested()
+    }
+
     /// Advance every un-gated device by exactly `delta` cycles, then latch any
     /// freshly-asserted interrupt lines into the NVIC's pending register.
     /// Called at a synchronization point with the true elapsed delta; gated
@@ -111,16 +118,36 @@ impl<M: Bus> SystemMemory<M> {
         self.latch_device_asserts();
     }
 
-    /// Fold candidate exception `n` at priority `p` into `best`, keeping the
-    /// higher-priority candidate; ties fall to the lower exception number.
-    /// Lower priority byte value means higher priority.
-    fn consider(best: &mut Option<(u8, u8)>, n: u8, p: u8) {
+    /// Split a priority byte into its group and subpriority parts under the
+    /// current `AIRCR.PRIGROUP` (the number of subpriority bits). A zero
+    /// `PRIGROUP` gives the whole byte to the group and leaves no subpriority
+    /// bits. Preemption is decided on the group part alone; subpriority only
+    /// orders which pending exception is activated within the same group.
+    fn split_priority(&self, p: u8) -> (u8, u8) {
+        let sub = self.scb.prig() & 0x7;
+        (
+            p >> sub,
+            if sub == 0 {
+                0
+            } else {
+                p & ((1u8 << sub) - 1)
+            },
+        )
+    }
+
+    /// Fold candidate exception `n` with priority parts `group`/`sub` and raw
+    /// priority byte `raw` into `best`. Higher priority wins; among equal
+    /// groups the higher subpriority wins; ties fall to the lower exception
+    /// number. Lower numeric value means higher priority everywhere.
+    fn consider(best: &mut Option<(u8, u8, u8, u8)>, n: u8, group: u8, sub: u8, raw: u8) {
         let replace = match *best {
             None => true,
-            Some((bn, bp)) => p < bp || (p == bp && n < bn),
+            Some((bn, bg, bs, _)) => {
+                group < bg || (group == bg && (sub < bs || (sub == bs && n < bn)))
+            }
         };
         if replace {
-            *best = Some((n, p));
+            *best = Some((n, group, sub, raw));
         }
     }
 
@@ -152,37 +179,45 @@ impl<M: Bus> SystemMemory<M> {
         if primask || faultmask {
             return None;
         }
-        // Best pending candidate by priority; ties go to the lowest exception
-        // number, which is exactly the M-profile preemption rule.
-        let mut best: Option<(u8, u8)> = None;
+        // Best pending candidate by group/subpriority; ties go to the lowest
+        // exception number, which is exactly the M-profile preemption rule.
+        let mut best: Option<(u8, u8, u8, u8)> = None;
         for device in &self.devices {
             if device.exception_number() == Some(15) && device.pending() != 0 {
-                Self::consider(&mut best, 15, self.scb.priority(15));
+                let p = self.scb.priority(15);
+                let (g, s) = self.split_priority(p);
+                Self::consider(&mut best, 15, g, s, p);
             }
         }
         if self.scb.pendsv_pending() {
-            Self::consider(&mut best, 14, self.scb.priority(14));
+            let p = self.scb.priority(14);
+            let (g, s) = self.split_priority(p);
+            Self::consider(&mut best, 14, g, s, p);
         }
         let mut ready = self.nvic.ready();
         while ready != 0 {
             let line = ready.trailing_zeros();
             let n = 16 + line as u8;
-            Self::consider(&mut best, n, self.nvic.priority(line));
+            let p = self.nvic.priority(line);
+            let (g, s) = self.split_priority(p);
+            Self::consider(&mut best, n, g, s, p);
             ready &= ready - 1;
         }
-        let (n, priority) = best?;
+        let (n, group, _sub, priority) = best?;
         // BASEPRI masks the configurable-priority exceptions (PendSV, SysTick,
         // and external IRQs) whose priority number is `>=` its value. A zero
         // BASEPRI never masks. Faults (3) are not configurable.
         if basepri != 0 && n >= 14 && priority >= basepri {
             return None;
         }
-        // Only a strictly higher-priority (numerically lower) exception
-        // preempts the one running. HardFault (3) blocks everything we model.
+        // Only a strictly higher-priority (numerically lower) group preempts
+        // the one running; an equal group never preempts, even with a higher
+        // subpriority. HardFault (3) blocks everything we model.
         match self.current_priority(current_ipsr) {
             3 => None,
             current => {
-                if priority < current {
+                let (cur_group, _) = self.split_priority(current);
+                if group < cur_group {
                     Some(n)
                 } else {
                     None
@@ -676,5 +711,60 @@ mod tests {
         sys.write(0xE000_ED22, 0xC0).unwrap();
         sys.write_word(0xE000_ED04, 0x1000_0000).unwrap();
         assert_eq!(sys.next_exception(false, false, 0, 23), None);
+    }
+
+    #[test]
+    fn prigroup_blocks_same_group_preemption() {
+        let mut sys = SystemMemory::new(ram());
+        // PRIGROUP = 2: two subpriority bits.
+        sys.write_word(0xE000_ED0C, 0x05FA_0200).unwrap();
+        // IRQ0 (exc 16) priority 0x3C, IRQ7 (exc 23) priority 0x3F. Under
+        // grouping both are group 0x0F, so IRQ0 may not preempt the running
+        // IRQ7 even though its raw priority byte is numerically higher.
+        sys.write(0xE000_E400, 0x3C).unwrap();
+        sys.write(0xE000_E407, 0x3F).unwrap();
+        sys.write_word(0xE000_E100, (1 << 0) | (1 << 7)).unwrap();
+        sys.write_word(0xE000_E200, (1 << 0) | (1 << 7)).unwrap();
+        assert_eq!(sys.next_exception(false, false, 0, 23), None);
+        // In thread mode the higher subpriority in the group is served first.
+        assert_eq!(sys.next_exception(false, false, 0, 0), Some(16));
+    }
+
+    #[test]
+    fn prigroup_subpriority_orders_same_group() {
+        let mut sys = SystemMemory::new(ram());
+        sys.write_word(0xE000_ED0C, 0x05FA_0200).unwrap();
+        // IRQ0 has subpriority 3, IRQ7 subpriority 0 within group 0x0F.
+        sys.write(0xE000_E400, 0x3F).unwrap();
+        sys.write(0xE000_E407, 0x3C).unwrap();
+        sys.write_word(0xE000_E100, (1 << 0) | (1 << 7)).unwrap();
+        sys.write_word(0xE000_E200, (1 << 0) | (1 << 7)).unwrap();
+        assert_eq!(sys.next_exception(false, false, 0, 0), Some(23));
+    }
+
+    #[test]
+    fn without_prigroup_full_byte_preempts() {
+        let mut sys = SystemMemory::new(ram());
+        // Default PRIGROUP 0: the raw byte arbitrates, so IRQ0 (0x3C)
+        // preempts the running IRQ7 (0x3F).
+        sys.write(0xE000_E400, 0x3C).unwrap();
+        sys.write(0xE000_E407, 0x3F).unwrap();
+        sys.write_word(0xE000_E100, (1 << 0) | (1 << 7)).unwrap();
+        sys.write_word(0xE000_E200, (1 << 0) | (1 << 7)).unwrap();
+        assert_eq!(sys.next_exception(false, false, 0, 23), Some(16));
+    }
+
+    #[test]
+    fn aircr_sysresetreq_latches_until_reset() {
+        let mut sys = SystemMemory::new(ram());
+        assert!(!sys.reset_requested());
+        sys.write_word(0xE000_ED0C, 0x05FA_0004).unwrap();
+        assert!(sys.reset_requested());
+        // The machine's reset path clears the latch.
+        sys.reset_devices();
+        assert!(!sys.reset_requested());
+        // Without the VECTKEY the request never latches.
+        sys.write_word(0xE000_ED0C, 0x0000_0004).unwrap();
+        assert!(!sys.reset_requested());
     }
 }

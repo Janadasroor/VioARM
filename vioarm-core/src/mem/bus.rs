@@ -124,4 +124,10 @@ pub trait PeripheralBus: Bus {
 
     /// Reset all peripheral state.
     fn reset_peripherals(&mut self) {}
+
+    /// Whether the system control block has latched `AIRCR.SYSRESETREQ`; the
+    /// machine performs a full reset when set. Default: no such request.
+    fn reset_requested(&self) -> bool {
+        false
+    }
 }

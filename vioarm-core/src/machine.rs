@@ -77,6 +77,13 @@ impl<M: PeripheralBus> Machine<M> {
     ///
     /// Returns the halt cause if the machine halts while stepping.
     pub fn step(&mut self) -> Result<(), HaltCause> {
+        // AIRCR.SYSRESETREQ resets the whole machine: peripherals to their
+        // post-reset state and the core re-booted from the reset vector table.
+        // The SCB's reset clears the request latch, so the reset runs exactly
+        // once.
+        if self.core.mem().reset_requested() {
+            self.reset()?;
+        }
         let (primask, faultmask, basepri, ipsr) = (
             self.core.primask,
             self.core.faultmask,

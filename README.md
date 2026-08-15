@@ -102,6 +102,8 @@ cargo test -p vioarm-qemu --test conformance
   are no-ops. Time-sensitive firmware does not reproduce silicon behavior.
 - CPACR is stored but does not gate FP access; the FPU is always enabled.
 - No DMA, flash controller, MPU, or full SCB; flash writes are ignored.
+- `AIRCR`/`SCR`/`CCR` are modeled (PRIGROUP, SYSRESETREQ, SLEEPONEXIT,
+  STKALIGN, DIV_0_TRP); `SHCSR`, `CFSR`/`HFSR`, and `VTOR` are not.
 - STM32F107 Ethernet/USB/CAN and STM32F407 CCM RAM are not modeled, and the
   F103 `0x0800_0000` flash alias is absent.
 - Double-precision arithmetic is not implemented (D registers alias S pairs

@@ -2312,4 +2312,112 @@ fn fp_ctx_fpdscr_supplies_new_context() {
     conformance("fp_ctx_fpdscr_supplies_new_context", &mut a, "halt", &mt);
 }
 
+// ---------------------------------------------------------------------------
+// SCB system-control windows: AIRCR (VECTKEY-protected PRIGROUP store and
+// VECTKEYSTAT read), SCR, and CCR are diffed against the M4 oracle through
+// register reads.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn scb_aircr_scr_ccr_roundtrip() {
+    let Some(mt) = qemu_m4() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+
+    // AIRCR: an unkeyed write is ignored (read stays VECTKEYSTAT with no
+    // PRIGROUP); a keyed write stores PRIGROUP and the read reports it.
+    a.mov_imm32(0, 0xE000_ED0C);
+    a.mov_imm32(1, 0x0000_0700); // no VECTKEY: ignored
+    a.str_imm(1, 0, 0);
+    a.ldr_imm(2, 0, 0); // r2 = 0xFA05_0000
+    a.mov_imm32(1, 0x05FA_0700); // VECTKEY | PRIGROUP = 7
+    a.str_imm(1, 0, 0);
+    a.ldr_imm(3, 0, 0); // r3 = 0xFA05_0700
+
+    // SCR: SEVONPEND|SLEEPONEXIT store and read back; the deep-sleep bits
+    // are RAZ/WI in both models.
+    a.mov_imm32(0, 0xE000_ED10);
+    a.movs_imm8(1, 0x16);
+    a.str_imm(1, 0, 0);
+    a.ldr_imm(1, 0, 0); // r1 = 0x12
+
+    // CCR: the reset value carries STKALIGN; a STKALIGN|DIV_0_TRP write reads
+    // back exactly what was written.
+    a.mov_imm32(0, 0xE000_ED14);
+    a.ldr_imm(2, 0, 0); // r2 = 0x200 (reset)
+    a.mov_imm32(1, 0x0000_0210);
+    a.str_imm(1, 0, 0);
+    a.ldr_imm(1, 0, 0); // r1 = 0x210
+
+    a.movs_imm8(4, 0xAA);
+    a.label("halt");
+    a.b("halt");
+    conformance("scb_aircr_scr_ccr_roundtrip", &mut a, "halt", &mt);
+}
+
+// ---------------------------------------------------------------------------
+// CCR.STKALIGN: with the bit cleared, exception entry skips the 8-byte
+// stack alignment. The main SP is parked on a 4-aligned-but-not-8 address, an
+// SVC is taken, and the handler reads MSP, so any divergence in the frame
+// base lands directly in the diffed registers.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ccr_stkalign_cleared_skips_align() {
+    let Some(mt) = qemu_m4() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+
+    // Clear STKALIGN (CCR bit 9); DIV_0_TRP is irrelevant here.
+    a.mov_imm32(0, 0xE000_ED14);
+    a.mov_imm32(1, 0x0000_0010);
+    a.str_imm(1, 0, 0);
+
+    // Park MSP on a 4-aligned-but-not-8 address, then take SVC.
+    a.mov_imm32(0, 0x2000_1004);
+    a.msr(0x08, 0); // MSR MSP, r0
+    a.svc(1);
+    a.label("halt");
+    a.b("halt");
+
+    a.label("svc_handler");
+    a.mrs(0, 0x08); // r0 = MSP after entry
+    a.movs_imm8(1, 0xAA);
+    a.bx(14);
+
+    a.vec(11, "svc_handler");
+    conformance("ccr_stkalign_cleared_skips_align", &mut a, "halt", &mt);
+}
+
+// ---------------------------------------------------------------------------
+// CCR.DIV_0_TRP: a zero divisor traps to a UsageFault (folded into HardFault
+// here) instead of yielding zero. Both simulators must take the HardFault
+// vector, which branches to the same halt the untrapped path would also
+// reach, so whichever way the oracle behaves the trace either agrees or the
+// exception entry/return state diverges.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ccr_div0_trp_hardfaults_zero_divide() {
+    let Some(mt) = qemu_m4() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+
+    a.mov_imm32(0, 0xE000_ED14);
+    a.mov_imm32(1, 0x0000_0010); // DIV_0_TRP
+    a.str_imm(1, 0, 0);
+
+    a.mov_imm32(0, 100);
+    a.movs_imm8(1, 0); // divisor zero
+    a.udiv(2, 0, 1);
+    a.label("halt");
+    a.b("halt");
+
+    a.label("hf_handler");
+    a.b("halt");
+
+    a.vec(3, "hf_handler");
+    conformance("ccr_div0_trp_hardfaults_zero_divide", &mut a, "halt", &mt);
+}
+
 

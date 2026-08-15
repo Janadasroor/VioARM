@@ -268,6 +268,20 @@ impl FpuCtx {
 /// new context (when `FPCCR.ASPEN` is set) and cleared at exception entry.
 const CONTROL_FPCA: u32 = 1 << 2;
 
+/// `SCR.SLEEPONEXIT` (bit 1): on exception return to Thread mode the core
+/// re-enters sleep instead of resuming the thread, until an exception wakes it.
+const SCR_ADDR: u32 = 0xE000_ED10;
+const SCR_SLEEPONEXIT: u32 = 0x0000_0002;
+
+/// `CCR` fields the exception paths consult through the bus. `STKALIGN` gates
+/// the 8-byte stack alignment on exception entry; `DIV_0_TRP` traps a
+/// divide-by-zero. The architectural reset value (`STKALIGN` set) is the
+/// fallback when no `SCB` is present on the bus.
+const CCR_ADDR: u32 = 0xE000_ED14;
+const CCR_STKALIGN: u32 = 0x0000_0200;
+const CCR_DIV0_TRP: u32 = 0x0000_0010;
+const CCR_RESET: u32 = 0x0000_0200;
+
 /// The core CPU state plus its bus.
 pub struct Core<B: PeripheralBus> {
     pub regs: Registers,
@@ -294,6 +308,10 @@ pub struct Core<B: PeripheralBus> {
     /// `None` means open; `STREX*` succeeds only while it matches, and any
     /// exception entry or return clears it.
     pub exmon: Option<u32>,
+    /// Whether the core is asleep (`SCR.SLEEPONEXIT` on exception return to
+    /// Thread mode). A sleeping core does not execute until an exception wakes
+    /// it; peripherals keep ticking.
+    pub sleeping: bool,
     pub cycles: u64,
     /// Shared M-profile FP context-control state (`FPCCR`/`FPCAR`). The `SCB`
     /// device holds the same `Rc` so firmware writes through the bus and the
@@ -338,6 +356,7 @@ impl<B: PeripheralBus> Core<B> {
             ipsr: 0,
             itstate: 0,
             exmon: None,
+            sleeping: false,
             cycles: 0,
             fpu_ctx: std::sync::Arc::new(std::sync::Mutex::new(FpuCtx::new())),
             mem,
@@ -353,6 +372,12 @@ impl<B: PeripheralBus> Core<B> {
     /// advanced exactly one instruction; on error it has *not*. Interrupts
     /// are taken by the `Machine`, not here.
     pub fn step(&mut self) -> Result<(), HaltCause> {
+        // A sleeping core (`SCR.SLEEPONEXIT`) does not execute; the machine
+        // still advances peripherals and re-checks for a waking exception
+        // each cycle.
+        if self.sleeping {
+            return Ok(());
+        }
         let pc = self.regs.pc;
         let next = match self.isa {
             Isa::Armv6M => self.step_v6m(pc)?,
@@ -490,6 +515,7 @@ impl<B: PeripheralBus> Core<B> {
         self.control = 0;
         self.ipsr = 0;
         self.itstate = 0;
+        self.sleeping = false;
         Ok(())
     }
 
@@ -1447,14 +1473,20 @@ impl<B: PeripheralBus> Core<B> {
                         what: "divide writes to pc",
                     });
                 }
-                // A zero divisor yields zero (no fault; `DIV_0_TRP` is off at
-                // reset and not modeled). Signed `MIN / -1` saturates to MIN
-                // without trapping, exactly as the architecture requires.
+                // A zero divisor yields zero unless `CCR.DIV_0_TRP` traps it
+                // to a UsageFault, folded into HardFault exactly like an
+                // undefined instruction. Signed `MIN / -1` saturates to MIN
+                // without trapping, as the architecture requires.
                 let num = self.regs.read(rn);
                 let den = self.regs.read(rm);
-                let result = if den == 0 {
-                    0
-                } else if signed {
+                if den == 0 {
+                    if self.mem.read_word(CCR_ADDR).unwrap_or(CCR_RESET) & CCR_DIV0_TRP != 0 {
+                        return self.hardfault_on_undefined(pc, 4);
+                    }
+                    self.regs.write(rd, 0);
+                    return Ok(Next::Advance(pc + 4));
+                }
+                let result = if signed {
                     i32::wrapping_div(num as i32, den as i32) as u32
                 } else {
                     u32::wrapping_div(num, den)
@@ -2813,8 +2845,10 @@ impl<B: PeripheralBus> Core<B> {
         {
             return Err(HaltCause::UnhandledException);
         }
-        // Exception entry clears the local exclusive monitor.
+        // Exception entry clears the local exclusive monitor and wakes the core
+        // from a `SCR.SLEEPONEXIT` sleep.
         self.exmon = None;
+        self.sleeping = false;
         let vector_addr = u32::from(ex.number()) * 4;
         let vector = match self.read_word_halt(vector_addr) {
             Ok(v) => v,
@@ -2846,8 +2880,15 @@ impl<B: PeripheralBus> Core<B> {
         sxpsr |= (it & 0xFC) << 8;
         sxpsr |= (it & 0x03) << 25;
         if sp & 0x4 != 0 {
-            sp = sp.wrapping_sub(4);
-            sxpsr |= XPSR_ALIGN;
+            // CCR.STKALIGN (set at reset) enables the 8-byte alignment of the
+            // frame base on exception entry; cleared, a 4-aligned-but-not-8
+            // SP is pushed unadjusted (ARMv7-M; matches QEMU). Without an SCB
+            // on the bus the architectural reset value (STKALIGN set) applies.
+            let stkalign = self.mem.read_word(CCR_ADDR).unwrap_or(CCR_RESET) & CCR_STKALIGN != 0;
+            if stkalign {
+                sp = sp.wrapping_sub(4);
+                sxpsr |= XPSR_ALIGN;
+            }
         }
         let frame = sp.wrapping_sub(framesize);
         for (i, r) in [0u8, 1, 2, 3, 12].into_iter().enumerate() {
@@ -3015,6 +3056,14 @@ impl<B: PeripheralBus> Core<B> {
             self.regs.sp = sp;
             self.regs.msp = sp;
             self.ipsr = (sxpsr & 0xFF) as u8;
+        }
+        // SCR.SLEEPONEXIT: returning to Thread mode re-enters sleep instead
+        // of resuming the thread, until a pending exception wakes it. Fault
+        // returns into another handler do not sleep.
+        if (to_process || to_main)
+            && self.mem.read_word(SCR_ADDR).unwrap_or(0) & SCR_SLEEPONEXIT != 0
+        {
+            self.sleeping = true;
         }
         Ok(Next::Advance(self.regs.pc))
     }
@@ -3615,6 +3664,44 @@ mod tests {
         assert_eq!(c.ipsr, 0);
         assert_eq!(c.regs.pc, SVC_ADDR + 2);
         assert_eq!(c.regs.sp, SP);
+    }
+
+    #[test]
+    fn sleeponexit_sleeps_until_exception_wakes() {
+        use crate::mem::flat::FlatMemory;
+        use crate::mem::system::SystemMemory;
+        const SVC_ADDR: u32 = 0x2000_0100;
+        const HANDLER: u32 = 0x2000_0400;
+        const SP: u32 = 0x2000_0800;
+        let backing = FlatMemory::with_layout(&[0x0000_0000, 0x2000_0000], &[0x1000, 0x1000]);
+        let mut c = Core::armv7m(SystemMemory::new(backing));
+        // SVCall vector 11 at 0x2c, PendSV vector 14 at 0x38: both point at a
+        // `bx lr` handler.
+        c.mem().write_word(0x2c, HANDLER | 1).unwrap();
+        c.mem().write_word(0x38, HANDLER | 1).unwrap();
+        c.mem().write_word(SVC_ADDR, 0xdf00).unwrap(); // svc #0
+        c.mem().write_word(HANDLER, 0x4770).unwrap(); // bx lr
+        c.regs.sp = SP;
+        c.regs.msp = SP;
+        // SCR.SLEEPONEXIT: return to Thread mode goes straight back to sleep.
+        c.mem().write_word(0xE000_ED10, 0x0000_0002).unwrap();
+        c.regs.pc = SVC_ADDR;
+        c.step().unwrap(); // take SVC
+        assert_eq!(c.ipsr, 11);
+        c.step().unwrap(); // bx lr -> exception return, then sleep
+        assert_eq!(c.ipsr, 0);
+        assert!(c.sleeping);
+        assert_eq!(c.regs.pc, SVC_ADDR + 2);
+        // A sleeping core does not execute.
+        let pc = c.regs.pc;
+        c.step().unwrap();
+        assert_eq!(c.regs.pc, pc);
+        assert_eq!(c.cycles, 2);
+        // A pending exception wakes it on entry.
+        c.mem().write_word(0xE000_ED04, 0x1000_0000).unwrap(); // pend PendSV
+        c.enter_exception(14).unwrap();
+        assert!(!c.sleeping);
+        assert_eq!(c.ipsr, 14);
     }
 
     #[test]
