@@ -13,10 +13,12 @@ pub mod vioarm;
 use std::fmt;
 
 /// The xPSR bits both implementations model and agree on: `N:Z:C:V`, the
-/// sticky saturation flag `Q`, the four ARMv7-M `GE` flags, and the Thumb bit
-/// `T`. `IPSR` (exception number) is excluded — the conformance traces run in
-/// Thread mode where it is zero anyway — as are the reserved bits.
-pub const XPSR_MASK: u32 = 0xF90F_0000;
+/// sticky saturation flag `Q`, the four ARMv7-M `GE` flags, the Thumb bit
+/// `T`, and the ARMv7-M `ITSTATE` (bits 26:25 and 15:10), which carries the
+/// conditional-execution state through an IT block. `IPSR` (exception number)
+/// is excluded — the conformance traces run in Thread mode where it is zero
+/// anyway — as are the reserved bits.
+pub const XPSR_MASK: u32 = 0xF90F_0000 | 0x0600_FC00;
 
 /// A single architectural register snapshot: `r0..r12`, `r13` = SP,
 /// `r14` = LR, `r15` = PC, plus the `xPSR`.

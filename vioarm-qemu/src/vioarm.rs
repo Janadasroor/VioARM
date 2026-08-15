@@ -26,7 +26,9 @@ pub fn new_machine(bin: &[u8]) -> Machine<FlatMemory> {
 }
 
 /// Snapshot the machine's architectural state. `pc` is stored Thumb-masked by
-/// the core, exactly as QEMU reports `R15`.
+/// the core, exactly as QEMU reports `R15`. `xpsr` carries the modeled xPSR
+/// bits plus the CPU's live `ITSTATE` folded in at bits [26:25]/[15:10], the
+/// same positions QEMU's `XPSR=` dump uses, so IT-block execution is diffed.
 #[must_use]
 pub fn snapshot(m: &Machine<FlatMemory>) -> CpuState {
     let regs = m.core.regs;
@@ -35,10 +37,9 @@ pub fn snapshot(m: &Machine<FlatMemory>) -> CpuState {
     r[13] = regs.sp;
     r[14] = regs.lr;
     r[15] = regs.pc;
-    CpuState {
-        r,
-        xpsr: m.core.xpsr.get(),
-    }
+    let it = u32::from(m.core.itstate);
+    let xpsr = m.core.xpsr.get() | ((it & 0xFC) << 8) | ((it & 0x03) << 25);
+    CpuState { r, xpsr }
 }
 
 /// Run `bin` under VioARM, collecting the state after every instruction until
