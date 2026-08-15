@@ -6,6 +6,18 @@
 //! bits for every single executed instruction.
 //!
 //! The tests are skipped (with a note) when no `qemu-system-arm` is found.
+//!
+//! # Known reference-model limitation
+//!
+//! QEMU 10.2 (the Cortex-M3 `armv7m` model used as the oracle here) cannot
+//! execute a *taken* conditional branch that is the conditional instruction of
+//! an IT block: it escalates to a HardFault and locks up, even for clang's
+//! canonical `it ne; bne <label>` sequence, which real Cortex-M silicon and
+//! VioARM both execute correctly (the taken branch clears ITSTATE). The
+//! differential tests therefore only exercise branches whose IT condition is
+//! false (branch suppressed, ITSTATE advances), while VioARM's taken-branch
+//! semantics are covered by unit tests in `vioarm-core`
+//! (`it_block_branch_clears_state`).
 
 use std::time::Duration;
 use vioarm_qemu::asm::{Asm, Image, SP};
@@ -1033,6 +1045,116 @@ fn faults() {
     a.label("halt");
     a.b("halt");
     conformance("faults", &mut a, "halt", &mt);
+}
+
+// ---------------------------------------------------------------------------
+// PRIMASK and BASEPRI are not part of the stacked frame: ARMv7-M preserves
+// them across exception entry and return (the handler inherits the mask state
+// of the preempted context and it is not restored from the 8-word frame, so
+// it survives both the UDEF escalation to HardFault and the bx lr return).
+// FAULTMASK must stay clear here (UDEF is escalated, not a nested fault).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn exception_masks_persist() {
+    let Some(mt) = qemu() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+    a.vec(3, "hf"); // HardFault vector
+
+    a.movs_imm8(0, 1);
+    a.msr(0x10, 0); // PRIMASK = 1
+    a.movs_imm8(0, 0x80);
+    a.msr(0x11, 0); // BASEPRI = 0x80
+    a.raw(0xDE00); // UDEF -> HardFault (fixed priority, masks don't block it)
+    // resumed here after the handler patches PAST the UDEF:
+    a.mrs(4, 0x10); // r4 = PRIMASK after return (still 1)
+    a.mrs(5, 0x11); // r5 = BASEPRI after return (still 0x80)
+    a.b("halt");
+
+    a.label("hf");
+    // Handler: read the masks we set, then patch the stacked PC past the
+    // UDEF and return to Thread mode.
+    a.mrs(1, 0x10); // r1 = PRIMASK in handler (still 1)
+    a.mrs(2, 0x11); // r2 = BASEPRI in handler (still 0x80)
+    a.mrs(3, 0x13); // r3 = FAULTMASK in handler (0)
+    a.mov_reg(6, 13); // frame base
+    a.ldr_wide(7, 6, 24); // stacked PC (the UDEF itself)
+    a.adds_imm8(7, 2); // skip the UDEF
+    a.str_imm(7, 6, 24);
+    a.bx(14); // return to Thread mode, past the UDEF
+
+    a.label("halt");
+    a.b("halt");
+    conformance("exception_masks_persist", &mut a, "halt", &mt);
+}
+
+// ---------------------------------------------------------------------------
+// IT blocks (ARMv7-M conditional execution). The conformance harness now
+// folds ITSTATE into the compared xPSR bits [26:25]/[15:10], so every
+// executed and every suppressed instruction must leave the same ITSTATE in
+// both simulators, and the skipped instructions must not touch any register.
+//
+// The `mask` field of `IT<c>` is a count/shape register, not a plain count:
+// each mask bit, read from bit 3 down, encodes one following instruction as
+// "then" (bit set) or "else" (bit clear), and the count of conditional
+// instructions is the number of bits from the first set bit to the lowest
+// (the trailing-zeros ITSTATE advance drops one bit per instruction). Masks
+// below follow that encoding with the T/E shapes noted per block.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn it_blocks() {
+    let Some(mt) = qemu() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a); // N=0 C=0 V=0 Z=1
+
+    // Flags: Z=0 (0x5F cmp 0xA0 is negative) so EQ fails, NE/GE/GT pass.
+    a.movs_imm8(0, 0x5F);
+    a.cmp_imm8(0, 0xA0);
+
+    // IT NE, one instruction (mask 0b1000), condition true -> executes.
+    a.it(1, 0b1000);
+    a.movs_imm8(1, 0x11);
+    // IT EQ, one instruction, condition false -> suppressed.
+    a.it(0, 0b1000);
+    a.movs_imm8(2, 0x22);
+    // mask 0b0100: two instructions with shape T,E (then NE, else EQ).
+    // NE true -> r3 executes; EQ false -> r4 suppressed.
+    a.it(1, 0b0100);
+    a.movs_imm8(3, 0x33);
+    a.movs_imm8(4, 0x44);
+    // mask 0b1001: four instructions, shape T,T,E,E. Only r5, r6 write.
+    a.it(1, 0b1001);
+    a.movs_imm8(5, 0x55);
+    a.movs_imm8(6, 0x66);
+    a.movs_imm8(7, 0x77);
+    a.movs_imm8(8, 0x88);
+    // mask 0b0001: four instructions, shape T,E,E,E. Only r9 writes.
+    a.it(1, 0b0001);
+    a.movs_imm8(9, 0x99);
+    a.movs_imm8(10, 0xAA);
+    a.movs_imm8(11, 0xBB);
+    a.movs_imm8(12, 0xCC);
+    // A single wide (32-bit) instruction inside IT, condition true.
+    a.it(1, 0b1000);
+    a.movw(10, 0x2222); // executes (NE true), one slot
+    // A suppressed (not-taken) conditional branch inside IT. clang emits the
+    // canonical `it ne; bne` for conditional branches, and with the condition
+    // false (Z=1 -> NE fails) the branch is suppressed and ITSTATE advances
+    // normally. NOTE: a *taken* branch inside an IT block is intentionally
+    // absent here -- QEMU 10.2 (reference model) HardFault-lockups on it even
+    // for clang's canonical sequence, so it is not differentially testable.
+    a.movs_imm8(0, 0); // Z=1 -> NE false
+    a.it(1, 0b1000); // [T], single, cond NE
+    a.bc(1, "it_nt"); // bne: suppressed (NE false), falls through
+    a.movs_imm8(2, 0x22); // unconditional fall-through
+    a.label("it_nt");
+    a.movs_imm8(3, 0x33); // reached via fall-through only
+    a.b("halt");
+    a.label("halt");
+    a.b("halt");
+    conformance("it_blocks", &mut a, "halt", &mt);
 }
 
 // ---------------------------------------------------------------------------
