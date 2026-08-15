@@ -41,6 +41,10 @@ const EXC_RETURN_HANDLER: u32 = 0xFFFF_FFF1;
 const EXC_RETURN_THREAD_MSP: u32 = 0xFFFF_FFF9;
 /// Return to Thread mode, restoring the process stack pointer.
 const EXC_RETURN_THREAD_PSP: u32 = 0xFFFF_FFFD;
+/// The same returns with the extended (FP) frame: `EXC_RETURN.FType == 0`.
+const EXC_RETURN_HANDLER_FP: u32 = 0xFFFF_FFE1;
+const EXC_RETURN_THREAD_MSP_FP: u32 = 0xFFFF_FFE9;
+const EXC_RETURN_THREAD_PSP_FP: u32 = 0xFFFF_FFED;
 
 /// xPSR `ALIGN` bit (bit 9): set on the stacked xPSR when the interrupted
 /// stack was 8-byte-aligned by an exception-entry adjustment.
@@ -48,6 +52,11 @@ const XPSR_ALIGN: u32 = 1 << 9;
 
 /// The eight-word ARMv6-M exception frame, in bytes.
 const FRAME_BYTES: u32 = 32;
+/// The FP extension of the exception frame (16 single-precision registers +
+/// FPSCR), in bytes, added when `CONTROL.FPCA` is set at exception entry.
+const FP_FRAME_BYTES: u32 = 0x48;
+/// The full extended frame, in bytes.
+const EXTENDED_FRAME_BYTES: u32 = FRAME_BYTES + FP_FRAME_BYTES;
 
 /// What an executed instruction does with the program counter.
 enum Next {
@@ -180,6 +189,76 @@ impl VfpState {
     }
 }
 
+/// The M-profile floating-point context-control state: the `ASPEN`, `LSPEN`
+/// and `LSPACT` bits of `FPCCR` plus `FPCAR`.
+///
+/// `ASPEN` enables automatic context switching (`CONTROL.FPCA`); `LSPEN`
+/// enables lazy stacking of `S0`-`S15`/FPSCR on exception entry (the frame is
+/// only reserved and written on the first FP instruction the handler runs);
+/// `LSPACT` marks an outstanding lazy frame whose address is `FPCAR`.
+///
+/// The state is shared between the core (which consumes it during exception
+/// entry/return and FP execution) and the `SCB` device (which exposes it to
+/// firmware as `FPCCR` at `0xE000_EF34` and `FPCAR` at `0xE000_EF38`). It
+/// resets to lazy stacking enabled, matching the architecture and QEMU.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FpuCtx {
+    /// FPCCR[31]: automatic FP context switching (set `CONTROL.FPCA` on the
+    /// first FP instruction of a new context).
+    pub aspen: bool,
+    /// FPCCR[30]: lazy stacking of FP registers on exception entry.
+    pub lspen: bool,
+    /// FPCCR[0]: an FP frame is reserved on the stack at `FPCAR` but not yet
+    /// written. Set by hardware; the first FP instruction or exception return
+    /// resolves it.
+    pub lspact: bool,
+    /// The address of the outstanding lazy FP frame (bits [31:3]).
+    pub fpcar: u32,
+}
+
+impl FpuCtx {
+    /// Reset state: automatic context switching on, lazy stacking on.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            aspen: true,
+            lspen: true,
+            lspact: false,
+            fpcar: 0,
+        }
+    }
+
+    /// The modeled `FPCCR` read value: the `ASPEN`/`LSPEN`/`LSPACT` bits plus
+    /// the ready bits that are statically set at reset (`HFRDY`, `BFRDY`,
+    /// `MMRDY`, `MONRDY`, `UFRDY`).
+    #[must_use]
+    pub const fn fpccr(&self) -> u32 {
+        let mut v = 0x0780_0004; // HFRDY | BFRDY | MMRDY | MONRDY | UFRDY.
+        if self.aspen {
+            v |= 1 << 31;
+        }
+        if self.lspen {
+            v |= 1 << 30;
+        }
+        if self.lspact {
+            v |= 1 << 0;
+        }
+        v
+    }
+
+    /// Apply a firmware write to `FPCCR`. Only `ASPEN` and `LSPEN` are
+    /// software-controllable; `LSPACT` is set and cleared by hardware and the
+    /// ready bits are read-only.
+    pub fn write_fpccr(&mut self, v: u32) {
+        self.aspen = v & (1 << 31) != 0;
+        self.lspen = v & (1 << 30) != 0;
+    }
+}
+
+/// `CONTROL` bit 2: FP extension active. Set by the first FP instruction of a
+/// new context (when `FPCCR.ASPEN` is set) and cleared at exception entry.
+const CONTROL_FPCA: u32 = 1 << 2;
+
 /// The core CPU state plus its bus.
 pub struct Core<B: PeripheralBus> {
     pub regs: Registers,
@@ -207,6 +286,10 @@ pub struct Core<B: PeripheralBus> {
     /// exception entry or return clears it.
     pub exmon: Option<u32>,
     pub cycles: u64,
+    /// Shared M-profile FP context-control state (`FPCCR`/`FPCAR`). The `SCB`
+    /// device holds the same `Rc` so firmware writes through the bus and the
+    /// core's exception/FP logic agree on one value.
+    pub fpu_ctx: std::sync::Arc<std::sync::Mutex<FpuCtx>>,
     mem: B,
 }
 
@@ -220,6 +303,17 @@ impl<B: PeripheralBus> Core<B> {
     /// Create an uninitialized ARMv7-M core over `mem`.
     pub fn armv7m(mem: B) -> Self {
         Self::new_with_isa(mem, Isa::Armv7M)
+    }
+
+    /// An ARMv7-M core whose FP context-control state is shared with the `SCB`
+    /// device (the firmware-visible `FPCCR`/`FPCAR`). `mem` must be a
+    /// `SystemMemory` built with the same `fpu_ctx`; core-only uses keep the
+    /// default (architectural reset) state.
+    #[must_use]
+    pub fn armv7m_with_fpu(mem: B, fpu_ctx: std::sync::Arc<std::sync::Mutex<FpuCtx>>) -> Self {
+        let mut core = Self::new_with_isa(mem, Isa::Armv7M);
+        core.fpu_ctx = fpu_ctx;
+        core
     }
 
     fn new_with_isa(mem: B, isa: Isa) -> Self {
@@ -236,6 +330,7 @@ impl<B: PeripheralBus> Core<B> {
             itstate: 0,
             exmon: None,
             cycles: 0,
+            fpu_ctx: std::sync::Arc::new(std::sync::Mutex::new(FpuCtx::new())),
             mem,
         }
     }
@@ -946,10 +1041,63 @@ impl<B: PeripheralBus> Core<B> {
         }
     }
 
+    /// Whether `inst` is a VFP/FP instruction. M-profile FP context mechanics
+    /// (lazy preserve, `CONTROL.FPCA` set) run before these execute.
+    fn inst_is_vfp(inst: &Inst32) -> bool {
+        use Inst32 as I;
+        matches!(
+            inst,
+            I::Vfp3 { .. }
+                | I::Vfp2 { .. }
+                | I::VfpCmp { .. }
+                | I::VfpVrint { .. }
+                | I::VfpCvtInt { .. }
+                | I::VfpCvtFix { .. }
+                | I::VfpMovImm { .. }
+                | I::VfpMov { .. }
+                | I::VfpMov64 { .. }
+                | I::VfpMrsVmsr { .. }
+                | I::VfpLdSt { .. }
+                | I::VfpLdStD { .. }
+                | I::VfpLdStMult { .. }
+                | I::VfpLdStMultD { .. }
+        )
+    }
+
+    /// M-profile FP context mechanics run before any FP instruction, matching
+    /// the `PreserveFPState()`/`ExecuteFPCheck()` pseudocode and QEMU:
+    ///
+    /// 1. If `FPCCR.LSPACT` is set, an exception left an FP frame reserved at
+    ///    `FPCAR`; store `S0`-`S15` and FPSCR there and clear `LSPACT`.
+    /// 2. If `FPCCR.ASPEN` is set and `CONTROL.FPCA` is clear, create a new FP
+    ///    context: set `FPCA` and reload FPSCR from `FPDSCR` (zero here, as
+    ///    `FPDSCR` is not modeled and resets to zero).
+    fn fp_context(&mut self) -> Result<(), HaltCause> {
+        let ctx = *self.fpu_ctx.lock().unwrap();
+        if ctx.lspact {
+            for i in 0..16u32 {
+                let v = self.vfp.read_s(i as u8);
+                self.write_word_halt(ctx.fpcar.wrapping_add(i * 4), v)?;
+            }
+            self.write_word_halt(ctx.fpcar.wrapping_add(0x40), self.vfp.fpscr)?;
+            self.fpu_ctx.lock().unwrap().lspact = false;
+        }
+        if ctx.aspen && self.control & CONTROL_FPCA == 0 {
+            self.control |= CONTROL_FPCA;
+            self.vfp.fpscr = 0;
+        }
+        Ok(())
+    }
+
     /// Execute a 32-bit ARMv6-M instruction. Every 32-bit instruction is
     /// exactly 4 bytes, so a non-branching one simply advances `pc + 4`.
     fn exec32(&mut self, pc: u32, inst: Inst32) -> Result<Next, HaltCause> {
         use Inst32 as I;
+        // M-profile FP context mechanics run before every FP instruction,
+        // exactly as the PreserveFPState()/ExecuteFPCheck() pseudocode does.
+        if Self::inst_is_vfp(&inst) {
+            self.fp_context()?;
+        }
         match inst {
             I::Bl { off } => {
                 self.itstate = 0;
@@ -2667,6 +2815,18 @@ impl<B: PeripheralBus> Core<B> {
         if vector & 1 == 0 {
             return Err(HaltCause::NonThumbTarget);
         }
+        // When the interrupted context owns the FP context (`CONTROL.FPCA`),
+        // the frame is extended by the FP registers. With lazy stacking
+        // (`FPCCR.LSPEN`) the S0-S15/FPSCR block is only reserved (its address
+        // goes to FPCAR and LSPACT is set); otherwise it is stored now and the
+        // handler starts with the FP state cleared.
+        let fpu_active = self.control & CONTROL_FPCA != 0;
+        let fpu_ctx = *self.fpu_ctx.lock().unwrap();
+        let framesize = if fpu_active {
+            EXTENDED_FRAME_BYTES
+        } else {
+            FRAME_BYTES
+        };
         // The frame is pushed onto the stack the interrupted context was
         // using; the handler then runs on the main stack pointer.
         let use_process = self.sp_is_process();
@@ -2681,7 +2841,7 @@ impl<B: PeripheralBus> Core<B> {
             sp = sp.wrapping_sub(4);
             sxpsr |= XPSR_ALIGN;
         }
-        let frame = sp.wrapping_sub(FRAME_BYTES);
+        let frame = sp.wrapping_sub(framesize);
         for (i, r) in [0u8, 1, 2, 3, 12].into_iter().enumerate() {
             self.write_word_halt(frame.wrapping_add((i as u32) * 4), self.regs.read(r))?;
         }
@@ -2690,7 +2850,33 @@ impl<B: PeripheralBus> Core<B> {
         // in the stacked xPSR's T bit, matching QEMU and real Cortex-M frames.
         self.write_word_halt(frame.wrapping_add(24), return_pc)?;
         self.write_word_halt(frame.wrapping_add(28), sxpsr)?;
-        self.regs.lr = if self.ipsr != 0 {
+        if fpu_active {
+            if fpu_ctx.lspen {
+                // Lazy stacking: reserve the FP block for the first FP
+                // instruction the handler runs.
+                let mut ctx = self.fpu_ctx.lock().unwrap();
+                ctx.fpcar = frame.wrapping_add(0x20) & !7;
+                ctx.lspact = true;
+            } else {
+                // Non-lazy stacking: store the FP registers now.
+                for i in 0..16u32 {
+                    let v = self.vfp.read_s(i as u8);
+                    self.write_word_halt(frame.wrapping_add(0x20).wrapping_add(i * 4), v)?;
+                }
+                self.write_word_halt(frame.wrapping_add(0x60), self.vfp.fpscr)?;
+                self.vfp.s[0..16].fill(0);
+                self.vfp.fpscr = 0;
+            }
+        }
+        self.regs.lr = if fpu_active {
+            if self.ipsr != 0 {
+                EXC_RETURN_HANDLER_FP
+            } else if use_process {
+                EXC_RETURN_THREAD_PSP_FP
+            } else {
+                EXC_RETURN_THREAD_MSP_FP
+            }
+        } else if self.ipsr != 0 {
             EXC_RETURN_HANDLER
         } else if use_process {
             EXC_RETURN_THREAD_PSP
@@ -2707,6 +2893,9 @@ impl<B: PeripheralBus> Core<B> {
         self.regs.pc = vector & !1;
         self.ipsr = ex.number();
         self.itstate = 0;
+        // The handler starts without an FP context (the interrupted one was
+        // stacked or reserved above).
+        self.control &= !CONTROL_FPCA;
         Ok(())
     }
 
@@ -2725,13 +2914,19 @@ impl<B: PeripheralBus> Core<B> {
         self.take_exception(ex, self.regs.pc)
     }
 
-    /// Unstack the eight-word frame and leave Handler mode, as directed by an
+    /// Unstack the exception frame and leave Handler mode, as directed by an
     /// `EXC_RETURN` value loaded into the PC. Returns the branch to the
-    /// restored program counter.
+    /// restored program counter. An extended return (`EXC_RETURN.FType == 0`,
+    /// used when the interrupted context owned the FP context) also unstacks
+    /// `S0`-`S15` and FPSCR â€” unless the frame was left lazily stacked
+    /// (`FPCCR.LSPACT`), in which case the FPU still holds valid state and the
+    /// reservation is simply abandoned.
     fn exception_return(&mut self, value: u32) -> Result<Next, HaltCause> {
-        let to_handler = value == EXC_RETURN_HANDLER;
-        let to_process = value == EXC_RETURN_THREAD_PSP;
-        let to_main = value == EXC_RETURN_THREAD_MSP;
+        let to_handler = value == EXC_RETURN_HANDLER || value == EXC_RETURN_HANDLER_FP;
+        let to_process = value == EXC_RETURN_THREAD_PSP || value == EXC_RETURN_THREAD_PSP_FP;
+        let to_main = value == EXC_RETURN_THREAD_MSP || value == EXC_RETURN_THREAD_MSP_FP;
+        // FType == 0 (bit 4 clear) marks an extended frame with FP state.
+        let ftype = value & 0x10 != 0;
         if !(to_handler || to_process || to_main) {
             return Err(HaltCause::UnhandledException);
         }
@@ -2750,15 +2945,33 @@ impl<B: PeripheralBus> Core<B> {
         let lr = self.read_word_halt(frame.wrapping_add(20))?;
         let pc_ret = self.read_word_halt(frame.wrapping_add(24))?;
         let sxpsr = self.read_word_halt(frame.wrapping_add(28))?;
+        // An extended return restores the FP context that was stacked at
+        // entry, unless lazy stacking left it reserved (LSPACT): then the FPU
+        // still holds the pre-exception values and we just clear LSPACT.
+        if !ftype {
+            let ctx = *self.fpu_ctx.lock().unwrap();
+            if ctx.lspact {
+                self.fpu_ctx.lock().unwrap().lspact = false;
+            } else {
+                for i in 0..16u32 {
+                    let v = self.read_word_halt(frame.wrapping_add(0x20).wrapping_add(i * 4))?;
+                    self.vfp.write_s(i as u8, v);
+                }
+                self.vfp.fpscr = self.read_word_halt(frame.wrapping_add(0x60))?;
+            }
+        }
         // Exception return clears the local exclusive monitor.
         self.exmon = None;
         // A return-to-process hands the thread the handler's final main SP,
         // captured before the registers below switch the active pointer.
         let handler_msp = self.regs.sp;
         let align = sxpsr & XPSR_ALIGN != 0;
-        let sp = frame
+        let mut sp = frame
             .wrapping_add(FRAME_BYTES)
-            .wrapping_add(u32::from(align) * 4);
+            .wrapping_add(if ftype { 0 } else { FP_FRAME_BYTES });
+        if align {
+            sp |= 4;
+        }
         self.regs.write(0, r0);
         self.regs.write(1, r1);
         self.regs.write(2, r2);
@@ -2771,6 +2984,12 @@ impl<B: PeripheralBus> Core<B> {
         self.xpsr.set(sxpsr & (APSR_QFLAGS | XPSR_T));
         // Restore ITSTATE from its xPSR[15:10] / [26:25] slots.
         self.itstate = ((sxpsr >> 8) & 0xFC) as u8 | ((sxpsr >> 25) & 0x03) as u8;
+        // The returning context owns the FP context iff the frame was extended.
+        if ftype {
+            self.control &= !CONTROL_FPCA;
+        } else {
+            self.control |= CONTROL_FPCA;
+        }
         if to_process {
             self.regs.msp = handler_msp;
             self.regs.psp = sp;
@@ -2832,15 +3051,21 @@ impl<B: PeripheralBus> Core<B> {
     }
 }
 
-/// Whether `v` is one of the ARMv6-M `EXC_RETURN` values.
+/// Whether `v` is one of the ARMv6-M `EXC_RETURN` values (both the basic
+/// `F1/F9/FD` set and the FP-carrying `E1/E9/ED` set).
 const fn is_exc_return(v: u32) -> bool {
     matches!(
         v,
-        EXC_RETURN_HANDLER | EXC_RETURN_THREAD_MSP | EXC_RETURN_THREAD_PSP
+        EXC_RETURN_HANDLER
+            | EXC_RETURN_THREAD_MSP
+            | EXC_RETURN_THREAD_PSP
+            | EXC_RETURN_HANDLER_FP
+            | EXC_RETURN_THREAD_MSP_FP
+            | EXC_RETURN_THREAD_PSP_FP
     )
 }
 
-/// A fully-resolved load/store (word/half/byte × load/store, plus
+/// A fully-resolved load/store (word/half/byte Ã— load/store, plus
 /// sign-extending loads).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LsAccess {
@@ -3160,6 +3385,23 @@ mod tests {
             &[0x2000_0000],
             &[0x1000],
         ))
+    }
+
+    /// A Cortex-M4-style core with a shared FP context-control state, plus
+    /// both a low vector region and SRAM.
+    fn armv7m_fpu_core() -> (
+        Core<crate::mem::flat::FlatMemory>,
+        std::sync::Arc<std::sync::Mutex<FpuCtx>>,
+    ) {
+        let fpu_ctx = std::sync::Arc::new(std::sync::Mutex::new(FpuCtx::new()));
+        let c = Core::armv7m_with_fpu(
+            crate::mem::flat::FlatMemory::with_layout(
+                &[0x0000_0000, 0x2000_0000],
+                &[0x1000, 0x1000],
+            ),
+            fpu_ctx.clone(),
+        );
+        (c, fpu_ctx)
     }
 
     /// Place a byte sequence (an instruction stream) at `addr`.
@@ -5386,5 +5628,169 @@ mod tests {
         assert_eq!(c.vfp.read_s(0), 0x4000_0000);
         assert_eq!(c.vfp.read_s(3), 0x4040_0000);
         assert_eq!(c.regs.sp, 0x2000_0400);
+    }
+
+    #[test]
+    fn fpu_ctx_preserve_on_first_fp_insn() {
+        let (mut c, fpu_ctx) = armv7m_fpu_core();
+        c.regs.pc = 0x2000_0000;
+        // A prior exception left a lazy frame reserved (LSPACT at FPCAR); the
+        // first FP instruction must write S0-S15 + FPSCR there and clear it.
+        fpu_ctx.lock().unwrap().lspact = true;
+        fpu_ctx.lock().unwrap().fpcar = 0x2000_0800;
+        c.vfp.write_s(0, 0x3F80_0000); // s0 = 1.0
+        c.vfp.write_s(1, 0x4000_0000); // s1 = 2.0
+        c.vfp.write_s(2, 0x4040_0000); // s2 = 3.0
+        c.vfp.write_s(15, 0x40A0_0000); // s15 = 5.0
+        c.vfp.fpscr = 0x0000_0001; // IOC set
+        load_inst(&mut c, 0x2000_0000, &[0x30, 0xee, 0x81, 0x0a]); // vadd.f32 s0, s1, s2
+        c.step().unwrap();
+        assert_eq!(c.vfp.read_s(0), 0x40A0_0000); // 2.0 + 3.0 = 5.0
+        assert!(!fpu_ctx.lock().unwrap().lspact);
+        // The pre-instruction bank and FPSCR were preserved into the frame.
+        assert_eq!(c.mem().read_word(0x2000_0800).unwrap(), 0x3F80_0000);
+        assert_eq!(c.mem().read_word(0x2000_0804).unwrap(), 0x4000_0000);
+        assert_eq!(c.mem().read_word(0x2000_083c).unwrap(), 0x40A0_0000);
+        assert_eq!(c.mem().read_word(0x2000_0840).unwrap(), 0x0000_0001);
+        // A new context took over: FPCA set and FPSCR reloaded from FPDSCR (0).
+        assert_ne!(c.control & CONTROL_FPCA, 0);
+        assert_eq!(c.vfp.fpscr, 0);
+    }
+
+    #[test]
+    fn fpu_ctx_context_create_on_first_fp_insn() {
+        let (mut c, _) = armv7m_fpu_core();
+        c.regs.pc = 0x2000_0000;
+        assert_eq!(c.control & CONTROL_FPCA, 0);
+        load_inst(&mut c, 0x2000_0000, &[0x30, 0xee, 0x81, 0x0a]); // vadd.f32 s0, s1, s2
+        c.step().unwrap();
+        // The first FP instruction of a context sets FPCA and resets FPSCR.
+        assert_ne!(c.control & CONTROL_FPCA, 0);
+        assert_eq!(c.vfp.fpscr, 0);
+    }
+
+    #[test]
+    fn fpu_ctx_exception_lazy_reserve() {
+        let (mut c, fpu_ctx) = armv7m_fpu_core();
+        const SVC_HANDLER: u32 = 0x2000_0400;
+        const SP: u32 = 0x2000_0800;
+        c.mem().write_word(0x2c, SVC_HANDLER | 1).unwrap();
+        c.regs.sp = SP;
+        c.regs.msp = SP;
+        c.regs.pc = 0x2000_0100;
+        // The interrupted thread owns the FP context.
+        c.control |= CONTROL_FPCA;
+        c.vfp.write_s(0, 0x3F80_0000);
+        c.vfp.write_s(15, 0x40A0_0000);
+        c.vfp.fpscr = 0x0000_0001;
+        c.take_exception(Exception::SvCall, 0x2000_0102).unwrap();
+        // The frame is extended to 0x68 and lazily reserved.
+        assert_eq!(c.ipsr, 11);
+        assert_eq!(c.regs.sp, SP - EXTENDED_FRAME_BYTES);
+        assert_eq!(c.regs.pc, SVC_HANDLER);
+        assert_eq!(c.regs.lr, EXC_RETURN_THREAD_MSP_FP);
+        assert_eq!(c.control & CONTROL_FPCA, 0); // handler starts context-less
+        let ctx = *fpu_ctx.lock().unwrap();
+        assert_eq!(ctx.fpcar, SP - EXTENDED_FRAME_BYTES + 0x20);
+        assert!(ctx.lspact);
+        // Lazy: the registers were not touched.
+        assert_eq!(c.vfp.read_s(0), 0x3F80_0000);
+        assert_eq!(c.vfp.fpscr, 0x0000_0001);
+    }
+
+    #[test]
+    fn fpu_ctx_exception_nonlazy_store() {
+        let (mut c, fpu_ctx) = armv7m_fpu_core();
+        const SVC_HANDLER: u32 = 0x2000_0400;
+        const SP: u32 = 0x2000_0800;
+        c.mem().write_word(0x2c, SVC_HANDLER | 1).unwrap();
+        c.regs.sp = SP;
+        c.regs.msp = SP;
+        c.regs.pc = 0x2000_0100;
+        c.control |= CONTROL_FPCA;
+        c.vfp.write_s(0, 0x3F80_0000);
+        c.vfp.write_s(15, 0x40A0_0000);
+        c.vfp.fpscr = 0x0000_0001;
+        fpu_ctx.lock().unwrap().lspen = false;
+        c.take_exception(Exception::SvCall, 0x2000_0102).unwrap();
+        let frame = SP - EXTENDED_FRAME_BYTES;
+        assert_eq!(c.regs.sp, frame);
+        assert_eq!(c.regs.lr, EXC_RETURN_THREAD_MSP_FP);
+        assert_eq!(c.control & CONTROL_FPCA, 0);
+        // Non-lazy: S0-S15 + FPSCR stored now and the registers cleared.
+        assert_eq!(c.mem().read_word(frame + 0x20).unwrap(), 0x3F80_0000);
+        assert_eq!(c.mem().read_word(frame + 0x5c).unwrap(), 0x40A0_0000);
+        assert_eq!(c.mem().read_word(frame + 0x60).unwrap(), 0x0000_0001);
+        assert_eq!(c.vfp.read_s(0), 0);
+        assert_eq!(c.vfp.read_s(15), 0);
+        assert_eq!(c.vfp.fpscr, 0);
+        let ctx = *fpu_ctx.lock().unwrap();
+        assert!(!ctx.lspact);
+        assert_eq!(ctx.fpcar, 0);
+    }
+
+    #[test]
+    fn fpu_ctx_return_restores() {
+        let (mut c, _) = armv7m_fpu_core();
+        const SP: u32 = 0x2000_0800;
+        let frame = SP - EXTENDED_FRAME_BYTES;
+        // A pre-stacked extended frame with FP contents.
+        c.mem().write_word(frame + 0x00, 0x1111_1111).unwrap();
+        c.mem().write_word(frame + 0x04, 0x2222_2222).unwrap();
+        c.mem().write_word(frame + 0x08, 0x3333_3333).unwrap();
+        c.mem().write_word(frame + 0x0c, 0x4444_4444).unwrap();
+        c.mem().write_word(frame + 0x10, 0x5555_5555).unwrap();
+        c.mem().write_word(frame + 0x14, 0x6666_6666).unwrap();
+        c.mem().write_word(frame + 0x18, 0x2000_0102).unwrap();
+        c.mem().write_word(frame + 0x1c, XPSR_T).unwrap();
+        for (i, w) in [0x3F80_0000u32, 0x4000_0000, 0x4040_0000, 0x4080_0000]
+            .into_iter()
+            .enumerate()
+        {
+            c.mem().write_word(frame + 0x20 + i as u32 * 4, w).unwrap();
+        }
+        c.mem().write_word(frame + 0x60, 0x0000_0001).unwrap();
+        c.regs.sp = frame;
+        c.regs.msp = frame;
+        c.regs.pc = 0x2000_0400; // handler code
+        c.ipsr = 11;
+        c.control &= !CONTROL_FPCA;
+        c.exception_return(EXC_RETURN_THREAD_MSP_FP).unwrap();
+        // S0-S15 + FPSCR came back from the frame, FPCA is re-owned, and the
+        // extended frame (0x68) was fully popped.
+        assert_eq!(c.vfp.read_s(0), 0x3F80_0000);
+        assert_eq!(c.vfp.read_s(1), 0x4000_0000);
+        assert_eq!(c.vfp.read_s(3), 0x4080_0000);
+        assert_eq!(c.vfp.fpscr, 0x0000_0001);
+        assert_ne!(c.control & CONTROL_FPCA, 0);
+        assert_eq!(c.ipsr, 0);
+        assert_eq!(c.regs.sp, SP);
+    }
+
+    #[test]
+    fn fpu_ctx_return_abandons_lazy() {
+        let (mut c, fpu_ctx) = armv7m_fpu_core();
+        const SP: u32 = 0x2000_0800;
+        let frame = SP - EXTENDED_FRAME_BYTES;
+        c.mem().write_word(frame + 0x1c, XPSR_T).unwrap();
+        c.regs.sp = frame;
+        c.regs.msp = frame;
+        c.regs.pc = 0x2000_0400; // handler code
+        c.ipsr = 11;
+        c.control &= !CONTROL_FPCA;
+        c.vfp.write_s(0, 0x40A0_0000);
+        c.vfp.fpscr = 0x0000_0001;
+        {
+            let mut ctx = fpu_ctx.lock().unwrap();
+            ctx.lspact = true;
+            ctx.fpcar = frame + 0x20;
+        }
+        c.exception_return(EXC_RETURN_THREAD_MSP_FP).unwrap();
+        // The lazy frame is abandoned: LSPACT cleared, the FPU still holds the
+        // pre-exception values, and the returning thread re-owns the context.
+        assert!(!fpu_ctx.lock().unwrap().lspact);
+        assert_eq!(c.vfp.read_s(0), 0x40A0_0000);
+        assert_eq!(c.vfp.fpscr, 0x0000_0001);
+        assert_ne!(c.control & CONTROL_FPCA, 0);
     }
 }

@@ -12,6 +12,8 @@ use crate::device::scb::Scb;
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
 use crate::mem::bus::{Bus, PeripheralBus};
+use crate::cpu::FpuCtx;
+use std::sync::{Arc, Mutex};
 
 /// A `Bus` over flat backing memory plus a set of MMIO devices and the NVIC.
 ///
@@ -47,13 +49,23 @@ impl<M: Bus + core::fmt::Debug> core::fmt::Debug for SystemMemory<M> {
 impl<M: Bus> SystemMemory<M> {
     /// Wrap `backing` with no peripherals attached.
     #[must_use]
-    pub const fn new(backing: M) -> Self {
+    pub fn new(backing: M) -> Self {
         Self {
             backing,
             devices: Vec::new(),
             nvic: Nvic::new(),
             scb: Scb::new(),
         }
+    }
+
+    /// Wrap `backing`, sharing the FP context-control state with the core.
+    /// Both this bus's `SCB` and the core must see the same `FPCCR`/`FPCAR`;
+    /// the caller creates the `Rc` once and passes clones to both.
+    #[must_use]
+    pub fn new_with_fpu(backing: M, fpu_ctx: Arc<Mutex<FpuCtx>>) -> Self {
+        let mut mem = Self::new(backing);
+        mem.scb.set_fpu_ctx(fpu_ctx);
+        mem
     }
 
     /// Attach a device. Its windows immediately take priority over the

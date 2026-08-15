@@ -7,10 +7,11 @@
 //! instruction (or takes an exception), then advances the bus by one cycle so
 //! timers count and freshly-asserted interrupt lines reach the NVIC.
 
-use crate::cpu::Core;
+use crate::cpu::{Core, FpuCtx};
 use crate::error::HaltCause;
 use crate::loader::LoadedImage;
 use crate::mem::PeripheralBus;
+use std::sync::{Arc, Mutex};
 
 /// A ready-to-run core+memory pair. The core owns the memory; the machine is
 /// the host-facing facade.
@@ -31,6 +32,16 @@ impl<M: PeripheralBus> Machine<M> {
     pub fn armv7m(mem: M) -> Self {
         Self {
             core: Core::armv7m(mem),
+        }
+    }
+
+    /// An ARMv7-M machine whose FP context-control state is shared between the
+    /// core and the `SCB` device. `mem` must be a `SystemMemory` built with the
+    /// same `fpu_ctx`.
+    #[must_use]
+    pub fn armv7m_with_fpu(mem: M, fpu_ctx: Arc<Mutex<FpuCtx>>) -> Self {
+        Self {
+            core: Core::armv7m_with_fpu(mem, fpu_ctx),
         }
     }
 
