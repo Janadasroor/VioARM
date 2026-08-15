@@ -157,7 +157,9 @@ impl<M: Bus> SystemMemory<M> {
     fn current_priority(&self, ipsr: u8) -> u8 {
         match ipsr {
             0 => u8::MAX,
-            n @ 14..=15 => self.scb.priority(n),
+            // SVCall (11), PendSV (14), and SysTick (15) are the
+            // configurable-priority system exceptions with SHPR bytes.
+            11 | 14 | 15 => self.scb.priority(ipsr),
             n => self.nvic.priority(u32::from(n - 16)),
         }
     }
@@ -194,6 +196,11 @@ impl<M: Bus> SystemMemory<M> {
             let (g, s) = self.split_priority(p);
             Self::consider(&mut best, 14, g, s, p);
         }
+        if self.scb.svcall_pending() {
+            let p = self.scb.priority(11);
+            let (g, s) = self.split_priority(p);
+            Self::consider(&mut best, 11, g, s, p);
+        }
         let mut ready = self.nvic.ready();
         while ready != 0 {
             let line = ready.trailing_zeros();
@@ -204,10 +211,10 @@ impl<M: Bus> SystemMemory<M> {
             ready &= ready - 1;
         }
         let (n, group, _sub, priority) = best?;
-        // BASEPRI masks the configurable-priority exceptions (PendSV, SysTick,
-        // and external IRQs) whose priority number is `>=` its value. A zero
-        // BASEPRI never masks. Faults (3) are not configurable.
-        if basepri != 0 && n >= 14 && priority >= basepri {
+        // BASEPRI masks the configurable-priority exceptions (SVCall, PendSV,
+        // SysTick, and external IRQs) whose priority number is `>=` its value.
+        // A zero BASEPRI never masks. Faults (3) are not configurable.
+        if basepri != 0 && (n == 11 || n >= 14) && priority >= basepri {
             return None;
         }
         // Only a strictly higher-priority (numerically lower) group preempts
@@ -230,6 +237,7 @@ impl<M: Bus> SystemMemory<M> {
     /// NVIC pending latch and tell the source device to drop its line.
     fn consume_exception(&mut self, n: u8) {
         match n {
+            11 => self.scb.acknowledge_svcall(),
             14 => self.scb.acknowledge(1),
             15 => {
                 for device in &mut self.devices {
@@ -319,6 +327,10 @@ impl<M: Bus> PeripheralBus for SystemMemory<M> {
 
     fn reset_peripherals(&mut self) {
         self.reset_devices();
+    }
+
+    fn record_fault(&mut self, cfsr_bits: u32, hfsr_bits: u32) {
+        self.scb.record_fault(cfsr_bits, hfsr_bits);
     }
 }
 
@@ -711,6 +723,47 @@ mod tests {
         sys.write(0xE000_ED22, 0xC0).unwrap();
         sys.write_word(0xE000_ED04, 0x1000_0000).unwrap();
         assert_eq!(sys.next_exception(false, false, 0, 23), None);
+    }
+
+    #[test]
+    fn shcsr_svcallpend_takes_svc_in_thread_mode() {
+        let mut sys = SystemMemory::new(ram());
+        // Pend an SVC through SHCSR.SVCALLPENDED.
+        sys.write_word(0xE000_ED24, 0x0000_8000).unwrap();
+        assert_eq!(sys.next_exception(false, false, 0, 0), Some(11));
+        // Acknowledge clears the pend; the second peek sees nothing.
+        sys.acknowledge_exception(11);
+        assert_eq!(sys.next_exception(false, false, 0, 0), None);
+        // The pend is restored and re-taken; PRIMASK still masks it.
+        sys.write_word(0xE000_ED24, 0x0000_8000).unwrap();
+        assert_eq!(sys.next_exception(true, false, 0, 0), None);
+        assert_eq!(sys.next_exception(false, false, 0, 0), Some(11));
+    }
+
+    #[test]
+    fn svcall_pend_preempts_lower_priority_handler() {
+        let mut sys = SystemMemory::new(ram());
+        // IRQ7 (exc 23) running at priority 0xC0; SVC pended at 0x40.
+        sys.write_word(0xE000_E200, 1 << 7).unwrap();
+        sys.write_word(0xE000_E100, 1 << 7).unwrap();
+        sys.write(0xE000_E407, 0xC0).unwrap();
+        sys.write(0xE000_ED1F, 0x40).unwrap(); // SHPR2 SVCall prio 0x40
+        sys.write_word(0xE000_ED24, 0x0000_8000).unwrap();
+        assert_eq!(sys.next_exception(false, false, 0, 23), Some(11));
+        // At the same priority the running handler blocks the pend.
+        sys.write(0xE000_ED1F, 0xC0).unwrap();
+        sys.write_word(0xE000_ED24, 0x0000_8000).unwrap();
+        assert_eq!(sys.next_exception(false, false, 0, 23), None);
+    }
+
+    #[test]
+    fn svcall_pend_masked_by_basepri() {
+        let mut sys = SystemMemory::new(ram());
+        sys.write(0xE000_ED1F, 0x40).unwrap(); // SVC prio 0x40
+        sys.write_word(0xE000_ED24, 0x0000_8000).unwrap();
+        assert_eq!(sys.next_exception(false, false, 0x20, 0), None);
+        assert_eq!(sys.next_exception(false, false, 0x40, 0), None);
+        assert_eq!(sys.next_exception(false, false, 0x50, 0), Some(11));
     }
 
     #[test]

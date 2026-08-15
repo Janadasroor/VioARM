@@ -2420,4 +2420,140 @@ fn ccr_div0_trp_hardfaults_zero_divide() {
     conformance("ccr_div0_trp_hardfaults_zero_divide", &mut a, "halt", &mt);
 }
 
+// ---------------------------------------------------------------------------
+// SHCSR: the fault-enable bits store and read back, and a written
+// `SVCALLPENDED` makes the machine take the SVC vector like a pended SVC.
+// (The read-only `*ACT` bits are not exercised here: QEMU lets firmware set
+// them through its NVIC state, while VioARM reads them as zero; the model's
+// behavior is covered by the SCB unit tests.)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn scb_shcsr_svcallpend_takes_svc() {
+    let Some(mt) = qemu_m4() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+
+    // SHCSR = USGFAULTENA|BUSFAULTENA|MEMFAULTENA (0x0007_0000): reads back.
+    a.mov_imm32(0, 0xE000_ED24);
+    a.mov_imm32(1, 0x0007_0000);
+    a.str_imm(1, 0, 0);
+    a.ldr_imm(2, 0, 0); // r2 = 0x0007_0000
+    // Pend an SVC: the machine must take the SVC vector before the next step.
+    a.mov_imm32(1, 0x0007_8000);
+    a.str_imm(1, 0, 0);
+    a.label("halt");
+    a.b("halt");
+
+    a.label("svc_handler");
+    a.movs_imm8(4, 0x77);
+    a.bx(14);
+
+    a.vec(11, "svc_handler");
+    conformance("scb_shcsr_svcallpend_takes_svc", &mut a, "halt", &mt);
+}
+
+// ---------------------------------------------------------------------------
+// VTOR: the vector table base relocates. The firmware points `VTOR` at a
+// 128-byte-aligned RAM address, writes the SVC entry into the relocated table
+// (patched with the handler's runtime address), and takes SVC. The base table
+// at address zero deliberately points the SVC entry at an infinite loop, so
+// the test only reaches `halt` if the relocated table is actually used.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn scb_vtor_relocates_vector_table() {
+    let Some(mt) = qemu_m4() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+
+    // VTOR = 0x2000_0080 (128-byte aligned RAM).
+    a.mov_imm32(0, 0xE000_ED08);
+    a.mov_imm32(1, 0x2000_0080);
+    a.str_imm(1, 0, 0);
+    a.ldr_imm(2, 0, 0); // r2 = 0x2000_0080
+
+    // Store the SVC handler pointer at the relocated table's SVC entry
+    // (0x2000_0080 + 11*4 = 0x2000_00AC). `svc_w` is patched below with the
+    // handler's resolved address once labels exist.
+    a.label("svc_w");
+    a.movw(1, 0);
+    a.mov_imm32(0, 0x2000_00AC);
+    a.str_imm(1, 0, 0);
+
+    // Take SVC: the vector comes from the relocated table.
+    a.svc(1);
+    a.label("halt");
+    a.b("halt");
+
+    a.label("svc_handler");
+    a.movs_imm8(3, 0x99);
+    a.bx(14);
+    a.label("not_handler");
+    a.b("not_handler");
+
+    a.vec(11, "not_handler");
+
+    let mut img: Image = a.clone().finish(SP).expect("assemble");
+    let mvw = img.addr("svc_w").expect("svc_w") as usize;
+    let handler = img.addr("svc_handler").expect("svc_handler");
+    patch_movw(&mut img.bytes[..], mvw, 1, (handler | 1) as u16);
+
+    let stop = img.addr("halt").expect("halt");
+    let (vio, reached) = vio_run(&img.bytes, stop);
+    assert!(
+        reached,
+        "scb_vtor_relocates_vector_table: vioarm never reached halt @ {stop:#x} (last {})",
+        snapshot_like(&vio)
+    );
+    let qemu = qemu_run_retry(&mt, &img.bytes, stop);
+    assert!(
+        !qemu.is_empty() && qemu.last().expect("empty").r[15] & !1 == stop,
+        "scb_vtor_relocates_vector_table: qemu never reached halt @ {stop:#x} (got {} states)",
+        qemu.len()
+    );
+    compare_traces("scb_vtor_relocates_vector_table", &vio, &qemu).expect("traces agree");
+}
+
+// ---------------------------------------------------------------------------
+// CFSR/HFSR: a divide-by-zero with DIV_0_TRP records a UsageFault DIVBYZERO
+// in CFSR and the FORCED escalation bit in HFSR; the HardFault handler reads
+// both through the memory windows, then clears them write-1-to-clear.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn scb_div0_records_cfsr_hfsr() {
+    let Some(mt) = qemu_m4() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+
+    a.mov_imm32(0, 0xE000_ED14);
+    a.mov_imm32(1, 0x0000_0010); // DIV_0_TRP
+    a.str_imm(1, 0, 0);
+
+    a.mov_imm32(0, 100);
+    a.movs_imm8(1, 0); // divisor zero
+    a.udiv(2, 0, 1);
+    a.label("halt");
+    a.b("halt");
+
+    a.label("hf_handler");
+    // CFSR: read DIVBYZERO (combined bit 25), then clear it the canonical
+    // way firmware does, by writing the read value back (W1C).
+    a.mov_imm32(0, 0xE000_ED28);
+    a.ldr_imm(4, 0, 0); // r4 = 0x0200_0000
+    a.str_imm(4, 0, 0); // clear DIVBYZERO
+    a.ldr_imm(6, 0, 0); // r6 = 0
+    // HFSR: read FORCED (bit 30, where the QEMU oracle reports it), then
+    // clear it the same way.
+    a.mov_imm32(0, 0xE000_ED2C);
+    a.ldr_imm(5, 0, 0); // r5 = 0x4000_0000
+    a.str_imm(5, 0, 0); // clear FORCED
+    a.ldr_imm(7, 0, 0); // r7 = 0
+    a.b("halt");
+
+    a.vec(3, "hf_handler");
+    conformance("scb_div0_records_cfsr_hfsr", &mut a, "halt", &mt);
+}
+
 

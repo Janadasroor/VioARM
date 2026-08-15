@@ -73,6 +73,12 @@ impl<M: PeripheralBus> Machine<M> {
     /// outranks the running context) or retire one instruction, then advance
     /// peripherals.
     ///
+    /// A software-pended exception (an `SHCSR.SVCALLPENDED` or a NVIC
+    /// `SETPEND` write) is taken at the same boundary QEMU uses: QEMU's
+    /// per-instruction dump after the pending write already shows the entry,
+    /// so an instruction that pends an exception is followed by that
+    /// exception within the same step, never by an extra thread-mode state.
+    ///
     /// # Errors
     ///
     /// Returns the halt cause if the machine halts while stepping.
@@ -100,6 +106,21 @@ impl<M: PeripheralBus> Machine<M> {
             self.core.cycles += 1;
         } else {
             self.core.step()?;
+            let (primask, faultmask, basepri, ipsr) = (
+                self.core.primask,
+                self.core.faultmask,
+                self.core.basepri,
+                self.core.ipsr,
+            );
+            if let Some(n) = self
+                .core
+                .mem()
+                .next_exception(primask, faultmask, basepri, ipsr)
+            {
+                self.core.enter_exception(n)?;
+                self.core.mem().acknowledge_exception(n);
+                self.core.cycles += 1;
+            }
         }
         self.core.mem().tick_cycle();
         Ok(())

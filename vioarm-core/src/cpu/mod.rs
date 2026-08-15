@@ -282,6 +282,24 @@ const CCR_STKALIGN: u32 = 0x0000_0200;
 const CCR_DIV0_TRP: u32 = 0x0000_0010;
 const CCR_RESET: u32 = 0x0000_0200;
 
+/// `VTOR`: the vector table base (bits [31:7]) the exception-entry logic
+/// consults. Zero is the fallback when no `SCB` is on the bus.
+const VTOR_ADDR: u32 = 0xE000_ED08;
+const VTOR_MASK: u32 = !0x7F;
+
+/// `CFSR`/`HFSR` fault-status bits the exception paths record on the
+/// escalation paths that fold a fault into HardFault (see
+/// `PeripheralBus::record_fault`). A zero divisor with `DIV_0_TRP` is a
+/// UsageFault `DIVBYZERO`; an undecodable instruction is `UNDEFINSTR`; a
+/// faulting data access is a BusFault `PRECISERR`. Every escalation sets
+/// `HFSR.FORCED`.
+const UFSR_UNDEFINSTR: u32 = 0x0001_0000; // UFSR bit 0 -> combined bit 16
+const UFSR_DIVBYZERO: u32 = 0x0200_0000; // UFSR bit 9 -> combined bit 25
+const BFSR_PRECISERR: u32 = 0x0000_0100; // BFSR bit 0 -> combined bit 8
+// QEMU reports HFSR.FORCED at bit 30 (0x4000_0000) rather than the ARMv7-M
+// architectural bit 31; the differential oracle is the arbiter here.
+const HFSR_FORCED: u32 = 0x4000_0000;
+
 /// The core CPU state plus its bus.
 pub struct Core<B: PeripheralBus> {
     pub regs: Registers,
@@ -1481,7 +1499,7 @@ impl<B: PeripheralBus> Core<B> {
                 let den = self.regs.read(rm);
                 if den == 0 {
                     if self.mem.read_word(CCR_ADDR).unwrap_or(CCR_RESET) & CCR_DIV0_TRP != 0 {
-                        return self.hardfault_on_undefined(pc, 4);
+                        return self.usage_fault(pc, UFSR_DIVBYZERO);
                     }
                     self.regs.write(rd, 0);
                     return Ok(Next::Advance(pc + 4));
@@ -2808,8 +2826,16 @@ impl<B: PeripheralBus> Core<B> {
     /// Raise a HardFault for an undecodable instruction at `pc`. The stacked
     /// return address is the faulting instruction itself, so the handler can
     /// repair or skip the bad opcode (it must advance `pc` itself); QEMU and
-    /// real Cortex-M hardware both stack the faulting address here.
+    /// real Cortex-M hardware both stack the faulting address here. Records a
+    /// UsageFault `UNDEFINSTR` and the `FORCED` escalation bit.
     fn hardfault_on_undefined(&mut self, pc: u32, _size: u32) -> Result<Next, HaltCause> {
+        self.usage_fault(pc, UFSR_UNDEFINSTR)
+    }
+
+    /// Fold a UsageFault (recorded as `ufsr_bit` in `CFSR`, plus `HFSR.FORCED`)
+    /// into HardFault. The stacked return address is the faulting instruction.
+    fn usage_fault(&mut self, pc: u32, ufsr_bit: u32) -> Result<Next, HaltCause> {
+        self.mem.record_fault(ufsr_bit, HFSR_FORCED);
         self.take_exception(Exception::HardFault, pc)?;
         Ok(Next::Advance(self.regs.pc))
     }
@@ -2817,9 +2843,11 @@ impl<B: PeripheralBus> Core<B> {
     /// Escalate a faulting data access at `addr` (from instruction at `pc`)
     /// to a HardFault, per ARMv6-M (no separate bus-fault exception exists).
     /// The stacked return address is the faulting instruction so the handler
-    /// can fix the cause and retry it. Continues into the handler.
+    /// can fix the cause and retry it. Records a BusFault `PRECISERR` and the
+    /// `FORCED` escalation bit. Continues into the handler.
     fn data_fault(&mut self, addr: u32, pc: u32) -> Result<Next, HaltCause> {
         let _ = addr;
+        self.mem.record_fault(BFSR_PRECISERR, HFSR_FORCED);
         self.take_exception(Exception::HardFault, pc)?;
         Ok(Next::Advance(self.regs.pc))
     }
@@ -2849,7 +2877,11 @@ impl<B: PeripheralBus> Core<B> {
         // from a `SCR.SLEEPONEXIT` sleep.
         self.exmon = None;
         self.sleeping = false;
-        let vector_addr = u32::from(ex.number()) * 4;
+        // The vector table lives at `VTOR` (128-byte aligned), defaulting to
+        // address zero when no `SCB` is on the bus. Exception `n`'s entry is
+        // the `n`-th word of that table.
+        let vtor = self.mem.read_word(VTOR_ADDR).unwrap_or(0) & VTOR_MASK;
+        let vector_addr = vtor.wrapping_add(u32::from(ex.number()) * 4);
         let vector = match self.read_word_halt(vector_addr) {
             Ok(v) => v,
             Err(_) => return Err(HaltCause::UnhandledException),

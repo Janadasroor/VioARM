@@ -1,14 +1,25 @@
 //! The ARMv7-M System Control Block (subset).
 //!
 //! Models the `ICSR` `PendSV` set/clear bits, the `SHPR2`/`SHPR3` configurable
-//! exception priorities (`SVCall`, `PendSV`, `SysTick`), the `CPACR`
-//! coprocessor access-control register, and the reset/control registers
-//! `AIRCR`, `SCR`, and `CCR`. The `CPACR` value is stored but does not gate
-//! VFP execution (the core implements FPv4-SP unconditionally); the window
-//! exists so firmware that enables the FPU (as every Cortex-M4 image does)
-//! does not fault. `AIRCR.SYSRESETREQ` latches a reset request the machine
-//! honors; `SCR.SLEEPONEXIT` and `CCR.STKALIGN`/`DIV_0_TRP` drive the core's
-//! exception-return and exception-entry behavior.
+//! exception priorities (`SVCall`, `PendSV`, `SysTick`), the `VTOR` vector
+//! table offset, the `SHCSR` system handler control/state register, the
+//! `CFSR`/`HFSR` fault status registers, the `CPACR` coprocessor access-control
+//! register, and the reset/control registers `AIRCR`, `SCR`, and `CCR`. The
+//! `CPACR` value is stored but does not gate VFP execution (the core implements
+//! FPv4-SP unconditionally); the window exists so firmware that enables the FPU
+//! (as every Cortex-M4 image does) does not fault. `AIRCR.SYSRESETREQ` latches
+//! a reset request the machine honors; `SCR.SLEEPONEXIT` and
+//! `CCR.STKALIGN`/`DIV_0_TRP` drive the core's exception-return and
+//! exception-entry behavior.
+//!
+//! `VTOR` sets the base address of the exception vector table the core consults
+//! on exception entry. `SHCSR` stores the fault-enable and pending bits;
+//! `SVCALLPENDED` is wired into the interrupt controller so a written pend is
+//! taken like a pended SVC. Its active-status (`*ACT`) bits read zero: the SCB
+//! is not told which exception is running, so they are only correct in Thread
+//! mode. `CFSR` and `HFSR` are write-1-to-clear fault status; the core records
+//! the folding fault causes (`UNDEFINSTR`, `DIVBYZERO`, `PRECISERR`) and the
+//! `FORCED` escalation bit through [`PeripheralBus::record_fault`].
 //!
 //! The `FPCCR` (`0xE000_EF34`) and `FPCAR` (`0xE000_EF38`) windows expose the
 //! M-profile lazy-FP-stacking control to firmware. Their state lives in the
@@ -26,11 +37,15 @@ use crate::mem::bus::Region;
 use std::sync::{Arc, Mutex};
 
 const ICSR: u32 = 0xE000_ED04;
+const VTOR: u32 = 0xE000_ED08;
 const AIRCR: u32 = 0xE000_ED0C;
 const SCR: u32 = 0xE000_ED10;
 const CCR: u32 = 0xE000_ED14;
 const SHPR2: u32 = 0xE000_ED1C;
 const SHPR3: u32 = 0xE000_ED20;
+const SHCSR: u32 = 0xE000_ED24;
+const CFSR: u32 = 0xE000_ED28;
+const HFSR: u32 = 0xE000_ED2C;
 const CPACR: u32 = 0xE000_ED88;
 const FPCCR: u32 = 0xE000_EF34;
 const FPCAR: u32 = 0xE000_EF38;
@@ -57,16 +72,41 @@ const SCR_MASK: u32 = 0x0000_0012;
 const CCR_MASK: u32 = 0x0000_033B;
 const CCR_RESET: u32 = 0x0000_0200;
 
+// SHCSR: the writable bits are the three fault enables (USGFAULTENA 18,
+// BUSFAULTENA 17, MEMFAULTENA 16) and the four pend bits (SVCALLPENDED 15,
+// BUSFAULTPENDED 14, MEMFAULTPENDED 13, USGFAULTPENDED 12). The active-status
+// bits (SYSTICKACT 11, PENDSVACT 10, ...) are read-only and read zero here:
+// the SCB is not told which exception is running, so they are only accurate in
+// Thread mode.
+const SHCSR_WRITABLE: u32 = 0x0007_F000;
+const SHCSR_SVCALLPENDED: u32 = 0x0000_8000;
+
+// CFSR combines MMFSR (bits 7:0), BFSR (15:8), and UFSR (31:16); HFSR carries
+// FORCED (31) and VECTTBL (1). Both are write-1-to-clear: firmware writes 1s
+// to clear the corresponding status, and 0s are ignored.
+const CFSR_MASK: u32 = 0xFFFF_FFFF;
+// HFSR.FORCED (W1C) is reported at bit 30 to match the QEMU oracle, which
+// stores it there instead of the architectural bit 31 (see cpu/mod.rs).
+const HFSR_MASK: u32 = 0x4000_0002;
+
 /// The System Control Block: interrupt control state, exception priorities,
 /// the reset/control registers (`AIRCR`/`SCR`/`CCR`), the coprocessor
 /// access-control register, and the FP context control.
 #[derive(Debug, Clone)]
 pub struct Scb {
-    ranges: [Region; 10],
+    ranges: [Region; 14],
     pendsv: bool,
     shpr2: u32,
     shpr3: u32,
     cpacr: u32,
+    /// `VTOR`: the vector table base, masked to the 128-byte alignment.
+    vtor: u32,
+    /// `SHCSR`: fault enables and pend bits; the `*ACT` bits read zero.
+    shcsr: u32,
+    /// `CFSR`: the combined fault status (MMFSR/BFSR/UFSR), write-1-to-clear.
+    cfsr: u32,
+    /// `HFSR`: `FORCED`/`VECTTBL`, write-1-to-clear.
+    hfsr: u32,
     /// The last `AIRCR` word written (key bytes included), so a 32-bit store's
     /// `VECTKEY` is recognized across its four byte-writes. Reads always
     /// report `VECTKEYSTAT`, never the stored key.
@@ -87,11 +127,15 @@ impl Scb {
         Self {
             ranges: [
                 Region::new(ICSR, 4),
+                Region::new(VTOR, 4),
                 Region::new(AIRCR, 4),
                 Region::new(SCR, 4),
                 Region::new(CCR, 4),
                 Region::new(SHPR2, 4),
                 Region::new(SHPR3, 4),
+                Region::new(SHCSR, 4),
+                Region::new(CFSR, 4),
+                Region::new(HFSR, 4),
                 Region::new(CPACR, 4),
                 Region::new(FPCCR, 4),
                 Region::new(FPCAR, 4),
@@ -101,6 +145,10 @@ impl Scb {
             shpr2: 0,
             shpr3: 0,
             cpacr: 0,
+            vtor: 0,
+            shcsr: 0,
+            cfsr: 0,
+            hfsr: 0,
             aircr: 0,
             scr: 0,
             ccr: CCR_RESET,
@@ -165,9 +213,37 @@ impl Scb {
         self.reset_requested
     }
 
+    /// `VTOR`: the vector table base (bits [31:7], 128-byte aligned).
+    #[must_use]
+    pub const fn vtor(&self) -> u32 {
+        self.vtor
+    }
+
+    /// Whether `SHCSR.SVCALLPENDED` is set: an SVC is pending and should be
+    /// taken by the interrupt controller.
+    #[must_use]
+    pub const fn svcall_pending(&self) -> bool {
+        self.shcsr & SHCSR_SVCALLPENDED != 0
+    }
+
+    /// Clear `SHCSR.SVCALLPENDED`, as the interrupt controller does when an
+    /// SVC is taken.
+    pub fn acknowledge_svcall(&mut self) {
+        self.shcsr &= !SHCSR_SVCALLPENDED;
+    }
+
+    /// Record escalated-fault status into `CFSR`/`HFSR`. The core calls this
+    /// on the paths where it folds a fault into HardFault; firmware reads the
+    /// cause through the memory-mapped windows and clears bits write-1-to-clear.
+    pub fn record_fault(&mut self, cfsr_bits: u32, hfsr_bits: u32) {
+        self.cfsr |= cfsr_bits & CFSR_MASK;
+        self.hfsr |= hfsr_bits & HFSR_MASK;
+    }
+
     fn read_reg(&self, base: u32, offset: u32) -> u8 {
         let reg = match base {
             ICSR => u32::from(self.pendsv) << 28,
+            VTOR => self.vtor,
             // The read reports VECTKEYSTAT; the stored key bytes are never
             // echoed back.
             AIRCR => 0xFA05_0000 | (u32::from(self.prig()) << 8),
@@ -175,6 +251,9 @@ impl Scb {
             CCR => self.ccr,
             SHPR2 => self.shpr2,
             SHPR3 => self.shpr3,
+            SHCSR => self.shcsr,
+            CFSR => self.cfsr,
+            HFSR => self.hfsr,
             CPACR => self.cpacr,
             FPCCR => self.fpu_ctx.lock().unwrap().fpccr(),
             FPCAR => self.fpu_ctx.lock().unwrap().fpcar,
@@ -195,6 +274,11 @@ impl Scb {
                         self.pendsv = false;
                     }
                 }
+            }
+            VTOR => {
+                let shift = 8 * offset;
+                self.vtor = (self.vtor & !(0xFF << shift)) | (u32::from(val) << shift);
+                self.vtor &= !0x7F;
             }
             AIRCR => {
                 // Only a store whose bits 31:16 carry `VECTKEY` (0x05FA) is
@@ -229,6 +313,21 @@ impl Scb {
             SHPR3 => {
                 let shift = 8 * offset;
                 self.shpr3 = (self.shpr3 & !(0xFF << shift)) | (u32::from(val) << shift);
+            }
+            SHCSR => {
+                // The enable and pend bits are plain read/write storage (matching
+                // QEMU's storage of `SHCSR`); the read-only active-status bits are
+                // not writable and read zero.
+                let shift = 8 * offset;
+                self.shcsr = (self.shcsr & !(0xFF << shift)) | (u32::from(val) << shift);
+                self.shcsr &= SHCSR_WRITABLE;
+            }
+            CFSR => {
+                // Write-1-to-clear: a written 1 clears that fault status bit.
+                self.cfsr &= !(u32::from(val) << (8 * offset));
+            }
+            HFSR => {
+                self.hfsr &= !(u32::from(val) << (8 * offset));
             }
             CPACR => {
                 let shift = 8 * offset;
@@ -294,6 +393,10 @@ impl Peripheral for Scb {
         self.shpr2 = 0;
         self.shpr3 = 0;
         self.cpacr = 0;
+        self.vtor = 0;
+        self.shcsr = 0;
+        self.cfsr = 0;
+        self.hfsr = 0;
         self.aircr = 0;
         self.scr = 0;
         self.ccr = CCR_RESET;
@@ -511,5 +614,63 @@ mod tests {
         assert_eq!(read_word(&mut s, 0xE000_ED14), 0x0000_0010);
         s.reset();
         assert_eq!(read_word(&mut s, 0xE000_ED14), 0x0000_0200);
+    }
+
+    #[test]
+    fn vtor_aligns_and_stores() {
+        let mut s = Scb::new();
+        assert_eq!(read_word(&mut s, 0xE000_ED08), 0);
+        // The base must be 128-byte aligned: the low seven bits are masked.
+        write_word(&mut s, 0xE000_ED08, 0x2000_00B5);
+        assert_eq!(read_word(&mut s, 0xE000_ED08), 0x2000_0080);
+        assert_eq!(s.vtor(), 0x2000_0080);
+        s.reset();
+        assert_eq!(read_word(&mut s, 0xE000_ED08), 0);
+    }
+
+    #[test]
+    fn shcsr_stores_enables_and_pends_svcall() {
+        let mut s = Scb::new();
+        assert_eq!(read_word(&mut s, 0xE000_ED24), 0);
+        assert!(!s.svcall_pending());
+        // Enable the folded fault exceptions and pend an SVC.
+        write_word(&mut s, 0xE000_ED24, 0x0007_8000);
+        assert_eq!(read_word(&mut s, 0xE000_ED24), 0x0007_8000);
+        assert!(s.svcall_pending());
+        // The active-status bits are read-only and read zero: writing
+        // SYSTICKACT (bit 11, 0x800) is ignored, the pend/enable bits stay.
+        write_word(&mut s, 0xE000_ED24, 0x0007_C800);
+        assert_eq!(read_word(&mut s, 0xE000_ED24), 0x0007_C000);
+        // Clearing SVCALLPENDED drops the pend (the controller does this on
+        // acknowledge; firmware may also write it).
+        write_word(&mut s, 0xE000_ED24, 0x0007_0000);
+        assert!(!s.svcall_pending());
+        s.reset();
+        assert_eq!(read_word(&mut s, 0xE000_ED24), 0);
+    }
+
+    #[test]
+    fn cfsr_and_hfsr_are_write_one_to_clear() {
+        let mut s = Scb::new();
+        assert_eq!(read_word(&mut s, 0xE000_ED28), 0);
+        assert_eq!(read_word(&mut s, 0xE000_ED2C), 0);
+        // Firmware cannot set a status bit by writing: writes only clear.
+        write_word(&mut s, 0xE000_ED28, 0xFFFF_FFFF);
+        write_word(&mut s, 0xE000_ED2C, 0xFFFF_FFFF);
+        assert_eq!(read_word(&mut s, 0xE000_ED28), 0);
+        assert_eq!(read_word(&mut s, 0xE000_ED2C), 0);
+        // The core records a folded fault; the windows then report it.
+        s.record_fault(0x0200_0000, 0x4000_0000); // DIVBYZERO | FORCED
+        assert_eq!(read_word(&mut s, 0xE000_ED28), 0x0200_0000);
+        assert_eq!(read_word(&mut s, 0xE000_ED2C), 0x4000_0000);
+        // Clearing is write-1-to-clear; the untouched bits survive.
+        s.record_fault(0x0000_0100, 0); // also PRECISERR
+        s.write(0xE000_ED2B, 0x02).unwrap(); // clear DIVBYZERO (bit 25)
+        assert_eq!(read_word(&mut s, 0xE000_ED28), 0x0000_0100);
+        s.write(0xE000_ED2F, 0x40).unwrap(); // clear FORCED (bit 30)
+        assert_eq!(read_word(&mut s, 0xE000_ED2C), 0);
+        s.reset();
+        assert_eq!(read_word(&mut s, 0xE000_ED28), 0);
+        assert_eq!(read_word(&mut s, 0xE000_ED2C), 0);
     }
 }

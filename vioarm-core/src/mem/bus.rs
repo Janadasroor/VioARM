@@ -130,4 +130,9 @@ pub trait PeripheralBus: Bus {
     fn reset_requested(&self) -> bool {
         false
     }
+
+    /// Record escalated-fault status into the SCB's `CFSR`/`HFSR` (the bits to
+    /// OR in). The core calls this when it folds a fault into HardFault, so
+    /// firmware can read the cause back. Default: no recording (plain memory).
+    fn record_fault(&mut self, _cfsr_bits: u32, _hfsr_bits: u32) {}
 }
