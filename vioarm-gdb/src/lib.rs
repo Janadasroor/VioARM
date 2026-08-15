@@ -697,6 +697,21 @@ mod tests {
         machine
     }
 
+    /// Some CI/sandboxed environments forbid loopback `connect()` (Windows
+    /// returns `10013 WSAEACCES`). The socket tests would otherwise hang on
+    /// `accept()` after the client thread panics, so probe loopback first and
+    /// skip when it is unavailable.
+    fn loopback_available() -> bool {
+        let Ok(listener) = TcpListener::bind(("127.0.0.1", 0)) else {
+            return false;
+        };
+        let addr = listener.local_addr().unwrap();
+        match std::net::TcpStream::connect(addr) {
+            Ok(_) => true,
+            Err(_) => false,
+        }
+    }
+
     fn write_half(machine: &mut Machine<FlatMemory>, addr: u32, op: u16) {
         machine.core.mem().write_half(addr, op).unwrap();
     }
@@ -723,6 +738,10 @@ mod tests {
     /// an infinite `movs r0,#1 ; b .` loop rewritten in place.
     #[test]
     fn loopback_session_steps_and_hits_breakpoint() {
+        if !loopback_available() {
+            eprintln!("skipping: loopback connect unavailable in this environment");
+            return;
+        }
         let mut machine = test_machine();
         write_half(&mut machine, 0x100, 0x2001); // movs r0, #1
         write_half(&mut machine, 0x102, 0xE7FD); // b 0x100
@@ -767,6 +786,10 @@ mod tests {
     /// A continue into an infinite loop is interruptible with Ctrl-C.
     #[test]
     fn continue_is_interruptible() {
+        if !loopback_available() {
+            eprintln!("skipping: loopback connect unavailable in this environment");
+            return;
+        }
         let mut machine = test_machine();
         write_half(&mut machine, 0x100, 0xE7FE); // b .
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
