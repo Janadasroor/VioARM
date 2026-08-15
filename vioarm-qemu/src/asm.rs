@@ -1541,6 +1541,16 @@ impl Asm {
         self.raw32(w.rotate_left(16));
     }
 
+    /// `VMSR FPSCR, Rt` â€” write a general-purpose register into the FPSCR.
+    pub fn vmsr(&mut self, rt: u8) {
+        let w = 0xEE00_0000
+            | (0b111 << 21)
+            | (1 << 16)
+            | (u32::from(rt) << 12)
+            | 0x0A10;
+        self.raw32(w.rotate_left(16));
+    }
+
     /// `VCMP.F32 S{vd}, S{vm}` (quiet compare against a register).
     pub fn vcmp_f32(&mut self, vd: u8, vm: u8) {
         self.vfp_cmp(vd, vm, false, false);

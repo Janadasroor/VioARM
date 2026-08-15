@@ -1971,4 +1971,148 @@ fn vfp_m4() {
     conformance("vfp_m4", &mut a, "halt", &mt);
 }
 
+// ---------------------------------------------------------------------------
+// FP context switching / lazy stacking (FPCCR ASPEN/LSPEN, CONTROL.FPCA).
+//
+// These tests drive the exception machinery against the Cortex-M4 oracle:
+// thread-mode code uses the FPU (setting CONTROL.FPCA), then takes an SVC, and
+// the handler either does or does not touch the FPU. Depending on LSPEN and on
+// whether the handler uses the FPU, the extended exception frame is either
+// lazily reserved (FPCAR/LSPACT), eagerly stored, or abandoned.
+// ---------------------------------------------------------------------------
+
+/// Minimal probe: an `SVC` through the non-FP exception path. Both simulators
+/// must agree on the stacked frame, `EXC_RETURN`, and the return.
+#[test]
+fn fp_ctx_svc_basic() {
+    let Some(mt) = qemu_m4() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+    a.svc(1);
+    a.label("halt");
+    a.b("halt");
+
+    a.label("svc_handler");
+    a.adds_imm8(0, 1);
+    a.bx(14);
+
+    a.vec(11, "svc_handler");
+    conformance("fp_ctx_svc_basic", &mut a, "halt", &mt);
+}
+
+/// Scenario A: lazy stacking (LSPEN=1, the reset default). The handler uses
+/// the FPU, so on entry the FP frame is lazily reserved (FPCAR/LSPACT) and the
+/// thread's S0-S15/FPSCR are written out on the handler's first FP instruction;
+/// on return they are restored from the frame. S16-S31 are not in the frame and
+/// the handler's writes persist.
+#[test]
+fn fp_ctx_lazy_handler_uses_fp() {
+    let Some(mt) = qemu_m4() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+    a.enable_fpu();
+
+    // Thread-mode FP context: FPCA set by the first FP instruction; FPSCR gets
+    // an inexact flag from 2/3 so the frame stores a nonzero FPSCR.
+    a.mov_imm32(0, 0x3F80_0000); //  1.0
+    a.vmov_s_gpr(0, 0);
+    a.mov_imm32(0, 0x4000_0000); //  2.0
+    a.vmov_s_gpr(1, 0);
+    a.vadd_f32(2, 0, 1); // s2 = 3.0   (first FP insn -> FPCA, FPSCR reset)
+    a.vdiv_f32(3, 1, 2); // s3 = 2/3   (inexact -> IXC set)
+    a.mov_imm32(0, 0x4120_0000); // 10.0
+    a.vmov_s_gpr(4, 0);
+    a.vmov_f32_imm(16, 0x70); // s16 = 1.0 (not stacked)
+    a.vmov_f32_imm(17, 0x70); // s17 = 1.0 (not stacked)
+    a.vmrs(0, 1); // r0 = FPSCR (IXC)
+
+    a.svc(1);
+    a.label("halt");
+    a.b("halt");
+
+    // Handler uses the FPU: lazy preserve writes the thread's S0-S15 + FPSCR
+    // to the reserved frame, then FPCA is set and FPSCR reset for the handler.
+    a.label("svc_handler");
+    a.vadd_f32(6, 0, 1); // first handler FP insn: preserve + context create
+    a.vmul_f32(7, 2, 3);
+    a.vsub_f32(8, 4, 6);
+    a.vmov_f32_imm(16, 0xF0); // s16 = -1.0, persists after return
+    a.vmov_f32_imm(17, 0xF0); // s17 = -1.0, persists after return
+    a.bx(14);
+
+    a.vec(11, "svc_handler");
+    conformance("fp_ctx_lazy_handler_uses_fp", &mut a, "halt", &mt);
+}
+
+/// Scenario B: non-lazy stacking (LSPEN=0). On entry the thread's S0-S15 +
+/// FPSCR are eagerly stored and the registers zeroed; the handler's first FP
+/// instruction creates a fresh context from the zeroed bank. The values are
+/// restored on return.
+#[test]
+fn fp_ctx_nolazy_handler_uses_fp() {
+    let Some(mt) = qemu_m4() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+    a.enable_fpu();
+
+    a.mov_imm32(0, 0x3F80_0000); //  1.0
+    a.vmov_s_gpr(0, 0);
+    a.mov_imm32(0, 0x4000_0000); //  2.0
+    a.vmov_s_gpr(1, 0);
+    a.vadd_f32(2, 0, 1); // s2 = 3.0   (FPCA)
+    a.vdiv_f32(3, 1, 2); // s3 = 2/3   (IXC)
+    a.vmov_f32_imm(4, 0x70); // s4 = 1.0
+    a.vmrs(0, 1); // r0 = FPSCR (IXC)
+
+    // Turn lazy stacking off (ASPEN stays on).
+    a.mov_imm32(0, 0xE000_EF34);
+    a.mov_imm32(1, 0x8780_0004); // LSPEN=0
+    a.str_imm(1, 0, 0);
+
+    a.svc(1);
+    a.label("halt");
+    a.b("halt");
+
+    a.label("svc_handler");
+    a.vadd_f32(6, 0, 1); // first handler FP insn from the zeroed bank
+    a.vmul_f32(7, 2, 3);
+    a.bx(14);
+
+    a.vec(11, "svc_handler");
+    conformance("fp_ctx_nolazy_handler_uses_fp", &mut a, "halt", &mt);
+}
+
+/// Scenario C: lazy stacking, but the handler never touches the FPU. The frame
+/// is reserved lazily (FPCAR/LSPACT) and abandoned on return without any FPU
+/// save/restore, so the thread's S0-S15/FPSCR survive untouched.
+#[test]
+fn fp_ctx_lazy_handler_no_fp() {
+    let Some(mt) = qemu_m4() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+    a.enable_fpu();
+
+    a.mov_imm32(0, 0x3F80_0000); //  1.0
+    a.vmov_s_gpr(0, 0);
+    a.mov_imm32(0, 0x4000_0000); //  2.0
+    a.vmov_s_gpr(1, 0);
+    a.vadd_f32(2, 0, 1); // s2 = 3.0   (FPCA)
+    a.vdiv_f32(3, 1, 2); // s3 = 2/3   (IXC)
+    a.vmov_f32_imm(4, 0x70); // s4 = 1.0
+    a.vmrs(0, 1); // r0 = FPSCR (IXC)
+
+    a.svc(1);
+    a.label("halt");
+    a.b("halt");
+
+    // Handler does NOT use the FPU: LSPACT is cleared on return and nothing
+    // else happens to the FP registers.
+    a.label("svc_handler");
+    a.adds_imm8(0, 1);
+    a.bx(14);
+
+    a.vec(11, "svc_handler");
+    conformance("fp_ctx_lazy_handler_no_fp", &mut a, "halt", &mt);
+}
+
 

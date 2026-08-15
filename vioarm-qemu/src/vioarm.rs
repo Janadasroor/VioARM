@@ -8,8 +8,14 @@
 //! `CPACR` window so firmware that enables the FPU (as Cortex-M4 images do)
 //! does not fault; the VFP register bank and FPSCR are captured in every
 //! snapshot for the ARMv7E-M conformance tests.
+//!
+//! The FP context-control state (`FPCCR`/`FPCAR`) is shared between the core
+//! and the `SCB` device, so firmware writes to `0xE000_EF34`/`0xE000_EF38`
+//! drive the same lazy-stacking logic the exception paths use.
 
 use crate::{CpuState, VfpState};
+use std::sync::{Arc, Mutex};
+use vioarm_core::cpu::FpuCtx;
 use vioarm_core::loader::load_flat;
 use vioarm_core::machine::Machine;
 use vioarm_core::mem::flat::FlatMemory;
@@ -25,7 +31,9 @@ pub fn new_machine(bin: &[u8]) -> Machine<SystemMemory<FlatMemory>> {
         &[0x0000_0000, 0x2000_0000],
         &[FLASH_LEN, SRAM_LEN],
     );
-    let mut m = Machine::armv7m(SystemMemory::new(backing));
+    let fpu_ctx = Arc::new(Mutex::new(FpuCtx::new()));
+    let mem = SystemMemory::new_with_fpu(backing, fpu_ctx.clone());
+    let mut m = Machine::armv7m_with_fpu(mem, fpu_ctx);
     m.load_image(&load_flat(0x0000_0000, bin));
     m
 }
