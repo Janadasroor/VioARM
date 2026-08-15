@@ -1951,8 +1951,11 @@ impl<B: PeripheralBus> Core<B> {
                     Vfp3Op::Vdiv => fpu::div(a, b, &mut st),
                     Vfp3Op::Vfma => fpu::muladd(a, b, c, &mut st),
                     Vfp3Op::Vfms => fpu::muladd(a ^ 0x8000_0000, b, c, &mut st),
-                    Vfp3Op::Vfnma => fpu::muladd(a, b, c ^ 0x8000_0000, &mut st),
-                    Vfp3Op::Vfnms => fpu::muladd(a ^ 0x8000_0000, b, c ^ 0x8000_0000, &mut st),
+                    // VFNMA negates the final result of a fused multiply-add,
+                    // VFNMS the result of a fused multiply-subtract:
+                    //   VFNMA = -(fd + fn*fm)   VFNMS = fn*fm - fd.
+                    Vfp3Op::Vfnma => fpu::muladd(a ^ 0x8000_0000, b, c ^ 0x8000_0000, &mut st),
+                    Vfp3Op::Vfnms => fpu::muladd(a, b, c ^ 0x8000_0000, &mut st),
                 };
                 self.vfp.write_s(vd, result);
                 self.vfp.fold_flags(st.flags);
@@ -5228,16 +5231,16 @@ mod tests {
         load_inst(&mut c, 0x2000_0010, &[0xa0, 0xee, 0x81, 0x0a]);
         c.step().unwrap();
         assert_eq!(c.vfp.read_s(0), 0x4120_0000);
-        // vfnma.f32 s0, s1, s2: vn*vm - vd = 2.0*3.0 - 4.0 = 2.0.
+        // vfnma.f32 s0, s1, s2: -(vn*vm + vd) = -(2.0*3.0 + 4.0) = -10.0.
         c.vfp.write_s(0, 0x4080_0000);
         load_inst(&mut c, 0x2000_0014, &[0x90, 0xee, 0xc1, 0x0a]);
         c.step().unwrap();
-        assert_eq!(c.vfp.read_s(0), 0x4000_0000);
-        // vfnms.f32 s0, s1, s2: -(vn*vm) - vd = -(2.0*3.0) - 4.0 = -10.0.
+        assert_eq!(c.vfp.read_s(0), 0xc120_0000);
+        // vfnms.f32 s0, s1, s2: vn*vm - vd = 2.0*3.0 - 4.0 = 2.0.
         c.vfp.write_s(0, 0x4080_0000);
         load_inst(&mut c, 0x2000_0018, &[0x90, 0xee, 0x81, 0x0a]);
         c.step().unwrap();
-        assert_eq!(c.vfp.read_s(0), 0xc120_0000);
+        assert_eq!(c.vfp.read_s(0), 0x4000_0000);
     }
 
     #[test]
