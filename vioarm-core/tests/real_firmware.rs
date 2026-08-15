@@ -694,3 +694,127 @@ fn stm32f103_flash_programming_is_gated_and_lands() {
         "the locked write was rejected and the program landed"
     );
 }
+
+/// Real CMSIS-style firmware against the STM32F1 DMA controller: a
+/// memory-to-memory copy through `DMA1` channel 1, driven to completion by the
+/// transfer-complete interrupt (IRQ 11, exception 27). The result snapshot is
+/// `1` only if the 16-word copy landed, `CNDTR1` reads zero, `EN` self-cleared,
+/// and the handler ran.
+const STM32_F103_DMA_FIRMWARE: &str = r#"
+#define STM32F10X_HD
+#include "stm32f10x.h"
+
+#define SRC_ADDR 0x20000100u
+#define DST_ADDR 0x20000200u
+#define DONE_ADDR 0x20000300u
+#define RESULT_ADDR 0x20000304u
+#define DONE_WORD (*(volatile unsigned *)DONE_ADDR)
+
+void DMA1_Channel1_IRQHandler(void) {
+    if (DMA1->ISR & DMA_ISR_TCIF1) {
+        DONE_WORD = 1;
+        DMA1->IFCR = DMA_IFCR_CTCIF1;
+    }
+}
+
+void reset(void) {
+    /* 1. Fill the source buffer with a 32-bit pattern. */
+    volatile unsigned *src = (volatile unsigned *)SRC_ADDR;
+    for (unsigned i = 0; i < 16; ++i) src[i] = 0xDEAD0000u | i;
+
+    /* 2. Clear the destination. */
+    volatile unsigned *dst = (volatile unsigned *)DST_ADDR;
+    for (unsigned i = 0; i < 16; ++i) dst[i] = 0;
+
+    /* 3. Arm the DMA1 channel-1 IRQ (IRQ 11, exception 27). */
+    NVIC->ISER[0] = 1u << DMA1_Channel1_IRQn;
+
+    /* 4. Memory-to-memory copy of 16 words, both sides incrementing. */
+    DMA1->CPAR1 = SRC_ADDR;
+    DMA1->CMAR1 = DST_ADDR;
+    DMA1->CNDTR1 = 16;
+    DMA1->CCR1 = DMA_CCR_MEM2MEM | DMA_CCR_PINC | DMA_CCR_MINC |
+                 DMA_CCR_PSIZE_32BIT | DMA_CCR_MSIZE_32BIT | DMA_CCR_TCIE | DMA_CCR_EN;
+
+    /* 5. Wait for the transfer-complete interrupt. */
+    while (!DONE_WORD) { }
+
+    /* 6. Verify the copy and the post-transfer register state. */
+    unsigned ok = 1;
+    for (unsigned i = 0; i < 16; ++i) {
+        if (dst[i] != (0xDEAD0000u | i)) { ok = 0; break; }
+        if (src[i] != (0xDEAD0000u | i)) { ok = 0; break; }
+    }
+    if (DMA1->CNDTR1 != 0) ok = 0;
+    if (DMA1->CCR1 & DMA_CCR_EN) ok = 0;
+
+    *(volatile unsigned *)RESULT_ADDR = ok;
+    __asm__ volatile("bkpt #0");
+}
+"#;
+
+/// On the STM32F103 board, CMSIS firmware copies 16 words with `DMA1` channel
+/// 1 in memory-to-memory mode, completes the transfer through the IRQ, and
+/// verifies the result.
+#[test]
+fn stm32f103_dma_transfers_memory_to_memory() {
+    let includes = [
+        "../packs/Keil.STM32F1xx_DFP/Device/Include",
+        "../packs/STM32F4xx_CMSIS/CMSIS/Core/Include",
+    ];
+    let mut include_paths = Vec::new();
+    for rel in includes {
+        let include = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel);
+        if !include.is_dir() {
+            eprintln!(
+                "skipping dma test: pack include dir {} not found",
+                include.display()
+            );
+            return;
+        }
+        include_paths.push(
+            include
+                .to_str()
+                .expect("pack include path is not UTF-8")
+                .to_owned(),
+        );
+    }
+    let include_refs: Vec<&str> = include_paths.iter().map(String::as_str).collect();
+    let (code, symbols) =
+        match build_firmware_with_includes(STM32_F103_DMA_FIRMWARE, &include_refs) {
+            Ok(image) => image,
+            Err(why) => {
+                eprintln!("skipping dma test: {why}");
+                return;
+            }
+        };
+    let entry = *symbols.get("reset").expect("no reset symbol");
+    let irq = *symbols
+        .get("DMA1_Channel1_IRQHandler")
+        .expect("no DMA1_Channel1_IRQHandler symbol");
+    assert!(!code.is_empty(), "compiled .text must not be empty");
+
+    let mut m = Machine::new(board::stm32f103());
+    m.load_image(&load_flat(CODE_BASE, &code));
+    {
+        let mem = m.core.mem();
+        mem.write_word(FLASH, INIT_SP).unwrap();
+        mem.write_word(FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+        // Vector 27 = DMA1 IRQ 11 at FLASH + 27 * 4.
+        mem.write_word(FLASH + 27 * 4, (CODE_BASE + irq) | 1)
+            .unwrap();
+    }
+    m.reset().expect("reset from vector table");
+    let err = m.run(100_000);
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
+    assert_eq!(
+        m.core.mem().read_word(0x2000_0300).unwrap(),
+        1,
+        "the transfer-complete IRQ fired"
+    );
+    assert_eq!(
+        m.core.mem().read_word(0x2000_0304).unwrap(),
+        1,
+        "the memory-to-memory copy was verified"
+    );
+}

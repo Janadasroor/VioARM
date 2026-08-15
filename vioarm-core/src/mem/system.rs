@@ -9,6 +9,7 @@
 
 use crate::device::nvic::Nvic;
 use crate::device::scb::Scb;
+use crate::device::stm32::dma::DmaUnit;
 use crate::device::stm32::flash::{FlashErase, FlashGate};
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
@@ -36,6 +37,10 @@ pub struct SystemMemory<M: Bus> {
     /// the controller is unlocked and programming (`CR.PG`); otherwise they
     /// are consumed and `WRPRTERR` latches.
     flash: Option<Arc<Mutex<FlashGate>>>,
+    /// The shared DMA transfer queue, drained after every device tick. DMA
+    /// controllers push `(src, dst, len)` units here because they have no view
+    /// of the bus; this bus performs the actual copy.
+    dma_mailbox: Option<Arc<Mutex<Vec<DmaUnit>>>>,
 }
 
 impl<M: Bus + core::fmt::Debug> core::fmt::Debug for SystemMemory<M> {
@@ -45,6 +50,7 @@ impl<M: Bus + core::fmt::Debug> core::fmt::Debug for SystemMemory<M> {
             .field("nvic", &self.nvic)
             .field("scb", &self.scb)
             .field("flash", &self.flash)
+            .field("dma_mailbox", &self.dma_mailbox)
             .field(
                 "devices",
                 &self.devices.iter().map(|d| d.name()).collect::<Vec<_>>(),
@@ -63,6 +69,7 @@ impl<M: Bus> SystemMemory<M> {
             nvic: Nvic::new(),
             scb: Scb::new(),
             flash: None,
+            dma_mailbox: None,
         }
     }
 
@@ -88,6 +95,14 @@ impl<M: Bus> SystemMemory<M> {
     /// default) leaves every backing write ungated.
     pub fn set_flash_gate(&mut self, gate: Arc<Mutex<FlashGate>>) {
         self.flash = Some(gate);
+    }
+
+    /// Install the shared DMA transfer queue. Every attached DMA controller
+    /// must push through the same `Arc`; this bus performs the copies it
+    /// accumulates after each device tick. `None` (the default) leaves DMA
+    /// units undelivered (a controller with no bus).
+    pub fn set_dma_mailbox(&mut self, mailbox: Arc<Mutex<Vec<DmaUnit>>>) {
+        self.dma_mailbox = Some(mailbox);
     }
 
     /// The attached devices, in attach order.
@@ -138,7 +153,27 @@ impl<M: Bus> SystemMemory<M> {
                 device.tick(delta);
             }
         }
+        // DMA units queued by the controllers above land on this bus now.
+        self.drain_dma_units();
         self.latch_device_asserts();
+    }
+
+    /// Perform the copies queued by the DMA controllers. Reads and writes go
+    /// through the full bus path, so a unit can touch peripheral windows and
+    /// the flash gate; a unit whose addresses are reserved is dropped.
+    fn drain_dma_units(&mut self) {
+        let Some(mailbox) = &self.dma_mailbox else {
+            return;
+        };
+        let units = core::mem::take(&mut *mailbox.lock().unwrap());
+        for (src, dst, len) in units {
+            for i in 0..len {
+                let Some(byte) = self.read(src.wrapping_add(u32::from(i))).ok() else {
+                    continue;
+                };
+                let _ = self.write(dst.wrapping_add(u32::from(i)), byte);
+            }
+        }
     }
 
     /// Split a priority byte into its group and subpriority parts under the
@@ -1002,5 +1037,41 @@ mod tests {
         let (mut sys, _gate) = gated_system();
         sys.write_word(RAM, 0xCAFE_F00D).unwrap();
         assert_eq!(sys.read_word(RAM).unwrap(), 0xCAFE_F00D);
+    }
+
+    #[test]
+    fn dma_mailbox_units_land_after_device_ticks() {
+        use crate::device::stm32::dma::DmaF1;
+        use std::sync::{Arc, Mutex};
+
+        const DMA: u32 = 0x4002_0000;
+
+        // Source bytes in RAM at `0x2000_0100`; DMA1 channel 1 copies them to
+        // `0x2000_0200` through the mailbox the controller shares with this bus.
+        let mut backing = ram();
+        for i in 0u8..8 {
+            backing.write(RAM + u32::from(i) + 0x100, i).unwrap();
+        }
+        let mailbox = Arc::new(Mutex::new(Vec::new()));
+        let mut sys = SystemMemory::new(backing);
+        sys.set_dma_mailbox(mailbox.clone());
+        sys.attach(Box::new(DmaF1::dma1(mailbox)));
+
+        sys.write_word(DMA + 0x10, RAM + 0x100).unwrap(); // CPAR1
+        sys.write_word(DMA + 0x14, RAM + 0x200).unwrap(); // CMAR1
+        sys.write_word(DMA + 0x0C, 8).unwrap(); // CNDTR1
+        sys.write_word(DMA + 0x08, 0x4000 | 0x80 | 0x40 | 0x1)
+            .unwrap(); // CCR1: MEM2MEM|MINC|PINC|EN
+        sys.tick_devices(1);
+        assert_eq!(
+            sys.read_word(RAM + 0x200).unwrap(),
+            0x0302_0100,
+            "the first four bytes landed"
+        );
+        assert_eq!(
+            sys.read_word(RAM + 0x204).unwrap(),
+            0x0706_0504,
+            "the next four bytes landed"
+        );
     }
 }

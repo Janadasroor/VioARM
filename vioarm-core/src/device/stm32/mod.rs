@@ -11,6 +11,7 @@
 //! touching a peripheral) behaves identically to silicon.
 
 pub mod afio;
+pub mod dma;
 pub mod exti;
 pub mod flash;
 pub mod gpio;

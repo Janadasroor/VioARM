@@ -1,0 +1,436 @@
+//! The STM32F1 DMA controller (`DMA1`/`DMA2`), driven by the SVD-generated
+//! register tables.
+//!
+//! The register layout is pure SVD; the transfer engine is not, so
+//! [`DmaBehavior`] runs it. A channel enabled with `MEM2MEM` set copies
+//! `CNDTR` units from `CPAR` to `CMAR` (the reference manual's
+//! memory-to-memory direction, `DIR = 0`), honoring `PINC`/`MINC` stepping and
+//! the `PSIZE`/`MSIZE` unit widths. The controller has no view of the memory
+//! bus, so each unit is queued into a mailbox shared with [`SystemMemory`],
+//! which drains it after every device tick. Completion is optimistic: the
+//! whole transfer lands in the cycle the engine sees the channel enabled;
+//! `CNDTR` reads zero, `EN` self-clears, and `TCIF` latches — raising the
+//! controller's combined IRQ line (the first SVD line: DMA1 = IRQ 11, DMA2 =
+//! IRQ 56) when `TCIE` is set. Peripheral-request channels (`MEM2MEM` clear)
+//! are inert: the request lines are not modeled.
+
+use crate::device::svd::stm32f103;
+use crate::device::svd::{Behavior, Device, RegisterFile, Registers};
+use crate::device::{InterruptSource, Peripheral};
+use crate::error::BusError;
+use crate::mem::bus::Region;
+use std::sync::{Arc, Mutex};
+
+/// One queued transfer unit: read `len` bytes at `src`, write them at `dst`.
+pub type DmaUnit = (u32, u32, u8);
+
+const ISR: u16 = 0x00;
+const IFCR: u16 = 0x04;
+const CCR_CH: u16 = 0x08;
+const CNDTR_CH: u16 = 0x0C;
+const CPAR_CH: u16 = 0x10;
+const CMAR_CH: u16 = 0x14;
+const CH_STRIDE: u16 = 0x14;
+
+const EN: u32 = 1 << 0;
+const TCIE: u32 = 1 << 1;
+const PINC: u32 = 1 << 6;
+const MINC: u32 = 1 << 7;
+const PSIZE_SHIFT: u32 = 8;
+const MSIZE_SHIFT: u32 = 10;
+const MEM2MEM: u32 = 1 << 14;
+const NDT_MASK: u32 = 0xFFFF;
+
+/// ISR `GIF` bit for channel `ch` (0-based).
+const fn isr_gif(ch: u32) -> u32 {
+    1 << (4 * ch)
+}
+
+/// ISR `TCIF` bit for channel `ch` (0-based).
+const fn isr_tcif(ch: u32) -> u32 {
+    1 << (4 * ch + 1)
+}
+
+/// The transfer engine the SVD cannot express.
+#[derive(Debug)]
+struct DmaBehavior {
+    /// The shared queue of pending transfer units, drained by `SystemMemory`.
+    mailbox: Arc<Mutex<Vec<DmaUnit>>>,
+    /// The number of DMA channels in the controller's register file.
+    channels: u8,
+}
+
+impl DmaBehavior {
+    const fn new(mailbox: Arc<Mutex<Vec<DmaUnit>>>, channels: u8) -> Self {
+        Self { mailbox, channels }
+    }
+}
+
+impl Behavior for DmaBehavior {
+    fn on_write(
+        &mut self,
+        view: &mut Registers<&mut [u32]>,
+        offset: u16,
+        val: u8,
+        shift: u32,
+    ) -> u32 {
+        match offset {
+            // `IFCR` is a write-1-to-clear into `ISR`: `CGIF{n}` drops all
+            // four flags of channel `n`, and `CTCIF{n}`/`CHTIF{n}`/`CTEIF{n}`
+            // drop the transfer-complete / half-transfer / error flag.
+            IFCR => {
+                let word = view.merged(IFCR, val, shift);
+                let mut isr = view.get(ISR);
+                for ch in 0..self.channels {
+                    let base = 4 * u32::from(ch);
+                    if word & (1u32 << base) != 0 {
+                        isr &= !(0xF << base);
+                    }
+                    if word & (1u32 << (base + 1)) != 0 {
+                        isr &= !(1u32 << (base + 1));
+                    }
+                    if word & (1u32 << (base + 2)) != 0 {
+                        isr &= !(1u32 << (base + 2));
+                    }
+                    if word & (1u32 << (base + 3)) != 0 {
+                        isr &= !(1u32 << (base + 3));
+                    }
+                }
+                view.set(ISR, isr);
+                word
+            }
+            // `CNDTR` is writable only while the channel is disabled.
+            offset
+                if offset >= CNDTR_CH && (offset - CNDTR_CH) % CH_STRIDE == 0 =>
+            {
+                let ch = (offset - CNDTR_CH) / CH_STRIDE;
+                if view.get(CCR_CH + ch * CH_STRIDE) & EN != 0 {
+                    view.get(offset)
+                } else {
+                    view.merged(offset, val, shift)
+                }
+            }
+            _ => view.merged(offset, val, shift),
+        }
+    }
+
+    fn tick(&mut self, view: &mut Registers<&mut [u32]>, _delta: u64) {
+        for ch in 0..self.channels {
+            let base = CH_STRIDE * u16::from(ch);
+            let ccr = view.get(CCR_CH + base);
+            if ccr & EN == 0 || ccr & MEM2MEM == 0 {
+                continue;
+            }
+            let ndt = view.get(CNDTR_CH + base) & NDT_MASK;
+            if ndt == 0 {
+                continue;
+            }
+            let unit: u8 = match (ccr >> PSIZE_SHIFT) & 0x3 {
+                0 => 1,
+                1 => 2,
+                _ => 4,
+            };
+            let step: u8 = match (ccr >> MSIZE_SHIFT) & 0x3 {
+                0 => 1,
+                1 => 2,
+                _ => 4,
+            };
+            let pinc = ccr & PINC != 0;
+            let minc = ccr & MINC != 0;
+            let mut src = view.get(CPAR_CH + base);
+            let mut dst = view.get(CMAR_CH + base);
+            let mut units = Vec::with_capacity(ndt as usize);
+            for _ in 0..ndt {
+                units.push((src, dst, unit));
+                if pinc {
+                    src = src.wrapping_add(u32::from(unit));
+                }
+                if minc {
+                    dst = dst.wrapping_add(u32::from(step));
+                }
+            }
+            self.mailbox.lock().unwrap().extend(units);
+            // Optimistic completion: the whole transfer lands this cycle.
+            view.set(CNDTR_CH + base, 0);
+            view.set(CCR_CH + base, ccr & !EN);
+            let chn = u32::from(ch);
+            view.set(ISR, view.get(ISR) | isr_gif(chn) | isr_tcif(chn));
+        }
+    }
+
+    fn pending(&self, view: &Registers<&[u32]>) -> u32 {
+        for ch in 0..self.channels {
+            let base = CH_STRIDE * u16::from(ch);
+            if view.get(CCR_CH + base) & TCIE != 0 && view.get(ISR) & isr_tcif(u32::from(ch)) != 0 {
+                return 1;
+            }
+        }
+        0
+    }
+}
+
+/// An STM32F1 DMA controller: `DMA1` (7 channels) or `DMA2` (5 channels).
+#[derive(Debug)]
+pub struct DmaF1 {
+    inner: RegisterFile<DmaBehavior>,
+}
+
+impl DmaF1 {
+    /// A new `DMA1` controller sharing `mailbox`.
+    ///
+    /// # Panics
+    /// Panics if the generated device tables do not contain the `DMA1`
+    /// peripheral (a build-time invariant enforced by conformance tests).
+    #[must_use]
+    pub fn dma1(mailbox: Arc<Mutex<Vec<DmaUnit>>>) -> Self {
+        Self::dma_for::<stm32f103::Stm32f103>("DMA1", mailbox)
+    }
+
+    /// A DMA controller from another chip's device tables, found by SVD name
+    /// (`"DMA1"` or `"DMA2"`).
+    ///
+    /// # Panics
+    /// Panics if `D`'s generated tables do not contain `name`.
+    #[must_use]
+    pub fn dma_for<D: Device>(name: &str, mailbox: Arc<Mutex<Vec<DmaUnit>>>) -> Self {
+        let def = D::peripheral(name).expect("generated tables contain the DMA controller");
+        let channels = u8::try_from(
+            def.registers
+                .iter()
+                .filter(|r| r.name.starts_with("CCR"))
+                .count(),
+        )
+        .expect("channel count fits u8");
+        Self {
+            inner: RegisterFile::new(def, DmaBehavior::new(mailbox, channels)),
+        }
+    }
+}
+
+impl Peripheral for DmaF1 {
+    fn ranges(&self) -> &[Region] {
+        self.inner.ranges()
+    }
+
+    fn read(&mut self, addr: u32) -> Result<u8, BusError> {
+        self.inner.read(addr)
+    }
+
+    fn write(&mut self, addr: u32, val: u8) -> Result<(), BusError> {
+        self.inner.write(addr, val)
+    }
+
+    fn reset(&mut self) {
+        self.inner.reset();
+    }
+
+    fn tick(&mut self, delta: u64) {
+        self.inner.tick(delta);
+    }
+
+    fn name(&self) -> &'static str {
+        self.inner.name()
+    }
+}
+
+impl InterruptSource for DmaF1 {
+    fn exception_number(&self) -> Option<u8> {
+        self.inner.exception_number()
+    }
+
+    fn pending(&self) -> u32 {
+        self.inner.pending()
+    }
+
+    fn acknowledge(&mut self, lines: u32) {
+        self.inner.acknowledge(lines);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DmaF1, DmaUnit, CNDTR_CH, CPAR_CH, CMAR_CH, CCR_CH, EN, ISR, MEM2MEM, MINC, PINC};
+    use crate::device::{InterruptSource, Peripheral};
+    use crate::error::BusError;
+    use std::sync::{Arc, Mutex};
+
+    const BASE: u32 = 0x4002_0000;
+    const CCR1: u32 = CCR_CH as u32;
+    const CNDTR1: u32 = CNDTR_CH as u32;
+    const CPAR1: u32 = CPAR_CH as u32;
+    const CMAR1: u32 = CMAR_CH as u32;
+    const ISR1: u32 = ISR as u32;
+
+    fn mailbox() -> Arc<Mutex<Vec<DmaUnit>>> {
+        Arc::new(Mutex::new(Vec::new()))
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
+    fn write_word(d: &mut DmaF1, addr: u32, val: u32) {
+        for (i, b) in val.to_le_bytes().iter().enumerate() {
+            d.write(addr.wrapping_add(i as u32), *b).unwrap();
+        }
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
+    fn read_word(d: &mut DmaF1, addr: u32) -> u32 {
+        let mut bytes = [0u8; 4];
+        for (i, b) in bytes.iter_mut().enumerate() {
+            *b = d.read(addr.wrapping_add(i as u32)).unwrap();
+        }
+        u32::from_le_bytes(bytes)
+    }
+
+    #[test]
+    fn memory_to_memory_copies_every_unit() {
+        let m = mailbox();
+        let mut d = DmaF1::dma1(m.clone());
+        write_word(&mut d, BASE + CPAR1, 0x1000);
+        write_word(&mut d, BASE + CMAR1, 0x2000);
+        write_word(&mut d, BASE + CNDTR1, 3);
+        write_word(&mut d, BASE + CCR1, EN | MEM2MEM | MINC | PINC);
+        d.tick(1);
+        assert_eq!(
+            *m.lock().unwrap(),
+            vec![
+                (0x1000, 0x2000, 1),
+                (0x1001, 0x2001, 1),
+                (0x1002, 0x2002, 1)
+            ]
+        );
+        assert_eq!(read_word(&mut d, BASE + CNDTR1), 0, "CNDTR exhausted");
+        assert_eq!(
+            read_word(&mut d, BASE + CCR1) & EN,
+            0,
+            "EN self-clears on completion"
+        );
+        assert_eq!(read_word(&mut d, BASE + ISR1) & 0x3, 0x3, "GIF1|TCIF1 set");
+    }
+
+    #[test]
+    fn word_units_step_by_msize() {
+        let m = mailbox();
+        let mut d = DmaF1::dma1(m.clone());
+        write_word(&mut d, BASE + CPAR1, 0x1000);
+        write_word(&mut d, BASE + CMAR1, 0x2000);
+        write_word(&mut d, BASE + CNDTR1, 2);
+        write_word(
+            &mut d,
+            BASE + CCR1,
+            EN | MEM2MEM | MINC | PINC | (2 << 8) | (2 << 10),
+        );
+        d.tick(1);
+        assert_eq!(
+            *m.lock().unwrap(),
+            vec![(0x1000, 0x2000, 4), (0x1004, 0x2004, 4)]
+        );
+    }
+
+    #[test]
+    fn pending_requires_tcie() {
+        let m = mailbox();
+        let mut d = DmaF1::dma1(m);
+        write_word(&mut d, BASE + CPAR1, 0x1000);
+        write_word(&mut d, BASE + CMAR1, 0x2000);
+        write_word(&mut d, BASE + CNDTR1, 1);
+        write_word(&mut d, BASE + CCR1, EN | MEM2MEM);
+        d.tick(1);
+        assert_eq!(d.pending(), 0, "no TCIE, no line");
+        write_word(&mut d, BASE + CCR1, 0x2); // TCIE on
+        assert_eq!(d.pending(), 1, "TCIE raises the line");
+    }
+
+    #[test]
+    fn ifcr_clears_the_transfer_flag() {
+        let m = mailbox();
+        let mut d = DmaF1::dma1(m);
+        write_word(&mut d, BASE + CPAR1, 0x1000);
+        write_word(&mut d, BASE + CMAR1, 0x2000);
+        write_word(&mut d, BASE + CNDTR1, 1);
+        write_word(&mut d, BASE + CCR1, EN | MEM2MEM | 0x2);
+        d.tick(1);
+        assert_eq!(read_word(&mut d, BASE + ISR1) & 0x3, 0x3);
+        write_word(&mut d, BASE + 0x04, 0x2); // IFCR CTCIF1
+        assert_eq!(read_word(&mut d, BASE + ISR1) & 0x2, 0x0, "TCIF cleared");
+        assert_eq!(
+            read_word(&mut d, BASE + ISR1) & 0x1,
+            0x1,
+            "GIF waits for CGIF"
+        );
+    }
+
+    #[test]
+    fn cgif_clears_all_channel_flags() {
+        let m = mailbox();
+        let mut d = DmaF1::dma1(m);
+        write_word(&mut d, BASE + CPAR1, 0x1000);
+        write_word(&mut d, BASE + CMAR1, 0x2000);
+        write_word(&mut d, BASE + CNDTR1, 1);
+        write_word(&mut d, BASE + CCR1, EN | MEM2MEM);
+        d.tick(1);
+        assert_eq!(read_word(&mut d, BASE + ISR1) & 0x3, 0x3);
+        write_word(&mut d, BASE + 0x04, 0x1); // IFCR CGIF1
+        assert_eq!(read_word(&mut d, BASE + ISR1) & 0x3, 0x0);
+    }
+
+    #[test]
+    fn cndtr_write_is_ignored_while_enabled() {
+        let m = mailbox();
+        let mut d = DmaF1::dma1(m);
+        write_word(&mut d, BASE + CCR1, EN);
+        write_word(&mut d, BASE + CNDTR1, 5);
+        assert_eq!(read_word(&mut d, BASE + CNDTR1), 0);
+        write_word(&mut d, BASE + CCR1, 0);
+        write_word(&mut d, BASE + CNDTR1, 5);
+        assert_eq!(read_word(&mut d, BASE + CNDTR1), 5);
+    }
+
+    #[test]
+    fn peripheral_request_channels_are_inert() {
+        let m = mailbox();
+        let mut d = DmaF1::dma1(m.clone());
+        write_word(&mut d, BASE + CPAR1, 0x1000);
+        write_word(&mut d, BASE + CMAR1, 0x2000);
+        write_word(&mut d, BASE + CNDTR1, 5);
+        write_word(&mut d, BASE + CCR1, EN);
+        d.tick(1);
+        assert!(m.lock().unwrap().is_empty(), "no MEM2MEM, no units");
+        assert_eq!(read_word(&mut d, BASE + CNDTR1), 5);
+        assert_eq!(read_word(&mut d, BASE + ISR1), 0);
+    }
+
+    #[test]
+    fn disabled_channels_do_not_transfer() {
+        let m = mailbox();
+        let mut d = DmaF1::dma1(m.clone());
+        write_word(&mut d, BASE + CPAR1, 0x1000);
+        write_word(&mut d, BASE + CMAR1, 0x2000);
+        write_word(&mut d, BASE + CNDTR1, 5);
+        write_word(&mut d, BASE + CCR1, MEM2MEM);
+        d.tick(1);
+        assert!(m.lock().unwrap().is_empty());
+        assert_eq!(read_word(&mut d, BASE + CNDTR1), 5);
+    }
+
+    #[test]
+    fn dma2_mounts_five_channels_on_f107() {
+        use crate::device::svd::stm32f107::Stm32f107;
+        const D2: u32 = 0x4002_0400;
+        let m = mailbox();
+        let mut d = DmaF1::dma_for::<Stm32f107>("DMA2", m.clone());
+        write_word(&mut d, D2 + 0x10 + 4 * 0x14, 0x3000); // CPAR5
+        write_word(&mut d, D2 + 0x14 + 4 * 0x14, 0x4000); // CMAR5
+        write_word(&mut d, D2 + 0x0C + 4 * 0x14, 1); // CNDTR5
+        write_word(&mut d, D2 + 0x08 + 4 * 0x14, EN | MEM2MEM); // CCR5
+        d.tick(1);
+        assert_eq!(*m.lock().unwrap(), vec![(0x3000, 0x4000, 1)]);
+    }
+
+    #[test]
+    fn addresses_outside_the_window_are_reserved() {
+        let m = mailbox();
+        let mut d = DmaF1::dma1(m);
+        assert!(matches!(d.read(BASE + 0x90), Err(BusError::Reserved)));
+        assert!(matches!(d.write(BASE - 1, 0), Err(BusError::Reserved)));
+    }
+}

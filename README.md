@@ -22,8 +22,9 @@ unit are validated instruction-by-instruction against `qemu-system-arm`
   BASEPRI, and IT blocks.
 - Board models for a generic virtual board and the STM32F103, STM32F107, and
   STM32F407, with an SCB subset, NVIC, SysTick, UART-Tx, GPIO, RCC, USART,
-  timers, EXTI, and the STM32F1 flash controller (KEYR unlock, page/mass
-  erase, and gated programming at `0x0800_0000`).
+  timers, EXTI, the STM32F1 flash controller (KEYR unlock, page/mass erase,
+  and gated programming at `0x0800_0000`), and the STM32F1 DMA controllers
+  (memory-to-memory transfers through a bus-shared mailbox).
 - Raw, ELF32, and Intel HEX image loaders with strict validation.
 - A GDB Remote Serial Protocol server for `arm-none-eabi-gdb`.
 
@@ -102,7 +103,7 @@ cargo test -p vioarm-qemu --test conformance
 - No cycle-accurate timing: one cycle per retired instruction, and WFI/WFE
   are no-ops. Time-sensitive firmware does not reproduce silicon behavior.
 - CPACR is stored but does not gate FP access; the FPU is always enabled.
-- No DMA or MPU.
+- No MPU.
 - `AIRCR`/`SCR`/`CCR` are modeled (PRIGROUP, SYSRESETREQ, SLEEPONEXIT,
   STKALIGN, DIV_0_TRP), as are `VTOR`, `SHCSR`, and `CFSR`/`HFSR`. To match
   the QEMU oracle, `HFSR.FORCED` is reported at bit 30 and the `SHCSR`
@@ -110,7 +111,9 @@ cargo test -p vioarm-qemu --test conformance
 - STM32F107 Ethernet/USB/CAN and STM32F407 CCM RAM are not modeled. The
   STM32F1 main flash at `0x0800_0000` is a separate gated store (the boot-time
   alias at `0x0000_0000` is ungated), and the F407 flash controller is not
-  modeled.
+  modeled. The F1 DMA controllers model memory-to-memory transfers only (each
+  controller raises a single combined IRQ line); peripheral-request transfers
+  and the stream-based F407 DMA are not modeled.
 - Double-precision arithmetic is not implemented (D registers alias S pairs
   for moves and loads only).
 
