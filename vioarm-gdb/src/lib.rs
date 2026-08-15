@@ -563,7 +563,15 @@ impl<'a, M: PeripheralBus> Session<'a, M> {
                     }
                 }
                 Err(cause) => {
-                    self.last_signal = gdb_signal(cause);
+                    // A software breakpoint is the bkpt instruction swapped
+                    // into the target. With core debug disabled that bkpt
+                    // escalates to a fault (matching QEMU), but a debugger
+                    // must see a breakpoint stop, not the underlying fault.
+                    if self.bps.contains_key(&self.machine.core.regs.pc) {
+                        self.last_signal = 5;
+                    } else {
+                        self.last_signal = gdb_signal(cause);
+                    }
                     return Ok(Stop::Signal(self.last_signal));
                 }
             }
