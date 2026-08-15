@@ -9,9 +9,10 @@
 
 use crate::device::nvic::Nvic;
 use crate::device::scb::Scb;
+use crate::device::stm32::flash::{FlashErase, FlashGate};
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
-use crate::mem::bus::{Bus, PeripheralBus};
+use crate::mem::bus::{Bus, PeripheralBus, Region};
 use crate::cpu::FpuCtx;
 use std::sync::{Arc, Mutex};
 
@@ -30,6 +31,11 @@ pub struct SystemMemory<M: Bus> {
     /// The ARMv7-M system control block: interrupt control/state, priority
     /// registers for the fixed exceptions, and the AIRCR reset bits.
     scb: Scb,
+    /// The STM32 flash controller's write gate, shared with the `FLASH`
+    /// device. When present, writes to `gate.region` are only honored while
+    /// the controller is unlocked and programming (`CR.PG`); otherwise they
+    /// are consumed and `WRPRTERR` latches.
+    flash: Option<Arc<Mutex<FlashGate>>>,
 }
 
 impl<M: Bus + core::fmt::Debug> core::fmt::Debug for SystemMemory<M> {
@@ -38,6 +44,7 @@ impl<M: Bus + core::fmt::Debug> core::fmt::Debug for SystemMemory<M> {
             .field("backing", &self.backing)
             .field("nvic", &self.nvic)
             .field("scb", &self.scb)
+            .field("flash", &self.flash)
             .field(
                 "devices",
                 &self.devices.iter().map(|d| d.name()).collect::<Vec<_>>(),
@@ -55,6 +62,7 @@ impl<M: Bus> SystemMemory<M> {
             devices: Vec::new(),
             nvic: Nvic::new(),
             scb: Scb::new(),
+            flash: None,
         }
     }
 
@@ -74,6 +82,14 @@ impl<M: Bus> SystemMemory<M> {
         self.devices.push(device);
     }
 
+    /// Install the shared flash-controller gate. Writes to `gate.region` are
+    /// thereafter gated by the controller's unlock/program state; the `FLASH`
+    /// device must be attached with a clone of the same `Arc`. `None` (the
+    /// default) leaves every backing write ungated.
+    pub fn set_flash_gate(&mut self, gate: Arc<Mutex<FlashGate>>) {
+        self.flash = Some(gate);
+    }
+
     /// The attached devices, in attach order.
     pub fn devices(&self) -> &[Box<dyn InterruptSource>] {
         &self.devices
@@ -89,11 +105,18 @@ impl<M: Bus> SystemMemory<M> {
     /// state. The processor's reset (AIRCR.SYSRESETREQ) folds into this too —
     /// the SCB clears its own latches, which is the architectural reset
     /// behaviour for pending SYSTICK and PENDSV.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the flash gate mutex is poisoned.
     pub fn reset_devices(&mut self) {
         self.nvic.reset();
         self.scb.reset();
         for device in &mut self.devices {
             device.reset();
+        }
+        if let Some(gate) = &self.flash {
+            gate.lock().unwrap().reset();
         }
     }
 
@@ -270,6 +293,83 @@ impl<M: Bus> SystemMemory<M> {
             }
         }
     }
+
+    /// A backing write, routed through the flash gate when one guards `addr`.
+    /// Writes to the gated main-flash region land only while the controller is
+    /// unlocked and programming; rejected writes are consumed (no fault) and
+    /// latch `WRPRTERR`.
+    fn write_backing(&mut self, addr: u32, val: u8) -> Result<(), BusError> {
+        let gate = match &self.flash {
+            Some(g) if g.lock().unwrap().region.contains(addr) => g.clone(),
+            _ => return self.backing.write(addr, val),
+        };
+        self.flash_region_write(&gate, addr, val)
+    }
+
+    /// A backing read, executing any pending erase first so firmware reading
+    /// a just-erased page sees zeros.
+    fn read_backing(&mut self, addr: u32) -> Result<u8, BusError> {
+        let gate = match &self.flash {
+            Some(g) if g.lock().unwrap().region.contains(addr) => g.clone(),
+            _ => return self.backing.read(addr),
+        };
+        self.flash_region_read(&gate, addr)
+    }
+
+    /// Program (or reject) a write into the gated flash region.
+    fn flash_region_write(
+        &mut self,
+        gate: &Arc<Mutex<FlashGate>>,
+        addr: u32,
+        val: u8,
+    ) -> Result<(), BusError> {
+        let mut guard = gate.lock().unwrap();
+        // A pending erase (`CR.STRT`) lands before the access that triggered it.
+        if let Some(erase) = guard.erase.take() {
+            let (region, page) = (guard.region, guard.page_size);
+            drop(guard);
+            self.perform_erase(erase, region, page);
+            guard = gate.lock().unwrap();
+        }
+        if guard.unlocked && guard.program {
+            drop(guard);
+            let result = self.backing.write(addr, val);
+            gate.lock().unwrap().eop = true;
+            result
+        } else {
+            guard.wrprterr = true;
+            drop(guard);
+            Ok(())
+        }
+    }
+
+    /// Read from the gated flash region, executing a pending erase first.
+    fn flash_region_read(&mut self, gate: &Arc<Mutex<FlashGate>>, addr: u32) -> Result<u8, BusError> {
+        let mut guard = gate.lock().unwrap();
+        if let Some(erase) = guard.erase.take() {
+            let (region, page) = (guard.region, guard.page_size);
+            drop(guard);
+            self.perform_erase(erase, region, page);
+        }
+        self.backing.read(addr)
+    }
+
+    /// Zero the backing flash bank for a page or mass erase.
+    fn perform_erase(&mut self, erase: FlashErase, region: Region, page_size: u32) {
+        match erase {
+            FlashErase::Mass => {
+                for off in 0..region.len {
+                    let _ = self.backing.write(region.base + off, 0);
+                }
+            }
+            FlashErase::Page(addr) => {
+                let base = (addr / page_size) * page_size;
+                for off in 0..page_size {
+                    let _ = self.backing.write(base + off, 0);
+                }
+            }
+        }
+    }
 }
 
 impl<M: Bus> Bus for SystemMemory<M> {
@@ -285,7 +385,7 @@ impl<M: Bus> Bus for SystemMemory<M> {
         } else if self.nvic.ranges().iter().any(|r| r.contains(addr)) {
             self.nvic.read(addr)
         } else {
-            self.backing.read(addr)
+            self.read_backing(addr)
         }
     }
 
@@ -301,7 +401,7 @@ impl<M: Bus> Bus for SystemMemory<M> {
         } else if self.nvic.ranges().iter().any(|r| r.contains(addr)) {
             self.nvic.write(addr, val)
         } else {
-            self.backing.write(addr, val)
+            self.write_backing(addr, val)
         }
     }
 }
@@ -819,5 +919,88 @@ mod tests {
         // Without the VECTKEY the request never latches.
         sys.write_word(0xE000_ED0C, 0x0000_0004).unwrap();
         assert!(!sys.reset_requested());
+    }
+
+    const MAIN_FLASH: u32 = 0x0800_0000;
+    const MAIN_FLASH_LEN: u32 = 0x1000;
+
+    /// A `SystemMemory` over RAM plus a gated main-flash bank, sharing the
+    /// gate with the (unattached) controller state the tests drive directly.
+    fn gated_system() -> (
+        SystemMemory<FlatMemory>,
+        std::sync::Arc<std::sync::Mutex<crate::device::stm32::flash::FlashGate>>,
+    ) {
+        let backing = FlatMemory::with_layout(&[RAM, MAIN_FLASH], &[RAM_LEN, MAIN_FLASH_LEN]);
+        let gate = std::sync::Arc::new(std::sync::Mutex::new(
+            crate::device::stm32::flash::FlashGate::new(Region::new(MAIN_FLASH, MAIN_FLASH_LEN), 1024),
+        ));
+        let mut sys = SystemMemory::new(backing);
+        sys.set_flash_gate(gate.clone());
+        (sys, gate)
+    }
+
+    #[test]
+    fn flash_writes_rejected_while_locked() {
+        let (mut sys, gate) = gated_system();
+        sys.write_word(MAIN_FLASH, 0xDEAD_BEEF).unwrap();
+        assert_eq!(
+            sys.read_word(MAIN_FLASH).unwrap(),
+            0,
+            "locked flash writes are consumed, not stored"
+        );
+        assert!(gate.lock().unwrap().wrprterr, "WRPRTERR latches");
+    }
+
+    #[test]
+    fn flash_writes_land_when_unlocked_and_programming() {
+        let (mut sys, gate) = gated_system();
+        {
+            let mut g = gate.lock().unwrap();
+            g.unlocked = true;
+            g.program = true;
+        }
+        sys.write_word(MAIN_FLASH, 0xDEAD_BEEF).unwrap();
+        assert_eq!(sys.read_word(MAIN_FLASH).unwrap(), 0xDEAD_BEEF);
+        assert!(gate.lock().unwrap().eop, "EOP latches after a program");
+    }
+
+    #[test]
+    fn page_erase_zeroes_only_the_target_page() {
+        use crate::device::stm32::flash::FlashErase;
+        let (mut sys, gate) = gated_system();
+        {
+            let mut g = gate.lock().unwrap();
+            g.unlocked = true;
+            g.program = true;
+        }
+        sys.write_word(MAIN_FLASH, 0xAAAA_AAAA).unwrap();
+        sys.write_word(MAIN_FLASH + 0x400, 0xBBBB_BBBB).unwrap();
+        gate.lock().unwrap().erase = Some(FlashErase::Page(MAIN_FLASH));
+        // The next access to the region runs the pending erase first.
+        assert_eq!(sys.read_word(MAIN_FLASH).unwrap(), 0);
+        assert_eq!(sys.read_word(MAIN_FLASH + 0x400).unwrap(), 0xBBBB_BBBB);
+    }
+
+    #[test]
+    fn mass_erase_zeroes_the_whole_region() {
+        use crate::device::stm32::flash::FlashErase;
+        let (mut sys, gate) = gated_system();
+        {
+            let mut g = gate.lock().unwrap();
+            g.unlocked = true;
+            g.program = true;
+        }
+        sys.write_word(MAIN_FLASH, 0x1111_1111).unwrap();
+        sys.write_word(MAIN_FLASH + MAIN_FLASH_LEN - 4, 0x2222_2222).unwrap();
+        gate.lock().unwrap().erase = Some(FlashErase::Mass);
+        assert_eq!(sys.read_word(MAIN_FLASH).unwrap(), 0);
+        assert_eq!(sys.read_word(MAIN_FLASH + MAIN_FLASH_LEN - 4).unwrap(), 0);
+    }
+
+    #[test]
+    fn flash_gate_leaves_ram_and_other_banks_alone() {
+        let (mut sys, _gate) = gated_system();
+        sys.write_word(RAM, 0xCAFE_F00D).unwrap();
+        assert_eq!(sys.read_word(RAM).unwrap(), 0xCAFE_F00D);
     }
 }

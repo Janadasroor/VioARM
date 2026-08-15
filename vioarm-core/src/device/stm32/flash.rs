@@ -1,0 +1,519 @@
+//! The STM32F1 flash controller (`FLASH`, `0x4002_2000`), driven by the
+//! SVD-generated register tables.
+//!
+//! The controller enforces the silicon write protocol on the main flash
+//! region at `0x0800_0000`: the CPU can only program flash after unlocking the
+//! controller with the KEYR key sequence and setting `CR.PG`, and page/mass
+//! erases only run once `CR.STRT` is set. The actual write gate lives on the
+//! memory side — a `SystemMemory` holds the shared [`FlashGate`] and routes
+//! main-flash writes through it, while this device owns the register window.
+//! Both halves see the same state through an `Arc<Mutex<FlashGate>>`, the same
+//! sharing pattern the SCB and the core use for the FP context.
+//!
+//! Status flags (`EOP`, `WRPRTERR`) are synthesized into `SR` from the gate on
+//! read and cleared by the one-shot write-1-to-clear convention, so firmware
+//! polling `SR` observes a program or erase that the memory gate completed.
+
+use crate::device::svd::stm32f103;
+use crate::device::svd::{Behavior, Device, RegisterFile, Registers};
+use crate::device::{InterruptSource, Peripheral};
+use crate::error::BusError;
+use crate::mem::bus::Region;
+use std::sync::{Arc, Mutex};
+
+/// The first key of the KEYR unlock sequence.
+pub const KEY1: u32 = 0x4567_0123;
+/// The second key of the KEYR unlock sequence.
+pub const KEY2: u32 = 0xCDEF_89AB;
+
+/// `SR.EOP`: an operation (program or erase) finished.
+const SR_EOP: u32 = 1 << 5;
+/// `SR.WRPRTERR`: a write to a write-protected flash word was rejected.
+const SR_WRPRTERR: u32 = 1 << 4;
+
+/// `CR.PG`: programming mode is enabled (flash words accept program writes).
+const CR_PG: u32 = 1 << 0;
+/// `CR.PER`: page-erase mode.
+const CR_PER: u32 = 1 << 1;
+/// `CR.MER`: mass-erase mode.
+const CR_MER: u32 = 1 << 2;
+/// `CR.STRT`: start the selected erase.
+const CR_STRT: u32 = 1 << 6;
+/// `CR.LOCK`: the controller is locked against writes.
+const CR_LOCK: u32 = 1 << 7;
+/// `CR.ERRIE`: interrupt enable for error flags.
+const CR_ERRIE: u32 = 1 << 10;
+/// `CR.EOPIE`: interrupt enable for `EOP`.
+const CR_EOPIE: u32 = 1 << 12;
+
+/// `KEYR` lives at register offset `0x04`.
+const KEYR: u16 = 0x04;
+/// `SR` lives at register offset `0x0c`.
+const SR: u16 = 0x0c;
+/// `CR` lives at register offset `0x10`.
+const CR: u16 = 0x10;
+/// `AR` lives at register offset `0x14`.
+const AR: u16 = 0x14;
+
+/// A pending erase, executed by the memory gate on the next access to the
+/// flash region so the controller's instant-completion model stays visible to
+/// firmware polling `SR.EOP`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FlashErase {
+    /// Erase the `page_size`-byte page containing `addr`.
+    Page(u32),
+    /// Erase the whole main-flash region.
+    Mass,
+}
+
+/// Shared flash-controller state: the program/erase gate and the status bits
+/// synthesized into `SR`.
+///
+/// The `FLASH` device sets it; the `SystemMemory` write gate reads it to
+/// decide whether a main-flash write lands; and `SR` reads reflect it.
+#[derive(Debug)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct FlashGate {
+    /// The programmable main-flash region (writes here are gated).
+    pub region: Region,
+    /// The page size in bytes for page erases.
+    pub page_size: u32,
+    /// Whether the KEYR unlock sequence has been completed.
+    pub unlocked: bool,
+    /// Whether `CR.PG` is set (programming mode enabled).
+    pub program: bool,
+    /// A pending erase not yet executed by the memory gate.
+    pub erase: Option<FlashErase>,
+    /// Latched `EOP`: a program or erase completed.
+    pub eop: bool,
+    /// Latched `WRPRTERR`: a gated write was rejected.
+    pub wrprterr: bool,
+}
+
+impl FlashGate {
+    /// A locked gate guarding `region`, erasing `page_size`-byte pages.
+    #[must_use]
+    pub const fn new(region: Region, page_size: u32) -> Self {
+        Self {
+            region,
+            page_size,
+            unlocked: false,
+            program: false,
+            erase: None,
+            eop: false,
+            wrprterr: false,
+        }
+    }
+
+    /// Restore the post-reset state: locked, no mode bits, no latched status.
+    pub fn reset(&mut self) {
+        *self = Self::new(self.region, self.page_size);
+    }
+}
+
+/// The flash controller's register side effects.
+#[derive(Debug)]
+struct FlashBehavior {
+    gate: Arc<Mutex<FlashGate>>,
+    /// The KEYR word being assembled from byte-lane writes.
+    key_word: u32,
+    /// Which key of the unlock sequence has been seen (`0`, `1`, or `2`).
+    key_step: u8,
+}
+
+impl FlashBehavior {
+    const fn new(gate: Arc<Mutex<FlashGate>>) -> Self {
+        Self {
+            gate,
+            key_word: 0,
+            key_step: 0,
+        }
+    }
+
+    fn unlock_write(&mut self, word: u32) {
+        match (self.key_step, word) {
+            (0, KEY1) => self.key_step = 1,
+            (1, KEY2) => {
+                self.gate.lock().unwrap().unlocked = true;
+                self.key_step = 0;
+            }
+            _ => self.key_step = 0,
+        }
+    }
+}
+
+impl Behavior for FlashBehavior {
+    fn on_write(
+        &mut self,
+        view: &mut Registers<&mut [u32]>,
+        offset: u16,
+        val: u8,
+        shift: u32,
+    ) -> u32 {
+        match offset {
+            KEYR => {
+                // Reassemble the full 32-bit key word from the byte lanes; a
+                // standard word store arrives as four lanes (0, 8, 16, 24).
+                self.key_word = (self.key_word & !(0xFF << shift))
+                    | (u32::from(val) << shift);
+                if shift == 24 {
+                    let word = self.key_word;
+                    self.unlock_write(word);
+                }
+                view.merged(KEYR, val, shift)
+            }
+            SR => {
+                // Write-1-to-clear on the synthesized status flags: the stored
+                // word is the read value, and the one-shot bits drop from the
+                // gate (a plain byte-lane merge would re-arm stale bits).
+                let mut gate = self.gate.lock().unwrap();
+                let mask = u32::from(val) << shift;
+                if mask & SR_EOP != 0 {
+                    gate.eop = false;
+                }
+                if mask & SR_WRPRTERR != 0 {
+                    gate.wrprterr = false;
+                }
+                let stored = view.get(SR) & !mask;
+                drop(gate);
+                stored
+            }
+            CR => {
+                let word = view.merged(CR, val, shift);
+                let mut gate = self.gate.lock().unwrap();
+                if !gate.unlocked {
+                    // Locked controllers ignore `CR` writes entirely.
+                    let stored = view.get(CR);
+                    drop(gate);
+                    return stored;
+                }
+                if word & CR_LOCK != 0 {
+                    gate.unlocked = false;
+                }
+                gate.program = word & CR_PG != 0;
+                if word & CR_STRT != 0 {
+                    if word & CR_MER != 0 {
+                        gate.eop = true;
+                        gate.erase = Some(FlashErase::Mass);
+                    } else if word & CR_PER != 0 {
+                        gate.eop = true;
+                        gate.erase = Some(FlashErase::Page(view.get(AR)));
+                    }
+                    // `STRT` self-clears on silicon.
+                    let stored = word & !CR_STRT;
+                    drop(gate);
+                    stored
+                } else {
+                    drop(gate);
+                    word
+                }
+            }
+            _ => view.merged(offset, val, shift),
+        }
+    }
+
+    fn on_read(&mut self, _view: &mut Registers<&mut [u32]>, offset: u16, value: u32) -> u32 {
+        let gate = self.gate.lock().unwrap();
+        let synth = match offset {
+            SR => {
+                value | if gate.eop { SR_EOP } else { 0 }
+                    | if gate.wrprterr { SR_WRPRTERR } else { 0 }
+            }
+            CR => {
+                // `LOCK` reflects the gate rather than the stored reset word,
+                // and the self-clearing `STRT` never reads back set.
+                (value & !(CR_STRT | CR_LOCK)) | if gate.unlocked { 0 } else { CR_LOCK }
+            }
+            _ => value,
+        };
+        drop(gate);
+        synth
+    }
+
+    fn pending(&self, view: &Registers<&[u32]>) -> u32 {
+        let cr = view.get(CR);
+        let gate = self.gate.lock().unwrap();
+        let error = gate.wrprterr && cr & CR_ERRIE != 0;
+        let done = gate.eop && cr & CR_EOPIE != 0;
+        drop(gate);
+        u32::from(error || done)
+    }
+
+    fn reset(&mut self) {
+        self.gate.lock().unwrap().reset();
+        self.key_word = 0;
+        self.key_step = 0;
+    }
+}
+
+/// The `FLASH` register file, table-driven from the SVD.
+#[derive(Debug)]
+pub struct FlashF1 {
+    inner: RegisterFile<FlashBehavior>,
+}
+
+impl FlashF1 {
+    /// A new `FLASH` controller at the STM32F1 base address sharing `gate`.
+    ///
+    /// # Panics
+    /// Panics if the generated device tables do not contain the `FLASH`
+    /// peripheral (a build-time invariant enforced by conformance tests).
+    #[must_use]
+    pub fn new(gate: Arc<Mutex<FlashGate>>) -> Self {
+        Self::for_device::<stm32f103::Stm32f103>(gate)
+    }
+
+    /// A new `FLASH` controller on another chip's device tables.
+    ///
+    /// # Panics
+    /// Panics if `D`'s generated tables do not contain the `FLASH` peripheral.
+    #[must_use]
+    pub fn for_device<D: Device>(gate: Arc<Mutex<FlashGate>>) -> Self {
+        let def = D::peripheral("FLASH").expect("generated tables contain FLASH");
+        Self {
+            inner: RegisterFile::new(def, FlashBehavior::new(gate)),
+        }
+    }
+}
+
+impl Peripheral for FlashF1 {
+    fn ranges(&self) -> &[Region] {
+        self.inner.ranges()
+    }
+
+    fn read(&mut self, addr: u32) -> Result<u8, BusError> {
+        self.inner.read(addr)
+    }
+
+    fn write(&mut self, addr: u32, val: u8) -> Result<(), BusError> {
+        self.inner.write(addr, val)
+    }
+
+    fn reset(&mut self) {
+        self.inner.reset();
+    }
+
+    fn name(&self) -> &'static str {
+        "flash"
+    }
+}
+
+impl InterruptSource for FlashF1 {
+    fn exception_number(&self) -> Option<u8> {
+        self.inner.exception_number()
+    }
+
+    fn pending(&self) -> u32 {
+        self.inner.pending()
+    }
+
+    fn acknowledge(&mut self, lines: u32) {
+        self.inner.acknowledge(lines);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FlashF1, FlashErase, FlashGate, KEY1, KEY2, Region};
+    use crate::device::stm32::flash::{
+        CR_EOPIE, CR_MER, CR_PER, CR_PG, CR_STRT, SR_EOP, SR_WRPRTERR,
+    };
+    use crate::device::{InterruptSource, Peripheral};
+    use crate::error::BusError;
+    use std::sync::{Arc, Mutex};
+
+    const BASE: u32 = 0x4002_2000;
+    const KEYR: u32 = 0x04;
+    const SR: u32 = 0x0c;
+    const CR: u32 = 0x10;
+    const AR: u32 = 0x14;
+
+    fn gate() -> Arc<Mutex<FlashGate>> {
+        Arc::new(Mutex::new(FlashGate::new(Region::new(0x0800_0000, 0x1_0000), 1024)))
+    }
+
+    fn device(g: Arc<Mutex<FlashGate>>) -> FlashF1 {
+        FlashF1::new(g)
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
+    fn write_word(f: &mut FlashF1, addr: u32, val: u32) {
+        for (i, b) in val.to_le_bytes().iter().enumerate() {
+            f.write(addr.wrapping_add(i as u32), *b).unwrap();
+        }
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
+    fn read_word(f: &mut FlashF1, addr: u32) -> u32 {
+        let mut bytes = [0u8; 4];
+        for (i, b) in bytes.iter_mut().enumerate() {
+            *b = f.read(addr.wrapping_add(i as u32)).unwrap();
+        }
+        u32::from_le_bytes(bytes)
+    }
+
+    fn unlock(f: &mut FlashF1) {
+        write_word(f, BASE + KEYR, KEY1);
+        write_word(f, BASE + KEYR, KEY2);
+    }
+
+    #[test]
+    fn cr_starts_locked_and_rejects_writes() {
+        let g = gate();
+        let mut f = device(g.clone());
+        assert_eq!(read_word(&mut f, BASE + CR), 0x80, "LOCK set at reset");
+        write_word(&mut f, BASE + CR, CR_PG);
+        assert_eq!(
+            read_word(&mut f, BASE + CR),
+            0x80,
+            "locked CR writes are ignored"
+        );
+        assert!(!g.lock().unwrap().unlocked);
+        assert!(!g.lock().unwrap().program);
+    }
+
+    #[test]
+    fn unlock_sequence_clears_lock() {
+        let g = gate();
+        let mut f = device(g.clone());
+        write_word(&mut f, BASE + KEYR, KEY1);
+        assert_eq!(
+            read_word(&mut f, BASE + CR),
+            0x80,
+            "a single key does not unlock"
+        );
+        write_word(&mut f, BASE + KEYR, KEY2);
+        assert!(g.lock().unwrap().unlocked);
+        assert_eq!(
+            read_word(&mut f, BASE + CR),
+            0,
+            "CR.LOCK reads back cleared once unlocked"
+        );
+    }
+
+    #[test]
+    fn wrong_keys_do_not_unlock() {
+        let g = gate();
+        let mut f = device(g.clone());
+        write_word(&mut f, BASE + KEYR, KEY1);
+        write_word(&mut f, BASE + KEYR, 0xDEAD_BEEF);
+        write_word(&mut f, BASE + KEYR, KEY2);
+        assert!(!g.lock().unwrap().unlocked);
+    }
+
+    #[test]
+    fn cr_write_sets_program_mode_after_unlock() {
+        let g = gate();
+        let mut f = device(g.clone());
+        unlock(&mut f);
+        write_word(&mut f, BASE + CR, CR_PG);
+        assert!(g.lock().unwrap().program);
+        assert_eq!(read_word(&mut f, BASE + CR), CR_PG);
+    }
+
+    #[test]
+    fn writing_lock_relocks() {
+        let g = gate();
+        let mut f = device(g.clone());
+        unlock(&mut f);
+        write_word(&mut f, BASE + CR, 0x80);
+        assert!(!g.lock().unwrap().unlocked);
+        assert_eq!(read_word(&mut f, BASE + CR), 0x80);
+        write_word(&mut f, BASE + CR, CR_PG);
+        assert!(!g.lock().unwrap().program, "relocked CR ignores writes");
+    }
+
+    #[test]
+    fn strt_requests_erase_and_self_clears() {
+        let g = gate();
+        let mut f = device(g.clone());
+        unlock(&mut f);
+        write_word(&mut f, BASE + AR, 0x0800_0100);
+        write_word(&mut f, BASE + CR, CR_PER | CR_STRT);
+        assert_eq!(
+            g.lock().unwrap().erase,
+            Some(FlashErase::Page(0x0800_0100)),
+            "page erase targets AR"
+        );
+        assert!(g.lock().unwrap().eop);
+        assert_eq!(
+            read_word(&mut f, BASE + CR) & CR_STRT,
+            0,
+            "STRT never reads back set"
+        );
+    }
+
+    #[test]
+    fn mass_erase_requests_full_region() {
+        let g = gate();
+        let mut f = device(g.clone());
+        unlock(&mut f);
+        write_word(&mut f, BASE + CR, CR_MER | CR_STRT);
+        assert_eq!(g.lock().unwrap().erase, Some(FlashErase::Mass));
+    }
+
+    #[test]
+    fn sr_synthesizes_and_w1c_clears_status() {
+        let g = gate();
+        let mut f = device(g.clone());
+        assert_eq!(read_word(&mut f, BASE + SR), 0, "SR reset clear");
+        unlock(&mut f);
+        write_word(&mut f, BASE + CR, CR_MER | CR_STRT);
+        assert_eq!(
+            read_word(&mut f, BASE + SR) & SR_EOP,
+            SR_EOP,
+            "EOP synthesized after an operation"
+        );
+        // Write-1-to-clear: writing EOP drops it.
+        write_word(&mut f, BASE + SR, SR_EOP);
+        assert_eq!(read_word(&mut f, BASE + SR) & SR_EOP, 0);
+        assert!(!g.lock().unwrap().eop);
+    }
+
+    #[test]
+    fn rejected_writes_latch_wrprterr() {
+        let g = gate();
+        let mut f = device(g.clone());
+        g.lock().unwrap().wrprterr = true;
+        assert_eq!(
+            read_word(&mut f, BASE + SR) & SR_WRPRTERR,
+            SR_WRPRTERR,
+            "WRPRTERR reflected from the gate"
+        );
+        write_word(&mut f, BASE + SR, SR_WRPRTERR);
+        assert_eq!(read_word(&mut f, BASE + SR) & SR_WRPRTERR, 0);
+    }
+
+    #[test]
+    fn eop_interrupt_pends_when_enabled() {
+        let g = gate();
+        let mut f = device(g);
+        assert_eq!(f.pending(), 0);
+        unlock(&mut f);
+        write_word(&mut f, BASE + CR, CR_EOPIE | CR_MER | CR_STRT);
+        assert_eq!(f.pending(), 1, "EOPIE raises the FLASH line");
+        write_word(&mut f, BASE + SR, SR_EOP);
+        assert_eq!(f.pending(), 0, "clearing EOP drops the line");
+    }
+
+    #[test]
+    fn addresses_outside_the_window_are_reserved() {
+        let g = gate();
+        let mut f = device(g);
+        assert!(matches!(f.read(BASE + 0x28), Err(BusError::Reserved)));
+        assert!(matches!(f.write(BASE - 4, 0), Err(BusError::Reserved)));
+    }
+
+    #[test]
+    fn reset_relocks_and_clears_status() {
+        let g = gate();
+        let mut f = device(g.clone());
+        unlock(&mut f);
+        write_word(&mut f, BASE + CR, CR_MER | CR_STRT);
+        f.reset();
+        assert!(!g.lock().unwrap().unlocked);
+        assert!(!g.lock().unwrap().eop);
+        assert_eq!(g.lock().unwrap().erase, None);
+        assert_eq!(read_word(&mut f, BASE + CR), 0x80);
+    }
+}

@@ -595,3 +595,102 @@ fn stm32f407_firmware_uses_real_peripherals() {
     assert!(tim_cnt > 0, "TIM2 never counted: {tim_cnt}");
     assert_eq!(tx, b"ok!\n");
 }
+
+/// Real CMSIS-style firmware against the STM32F103 flash controller: the
+/// `FLASH` register window and the `0x0800_0000` main-flash gate. The first
+/// program write is issued *before* the unlock and must be rejected; then the
+/// KEYR handshake, a page erase, and a halfword program must land. The result
+/// snapshot is `0xBEEF` only if both the gate and the program path worked.
+const STM32_F103_FLASH_FIRMWARE: &str = r#"
+#define STM32F10X_HD
+#include "stm32f10x.h"
+
+#define TARGET_ADDR 0x08000000u
+#define RESULT_ADDR 0x20000000u
+
+#define KEY1 0x45670123u
+#define KEY2 0xCDEF89ABu
+
+void reset(void) {
+    /* 1. Still locked: CR.PG is ignored and the program write must not land. */
+    FLASH->CR |= FLASH_CR_PG;
+    *(volatile unsigned short *)TARGET_ADDR = 0xDEAD;
+    unsigned locked = *(volatile unsigned short *)TARGET_ADDR;
+
+    /* 2. Unlock through the KEYR key sequence. */
+    FLASH->KEYR = KEY1;
+    FLASH->KEYR = KEY2;
+
+    /* 3. Erase the target page. */
+    FLASH->CR |= FLASH_CR_PER;
+    FLASH->AR = TARGET_ADDR;
+    FLASH->CR |= FLASH_CR_STRT;
+    while (FLASH->SR & FLASH_SR_BSY) { }
+
+    /* 4. Program a halfword. */
+    FLASH->CR |= FLASH_CR_PG;
+    *(volatile unsigned short *)TARGET_ADDR = 0xBEEF;
+    while (FLASH->SR & FLASH_SR_BSY) { }
+    FLASH->SR = FLASH_SR_EOP;
+
+    /* 5. Report: the locked write was rejected and the program landed. */
+    unsigned programmed = *(volatile unsigned short *)TARGET_ADDR;
+    *(volatile unsigned *)RESULT_ADDR = (locked == 0u) ? programmed : 0xFFFFFFFFu;
+    __asm__ volatile("bkpt #0");
+}
+"#;
+
+/// On the STM32F103 board, CMSIS firmware unlocks the `FLASH` controller,
+/// erases a page, programs a halfword into `0x0800_0000`, and confirms that a
+/// pre-unlock write was rejected by the write gate.
+#[test]
+fn stm32f103_flash_programming_is_gated_and_lands() {
+    let includes = [
+        "../packs/Keil.STM32F1xx_DFP/Device/Include",
+        "../packs/STM32F4xx_CMSIS/CMSIS/Core/Include",
+    ];
+    let mut include_paths = Vec::new();
+    for rel in includes {
+        let include = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel);
+        if !include.is_dir() {
+            eprintln!(
+                "skipping flash test: pack include dir {} not found",
+                include.display()
+            );
+            return;
+        }
+        include_paths.push(
+            include
+                .to_str()
+                .expect("pack include path is not UTF-8")
+                .to_owned(),
+        );
+    }
+    let include_refs: Vec<&str> = include_paths.iter().map(String::as_str).collect();
+    let (code, symbols) =
+        match build_firmware_with_includes(STM32_F103_FLASH_FIRMWARE, &include_refs) {
+            Ok(image) => image,
+            Err(why) => {
+                eprintln!("skipping flash test: {why}");
+                return;
+            }
+        };
+    let entry = *symbols.get("reset").expect("no reset symbol");
+    assert!(!code.is_empty(), "compiled .text must not be empty");
+
+    let mut m = Machine::new(board::stm32f103());
+    m.load_image(&load_flat(CODE_BASE, &code));
+    {
+        let mem = m.core.mem();
+        mem.write_word(FLASH, INIT_SP).unwrap();
+        mem.write_word(FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+    }
+    m.reset().expect("reset from vector table");
+    let err = m.run(100_000);
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
+    assert_eq!(
+        m.core.mem().read_word(0x2000_0000).unwrap(),
+        0xBEEF,
+        "the locked write was rejected and the program landed"
+    );
+}

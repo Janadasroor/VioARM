@@ -12,6 +12,7 @@
 
 pub mod afio;
 pub mod exti;
+pub mod flash;
 pub mod gpio;
 pub mod gpio_f4;
 pub mod rcc;

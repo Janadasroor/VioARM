@@ -15,6 +15,7 @@
 use crate::device::gpio::Gpio;
 use crate::device::stm32::afio::Afio;
 use crate::device::stm32::exti::Exti;
+use crate::device::stm32::flash::{FlashF1, FlashGate};
 use crate::device::stm32::gpio::Gpio as StmGpio;
 use crate::device::stm32::gpio_f4::GpioF4;
 use crate::device::stm32::rcc::Rcc;
@@ -23,8 +24,10 @@ use crate::device::stm32::timer::Timer;
 use crate::device::stm32::usart::Usart1;
 use crate::device::systick::SysTick;
 use crate::device::uart::UartTx;
+use crate::mem::bus::Region;
 use crate::mem::flat::FlatMemory;
 use crate::mem::system::SystemMemory;
+use std::sync::{Arc, Mutex};
 
 /// The concrete memory type the virtual board is built from.
 pub type BoardMemory = SystemMemory<FlatMemory>;
@@ -54,25 +57,41 @@ pub fn virtual_board() -> BoardMemory {
     mem
 }
 
-/// STM32F103 (Blue Pill class) flash base — the `0x0800_0000` alias is not yet
-/// modeled; firmware is loaded at the `0x0000_0000` boot alias.
+/// STM32F103 (Blue Pill class) flash base — the `0x0000_0000` boot alias; the
+/// main flash region at `0x0800_0000` is modeled separately and gated by the
+/// `FLASH` controller.
 pub const STM32_F103_FLASH: u32 = FLASH;
 /// STM32F103 flash size in bytes (medium density).
 pub const STM32_F103_FLASH_LEN: u32 = 0x0001_0000;
 /// STM32F103 RAM size in bytes.
 pub const STM32_F103_RAM_LEN: u32 = 0x0000_5000;
+/// STM32F1 main-flash base (where `FLASH` controller programming lands).
+pub const STM32_MAIN_FLASH: u32 = 0x0800_0000;
 
 /// A Blue-Pill-class STM32F103 board: the M0 core with the STM32F1 peripheral
 /// set mapped at its real addresses (from `STM32F103xx.svd`).
 ///
 /// Firmware boots from the flash alias at `0x0000_0000`; peripherals are
-/// ungated (see the `stm32` module docs).
+/// ungated (see the `stm32` module docs). The main flash at `0x0800_0000` is a
+/// separate store guarded by the `FLASH` controller's unlock/program gate.
 #[must_use]
 pub fn stm32f103() -> BoardMemory {
     use crate::device::stm32;
-    let backing =
-        FlatMemory::with_layout(&[FLASH, RAM], &[STM32_F103_FLASH_LEN, STM32_F103_RAM_LEN]);
+    let backing = FlatMemory::with_layout(
+        &[FLASH, STM32_MAIN_FLASH, RAM],
+        &[
+            STM32_F103_FLASH_LEN,
+            STM32_F103_FLASH_LEN,
+            STM32_F103_RAM_LEN,
+        ],
+    );
+    let gate = Arc::new(Mutex::new(FlashGate::new(
+        Region::new(STM32_MAIN_FLASH, STM32_F103_FLASH_LEN),
+        1024,
+    )));
     let mut mem = SystemMemory::new(backing);
+    mem.set_flash_gate(gate.clone());
+    mem.attach(Box::new(FlashF1::new(gate)));
     mem.attach(Box::new(Rcc::new()));
     mem.attach(Box::new(StmGpio::at(stm32::GPIOA, "gpioa")));
     mem.attach(Box::new(StmGpio::at(stm32::GPIOB, "gpiob")));
@@ -95,13 +114,26 @@ pub const STM32_F107_RAM_LEN: u32 = 0x0001_0000;
 /// peripheral set mapped at its real addresses (from `STM32F107xx.svd`).
 ///
 /// The shared cores mount the same behaviors as the F103 board; the F107 adds
-/// Ethernet, USB OTG, and a second CAN, which the model does not yet expose.
+/// Ethernet, USB OTG, and a second CAN, which the model does not yet expose,
+/// and its `FLASH` controller guards a 256 KiB main-flash region.
 #[must_use]
 pub fn stm32f107() -> BoardMemory {
     use crate::device::svd::stm32f107::Stm32f107;
-    let backing =
-        FlatMemory::with_layout(&[FLASH, RAM], &[STM32_F107_FLASH_LEN, STM32_F107_RAM_LEN]);
+    let backing = FlatMemory::with_layout(
+        &[FLASH, STM32_MAIN_FLASH, RAM],
+        &[
+            STM32_F107_FLASH_LEN,
+            STM32_F107_FLASH_LEN,
+            STM32_F107_RAM_LEN,
+        ],
+    );
+    let gate = Arc::new(Mutex::new(FlashGate::new(
+        Region::new(STM32_MAIN_FLASH, STM32_F107_FLASH_LEN),
+        1024,
+    )));
     let mut mem = SystemMemory::new(backing);
+    mem.set_flash_gate(gate.clone());
+    mem.attach(Box::new(FlashF1::for_device::<Stm32f107>(gate)));
     mem.attach(Box::new(Rcc::for_device::<Stm32f107>()));
     mem.attach(Box::new(StmGpio::at_in::<Stm32f107>(0x4001_0800, "gpioa")));
     mem.attach(Box::new(StmGpio::at_in::<Stm32f107>(0x4001_0C00, "gpiob")));
