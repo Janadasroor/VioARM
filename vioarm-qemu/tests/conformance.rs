@@ -2115,4 +2115,172 @@ fn fp_ctx_lazy_handler_no_fp() {
     conformance("fp_ctx_lazy_handler_no_fp", &mut a, "halt", &mt);
 }
 
+/// Scenario D: thread mode on the process stack. `CONTROL.SPSEL` switches the
+/// active SP to PSP, so the extended frame is pushed there and the return uses
+/// `EXC_RETURN_THREAD_PSP_FP` (0xffffffed), handing the thread back its PSP
+/// with both stack banks intact.
+#[test]
+fn fp_ctx_svc_on_process_stack() {
+    let Some(mt) = qemu_m4() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+    a.enable_fpu();
+
+    a.movs_imm8(0, 2); // CONTROL.SPSEL = 1
+    a.msr(0x14, 0);
+    a.mov_imm32(0, 0x2000_3ff0); // PSP value
+    a.msr(0x09, 0);
+    a.mrs(2, 0x09); // r2 = PSP
+    a.mrs(3, 0x08); // r3 = MSP
+
+    a.mov_imm32(0, 0x3F80_0000); //  1.0
+    a.vmov_s_gpr(0, 0);
+    a.mov_imm32(0, 0x4000_0000); //  2.0
+    a.vmov_s_gpr(1, 0);
+    a.vadd_f32(2, 0, 1); // s2 = 3.0   (FPCA)
+    a.vdiv_f32(3, 1, 2); // s3 = 2/3   (IXC)
+    a.vmrs(0, 1); // r0 = FPSCR (IXC)
+
+    a.svc(1); // extended frame pushed on PSP
+    a.mrs(4, 0x09); // r4 = PSP after return (back to 0x2000_3ff0)
+    a.mrs(5, 0x08); // r5 = MSP after return
+    a.vmov_gpr_s(1, 0); // r1 = s0 (restored thread value)
+    a.movs_imm8(6, 0xAA);
+    a.label("halt");
+    a.b("halt");
+
+    a.label("svc_handler");
+    a.vadd_f32(6, 0, 1); // first handler FP insn: lazy preserve + context create
+    a.vmul_f32(7, 2, 3);
+    a.bx(14); // EXC_RETURN_THREAD_PSP_FP
+
+    a.vec(11, "svc_handler");
+    conformance("fp_ctx_svc_on_process_stack", &mut a, "halt", &mt);
+}
+
+/// Scenario E: a nested exception while the handler owns the FP context. The
+/// SVC handler uses the FPU (setting `CONTROL.FPCA`), then takes a second SVC
+/// which cannot preempt and escalates to `HardFault`; the `HardFault` handler
+/// also uses the FPU, so both frames are extended and the return chain
+/// exercises `EXC_RETURN_HANDLER_FP` (0xffffffe1) as well as a double lazy
+/// preserve/restore. `S16` is not in the extended frame, so the last handler's
+/// write to it persists all the way back to the thread.
+#[test]
+fn fp_ctx_nested_handler_extended_return() {
+    let Some(mt) = qemu_m4() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+    a.enable_fpu();
+
+    a.mov_imm32(0, 0x3F80_0000); //  1.0
+    a.vmov_s_gpr(0, 0);
+    a.mov_imm32(0, 0x4000_0000); //  2.0
+    a.vmov_s_gpr(1, 0);
+    a.vadd_f32(2, 0, 1); // s2 = 3.0   (FPCA)
+    a.vdiv_f32(3, 1, 2); // s3 = 2/3   (IXC)
+    a.vmov_f32_imm(16, 0x70); // s16 = 1.0 (not stacked)
+    a.vmrs(0, 1); // r0 = FPSCR (IXC)
+
+    a.svc(1); // -> SVC handler
+    a.vmov_gpr_s(1, 0); // r1 = s0 (restored thread 1.0)
+    a.vmov_gpr_s(1, 16); // r1 = s16 (1.0: the HardFault handler's write won)
+    a.movs_imm8(2, 0xAA);
+    a.label("halt");
+    a.b("halt");
+
+    a.label("svc_handler");
+    a.vadd_f32(6, 0, 1); // first handler FP insn: preserve + context create
+    a.vmul_f32(7, 2, 3);
+    a.vmov_f32_imm(16, 0xF0); // s16 = -1.0 (SVC handler's value)
+    a.svc(2); // SVC inside the handler: cannot preempt -> HardFault
+    a.movs_imm8(4, 0x44); // reached once the fault returns
+    a.bx(14); // EXC_RETURN_THREAD_MSP_FP back to the thread
+
+    a.label("hf");
+    a.vadd_f32(8, 0, 1); // first HF FP insn: preserve + context create
+    a.vmul_f32(9, 6, 7);
+    a.vmov_f32_imm(16, 0x70); // s16 = 1.0 (persists past both returns)
+    a.bx(14); // EXC_RETURN_HANDLER_FP back into the SVC handler
+
+    a.vec(11, "svc_handler");
+    a.vec(3, "hf");
+    conformance("fp_ctx_nested_handler_extended_return", &mut a, "halt", &mt);
+}
+
+/// Scenario F: the thread's SP is 8-misaligned (`SP % 8 == 4`) when the FP
+/// exception is taken. Entry decrements SP by 4 and sets `xPSR.ALIGN`; the
+/// extended frame is pushed below the align slot, and the return re-aligns SP
+/// to the thread's original value.
+#[test]
+fn fp_ctx_sprealign_extended_frame() {
+    let Some(mt) = qemu_m4() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+    a.enable_fpu();
+
+    a.mov_imm32(0, 0x2000_2004); // SP % 8 == 4
+    a.msr(0x08, 0); // MSR MSP, r0
+
+    a.mov_imm32(0, 0x3F80_0000); //  1.0
+    a.vmov_s_gpr(0, 0);
+    a.mov_imm32(0, 0x4000_0000); //  2.0
+    a.vmov_s_gpr(1, 0);
+    a.vadd_f32(2, 0, 1); // s2 = 3.0   (FPCA)
+    a.vdiv_f32(3, 1, 2); // s3 = 2/3   (IXC)
+    a.vmrs(0, 1); // r0 = FPSCR (IXC)
+
+    a.svc(1); // taken with SP%8 == 4 -> ALIGN adjustment, extended frame
+    a.mrs(2, 0x08); // r2 = MSP after return (0x20002004 again)
+    a.vmov_gpr_s(1, 0); // r1 = s0 (restored thread 1.0)
+    a.movs_imm8(3, 0x55);
+    a.label("halt");
+    a.b("halt");
+
+    a.label("svc_handler");
+    a.vadd_f32(6, 0, 1); // first handler FP insn: lazy preserve + context create
+    a.vmul_f32(7, 2, 3);
+    a.bx(14); // EXC_RETURN_THREAD_MSP_FP: re-align SP to 0x20002004
+
+    a.vec(11, "svc_handler");
+    conformance("fp_ctx_sprealign_extended_frame", &mut a, "halt", &mt);
+}
+
+/// Scenario G: the handler's first FP instruction targets `S16` (outside the
+/// stacked `S0`-`S15` block). The lazy preserve and context creation still run
+/// on the first FP instruction regardless of its destination; `S16` is never
+/// stacked, so the handler's writes persist after return while `S0`-`S15` and
+/// FPSCR come back from the frame.
+#[test]
+fn fp_ctx_handler_uses_high_registers() {
+    let Some(mt) = qemu_m4() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+    a.enable_fpu();
+
+    a.mov_imm32(0, 0x3F80_0000); //  1.0
+    a.vmov_s_gpr(0, 0);
+    a.mov_imm32(0, 0x4000_0000); //  2.0
+    a.vmov_s_gpr(1, 0);
+    a.vadd_f32(2, 0, 1); // s2 = 3.0   (FPCA)
+    a.vdiv_f32(3, 1, 2); // s3 = 2/3   (IXC)
+    a.vmov_f32_imm(16, 0x70); // s16 = 1.0 (not stacked)
+    a.vmrs(0, 1); // r0 = FPSCR (IXC)
+
+    a.svc(1);
+    a.vmov_gpr_s(1, 0); // r1 = s0 (restored thread 1.0)
+    a.vmov_gpr_s(1, 16); // r1 = s16 (5.0: the handler's write persists)
+    a.movs_imm8(2, 0xAA);
+    a.label("halt");
+    a.b("halt");
+
+    a.label("svc_handler");
+    a.vmov_f32_imm(16, 0x78); // s16 = 5.0 -- first FP insn targets a high reg
+    a.vmov_f32_imm(17, 0x40); // s17 = 3.0
+    a.vadd_f32(18, 16, 17); // s18 = 8.0
+    a.bx(14);
+
+    a.vec(11, "svc_handler");
+    conformance("fp_ctx_handler_uses_high_registers", &mut a, "halt", &mt);
+}
+
 
