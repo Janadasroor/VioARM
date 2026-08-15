@@ -190,17 +190,21 @@ impl VfpState {
 }
 
 /// The M-profile floating-point context-control state: the `ASPEN`, `LSPEN`
-/// and `LSPACT` bits of `FPCCR` plus `FPCAR`.
+/// and `LSPACT` bits of `FPCCR`, `FPCAR`, and the default FP control register
+/// `FPDSCR`.
 ///
 /// `ASPEN` enables automatic context switching (`CONTROL.FPCA`); `LSPEN`
 /// enables lazy stacking of `S0`-`S15`/FPSCR on exception entry (the frame is
 /// only reserved and written on the first FP instruction the handler runs);
 /// `LSPACT` marks an outstanding lazy frame whose address is `FPCAR`.
+/// `FPDSCR` supplies the control bits (`DN`, `FZ`, `RMode`, and the trap
+/// enables) that a freshly-created FP context's FPSCR is loaded from.
 ///
 /// The state is shared between the core (which consumes it during exception
 /// entry/return and FP execution) and the `SCB` device (which exposes it to
-/// firmware as `FPCCR` at `0xE000_EF34` and `FPCAR` at `0xE000_EF38`). It
-/// resets to lazy stacking enabled, matching the architecture and QEMU.
+/// firmware as `FPCCR` at `0xE000_EF34`, `FPCAR` at `0xE000_EF38`, and
+/// `FPDSCR` at `0xE000_EF3C`). It resets to lazy stacking enabled, matching
+/// the architecture and QEMU.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FpuCtx {
     /// FPCCR[31]: automatic FP context switching (set `CONTROL.FPCA` on the
@@ -214,10 +218,14 @@ pub struct FpuCtx {
     pub lspact: bool,
     /// The address of the outstanding lazy FP frame (bits [31:3]).
     pub fpcar: u32,
+    /// FPDSCR: the FPSCR control bits (DN/FZ/RMode/trap enables) loaded into a
+    /// new FP context on its first FP instruction.
+    pub fpdscr: u32,
 }
 
 impl FpuCtx {
-    /// Reset state: automatic context switching on, lazy stacking on.
+    /// Reset state: automatic context switching on, lazy stacking on, the
+    /// default FP control bits (round-to-nearest, no traps) all clear.
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -225,6 +233,7 @@ impl FpuCtx {
             lspen: true,
             lspact: false,
             fpcar: 0,
+            fpdscr: 0,
         }
     }
 
@@ -1070,8 +1079,7 @@ impl<B: PeripheralBus> Core<B> {
     /// 1. If `FPCCR.LSPACT` is set, an exception left an FP frame reserved at
     ///    `FPCAR`; store `S0`-`S15` and FPSCR there and clear `LSPACT`.
     /// 2. If `FPCCR.ASPEN` is set and `CONTROL.FPCA` is clear, create a new FP
-    ///    context: set `FPCA` and reload FPSCR from `FPDSCR` (zero here, as
-    ///    `FPDSCR` is not modeled and resets to zero).
+    ///    context: set `FPCA` and load FPSCR from `FPDSCR`.
     fn fp_context(&mut self) -> Result<(), HaltCause> {
         let ctx = *self.fpu_ctx.lock().unwrap();
         if ctx.lspact {
@@ -1084,7 +1092,7 @@ impl<B: PeripheralBus> Core<B> {
         }
         if ctx.aspen && self.control & CONTROL_FPCA == 0 {
             self.control |= CONTROL_FPCA;
-            self.vfp.fpscr = 0;
+            self.vfp.fpscr = ctx.fpdscr;
         }
         Ok(())
     }

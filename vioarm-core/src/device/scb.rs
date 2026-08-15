@@ -30,6 +30,7 @@ const SHPR3: u32 = 0xE000_ED20;
 const CPACR: u32 = 0xE000_ED88;
 const FPCCR: u32 = 0xE000_EF34;
 const FPCAR: u32 = 0xE000_EF38;
+const FPDSCR: u32 = 0xE000_EF3C;
 
 const PENDSVSET: u8 = 0x10; // ICSR byte 3, bit 28: write 1 to pend.
 const PENDSVCLR: u8 = 0x08; // ICSR byte 3, bit 27: write 1 to clear.
@@ -38,12 +39,12 @@ const PENDSVCLR: u8 = 0x08; // ICSR byte 3, bit 27: write 1 to clear.
 /// the coprocessor access-control register, and the FP context control.
 #[derive(Debug, Clone)]
 pub struct Scb {
-    ranges: [Region; 6],
+    ranges: [Region; 7],
     pendsv: bool,
     shpr2: u32,
     shpr3: u32,
     cpacr: u32,
-    /// Shared `FPCCR`/`FPCAR` state; the core holds the same `Rc`.
+    /// Shared `FPCCR`/`FPCAR`/`FPDSCR` state; the core holds the same `Rc`.
     fpu_ctx: Arc<Mutex<FpuCtx>>,
 }
 
@@ -58,6 +59,7 @@ impl Scb {
                 Region::new(CPACR, 4),
                 Region::new(FPCCR, 4),
                 Region::new(FPCAR, 4),
+                Region::new(FPDSCR, 4),
             ],
             pendsv: false,
             shpr2: 0,
@@ -99,6 +101,7 @@ impl Scb {
             CPACR => self.cpacr,
             FPCCR => self.fpu_ctx.lock().unwrap().fpccr(),
             FPCAR => self.fpu_ctx.lock().unwrap().fpcar,
+            FPDSCR => self.fpu_ctx.lock().unwrap().fpdscr,
             _ => 0,
         };
         ((reg >> (8 * offset)) & 0xFF) as u8
@@ -142,6 +145,11 @@ impl Scb {
                 let mut ctx = self.fpu_ctx.lock().unwrap();
                 ctx.fpcar =
                     (ctx.fpcar & !(0xFF << shift)) | (u32::from(val) << shift) & !0x7;
+            }
+            FPDSCR => {
+                let shift = 8 * offset;
+                let mut ctx = self.fpu_ctx.lock().unwrap();
+                ctx.fpdscr = (ctx.fpdscr & !(0xFF << shift)) | (u32::from(val) << shift);
             }
             _ => {}
         }
@@ -305,6 +313,17 @@ mod tests {
         // FPCAR holds bits [31:3]; the low three bits read back as zero.
         write_word(&mut s, 0xE000_EF38, 0x2000_083F);
         assert_eq!(read_word(&mut s, 0xE000_EF38), 0x2000_0838);
+    }
+
+    #[test]
+    fn fpdscr_stores_and_resets() {
+        let mut s = Scb::new();
+        assert_eq!(read_word(&mut s, 0xE000_EF3C), 0);
+        // Round-towards-zero: FPSCR RMODE bits 23:22 = 0b11.
+        write_word(&mut s, 0xE000_EF3C, 0x00C0_0000);
+        assert_eq!(read_word(&mut s, 0xE000_EF3C), 0x00C0_0000);
+        s.reset();
+        assert_eq!(read_word(&mut s, 0xE000_EF3C), 0);
     }
 
     #[test]
