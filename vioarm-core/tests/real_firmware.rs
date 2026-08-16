@@ -1137,6 +1137,136 @@ fn stm32f103_firmware_talks_i2c() {
     assert_eq!(irq_result, 0xA5);
 }
 
+/// Real CMSIS-style firmware against the STM32F103 device header: a second
+/// USART instance. `USART2` (on `APB1`, pins `PA2`/`PA3`) transmits a line and
+/// receives a byte through `USART2_IRQHandler`, proving the shared USART core
+/// mounts on a base other than `USART1`'s at its real registers.
+const STM32_F103_USART2_FIRMWARE: &str = r#"
+#define STM32F10X_HD
+#include "stm32f10x.h"
+
+#define TX_RESULT  (*(volatile unsigned *)0x20000000u)
+#define RX_RESULT  (*(volatile unsigned *)0x20000004u)
+
+void USART2_IRQHandler(void) {
+    if (USART2->SR & USART_SR_RXNE) {
+        RX_RESULT = USART2->DR;
+    }
+}
+
+static void tx_byte(unsigned c) {
+    while (!(USART2->SR & USART_SR_TXE)) { }
+    USART2->DR = c;
+}
+
+void reset(void) {
+    /* 1. Clock gates: GPIOA + AFIO on APB2, USART2 on APB1. */
+    RCC->APB2ENR |= RCC_APB2ENR_IOPAEN | RCC_APB2ENR_AFIOEN;
+    RCC->APB1ENR |= RCC_APB1ENR_USART2EN;
+
+    /* 2. PA2 = USART2_TX (alternate push-pull 50 MHz), PA3 = USART2_RX. */
+    GPIOA->CRL = (GPIOA->CRL & ~(0xFu << (2 * 4))) | (0xBu << (2 * 4));
+    GPIOA->CRL = (GPIOA->CRL & ~(0xFu << (3 * 4))) | (0x4u << (3 * 4));
+
+    /* 3. USART2 at 8 MHz HSI / 9600 baud: BRR = 8e6 / 9600 = 833. */
+    USART2->BRR = 0x341;
+    USART2->CR1 = USART_CR1_UE | USART_CR1_TE | USART_CR1_RE;
+
+    /* 4. Arm the RX interrupt (IRQ 38, exception vector 54). */
+    NVIC->ISER[1] = 1u << (USART2_IRQn - 32);
+    USART2->CR1 |= USART_CR1_RXNEIE;
+
+    /* 5. Transmit a line over USART2. */
+    tx_byte('u'); tx_byte('2'); tx_byte('!'); tx_byte('\n');
+    TX_RESULT = 0xBE;
+
+    /* 6. Wait for the host-injected byte to arrive through the IRQ. */
+    while (!RX_RESULT) { }
+
+    __asm__ volatile("bkpt #0");
+}
+"#;
+
+/// Compile [`STM32_F103_USART2_FIRMWARE`], boot it on the F103 board, inject a
+/// received byte, and return the transmit sentinel, the interrupt-latched byte,
+/// and the USART2 TX line. `None` means the test was skipped (missing toolchain
+/// or pack).
+fn run_usart2_firmware() -> Option<(u32, u32, Vec<u8>)> {
+    let includes = [
+        "../packs/Keil.STM32F1xx_DFP/Device/Include",
+        "../packs/STM32F4xx_CMSIS/CMSIS/Core/Include",
+    ];
+    let mut include_paths = Vec::new();
+    for rel in includes {
+        let include = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel);
+        if !include.is_dir() {
+            eprintln!(
+                "skipping usart2 test: pack include dir {} not found",
+                include.display()
+            );
+            return None;
+        }
+        include_paths.push(
+            include
+                .to_str()
+                .expect("pack include path is not UTF-8")
+                .to_owned(),
+        );
+    }
+    let include_refs: Vec<&str> = include_paths.iter().map(String::as_str).collect();
+    let (code, symbols) =
+        match build_firmware_with_includes(STM32_F103_USART2_FIRMWARE, &include_refs) {
+            Ok(image) => image,
+            Err(why) => {
+                eprintln!("skipping usart2 test: {why}");
+                return None;
+            }
+        };
+    let entry = *symbols.get("reset").expect("no reset symbol");
+    let irq = *symbols
+        .get("USART2_IRQHandler")
+        .expect("no USART2_IRQHandler symbol");
+    assert!(!code.is_empty(), "compiled .text must not be empty");
+
+    let mut m = Machine::new(board::stm32f103());
+    m.load_image(&load_flat(CODE_BASE, &code));
+    {
+        let mem = m.core.mem();
+        mem.write_word(FLASH, INIT_SP).unwrap();
+        mem.write_word(FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+        // Vector 54 = USART2 IRQ 38 at FLASH + 54 * 4.
+        mem.write_word(FLASH + 54 * 4, (CODE_BASE + irq) | 1)
+            .unwrap();
+    }
+    m.reset().expect("reset from vector table");
+    // Host stimulus: a byte arrives on the USART2 RX line. (The sibling USARTs
+    // receive the same stimulus, but only USART2's IRQ is enabled.)
+    for device in m.core.mem().devices_mut() {
+        device.drive_inputs(0x5A);
+    }
+    let err = m.run(200_000);
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
+    let tx = m.core.mem().read_word(board::RAM).unwrap();
+    let rx = m.core.mem().read_word(board::RAM + 4).unwrap();
+    let mut line = Vec::new();
+    for device in m.core.mem().devices_mut() {
+        line.extend(device.drain_output());
+    }
+    Some((tx, rx, line))
+}
+
+/// On the STM32F103 board, CMSIS firmware transmits over `USART2` and receives
+/// a byte through its IRQ at the second USART's real registers.
+#[test]
+fn stm32f103_firmware_talks_usart2() {
+    let Some((tx, rx, line)) = run_usart2_firmware() else {
+        return; // skipped
+    };
+    assert_eq!(tx, 0xBE);
+    assert_eq!(rx, 0x5A);
+    assert_eq!(line, b"u2!\n");
+}
+
 /// Compile `firmware` against the STM32F4 device header, returning the flat
 /// `.text` and symbol map, or `None` if the toolchain or pack is missing.
 fn build_f4_firmware(firmware: &str) -> Option<(Vec<u8>, std::collections::HashMap<String, u32>)> {

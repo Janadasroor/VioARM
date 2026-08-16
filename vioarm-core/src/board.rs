@@ -26,7 +26,7 @@ use crate::device::stm32::rcc::Rcc;
 use crate::device::stm32::spi::Spi;
 use crate::device::stm32::syscfg::Syscfg;
 use crate::device::stm32::timer::Timer;
-use crate::device::stm32::usart::Usart1;
+use crate::device::stm32::usart::Usart;
 use crate::device::stm32::watchdog::{Iwdg, Wwdg};
 use crate::device::systick::SysTick;
 use crate::device::uart::UartTx;
@@ -104,7 +104,13 @@ pub fn stm32f103() -> BoardMemory {
     mem.attach(Box::new(StmGpio::at(stm32::GPIOB, "gpiob")));
     mem.attach(Box::new(StmGpio::at(stm32::GPIOC, "gpioc")));
     let dma_requests = Arc::new(Mutex::new(DmaRequests::new()));
-    mem.attach(Box::new(Usart1::with_dma(dma_requests.clone())));
+    mem.attach(Box::new(Usart::with_dma(dma_requests.clone())));
+    mem.attach(Box::new(Usart::usart2_for_device_with_dma::<Stm32f103>(
+        dma_requests.clone(),
+    )));
+    mem.attach(Box::new(Usart::usart3_for_device_with_dma::<Stm32f103>(
+        dma_requests.clone(),
+    )));
     mem.attach(Box::new(Timer::tim2()));
     mem.attach(Box::new(Timer::tim3()));
     mem.attach(Box::new(Exti::new()));
@@ -163,7 +169,11 @@ pub fn stm32f107() -> BoardMemory {
     mem.attach(Box::new(StmGpio::at_in::<Stm32f107>(0x4001_1000, "gpioc")));
     mem.attach(Box::new(StmGpio::at_in::<Stm32f107>(0x4001_1400, "gpiod")));
     mem.attach(Box::new(StmGpio::at_in::<Stm32f107>(0x4001_1800, "gpioe")));
-    mem.attach(Box::new(Usart1::for_device::<Stm32f107>()));
+    mem.attach(Box::new(Usart::for_device::<Stm32f107>()));
+    mem.attach(Box::new(Usart::usart2_for::<Stm32f107>()));
+    mem.attach(Box::new(Usart::usart3_for::<Stm32f107>()));
+    mem.attach(Box::new(Usart::uart4_for::<Stm32f107>()));
+    mem.attach(Box::new(Usart::uart5_for::<Stm32f107>()));
     mem.attach(Box::new(Timer::tim2_for::<Stm32f107>()));
     mem.attach(Box::new(Timer::tim3_for::<Stm32f107>()));
     mem.attach(Box::new(Exti::for_device::<Stm32f107>()));
@@ -176,7 +186,19 @@ pub fn stm32f107() -> BoardMemory {
     mem.attach(Box::new(I2c::for_device::<Stm32f107>()));
     mem.attach(Box::new(I2c::i2c2_for::<Stm32f107>()));
     let dma_requests = Arc::new(Mutex::new(DmaRequests::new()));
-    mem.attach(Box::new(Usart1::for_device_with_dma::<Stm32f107>(
+    mem.attach(Box::new(Usart::for_device_with_dma::<Stm32f107>(
+        dma_requests.clone(),
+    )));
+    mem.attach(Box::new(Usart::usart2_for_device_with_dma::<Stm32f107>(
+        dma_requests.clone(),
+    )));
+    mem.attach(Box::new(Usart::usart3_for_device_with_dma::<Stm32f107>(
+        dma_requests.clone(),
+    )));
+    mem.attach(Box::new(Usart::uart4_for_device_with_dma::<Stm32f107>(
+        dma_requests.clone(),
+    )));
+    mem.attach(Box::new(Usart::uart5_for_device_with_dma::<Stm32f107>(
         dma_requests.clone(),
     )));
     let dma = Arc::new(Mutex::new(Vec::new()));
@@ -244,7 +266,12 @@ pub fn stm32f407() -> BoardMemory {
     mem.attach(Box::new(GpioF4::at_in::<Stm32f407>(0x4002_0800, "gpioc")));
     mem.attach(Box::new(GpioF4::at_in::<Stm32f407>(0x4002_0C00, "gpiod")));
     mem.attach(Box::new(GpioF4::at_in::<Stm32f407>(0x4002_1000, "gpioe")));
-    mem.attach(Box::new(Usart1::for_device::<Stm32f407>()));
+    mem.attach(Box::new(Usart::for_device::<Stm32f407>()));
+    mem.attach(Box::new(Usart::usart2_for::<Stm32f407>()));
+    mem.attach(Box::new(Usart::usart3_for::<Stm32f407>()));
+    mem.attach(Box::new(Usart::uart4_for::<Stm32f407>()));
+    mem.attach(Box::new(Usart::uart5_for::<Stm32f407>()));
+    mem.attach(Box::new(Usart::usart6_for::<Stm32f407>()));
     mem.attach(Box::new(Timer::tim2_for::<Stm32f407>()));
     mem.attach(Box::new(Exti::for_device::<Stm32f407>()));
     mem.attach(Box::new(Syscfg::for_device::<Stm32f407>()));

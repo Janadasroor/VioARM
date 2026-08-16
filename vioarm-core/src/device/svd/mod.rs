@@ -648,6 +648,77 @@ mod tests {
     }
 
     #[test]
+    fn generated_usart_family_matches_silicon_layout() {
+        // USART2/USART3 on every line, UART4/UART5 on the connectivity and F4
+        // lines, USART6 on the F4: bases and IRQ numbers from the manuals.
+        let cases = [
+            (
+                super::stm32f103::peripheral("USART2").unwrap(),
+                0x4000_4400u32,
+                38,
+            ),
+            (
+                super::stm32f103::peripheral("USART3").unwrap(),
+                0x4000_4800,
+                39,
+            ),
+            (
+                super::stm32f107::peripheral("USART2").unwrap(),
+                0x4000_4400,
+                38,
+            ),
+            (
+                super::stm32f107::peripheral("USART3").unwrap(),
+                0x4000_4800,
+                39,
+            ),
+            (
+                super::stm32f107::peripheral("UART4").unwrap(),
+                0x4000_4c00,
+                52,
+            ),
+            (
+                super::stm32f107::peripheral("UART5").unwrap(),
+                0x4000_5000,
+                53,
+            ),
+            (
+                super::stm32f407::peripheral("USART2").unwrap(),
+                0x4000_4400,
+                38,
+            ),
+            (
+                super::stm32f407::peripheral("USART3").unwrap(),
+                0x4000_4800,
+                39,
+            ),
+            (
+                super::stm32f407::peripheral("UART4").unwrap(),
+                0x4000_4c00,
+                52,
+            ),
+            (
+                super::stm32f407::peripheral("UART5").unwrap(),
+                0x4000_5000,
+                53,
+            ),
+            (
+                super::stm32f407::peripheral("USART6").unwrap(),
+                0x4001_1400,
+                71,
+            ),
+        ];
+        for (def, base, irq) in cases {
+            assert_eq!(def.base, base, "base address of {}", def.name);
+            let got = def
+                .irqs
+                .first()
+                .unwrap_or_else(|| panic!("{} has an IRQ", def.name));
+            assert_eq!(got.number, irq, "IRQ number of {}", def.name);
+        }
+    }
+
+    #[test]
     fn generated_stm32f107_matches_silicon_layout() {
         let cases = [
             ("RCC", 0x4002_1000u32),
@@ -687,11 +758,11 @@ mod tests {
         use crate::device::stm32::gpio::Gpio;
         use crate::device::stm32::rcc::Rcc;
         use crate::device::stm32::timer::Timer;
-        use crate::device::stm32::usart::Usart1;
+        use crate::device::stm32::usart::Usart;
         use crate::device::{InterruptSource, Peripheral};
 
         // USART1: the byte-oriented behavior on F107's tables.
-        let mut u = Usart1::for_device::<stm32f107::Stm32f107>();
+        let mut u = Usart::for_device::<stm32f107::Stm32f107>();
         assert_eq!(u.ranges()[0].base, 0x4001_3800);
         u.drive_inputs(0x55);
         assert_eq!(u.pending(), 0);
@@ -843,12 +914,12 @@ mod tests {
     fn same_behavior_mounts_f407_tables() {
         use super::stm32f407;
         use crate::device::stm32::timer::Timer;
-        use crate::device::stm32::usart::Usart1;
+        use crate::device::stm32::usart::Usart;
         use crate::device::{InterruptSource, Peripheral};
 
         // USART1: the byte-oriented behavior on F407's tables (same 7-register
         // layout as F1, different base).
-        let mut u = Usart1::for_device::<stm32f407::Stm32f407>();
+        let mut u = Usart::for_device::<stm32f407::Stm32f407>();
         assert_eq!(u.ranges()[0].base, 0x4001_1000);
         u.drive_inputs(0x55);
         assert_eq!(u.pending(), 0);
