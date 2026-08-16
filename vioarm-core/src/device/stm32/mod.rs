@@ -10,6 +10,7 @@
 //! Conforming firmware (which always enables the clocks it uses before
 //! touching a peripheral) behaves identically to silicon.
 
+pub mod adc;
 pub mod afio;
 pub mod dma;
 pub mod dma_f4;

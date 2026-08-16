@@ -1029,7 +1029,7 @@ fn iwdg_underflow_requests_a_full_reset() {
     let mut sys = SystemMemory::new(backing);
     let latch = Arc::new(Mutex::new(false));
     sys.set_watchdog_reset(latch.clone());
-    sys.attach(Box::new(Iwdg::new(latch.clone())));
+    sys.attach(Box::new(Iwdg::new(latch)));
     let mut m = Machine::new(sys);
     m.load_image(&load_flat(ENTRY, &[0xFE, 0xE7])); // b . (spin)
     {
@@ -1076,7 +1076,7 @@ fn wwdg_underflow_requests_a_full_reset() {
     let mut sys = SystemMemory::new(backing);
     let latch = Arc::new(Mutex::new(false));
     sys.set_watchdog_reset(latch.clone());
-    sys.attach(Box::new(Wwdg::new(latch.clone())));
+    sys.attach(Box::new(Wwdg::new(latch)));
     let mut m = Machine::new(sys);
     m.load_image(&load_flat(ENTRY, &[0xFE, 0xE7])); // b . (spin)
     {
@@ -1107,4 +1107,69 @@ fn wwdg_underflow_requests_a_full_reset() {
         "the reset consumed the latch"
     );
     assert_eq!(m.core.regs.pc & !1, ENTRY, "re-booted at the reset entry");
+}
+
+/// The ADC's `EOC` interrupt: a software-start conversion of a host-driven
+/// level completes, raises IRQ 18, and the machine dispatches to the ADC1/2
+/// ISR before the spin loop resumes.
+#[test]
+fn adc_eoc_dispatches_its_isr() {
+    use vioarm_core::board;
+
+    const ADC1_CR1: u32 = 0x4001_2404;
+    const ADC1_CR2: u32 = 0x4001_2408;
+    const NVIC_ISER0: u32 = 0xE000_E100;
+    const ISR: u32 = ENTRY + 4;
+
+    // SP within the F103's 20 KiB RAM.
+    let mut m = Machine::new(board::stm32f103());
+    m.load_image(&load_flat(ENTRY, &[0xFE, 0xE7])); // b . (spin)
+                                                    // ISR: ldr r0, [pc, #4]; ldr r1, [r0]; bx lr (reading DR clears EOC), with
+                                                    // the DR address (0x4001_244C) constant in the literal pool. Bytes verified
+                                                    // with clang.
+    m.load_image(&load_flat(
+        ISR,
+        &[
+            0x01, 0x48, 0x01, 0x68, 0x70, 0x47, 0x00, 0x00, 0x4C, 0x24, 0x01, 0x40,
+        ],
+    ));
+    {
+        let mem = m.core.mem();
+        mem.write_word(FLASH, 0x2000_4000).unwrap(); // SP
+        mem.write_word(FLASH + 4, ENTRY | 1).unwrap(); // reset vector
+                                                       // Vector 34 = ADC1 IRQ 18 at FLASH + 34 * 4.
+        mem.write_word(FLASH + 34 * 4, ISR | 1).unwrap();
+    }
+    m.reset().unwrap();
+    {
+        let mem = m.core.mem();
+        mem.write_word(NVIC_ISER0, 1 << 18).unwrap(); // enable ADC1_2
+        mem.write_word(ADC1_CR1, 0x20).unwrap(); // EOCIE
+    }
+    // Host stimulus: a 12-bit analog level on every channel.
+    for device in m.core.mem().devices_mut() {
+        device.drive_inputs(0x0ABC);
+    }
+    {
+        let mem = m.core.mem();
+        mem.write_word(ADC1_CR2, 0x1).unwrap(); // ADON
+        mem.write_word(ADC1_CR2, 0x0040_0001).unwrap(); // ADON | SWSTART
+    }
+    let mut entered = false;
+    for _ in 0..64 {
+        m.step().unwrap();
+        if m.core.regs.pc & !1 == ISR {
+            entered = true;
+            break;
+        }
+    }
+    assert!(entered, "the ADC ISR was dispatched");
+    // The ISR returns to the spin loop.
+    for _ in 0..64 {
+        m.step().unwrap();
+        if m.core.regs.pc & !1 == ENTRY {
+            return;
+        }
+    }
+    panic!("the ADC ISR did not return to the spin loop");
 }

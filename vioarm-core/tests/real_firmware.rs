@@ -115,7 +115,7 @@ void reset(void) {
 /// refreshes it, and relies on the watchdog reset to reboot the part. A boot
 /// counter in RAM survives those resets, so the test can count how many times
 /// the watchdog actually fired.
-const IWDG_FIRMWARE: &str = r#"
+const IWDG_FIRMWARE: &str = r"
 #define BOOTCOUNT 0x20000000u
 #define IWDG_KR  0x40003000u
 #define IWDG_RLR 0x40003008u
@@ -134,7 +134,7 @@ void reset(void) {
     *(volatile unsigned *)IWDG_KR = 0xCCCCu;
     while (1) { }
 }
-"#;
+";
 
 /// A firmware that drives GPIO outputs, reads back host-driven inputs, and
 /// transmits a line of text on the virtual UART before halting.
@@ -766,6 +766,120 @@ fn stm32f407_firmware_uses_real_peripherals() {
     assert_eq!(rx, 0x5A);
     assert!(tim_cnt > 0, "TIM2 never counted: {tim_cnt}");
     assert_eq!(tx, b"ok!\n");
+}
+
+/// Real CMSIS-style firmware against the STM32F103 device header: a polled
+/// conversion of channel 0 (`SWSTART`, wait `EOC`, read `DR`) and a second
+/// conversion of channel 1 driven through the `ADC1_2` interrupt — both of a
+/// 12-bit analog level injected by the host.
+const STM32_F103_ADC_FIRMWARE: &str = r#"
+#define STM32F10X_HD
+#include "stm32f10x.h"
+
+#define RESULT      (*(volatile unsigned *)0x20000000u)
+#define IRQ_RESULT  (*(volatile unsigned *)0x20000004u)
+
+void ADC1_2_IRQHandler(void) {
+    if (ADC1->SR & ADC_SR_EOC) {
+        IRQ_RESULT = ADC1->DR;
+    }
+}
+
+void reset(void) {
+    RCC->APB2ENR |= RCC_APB2ENR_ADC1EN;
+
+    /* Channel 0 with the longest sampling time. */
+    ADC1->SMPR2 = 0x7u << 0;
+
+    /* Polled conversion of channel 0. */
+    ADC1->CR2 = ADC_CR2_ADON | ADC_CR2_SWSTART;
+    while (!(ADC1->SR & ADC_SR_EOC)) { }
+    RESULT = ADC1->DR;
+
+    /* Interrupt-driven conversion of channel 1. */
+    ADC1->SMPR2 = 0x7u << (1 * 3);
+    ADC1->SQR3 = 0x1u;
+    NVIC->ISER[0] = 1u << ADC1_2_IRQn;
+    ADC1->CR1 = ADC_CR1_EOCIE;
+    ADC1->CR2 = ADC_CR2_ADON | ADC_CR2_SWSTART;
+    while (!IRQ_RESULT) { }
+
+    __asm__ volatile("bkpt #0");
+}
+"#;
+
+/// Compile [`STM32_F103_ADC_FIRMWARE`], boot it on the F103 board, inject a
+/// 12-bit analog level on the ADC channels, and return the polled and IRQ
+/// results. `None` means the test was skipped (missing toolchain or pack).
+fn run_adc_firmware() -> Option<(u32, u32)> {
+    let includes = [
+        "../packs/Keil.STM32F1xx_DFP/Device/Include",
+        "../packs/STM32F4xx_CMSIS/CMSIS/Core/Include",
+    ];
+    let mut include_paths = Vec::new();
+    for rel in includes {
+        let include = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel);
+        if !include.is_dir() {
+            eprintln!(
+                "skipping adc test: pack include dir {} not found",
+                include.display()
+            );
+            return None;
+        }
+        include_paths.push(
+            include
+                .to_str()
+                .expect("pack include path is not UTF-8")
+                .to_owned(),
+        );
+    }
+    let include_refs: Vec<&str> = include_paths.iter().map(String::as_str).collect();
+    let (code, symbols) = match build_firmware_with_includes(STM32_F103_ADC_FIRMWARE, &include_refs)
+    {
+        Ok(image) => image,
+        Err(why) => {
+            eprintln!("skipping adc test: {why}");
+            return None;
+        }
+    };
+    let entry = *symbols.get("reset").expect("no reset symbol");
+    let irq = *symbols
+        .get("ADC1_2_IRQHandler")
+        .expect("no ADC1_2_IRQHandler symbol");
+    assert!(!code.is_empty(), "compiled .text must not be empty");
+
+    let mut m = Machine::new(board::stm32f103());
+    m.load_image(&load_flat(CODE_BASE, &code));
+    {
+        let mem = m.core.mem();
+        mem.write_word(FLASH, INIT_SP).unwrap();
+        mem.write_word(FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+        // Vector 34 = ADC1 IRQ 18 at FLASH + 34 * 4.
+        mem.write_word(FLASH + 34 * 4, (CODE_BASE + irq) | 1)
+            .unwrap();
+    }
+    m.reset().expect("reset from vector table");
+    // Host stimulus: a 12-bit analog level on the ADC channels.
+    for device in m.core.mem().devices_mut() {
+        device.drive_inputs(0x0ABC);
+    }
+    let err = m.run(100_000);
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
+    let polled = m.core.mem().read_word(board::RAM).unwrap();
+    let irq_result = m.core.mem().read_word(board::RAM + 4).unwrap();
+    Some((polled, irq_result))
+}
+
+/// On the STM32F103 board, firmware compiled against the real device header
+/// samples a host-injected 12-bit level — once by polling `EOC`, once through
+/// the `ADC1_2` interrupt.
+#[test]
+fn stm32f103_firmware_samples_the_adc() {
+    let Some((polled, irq_result)) = run_adc_firmware() else {
+        return; // skipped
+    };
+    assert_eq!(polled, 0x0ABC);
+    assert_eq!(irq_result, 0x0ABC);
 }
 
 /// Compile `firmware` against the STM32F4 device header, returning the flat
