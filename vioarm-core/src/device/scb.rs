@@ -41,6 +41,7 @@ const VTOR: u32 = 0xE000_ED08;
 const AIRCR: u32 = 0xE000_ED0C;
 const SCR: u32 = 0xE000_ED10;
 const CCR: u32 = 0xE000_ED14;
+const SHPR1: u32 = 0xE000_ED18;
 const SHPR2: u32 = 0xE000_ED1C;
 const SHPR3: u32 = 0xE000_ED20;
 const SHCSR: u32 = 0xE000_ED24;
@@ -80,6 +81,8 @@ const CCR_RESET: u32 = 0x0000_0200;
 // Thread mode.
 const SHCSR_WRITABLE: u32 = 0x0007_F000;
 const SHCSR_SVCALLPENDED: u32 = 0x0000_8000;
+const SHCSR_USGFAULTPENDED: u32 = 0x0000_1000;
+const SHCSR_USGFAULTENA: u32 = 0x0004_0000;
 
 // CFSR combines MMFSR (bits 7:0), BFSR (15:8), and UFSR (31:16); HFSR carries
 // FORCED (31) and VECTTBL (1). Both are write-1-to-clear: firmware writes 1s
@@ -94,8 +97,12 @@ const HFSR_MASK: u32 = 0x4000_0002;
 /// access-control register, and the FP context control.
 #[derive(Debug, Clone)]
 pub struct Scb {
-    ranges: [Region; 14],
+    ranges: [Region; 15],
     pendsv: bool,
+    /// `SHPR1`: configurable priorities for the fault exceptions. Only the
+    /// `UsageFault` byte (bits 15:8) is modeled; MemManage/BusFault are not
+    /// distinct exceptions in this simulator.
+    shpr1: u32,
     shpr2: u32,
     shpr3: u32,
     cpacr: u32,
@@ -131,6 +138,7 @@ impl Scb {
                 Region::new(AIRCR, 4),
                 Region::new(SCR, 4),
                 Region::new(CCR, 4),
+                Region::new(SHPR1, 4),
                 Region::new(SHPR2, 4),
                 Region::new(SHPR3, 4),
                 Region::new(SHCSR, 4),
@@ -142,6 +150,7 @@ impl Scb {
                 Region::new(FPDSCR, 4),
             ],
             pendsv: false,
+            shpr1: 0,
             shpr2: 0,
             shpr3: 0,
             cpacr: 0,
@@ -169,11 +178,13 @@ impl Scb {
         self.pendsv
     }
 
-    /// The configurable priority byte for system exception `n` (`11`, `14`,
-    /// `15`), lower meaning higher priority. Unrelated numbers read zero.
+    /// The configurable priority byte for system exception `n` (`6`, `11`,
+    /// `14`, `15`), lower meaning higher priority. Unrelated numbers read
+    /// zero.
     #[must_use]
     pub const fn priority(&self, n: u8) -> u8 {
         match n {
+            6 => ((self.shpr1 >> 8) & 0xFF) as u8,
             11 => ((self.shpr2 >> 24) & 0xFF) as u8,
             14 => ((self.shpr3 >> 16) & 0xFF) as u8,
             15 => ((self.shpr3 >> 24) & 0xFF) as u8,
@@ -232,8 +243,29 @@ impl Scb {
         self.shcsr &= !SHCSR_SVCALLPENDED;
     }
 
+    /// Whether `SHCSR.USGFAULTENA` is set: `UsageFault` is taken as a distinct
+    /// exception rather than escalated to `HardFault`.
+    #[must_use]
+    pub const fn usage_fault_enabled(&self) -> bool {
+        self.shcsr & SHCSR_USGFAULTENA != 0
+    }
+
+    /// Whether `SHCSR.USGFAULTPENDED` is set: a `UsageFault` is pended and
+    /// should be taken by the interrupt controller once the exception is
+    /// enabled and preempts the running context.
+    #[must_use]
+    pub const fn usage_fault_pending(&self) -> bool {
+        self.shcsr & SHCSR_USGFAULTPENDED != 0
+    }
+
+    /// Clear `SHCSR.USGFAULTPENDED`, as the interrupt controller does when a
+    /// `UsageFault` is taken.
+    pub fn acknowledge_usage_fault(&mut self) {
+        self.shcsr &= !SHCSR_USGFAULTPENDED;
+    }
+
     /// Record escalated-fault status into `CFSR`/`HFSR`. The core calls this
-    /// on the paths where it folds a fault into HardFault; firmware reads the
+    /// on the paths where it folds a fault into `HardFault`; firmware reads the
     /// cause through the memory-mapped windows and clears bits write-1-to-clear.
     pub fn record_fault(&mut self, cfsr_bits: u32, hfsr_bits: u32) {
         self.cfsr |= cfsr_bits & CFSR_MASK;
@@ -249,6 +281,7 @@ impl Scb {
             AIRCR => 0xFA05_0000 | (u32::from(self.prig()) << 8),
             SCR => self.scr,
             CCR => self.ccr,
+            SHPR1 => self.shpr1,
             SHPR2 => self.shpr2,
             SHPR3 => self.shpr3,
             SHCSR => self.shcsr,
@@ -305,6 +338,10 @@ impl Scb {
                 let shift = 8 * offset;
                 self.ccr = (self.ccr & !(0xFF << shift)) | (u32::from(val) << shift);
                 self.ccr &= CCR_MASK;
+            }
+            SHPR1 => {
+                let shift = 8 * offset;
+                self.shpr1 = (self.shpr1 & !(0xFF << shift)) | (u32::from(val) << shift);
             }
             SHPR2 => {
                 let shift = 8 * offset;
@@ -390,6 +427,7 @@ impl Peripheral for Scb {
 
     fn reset(&mut self) {
         self.pendsv = false;
+        self.shpr1 = 0;
         self.shpr2 = 0;
         self.shpr3 = 0;
         self.cpacr = 0;
@@ -481,6 +519,39 @@ mod tests {
         s.reset();
         assert!(!s.pendsv_pending());
         assert_eq!(s.priority(11), 0);
+    }
+
+    #[test]
+    fn shpr1_stores_usage_fault_priority() {
+        let mut s = Scb::new();
+        // SHPR1 byte 1 -> UsageFault (bits 15:8).
+        s.write(0xE000_ED19, 0x60).unwrap();
+        assert_eq!(s.priority(6), 0x60);
+        assert_eq!(read_word(&mut s, 0xE000_ED18), 0x0000_6000);
+        // The MemManage/BusFault bytes (SHPR1 bytes 3 and 2) are unmodeled
+        // and expose no priority.
+        s.reset();
+        assert_eq!(read_word(&mut s, 0xE000_ED18), 0);
+        assert_eq!(s.priority(6), 0);
+    }
+
+    #[test]
+    fn shcsr_usage_fault_enable_and_pend() {
+        let mut s = Scb::new();
+        assert!(!s.usage_fault_enabled());
+        assert!(!s.usage_fault_pending());
+        // Pend and enable through the SHCSR window.
+        write_word(&mut s, 0xE000_ED24, 0x0004_1000);
+        assert!(s.usage_fault_pending());
+        assert!(s.usage_fault_enabled());
+        // Acknowledge (the interrupt controller taking the exception) clears
+        // the pend but leaves the enable.
+        s.acknowledge_usage_fault();
+        assert!(!s.usage_fault_pending());
+        assert!(s.usage_fault_enabled());
+        s.reset();
+        assert!(!s.usage_fault_pending());
+        assert!(!s.usage_fault_enabled());
     }
 
     #[test]

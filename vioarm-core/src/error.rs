@@ -59,6 +59,12 @@ pub enum Exception {
     /// Exception number 3: the only fault ARMv6-M software can reach without
     /// a peripheral-provided interrupt.
     HardFault,
+    /// Exception number 6: the `UsageFault`, taken for undefined instructions,
+    /// divide-by-zero with `CCR.DIV_0_TRP`, coprocessor access violations
+    /// (`NOCP`), and alignment faults, when `SHCSR.USGFAULTENA` is set. When
+    /// disabled (or when it cannot preempt the running context) a `UsageFault`
+    /// escalates to `HardFault` with `HFSR.FORCED`.
+    UsageFault,
     /// Exception number 11: the supervisor call, taken by executing `svc`.
     /// Its vector is read from the same table as the other exceptions.
     SvCall,
@@ -78,6 +84,7 @@ impl Exception {
     pub const fn number(self) -> u8 {
         match self {
             Self::HardFault => 3,
+            Self::UsageFault => 6,
             Self::SvCall => 11,
             Self::PendSV => 14,
             Self::SysTick => 15,

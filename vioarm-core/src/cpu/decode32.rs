@@ -885,8 +885,8 @@ pub fn decode32(hi: u16, lo: u16) -> Result<Inst32, DecodeError> {
 /// `addw`/`subw` immediates), the immediate-offset load/store family, and the
 /// `B.W`/`B<c>.W`/`BLX` immediate branches are layered on top. The memory
 /// decoders are consulted before the data-processing set: their `F8xx`/`F9xx`
-/// first halfwords overlap the modified-immediate mask (`hi & 0xF600`) and
-/// must win the match.
+/// first halfwords overlap the modified-immediate space and must win the
+/// match.
 ///
 /// # Errors
 ///
@@ -1435,8 +1435,10 @@ fn decode_dp_plain(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
 /// decode the ARMv7-M modified-immediate data-processing set.
 fn decode_dp_modified(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
     // 1111 0 i 0 0 C op S Rn / 0 imm3 Rd imm8, C = bit8 selects the
-    // add/sub family, `imm12` expanded by `ThumbExpandImm`.
-    if hi & 0xF600 != 0xF000 {
+    // add/sub family, `imm12` expanded by `ThumbExpandImm`. Fixed bits are
+    // 11110 (bits 15:11) and bit9 = 0; bit10 (`i`) is free, so mask 0xFA00
+    // rather than 0xF600 (which wrongly pinned `i` to 0).
+    if hi & 0xFA00 != 0xF000 {
         return None;
     }
     if lo & 0x8000 != 0 {

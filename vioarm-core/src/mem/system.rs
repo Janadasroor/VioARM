@@ -210,13 +210,17 @@ impl<M: Bus> SystemMemory<M> {
     }
 
     /// The current execution priority: the priority of the running exception,
-    /// or `u8::MAX` in Thread mode.
+    /// or `u8::MAX` in Thread mode. `HardFault` (3) and `UsageFault` (6) get their
+    /// fixed/configurable priorities; `SVCall` (11), `PendSV` (14), and `SysTick`
+    /// (15) read the SHPR bytes.
     #[allow(clippy::cast_possible_truncation)]
     fn current_priority(&self, ipsr: u8) -> u8 {
         match ipsr {
             0 => u8::MAX,
-            // SVCall (11), PendSV (14), and SysTick (15) are the
-            // configurable-priority system exceptions with SHPR bytes.
+            // HardFault is priority -1: encoded as the highest possible
+            // (lowest numeric) priority, so nothing preempts it.
+            3 => 0,
+            6 => self.scb.priority(6),
             11 | 14 | 15 => self.scb.priority(ipsr),
             n => self.nvic.priority(u32::from(n - 16)),
         }
@@ -259,6 +263,14 @@ impl<M: Bus> SystemMemory<M> {
             let (g, s) = self.split_priority(p);
             Self::consider(&mut best, 11, g, s, p);
         }
+        // A software-pended UsageFault is taken only while the exception is
+        // enabled; disabled, the pend stays latched (it escalates only when a
+        // fault is raised synchronously).
+        if self.scb.usage_fault_pending() && self.scb.usage_fault_enabled() {
+            let p = self.scb.priority(6);
+            let (g, s) = self.split_priority(p);
+            Self::consider(&mut best, 6, g, s, p);
+        }
         let mut ready = self.nvic.ready();
         while ready != 0 {
             let line = ready.trailing_zeros();
@@ -271,23 +283,19 @@ impl<M: Bus> SystemMemory<M> {
         let (n, group, _sub, priority) = best?;
         // BASEPRI masks the configurable-priority exceptions (SVCall, PendSV,
         // SysTick, and external IRQs) whose priority number is `>=` its value.
-        // A zero BASEPRI never masks. Faults (3) are not configurable.
+        // A zero BASEPRI never masks. Faults (3, 6) are not configurable.
         if basepri != 0 && (n == 11 || n >= 14) && priority >= basepri {
             return None;
         }
         // Only a strictly higher-priority (numerically lower) group preempts
         // the one running; an equal group never preempts, even with a higher
-        // subpriority. HardFault (3) blocks everything we model.
-        match self.current_priority(current_ipsr) {
-            3 => None,
-            current => {
-                let (cur_group, _) = self.split_priority(current);
-                if group < cur_group {
-                    Some(n)
-                } else {
-                    None
-                }
-            }
+        // subpriority. HardFault runs at priority -1 (group 0), so nothing
+        // preempts it.
+        let (cur_group, _) = self.split_priority(self.current_priority(current_ipsr));
+        if group < cur_group {
+            Some(n)
+        } else {
+            None
         }
     }
 
@@ -295,6 +303,7 @@ impl<M: Bus> SystemMemory<M> {
     /// NVIC pending latch and tell the source device to drop its line.
     fn consume_exception(&mut self, n: u8) {
         match n {
+            6 => self.scb.acknowledge_usage_fault(),
             11 => self.scb.acknowledge_svcall(),
             14 => self.scb.acknowledge(1),
             15 => {
@@ -899,6 +908,46 @@ mod tests {
         assert_eq!(sys.next_exception(false, false, 0x20, 0), None);
         assert_eq!(sys.next_exception(false, false, 0x40, 0), None);
         assert_eq!(sys.next_exception(false, false, 0x50, 0), Some(11));
+    }
+
+    #[test]
+    fn shcsr_usagefaultpend_takes_when_enabled() {
+        let mut sys = SystemMemory::new(ram());
+        // Pend a UsageFault while it is disabled: the pend stays latched.
+        sys.write_word(0xE000_ED24, 0x0000_1000).unwrap();
+        assert_eq!(sys.next_exception(false, false, 0, 0), None);
+        // Enable USGFAULTENA: the pended UsageFault is then taken (exc 6).
+        sys.write_word(0xE000_ED24, 0x0004_1000).unwrap();
+        assert_eq!(sys.next_exception(false, false, 0, 0), Some(6));
+        // Acknowledge clears the pend; the second peek sees nothing.
+        sys.acknowledge_exception(6);
+        assert_eq!(sys.next_exception(false, false, 0, 0), None);
+    }
+
+    #[test]
+    fn usagefault_pend_blocked_inside_hardfault() {
+        let mut sys = SystemMemory::new(ram());
+        sys.write_word(0xE000_ED24, 0x0004_1000).unwrap();
+        // Inside the HardFault handler (ipsr 3, priority -1) nothing preempts.
+        assert_eq!(sys.next_exception(false, false, 0, 3), None);
+        // In Thread mode it is taken.
+        assert_eq!(sys.next_exception(false, false, 0, 0), Some(6));
+    }
+
+    #[test]
+    fn usagefault_pend_preempts_lower_priority_handler() {
+        let mut sys = SystemMemory::new(ram());
+        // IRQ7 (exc 23) running at priority 0xC0; UsageFault pended at 0x40.
+        sys.write_word(0xE000_E200, 1 << 7).unwrap();
+        sys.write_word(0xE000_E100, 1 << 7).unwrap();
+        sys.write(0xE000_E407, 0xC0).unwrap();
+        sys.write(0xE000_ED19, 0x40).unwrap(); // SHPR1 UsageFault prio 0x40
+        sys.write_word(0xE000_ED24, 0x0004_1000).unwrap();
+        assert_eq!(sys.next_exception(false, false, 0, 23), Some(6));
+        // At the same priority the running handler blocks the pend.
+        sys.write(0xE000_ED19, 0xC0).unwrap();
+        sys.write_word(0xE000_ED24, 0x0004_1000).unwrap();
+        assert_eq!(sys.next_exception(false, false, 0, 23), None);
     }
 
     #[test]

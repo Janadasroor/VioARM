@@ -151,6 +151,36 @@ fn build_firmware_with_includes(
     source: &str,
     includes: &[&str],
 ) -> Result<(Vec<u8>, HashMap<String, u32>), String> {
+    build_firmware_for(source, includes, "thumbv6m-none-eabi", "cortex-m0", false)
+}
+
+/// Like [`build_firmware_with_includes`], but for an ARMv7-M (Cortex-M3/M4)
+/// target, so the firmware can use the v7-M fault/FP features (`SHCSR`,
+/// `CPACR`, VFP).
+fn build_firmware_v7m_with_includes(
+    source: &str,
+    includes: &[&str],
+) -> Result<(Vec<u8>, HashMap<String, u32>), String> {
+    build_firmware_for(source, includes, "thumbv7em-none-eabi", "cortex-m4", false)
+}
+
+/// Like [`build_firmware_v7m_with_includes`], but with the FPU enabled so
+/// inline asm may reference VFP registers (`s0`, `d0`, ...). The ABI stays
+/// soft so no FP args/returns creep into the integer-only handlers.
+fn build_firmware_v7m_fp_with_includes(
+    source: &str,
+    includes: &[&str],
+) -> Result<(Vec<u8>, HashMap<String, u32>), String> {
+    build_firmware_for(source, includes, "thumbv7em-none-eabi", "cortex-m4", true)
+}
+
+fn build_firmware_for(
+    source: &str,
+    includes: &[&str],
+    target: &str,
+    cpu: &str,
+    vfp: bool,
+) -> Result<(Vec<u8>, HashMap<String, u32>), String> {
     let clang = which("clang").ok_or_else(|| "clang not found on PATH".to_string())?;
     let objcopy = which("llvm-objcopy")
         .or_else(|| which("objcopy"))
@@ -167,9 +197,16 @@ fn build_firmware_with_includes(
 
     let src = src.to_str().ok_or("temp path not UTF-8")?;
     let obj = obj.to_str().ok_or("temp path not UTF-8")?;
+    let target_arg = format!("--target={target}");
+    let cpu_arg = format!("-mcpu={cpu}");
+    let float_args: [&str; 2] = if vfp {
+        ["-mfloat-abi=softfp", "-mfpu=fpv4-sp-d16"]
+    } else {
+        ["-mfloat-abi=soft", "-mfpu=none"]
+    };
     let mut args = vec![
-        "--target=thumbv6m-none-eabi",
-        "-mcpu=cortex-m0",
+        target_arg.as_str(),
+        cpu_arg.as_str(),
         "-mthumb",
         "-ffreestanding",
         "-nostdlib",
@@ -180,6 +217,9 @@ fn build_firmware_with_includes(
         "-o",
         obj,
     ];
+    for f in float_args {
+        args.push(f);
+    }
     for inc in includes {
         args.push("-I");
         args.push(inc);
@@ -817,4 +857,134 @@ fn stm32f103_dma_transfers_memory_to_memory() {
         1,
         "the memory-to-memory copy was verified"
     );
+}
+
+/// ARMv7-M firmware that enables `SHCSR.USGFAULTENA`, trips an undefined
+/// instruction, and verifies the distinct `UsageFault` handler ran with the
+/// `UNDEFINSTR` cause and no `FORCED` escalation.
+///
+/// The handler clears `USGFAULTENA` before its trailing `bkpt` so the debug
+/// trap faults straight into (disabled) `HardFault`; with no `HardFault` vector
+/// written the core halts with `NonThumbTarget`, leaving the `ENTRY`/`CAUSE`
+/// snapshots intact.
+const USAGE_FAULT_FIRMWARE: &str = r#"
+#define SHCSR 0xE000ED24u
+#define CFSR  0xE000ED28u
+#define HFSR  0xE000ED2Cu
+#define ENTRY 0x20000000u
+#define CAUSE 0x20000004u
+#define HFRS  0x20000008u
+
+void UsageFault_Handler(void) {
+    *(volatile unsigned *)ENTRY = 6;
+    *(volatile unsigned *)CAUSE = *(volatile unsigned *)CFSR;
+    *(volatile unsigned *)HFRS = *(volatile unsigned *)HFSR;
+    *(volatile unsigned *)SHCSR &= ~0x40000u; /* stop re-faulting on the trap */
+    __asm__ volatile("bkpt #0");              /* HardFault (disabled) -> halt */
+}
+
+void reset(void) {
+    *(volatile unsigned *)SHCSR |= 0x40000u; /* USGFAULTENA */
+    __asm__ volatile("udf #0");              /* -> distinct UsageFault */
+}
+"#;
+
+/// On the STM32F103 board (ARMv7-M core), a distinct `UsageFault` exception is
+/// taken for an undefined instruction when `USGFAULTENA` is set, and the
+/// `UNDEFINSTR` cause is visible in `CFSR` without a `FORCED` escalation.
+#[test]
+fn usage_fault_is_a_distinct_exception_for_real_firmware() {
+    let (code, symbols) = match build_firmware_v7m_with_includes(USAGE_FAULT_FIRMWARE, &[]) {
+        Ok(image) => image,
+        Err(why) => {
+            eprintln!("skipping usage-fault test: {why}");
+            return;
+        }
+    };
+    let entry = *symbols.get("reset").expect("no reset symbol");
+    let uf = *symbols
+        .get("UsageFault_Handler")
+        .expect("no UsageFault_Handler symbol");
+    assert!(!code.is_empty(), "compiled .text must not be empty");
+
+    let mut m = Machine::armv7m(board::stm32f103());
+    m.load_image(&load_flat(CODE_BASE, &code));
+    {
+        let mem = m.core.mem();
+        mem.write_word(FLASH, INIT_SP).unwrap();
+        mem.write_word(FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+        // UsageFault vector 6 at FLASH + 24; HardFault vector left unset so
+        // the handler's `bkpt` escalates to HardFault -> vector 0 -> halt.
+        mem.write_word(FLASH + 6 * 4, (CODE_BASE + uf) | 1).unwrap();
+    }
+    m.reset().expect("reset from vector table");
+    let err = m.run(100_000);
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
+    assert_eq!(
+        m.core.mem().read_word(0x2000_0000).unwrap(),
+        6,
+        "the UsageFault handler ran, not HardFault"
+    );
+    // UNDEFINSTR (UFSR bit 0 -> CFSR bit 16), no FORCED in HFSR.
+    assert_eq!(m.core.mem().read_word(0x2000_0004).unwrap(), 0x0001_0000);
+    assert_eq!(m.core.mem().read_word(0x2000_0008).unwrap(), 0);
+}
+
+/// ARMv7-M firmware that leaves `CPACR` at reset (FPU denied) and executes a
+/// VFP instruction: the access is rejected with a `NOCP` `UsageFault`.
+const NOCP_FIRMWARE: &str = r#"
+#define SHCSR 0xE000ED24u
+#define CFSR  0xE000ED28u
+#define ENTRY 0x20000000u
+#define CAUSE 0x20000004u
+
+void UsageFault_Handler(void) {
+    *(volatile unsigned *)ENTRY = 6;
+    *(volatile unsigned *)CAUSE = *(volatile unsigned *)CFSR;
+    *(volatile unsigned *)SHCSR &= ~0x40000u; /* stop re-faulting on the trap */
+    __asm__ volatile("bkpt #0");              /* HardFault (disabled) -> halt */
+}
+
+void reset(void) {
+    *(volatile unsigned *)SHCSR |= 0x40000u; /* USGFAULTENA */
+    __asm__ volatile("vmov s0, r0");         /* CPACR denies: -> NOCP */
+}
+"#;
+
+/// A VFP instruction with `CPACR` at zero (the reset state, denying FPU
+/// access) raises a `NOCP` `UsageFault` instead of executing.
+#[test]
+fn cpacr_denies_vfp_with_nocp_usage_fault() {
+    let (code, symbols) = match build_firmware_v7m_fp_with_includes(NOCP_FIRMWARE, &[]) {
+        Ok(image) => image,
+        Err(why) => {
+            eprintln!("skipping nocp test: {why}");
+            return;
+        }
+    };
+    let entry = *symbols.get("reset").expect("no reset symbol");
+    let uf = *symbols
+        .get("UsageFault_Handler")
+        .expect("no UsageFault_Handler symbol");
+
+    let mut m = Machine::armv7m(board::stm32f103());
+    m.load_image(&load_flat(CODE_BASE, &code));
+    {
+        let mem = m.core.mem();
+        mem.write_word(FLASH, INIT_SP).unwrap();
+        mem.write_word(FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+        // UsageFault vector 6 at FLASH + 24; HardFault vector left unset so
+        // the handler's `bkpt` escalates to HardFault -> vector 0 -> halt.
+        mem.write_word(FLASH + 6 * 4, (CODE_BASE + uf) | 1).unwrap();
+    }
+    m.reset().expect("reset from vector table");
+    let err = m.run(100_000);
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
+    assert_eq!(
+        m.core.mem().read_word(0x2000_0000).unwrap(),
+        6,
+        "the UsageFault handler ran, not HardFault"
+    );
+    // NOCP (UFSR bit 1 -> CFSR bit 17).
+    assert_eq!(m.core.mem().read_word(0x2000_0004).unwrap(), 0x0002_0000);
 }

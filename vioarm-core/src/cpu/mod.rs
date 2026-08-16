@@ -290,15 +290,37 @@ const VTOR_MASK: u32 = !0x7F;
 /// `CFSR`/`HFSR` fault-status bits the exception paths record on the
 /// escalation paths that fold a fault into HardFault (see
 /// `PeripheralBus::record_fault`). A zero divisor with `DIV_0_TRP` is a
-/// UsageFault `DIVBYZERO`; an undecodable instruction is `UNDEFINSTR`; a
-/// faulting data access is a BusFault `PRECISERR`. Every escalation sets
-/// `HFSR.FORCED`.
+/// UsageFault `DIVBYZERO`; an undecodable instruction is `UNDEFINSTR`; an
+/// access to a disabled coprocessor is `NOCP`; a faulting data access is a
+/// BusFault `PRECISERR`. Every escalation sets `HFSR.FORCED`.
 const UFSR_UNDEFINSTR: u32 = 0x0001_0000; // UFSR bit 0 -> combined bit 16
+const UFSR_NOCP: u32 = 0x0002_0000; // UFSR bit 1 -> combined bit 17
 const UFSR_DIVBYZERO: u32 = 0x0200_0000; // UFSR bit 9 -> combined bit 25
 const BFSR_PRECISERR: u32 = 0x0000_0100; // BFSR bit 0 -> combined bit 8
 // QEMU reports HFSR.FORCED at bit 30 (0x4000_0000) rather than the ARMv7-M
 // architectural bit 31; the differential oracle is the arbiter here.
 const HFSR_FORCED: u32 = 0x4000_0000;
+
+/// `SHCSR.USGFAULTENA` (bit 18): a distinct `UsageFault` exception, enabled by
+/// firmware through the SCB window.
+const SHCSR_ADDR: u32 = 0xE000_ED24;
+const SHCSR_USGFAULTENA: u32 = 0x0004_0000;
+
+/// `SHPR1` (bits 15:8) holds the configurable `UsageFault` priority byte;
+/// `SHPR2`/`SHPR3` hold the SVCall/PendSV/SysTick bytes.
+const SHPR1_ADDR: u32 = 0xE000_ED18;
+const SHPR2_ADDR: u32 = 0xE000_ED1C;
+const SHPR3_ADDR: u32 = 0xE000_ED20;
+
+/// The NVIC `IPR` base: the configurable priority byte for IRQ `n` lives at
+/// `IPR + n` (byte-addressable, like the M3/M4).
+const NVIC_IPR: u32 = 0xE000_E400;
+
+/// `CPACR` CP10/CP11 (bits 21:20, 23:22): both `0b11` is full FPU access.
+/// With no SCB on the bus the fallback is full access, so a bare core keeps
+/// the unconditional FPU of the previous model.
+const CPACR_ADDR: u32 = 0xE000_ED88;
+const CPACR_FULL: u32 = 0x00F0_0000;
 
 /// The core CPU state plus its bus.
 pub struct Core<B: PeripheralBus> {
@@ -1147,7 +1169,12 @@ impl<B: PeripheralBus> Core<B> {
         use Inst32 as I;
         // M-profile FP context mechanics run before every FP instruction,
         // exactly as the PreserveFPState()/ExecuteFPCheck() pseudocode does.
+        // CPACR CP10/CP11 gate access first: denied access is a NOCP
+        // UsageFault taken before any FP-context activation.
         if Self::inst_is_vfp(&inst) {
+            if self.mem.read_word(CPACR_ADDR).unwrap_or(CPACR_FULL) & CPACR_FULL != CPACR_FULL {
+                return self.usage_fault(pc, UFSR_NOCP);
+            }
             self.fp_context()?;
         }
         match inst {
@@ -2823,21 +2850,64 @@ impl<B: PeripheralBus> Core<B> {
         Ok(Self::check_branch(target))
     }
 
-    /// Raise a HardFault for an undecodable instruction at `pc`. The stacked
-    /// return address is the faulting instruction itself, so the handler can
-    /// repair or skip the bad opcode (it must advance `pc` itself); QEMU and
-    /// real Cortex-M hardware both stack the faulting address here. Records a
-    /// UsageFault `UNDEFINSTR` and the `FORCED` escalation bit.
+    /// Take a UsageFault for an undecodable instruction at `pc`. With
+    /// `SHCSR.USGFAULTENA` set and a UsageFault that outranks the running
+    /// context, a distinct UsageFault (vector 6) is taken; otherwise the fault
+    /// escalates to HardFault. Either way the stacked return address is the
+    /// faulting instruction itself, so the handler can repair or skip the bad
+    /// opcode (it must advance `pc` itself). Records a UsageFault
+    /// `UNDEFINSTR` and, on escalation, the `FORCED` bit.
     fn hardfault_on_undefined(&mut self, pc: u32, _size: u32) -> Result<Next, HaltCause> {
         self.usage_fault(pc, UFSR_UNDEFINSTR)
     }
 
-    /// Fold a UsageFault (recorded as `ufsr_bit` in `CFSR`, plus `HFSR.FORCED`)
-    /// into HardFault. The stacked return address is the faulting instruction.
+    /// Take a UsageFault (recorded as `ufsr_bit` in `CFSR`): a distinct
+    /// exception when `SHCSR.USGFAULTENA` is set and its priority outranks the
+    /// running context, otherwise escalated to HardFault with `HFSR.FORCED`.
+    /// The stacked return address is the faulting instruction. With no SCB on
+    /// the bus the architectural reset state applies (disabled), so faults
+    /// fold to HardFault exactly as before.
     fn usage_fault(&mut self, pc: u32, ufsr_bit: u32) -> Result<Next, HaltCause> {
-        self.mem.record_fault(ufsr_bit, HFSR_FORCED);
-        self.take_exception(Exception::HardFault, pc)?;
+        let enabled = self.mem.read_word(SHCSR_ADDR).unwrap_or(0) & SHCSR_USGFAULTENA != 0;
+        // FAULTMASK raises the current priority to -1, below which nothing can
+        // preempt, so a distinct UsageFault cannot be taken under it.
+        let current = if self.faultmask { 0 } else { self.current_priority() };
+        if enabled && self.priority_byte(6) < current {
+            self.mem.record_fault(ufsr_bit, 0);
+            self.take_exception(Exception::UsageFault, pc)?;
+        } else {
+            self.mem.record_fault(ufsr_bit, HFSR_FORCED);
+            self.take_exception(Exception::HardFault, pc)?;
+        }
         Ok(Next::Advance(self.regs.pc))
+    }
+
+    /// The priority of the currently running context: `u8::MAX` in Thread
+    /// mode, HardFault at -1 (encoded as the highest priority), and otherwise
+    /// the running exception's configurable priority byte.
+    fn current_priority(&mut self) -> u8 {
+        match self.ipsr {
+            0 => u8::MAX,
+            3 => 0,
+            6 | 11 | 14 | 15 => self.priority_byte(self.ipsr),
+            n => self
+                .mem
+                .read(NVIC_IPR.wrapping_add(u32::from(n - 16)))
+                .unwrap_or(0),
+        }
+    }
+
+    /// The configurable priority byte for system exception `n` (`6`, `11`,
+    /// `14`, `15`), lower meaning higher priority.
+    fn priority_byte(&mut self, n: u8) -> u8 {
+        let (addr, shift) = match n {
+            6 => (SHPR1_ADDR, 8),
+            11 => (SHPR2_ADDR, 24),
+            14 => (SHPR3_ADDR, 16),
+            15 => (SHPR3_ADDR, 24),
+            _ => return 0,
+        };
+        ((self.mem.read_word(addr).unwrap_or(0) >> shift) & 0xFF) as u8
     }
 
     /// Escalate a faulting data access at `addr` (from instruction at `pc`)
@@ -2986,6 +3056,7 @@ impl<B: PeripheralBus> Core<B> {
     pub fn enter_exception(&mut self, n: u8) -> Result<(), HaltCause> {
         let ex = match n {
             3 => Exception::HardFault,
+            6 => Exception::UsageFault,
             11 => Exception::SvCall,
             14 => Exception::PendSV,
             15 => Exception::SysTick,
@@ -3494,7 +3565,7 @@ mod tests {
     }
 
     /// Place a byte sequence (an instruction stream) at `addr`.
-    fn load_inst(c: &mut Core<crate::mem::flat::FlatMemory>, addr: u32, bytes: &[u8]) {
+    fn load_inst<M: crate::mem::PeripheralBus>(c: &mut Core<M>, addr: u32, bytes: &[u8]) {
         for (i, b) in bytes.iter().enumerate() {
             c.mem().write(addr + i as u32, *b).unwrap();
         }
@@ -5919,5 +5990,126 @@ mod tests {
         assert_eq!(c.vfp.read_s(0), 0x40A0_0000);
         assert_eq!(c.vfp.fpscr, 0x0000_0001);
         assert_ne!(c.control & CONTROL_FPCA, 0);
+    }
+
+    /// An ARMv7-M core over a `SystemMemory` with the SCB present, so `SHCSR`
+    /// and `CPACR` windows gate fault and FP behavior.
+    fn armv7m_sys_core() -> Core<crate::mem::system::SystemMemory<crate::mem::flat::FlatMemory>> {
+        let backing = crate::mem::flat::FlatMemory::with_layout(
+            &[0x0000_0000, 0x2000_0000],
+            &[0x1000, 0x1000],
+        );
+        Core::armv7m(crate::mem::system::SystemMemory::new(backing))
+    }
+
+    #[test]
+    fn usage_fault_taken_as_distinct_exception_when_enabled() {
+        const CODE: u32 = 0x2000_0100;
+        const UF_HANDLER: u32 = 0x2000_0400;
+        const SP: u32 = 0x2000_0800;
+        let mut c = armv7m_sys_core();
+        // UsageFault vector 6 at 0x18; HardFault vector 3 at 0xc.
+        c.mem().write_word(6 * 4, UF_HANDLER | 1).unwrap();
+        c.mem().write_word(3 * 4, UF_HANDLER | 1).unwrap();
+        // SHCSR.USGFAULTENA (bit 18) enables a distinct UsageFault.
+        c.mem().write_word(0xE000_ED24, 0x0004_0000).unwrap();
+        c.regs.sp = SP;
+        c.regs.msp = SP;
+        load_inst(&mut c, CODE, &[0x00, 0xde]); // udf -> UsageFault
+        load_inst(&mut c, UF_HANDLER, &[0x70, 0x47]); // bx lr
+        c.regs.pc = CODE;
+        c.step().unwrap();
+        // The distinct UsageFault is taken: ipsr 6, its own vector, and the
+        // standard EXC_RETURN. CFSR records UNDEFINSTR without FORCED.
+        assert_eq!(c.ipsr, 6);
+        assert_eq!(c.regs.pc, UF_HANDLER);
+        assert_eq!(c.regs.lr, EXC_RETURN_THREAD_MSP);
+        assert_eq!(c.mem().read_word(0xE000_ED28).unwrap(), 0x0001_0000);
+        assert_eq!(c.mem().read_word(0xE000_ED2C).unwrap(), 0);
+        // The stacked return address is the faulting instruction.
+        assert_eq!(
+            c.mem().read_word(SP - FRAME_BYTES + 24).unwrap(),
+            CODE
+        );
+    }
+
+    #[test]
+    fn usage_fault_disabled_escalates_to_hardfault() {
+        const CODE: u32 = 0x2000_0100;
+        const HF_HANDLER: u32 = 0x2000_0600;
+        const SP: u32 = 0x2000_0800;
+        let mut c = armv7m_sys_core();
+        c.mem().write_word(3 * 4, HF_HANDLER | 1).unwrap();
+        c.regs.sp = SP;
+        c.regs.msp = SP;
+        load_inst(&mut c, CODE, &[0x00, 0xde]); // udf -> HardFault (USGFAULTENA=0)
+        c.regs.pc = CODE;
+        c.step().unwrap();
+        assert_eq!(c.ipsr, 3);
+        assert_eq!(c.regs.pc, HF_HANDLER);
+        // The fold records UNDEFINSTR plus the FORCED escalation bit.
+        assert_eq!(c.mem().read_word(0xE000_ED28).unwrap(), 0x0001_0000);
+        assert_eq!(c.mem().read_word(0xE000_ED2C).unwrap(), 0x4000_0000);
+    }
+
+    #[test]
+    fn usage_fault_in_handler_escalates_to_hardfault() {
+        const CODE: u32 = 0x2000_0100;
+        const UF_HANDLER: u32 = 0x2000_0400;
+        const HF_HANDLER: u32 = 0x2000_0600;
+        const SP: u32 = 0x2000_0800;
+        let mut c = armv7m_sys_core();
+        c.mem().write_word(6 * 4, UF_HANDLER | 1).unwrap();
+        c.mem().write_word(3 * 4, HF_HANDLER | 1).unwrap();
+        c.mem().write_word(0xE000_ED24, 0x0004_0000).unwrap();
+        c.regs.sp = SP;
+        c.regs.msp = SP;
+        load_inst(&mut c, CODE, &[0x00, 0xde]); // udf -> UsageFault
+        load_inst(&mut c, UF_HANDLER, &[0x00, 0xde]); // udf inside the handler
+        load_inst(&mut c, HF_HANDLER, &[0x70, 0x47]); // bx lr
+        c.regs.pc = CODE;
+        c.step().unwrap(); // take UsageFault
+        assert_eq!(c.ipsr, 6);
+        c.step().unwrap(); // the UDEF in the handler escalates to HardFault
+        assert_eq!(c.ipsr, 3);
+        assert_eq!(c.regs.pc, HF_HANDLER);
+    }
+
+    #[test]
+    fn cpacr_denied_vfp_raises_nocp_usage_fault() {
+        const CODE: u32 = 0x2000_0100;
+        const UF_HANDLER: u32 = 0x2000_0400;
+        const SP: u32 = 0x2000_0800;
+        let mut c = armv7m_sys_core();
+        c.mem().write_word(6 * 4, UF_HANDLER | 1).unwrap();
+        c.mem().write_word(0xE000_ED24, 0x0004_0000).unwrap();
+        // CPACR resets to zero: FP access is denied until firmware enables it.
+        c.regs.sp = SP;
+        c.regs.msp = SP;
+        c.regs.pc = CODE;
+        load_inst(&mut c, CODE, &[0x00, 0xee, 0x90, 0x0a]); // vmov s1, r0
+        load_inst(&mut c, UF_HANDLER, &[0x70, 0x47]); // bx lr
+        c.step().unwrap();
+        assert_eq!(c.ipsr, 6);
+        assert_eq!(c.regs.pc, UF_HANDLER);
+        // NOCP is the recorded UsageFault cause.
+        assert_eq!(c.mem().read_word(0xE000_ED28).unwrap(), 0x0002_0000);
+        // The FP context never activates on the denied access.
+        assert_eq!(c.control & CONTROL_FPCA, 0);
+    }
+
+    #[test]
+    fn cpacr_full_access_executes_vfp() {
+        const CODE: u32 = 0x2000_0100;
+        let mut c = armv7m_sys_core();
+        c.mem().write_word(6 * 4, CODE | 1).unwrap();
+        // Full access to CP10/CP11, as firmware enabling the FPU writes.
+        c.mem().write_word(0xE000_ED88, 0x00F0_0000).unwrap();
+        c.regs.write(0, 0x1122_3344);
+        c.regs.pc = CODE;
+        load_inst(&mut c, CODE, &[0x00, 0xee, 0x90, 0x0a]); // vmov s1, r0
+        c.step().unwrap();
+        assert_eq!(c.ipsr, 0);
+        assert_eq!(c.vfp.read_s(1), 0x1122_3344);
     }
 }
