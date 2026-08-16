@@ -1398,6 +1398,73 @@ fn usart2_rxne_dispatches_its_isr() {
     panic!("the USART2 ISR did not return to the spin loop");
 }
 
+/// The TIM1 update interrupt: the counter wraps past `ARR`, `UIF` raises the
+/// `TIM1_UP` line (IRQ 25 — the second line in the SVD table, after the break
+/// interrupt), and the machine dispatches to the `TIM1` ISR, which latches
+/// `SR` into RAM while the spin loop spins.
+#[test]
+fn tim1_update_dispatches_the_up_isr() {
+    use vioarm_core::board;
+
+    const TIM1_CR1: u32 = 0x4001_2C00;
+    const TIM1_DIER: u32 = 0x4001_2C0C;
+    const TIM1_ARR: u32 = 0x4001_2C2C;
+    const NVIC_ISER0: u32 = 0xE000_E100;
+    const RESULT: u32 = 0x2000_0000;
+    const ISR: u32 = ENTRY + 4;
+
+    // SP within the F103's 20 KiB RAM.
+    let mut m = Machine::new(board::stm32f103());
+    // Spin, then the ISR reads TIM1->SR, stores it to RAM 0x2000_0000, and
+    // returns. 16-bit Thumb only (the F103 boots an ARMv6-M core, so no
+    // Thumb-2). Bytes verified with clang -mcpu=cortex-m0.
+    m.load_image(&load_flat(ENTRY, &[0xFE, 0xE7]));
+    m.load_image(&load_flat(
+        ISR,
+        &[
+            0x03, 0x48, 0x00, 0x68, // ldr r0,[pc,#12]; ldr r0,[r0]
+            0x03, 0x49, 0x08, 0x60, // ldr r1,[pc,#12]; str r0,[r1]
+            0x70, 0x47, // bx lr
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // padding
+            0x10, 0x2C, 0x01, 0x40, // .word 0x40012C10 (TIM1_SR)
+            0x00, 0x00, 0x00, 0x20, // .word 0x20000000 (RESULT)
+        ],
+    ));
+    {
+        let mem = m.core.mem();
+        mem.write_word(FLASH, 0x2000_4000).unwrap(); // SP
+        mem.write_word(FLASH + 4, ENTRY | 1).unwrap(); // reset vector
+                                                       // Vector 41 = TIM1_UP IRQ 25 at FLASH + 41 * 4.
+        mem.write_word(FLASH + 41 * 4, ISR | 1).unwrap();
+    }
+    m.reset().unwrap();
+    {
+        let mem = m.core.mem();
+        mem.write_word(NVIC_ISER0, 1 << 25).unwrap(); // enable TIM1_UP
+        mem.write_word(TIM1_ARR, 2).unwrap(); // wrap every 3 counts
+        mem.write_word(TIM1_DIER, 1).unwrap(); // UIE
+        mem.write_word(TIM1_CR1, 1).unwrap(); // CEN
+    }
+    let mut entered = false;
+    for _ in 0..64 {
+        m.step().unwrap();
+        if m.core.regs.pc & !1 == ISR {
+            entered = true;
+            break;
+        }
+    }
+    assert!(entered, "the TIM1_UP ISR was dispatched");
+    // The ISR latches SR (UIF set) into RAM and returns to the spin loop.
+    for _ in 0..64 {
+        m.step().unwrap();
+        if m.core.regs.pc & !1 == ENTRY {
+            assert_eq!(m.core.mem().read_word(RESULT).unwrap(), 1);
+            return;
+        }
+    }
+    panic!("the TIM1 ISR did not return to the spin loop");
+}
+
 /// A level-sensitive interrupt line that stays asserted (the I2C EV line under
 /// `ITEVTEN`, with `SB` left set) must not starve the thread: after the
 /// handler's `EXC_RETURN`, the restored instruction executes before the

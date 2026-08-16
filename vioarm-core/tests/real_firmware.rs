@@ -1267,6 +1267,108 @@ fn stm32f103_firmware_talks_usart2() {
     assert_eq!(line, b"u2!\n");
 }
 
+/// Real CMSIS firmware drives the basic `TIM6` counter: enable the clock, arm
+/// the auto-reload, and wait for the update interrupt to fire. The ISR latches
+/// its run into `IRQ_SNAPSHOT`; after it returns, the firmware snapshots the
+/// still-counting `CNT` and halts. Both snapshots are read back from RAM.
+const STM32_F103_TIM6_FIRMWARE: &str = r#"
+#define STM32F10X_HD
+#include "stm32f10x.h"
+
+#define CNT_SNAPSHOT (*(volatile unsigned *)0x20000000u)
+#define IRQ_SNAPSHOT (*(volatile unsigned *)0x20000004u)
+
+void TIM6_IRQHandler(void) {
+    if (TIM6->SR & TIM_SR_UIF) {
+        TIM6->SR = 0u;          /* clear the update flag */
+        IRQ_SNAPSHOT = 0xA5u;
+    }
+}
+
+void reset(void) {
+    RCC->APB1ENR |= RCC_APB1ENR_TIM6EN;
+    TIM6->ARR = 0xFFFFu;
+    TIM6->PSC = 0u;
+    TIM6->EGR = TIM_EGR_UG;     /* force an update: reload ARR */
+    TIM6->SR = 0u;
+    NVIC->ISER[1] = 1u << (TIM6_IRQn - 32);
+    TIM6->DIER = TIM_DIER_UIE;
+    TIM6->CR1 = TIM_CR1_CEN;
+    while (!IRQ_SNAPSHOT) { }
+    CNT_SNAPSHOT = TIM6->CNT;
+    __asm__ volatile("bkpt #0");
+}
+"#;
+
+fn run_tim6_firmware() -> Option<(u32, u32)> {
+    let includes = [
+        "../packs/Keil.STM32F1xx_DFP/Device/Include",
+        "../packs/STM32F4xx_CMSIS/CMSIS/Core/Include",
+    ];
+    let mut include_paths = Vec::new();
+    for rel in includes {
+        let include = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel);
+        if !include.is_dir() {
+            eprintln!(
+                "skipping tim6 test: pack include dir {} not found",
+                include.display()
+            );
+            return None;
+        }
+        include_paths.push(
+            include
+                .to_str()
+                .expect("pack include path is not UTF-8")
+                .to_owned(),
+        );
+    }
+    let include_refs: Vec<&str> = include_paths.iter().map(String::as_str).collect();
+    let (code, symbols) =
+        match build_firmware_with_includes(STM32_F103_TIM6_FIRMWARE, &include_refs) {
+            Ok(image) => image,
+            Err(why) => {
+                eprintln!("skipping tim6 test: {why}");
+                return None;
+            }
+        };
+    let entry = *symbols.get("reset").expect("no reset symbol");
+    let irq = *symbols
+        .get("TIM6_IRQHandler")
+        .expect("no TIM6_IRQHandler symbol");
+    assert!(!code.is_empty(), "compiled .text must not be empty");
+
+    let mut m = Machine::new(board::stm32f103());
+    m.load_image(&load_flat(CODE_BASE, &code));
+    {
+        let mem = m.core.mem();
+        mem.write_word(FLASH, INIT_SP).unwrap();
+        mem.write_word(FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+        // Vector 70 = TIM6 IRQ 54 at FLASH + 70 * 4.
+        mem.write_word(FLASH + 70 * 4, (CODE_BASE + irq) | 1)
+            .unwrap();
+    }
+    m.reset().expect("reset from vector table");
+    let err = m.run(200_000);
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
+    let cnt = m.core.mem().read_word(board::RAM).unwrap();
+    let latched = m.core.mem().read_word(board::RAM + 4).unwrap();
+    Some((cnt, latched))
+}
+
+/// On the STM32F103 board, CMSIS firmware arms the basic `TIM6` counter and
+/// reaches its IRQ at the timer's real `0x4000_1000` registers.
+#[test]
+fn stm32f103_firmware_counts_with_tim6() {
+    let Some((cnt, latched)) = run_tim6_firmware() else {
+        return; // skipped
+    };
+    assert_eq!(latched, 0xA5);
+    assert!(
+        cnt < 0xFFFF,
+        "counter keeps counting after the overflow: {cnt:#x}"
+    );
+}
+
 /// Compile `firmware` against the STM32F4 device header, returning the flat
 /// `.text` and symbol map, or `None` if the toolchain or pack is missing.
 fn build_f4_firmware(firmware: &str) -> Option<(Vec<u8>, std::collections::HashMap<String, u32>)> {

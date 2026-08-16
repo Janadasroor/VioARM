@@ -113,6 +113,10 @@ pub fn stm32f103() -> BoardMemory {
     )));
     mem.attach(Box::new(Timer::tim2()));
     mem.attach(Box::new(Timer::tim3()));
+    mem.attach(Box::new(Timer::tim1()));
+    mem.attach(Box::new(Timer::tim4()));
+    mem.attach(Box::new(Timer::tim6()));
+    mem.attach(Box::new(Timer::tim7()));
     mem.attach(Box::new(Exti::new()));
     mem.attach(Box::new(Afio::new()));
     mem.attach(Box::new(Adc::adc1()));
@@ -176,6 +180,11 @@ pub fn stm32f107() -> BoardMemory {
     mem.attach(Box::new(Usart::uart5_for::<Stm32f107>()));
     mem.attach(Box::new(Timer::tim2_for::<Stm32f107>()));
     mem.attach(Box::new(Timer::tim3_for::<Stm32f107>()));
+    mem.attach(Box::new(Timer::tim1_for::<Stm32f107>()));
+    mem.attach(Box::new(Timer::tim4_for::<Stm32f107>()));
+    mem.attach(Box::new(Timer::tim5_for::<Stm32f107>()));
+    mem.attach(Box::new(Timer::tim6_for::<Stm32f107>()));
+    mem.attach(Box::new(Timer::tim7_for::<Stm32f107>()));
     mem.attach(Box::new(Exti::for_device::<Stm32f107>()));
     mem.attach(Box::new(Afio::for_device::<Stm32f107>()));
     mem.attach(Box::new(Adc::adc1_for::<Stm32f107>()));
@@ -273,6 +282,11 @@ pub fn stm32f407() -> BoardMemory {
     mem.attach(Box::new(Usart::uart5_for::<Stm32f407>()));
     mem.attach(Box::new(Usart::usart6_for::<Stm32f407>()));
     mem.attach(Box::new(Timer::tim2_for::<Stm32f407>()));
+    mem.attach(Box::new(Timer::tim1_for::<Stm32f407>()));
+    mem.attach(Box::new(Timer::tim4_for::<Stm32f407>()));
+    mem.attach(Box::new(Timer::tim5_for::<Stm32f407>()));
+    mem.attach(Box::new(Timer::tim6_for::<Stm32f407>()));
+    mem.attach(Box::new(Timer::tim7_for::<Stm32f407>()));
     mem.attach(Box::new(Exti::for_device::<Stm32f407>()));
     mem.attach(Box::new(Syscfg::for_device::<Stm32f407>()));
     mem.attach(Box::new(Adc::adc1_for::<Stm32f407>()));

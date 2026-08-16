@@ -719,6 +719,112 @@ mod tests {
     }
 
     #[test]
+    fn generated_timer_family_matches_silicon_layout() {
+        // TIM1/TIM4..TIM7 bases and update IRQs on every line. TIM1's table
+        // lists break first, so its update event is the second line (IRQ 25);
+        // the general/basic timers have a single line.
+        let cases = [
+            (
+                super::stm32f103::peripheral("TIM1").unwrap(),
+                0x4001_2c00u32,
+                24,
+                Some(25),
+            ),
+            (
+                super::stm32f103::peripheral("TIM4").unwrap(),
+                0x4000_0800,
+                30,
+                None,
+            ),
+            (
+                super::stm32f103::peripheral("TIM5").unwrap(),
+                0x4000_0c00,
+                50,
+                None,
+            ),
+            (
+                super::stm32f103::peripheral("TIM6").unwrap(),
+                0x4000_1000,
+                54,
+                None,
+            ),
+            (
+                super::stm32f103::peripheral("TIM7").unwrap(),
+                0x4000_1400,
+                55,
+                None,
+            ),
+            (
+                super::stm32f107::peripheral("TIM1").unwrap(),
+                0x4001_2c00,
+                24,
+                Some(25),
+            ),
+            (
+                super::stm32f107::peripheral("TIM4").unwrap(),
+                0x4000_0800,
+                30,
+                None,
+            ),
+            (
+                super::stm32f107::peripheral("TIM5").unwrap(),
+                0x4000_0c00,
+                50,
+                None,
+            ),
+            (
+                super::stm32f107::peripheral("TIM6").unwrap(),
+                0x4000_1000,
+                54,
+                None,
+            ),
+            (
+                super::stm32f107::peripheral("TIM7").unwrap(),
+                0x4000_1400,
+                55,
+                None,
+            ),
+            (
+                super::stm32f407::peripheral("TIM1").unwrap(),
+                0x4001_0000,
+                24,
+                Some(25),
+            ),
+            (
+                super::stm32f407::peripheral("TIM4").unwrap(),
+                0x4000_0800,
+                30,
+                None,
+            ),
+            (
+                super::stm32f407::peripheral("TIM5").unwrap(),
+                0x4000_0c00,
+                50,
+                None,
+            ),
+            (
+                super::stm32f407::peripheral("TIM6").unwrap(),
+                0x4000_1000,
+                54,
+                None,
+            ),
+            (
+                super::stm32f407::peripheral("TIM7").unwrap(),
+                0x4000_1400,
+                55,
+                None,
+            ),
+        ];
+        for (def, base, irq0, update) in cases {
+            assert_eq!(def.base, base, "base address of {}", def.name);
+            assert_eq!(def.irqs[0].number, irq0, "first IRQ of {}", def.name);
+            if let Some(update) = update {
+                assert_eq!(def.irqs[1].number, update, "update IRQ of {}", def.name);
+            }
+        }
+    }
+
+    #[test]
     fn generated_stm32f107_matches_silicon_layout() {
         let cases = [
             ("RCC", 0x4002_1000u32),

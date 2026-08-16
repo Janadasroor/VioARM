@@ -1,4 +1,4 @@
-//! The STM32F1 general-purpose timer (`TIM2`/`TIM3`), driven by the
+//! The STM32 general-purpose and basic timers (`TIM1`..`TIM7`), driven by the
 //! SVD-generated register tables.
 //!
 //! Register layout and resets come from the SVD; the table cannot express the
@@ -7,6 +7,12 @@
 //! `ARR` into an update event that sets `SR.UIF` and — with `DIER.UIE` set —
 //! raises a level-triggered IRQ. `EGR.UG` forces an update from software.
 //! Channel logic (`CCR`/`CCER`) is latched state only.
+//!
+//! The counter width varies by instance: `TIM2`/`TIM5` are 32-bit, the rest
+//! 16-bit. The advanced `TIM1` raises four lines (break, update, trigger/comm,
+//! capture/compare); the update interrupt is the second line in the table, so
+//! the model routes its single pending line to `TIM1_UP` (IRQ 25) rather than
+//! the break line the table happens to list first.
 
 use crate::device::svd::stm32f103;
 use crate::device::svd::{Behavior, Device, RegisterFile, Registers};
@@ -33,8 +39,8 @@ const UG: u32 = 1 << 0;
 /// The counting core the SVD cannot express.
 #[derive(Clone, Copy, Debug)]
 struct TimerBehavior {
-    /// Register width mask: `u32::MAX` for the 32-bit `TIM2`, `0xFFFF` for the
-    /// 16-bit `TIM3` counter and auto-reload registers.
+    /// Register width mask: `u32::MAX` for the 32-bit `TIM2`/`TIM5`,
+    /// `0xFFFF` for the 16-bit counters.
     width_mask: u32,
     /// Prescaler phase within the current `PSC + 1` division.
     psc_phase: u64,
@@ -67,30 +73,33 @@ impl Behavior for TimerBehavior {
         }
         let word = view.merged(offset, val, shift);
         match offset {
-            // TIM3's counter and auto-reload are 16-bit on silicon even
+            // The 16-bit counters and auto-reloads are 16-bit on silicon even
             // though the SVD describes 32-bit register words.
             CNT | ARR => word & self.width_mask,
             _ => word,
         }
     }
 
+    #[allow(clippy::cast_possible_truncation)]
     fn tick(&mut self, view: &mut Registers<&mut [u32]>, delta: u64) {
         if view.get(CR1) & CEN == 0 {
             return;
         }
         let div = u64::from(view.get(PSC).wrapping_add(1));
-        let arr = view.get(ARR);
+        let arr = u64::from(view.get(ARR));
         for _ in 0..delta {
             self.psc_phase += 1;
-            // The counter advances once every `PSC + 1` clock edges.
+            // The counter advances once every `PSC + 1` clock edges. Compare on
+            // the unmasked count so the 16-bit wrap past `0xFFFF` reads as an
+            // overflow (a masked `0` would never exceed `ARR`).
             if self.psc_phase >= div {
                 self.psc_phase = 0;
-                let cnt = view.get(CNT).wrapping_add(1) & self.width_mask;
+                let cnt = u64::from(view.get(CNT)) + 1;
                 if cnt > arr {
                     view.set(CNT, 0);
                     view.set(SR, view.get(SR) | UIF);
                 } else {
-                    view.set(CNT, cnt);
+                    view.set(CNT, cnt as u32);
                 }
             }
         }
@@ -101,14 +110,38 @@ impl Behavior for TimerBehavior {
     }
 }
 
-/// A general-purpose timer: `TIM2` (32-bit) or `TIM3` (16-bit).
+/// A timer: `TIM2`/`TIM5` (32-bit), the rest 16-bit. Base address, register
+/// set, and IRQ come from `D`'s generated tables.
 #[derive(Debug)]
 pub struct Timer {
     inner: RegisterFile<TimerBehavior>,
     name: &'static str,
+    /// The table index of the update interrupt line. The advanced `TIM1`
+    /// lists break first, so its update event routes to line 1 (`TIM1_UP`);
+    /// the general/basic timers have a single line at index 0.
+    irq_line: u32,
 }
 
 impl Timer {
+    /// A `TIM1` at `0x4001_2C00` (F1): 16-bit counter, update IRQ 25.
+    ///
+    /// # Panics
+    /// Panics if the generated device tables do not contain the `TIM1`
+    /// peripheral (a build-time invariant enforced by conformance tests).
+    #[must_use]
+    pub fn tim1() -> Self {
+        Self::tim1_for::<stm32f103::Stm32f103>()
+    }
+
+    /// A `TIM1` on another chip's device tables.
+    ///
+    /// # Panics
+    /// Panics if `D`'s generated tables do not contain the `TIM1` peripheral.
+    #[must_use]
+    pub fn tim1_for<D: Device>() -> Self {
+        Self::for_device::<D>("TIM1", "tim1", 0xFFFF, 1)
+    }
+
     /// A `TIM2` at `0x4000_0000`: 32-bit counter, IRQ 28.
     ///
     /// # Panics
@@ -125,11 +158,7 @@ impl Timer {
     /// Panics if `D`'s generated tables do not contain the `TIM2` peripheral.
     #[must_use]
     pub fn tim2_for<D: Device>() -> Self {
-        let def = D::peripheral("TIM2").expect("generated tables contain TIM2");
-        Self {
-            inner: RegisterFile::new(def, TimerBehavior::new(u32::MAX)),
-            name: "tim2",
-        }
+        Self::for_device::<D>("TIM2", "tim2", u32::MAX, 0)
     }
 
     /// A `TIM3` at `0x4000_0400`: 16-bit counter, IRQ 29.
@@ -148,10 +177,97 @@ impl Timer {
     /// Panics if `D`'s generated tables do not contain the `TIM3` peripheral.
     #[must_use]
     pub fn tim3_for<D: Device>() -> Self {
-        let def = D::peripheral("TIM3").expect("generated tables contain TIM3");
+        Self::for_device::<D>("TIM3", "tim3", 0xFFFF, 0)
+    }
+
+    /// A `TIM4` at `0x4000_0800`: 16-bit counter, IRQ 30.
+    ///
+    /// # Panics
+    /// Panics if the generated device tables do not contain the `TIM4`
+    /// peripheral (a build-time invariant enforced by conformance tests).
+    #[must_use]
+    pub fn tim4() -> Self {
+        Self::tim4_for::<stm32f103::Stm32f103>()
+    }
+
+    /// A `TIM4` on another chip's device tables.
+    ///
+    /// # Panics
+    /// Panics if `D`'s generated tables do not contain the `TIM4` peripheral.
+    #[must_use]
+    pub fn tim4_for<D: Device>() -> Self {
+        Self::for_device::<D>("TIM4", "tim4", 0xFFFF, 0)
+    }
+
+    /// A `TIM5` at `0x4000_0C00`: 32-bit counter, IRQ 50.
+    ///
+    /// # Panics
+    /// Panics if the generated device tables do not contain the `TIM5`
+    /// peripheral (a build-time invariant enforced by conformance tests).
+    #[must_use]
+    pub fn tim5() -> Self {
+        Self::tim5_for::<stm32f103::Stm32f103>()
+    }
+
+    /// A `TIM5` on another chip's device tables.
+    ///
+    /// # Panics
+    /// Panics if `D`'s generated tables do not contain the `TIM5` peripheral.
+    #[must_use]
+    pub fn tim5_for<D: Device>() -> Self {
+        Self::for_device::<D>("TIM5", "tim5", u32::MAX, 0)
+    }
+
+    /// A `TIM6` at `0x4000_1000`: 16-bit basic counter, IRQ 54.
+    ///
+    /// # Panics
+    /// Panics if the generated device tables do not contain the `TIM6`
+    /// peripheral (a build-time invariant enforced by conformance tests).
+    #[must_use]
+    pub fn tim6() -> Self {
+        Self::tim6_for::<stm32f103::Stm32f103>()
+    }
+
+    /// A `TIM6` on another chip's device tables.
+    ///
+    /// # Panics
+    /// Panics if `D`'s generated tables do not contain the `TIM6` peripheral.
+    #[must_use]
+    pub fn tim6_for<D: Device>() -> Self {
+        Self::for_device::<D>("TIM6", "tim6", 0xFFFF, 0)
+    }
+
+    /// A `TIM7` at `0x4000_1400`: 16-bit basic counter, IRQ 55.
+    ///
+    /// # Panics
+    /// Panics if the generated device tables do not contain the `TIM7`
+    /// peripheral (a build-time invariant enforced by conformance tests).
+    #[must_use]
+    pub fn tim7() -> Self {
+        Self::tim7_for::<stm32f103::Stm32f103>()
+    }
+
+    /// A `TIM7` on another chip's device tables.
+    ///
+    /// # Panics
+    /// Panics if `D`'s generated tables do not contain the `TIM7` peripheral.
+    #[must_use]
+    pub fn tim7_for<D: Device>() -> Self {
+        Self::for_device::<D>("TIM7", "tim7", 0xFFFF, 0)
+    }
+
+    fn for_device<D: Device>(
+        peripheral: &str,
+        name: &'static str,
+        width_mask: u32,
+        irq_line: u32,
+    ) -> Self {
+        let def = D::peripheral(peripheral)
+            .unwrap_or_else(|| panic!("generated tables contain {peripheral}"));
         Self {
-            inner: RegisterFile::new(def, TimerBehavior::new(0xFFFF)),
-            name: "tim3",
+            inner: RegisterFile::new(def, TimerBehavior::new(width_mask)),
+            name,
+            irq_line,
         }
     }
 }
@@ -184,7 +300,9 @@ impl Peripheral for Timer {
 
 impl InterruptSource for Timer {
     fn exception_number(&self) -> Option<u8> {
-        self.inner.exception_number()
+        // The advanced TIM1's first table line is the break interrupt; the
+        // update event belongs to the line the constructor stored (1 = UP).
+        self.inner.exception_for_line(self.irq_line)
     }
 
     fn pending(&self) -> u32 {
@@ -295,6 +413,73 @@ mod tests {
         let tim3_base = crate::device::stm32::TIM3;
         write_word(&mut t, tim3_base + 0x24, 0xFFFF_FFFF);
         assert_eq!(read_word(&mut t, tim3_base + 0x24), 0xFFFF);
+    }
+
+    #[test]
+    fn tim4_and_tim7_counters_are_sixteen_bit() {
+        for (timer, base) in [
+            (Timer::tim4(), 0x4000_0800u32),
+            (Timer::tim7(), 0x4000_1400),
+        ] {
+            let mut t = timer;
+            write_word(&mut t, base + 0x24, 0xFFFF_FFFF);
+            assert_eq!(read_word(&mut t, base + 0x24), 0xFFFF);
+        }
+    }
+
+    #[test]
+    fn tim5_counter_is_thirty_two_bit() {
+        let mut t = Timer::tim5();
+        write_word(&mut t, 0x4000_0C00 + 0x24, 0xFFFF_FFFF);
+        assert_eq!(read_word(&mut t, 0x4000_0C00 + 0x24), 0xFFFF_FFFF);
+    }
+
+    #[test]
+    fn tim6_basic_counter_wraps_and_irqs() {
+        let mut t = Timer::tim6();
+        let base = 0x4000_1000u32;
+        write_word(&mut t, base + 0x2C, 3); // ARR 3
+        write_word(&mut t, base + 0x0C, UIE);
+        write_word(&mut t, base, CEN);
+        for _ in 0..4 {
+            t.tick(1);
+        }
+        assert_eq!(read_word(&mut t, base + 0x24), 0);
+        assert_eq!(t.pending(), 1);
+        assert_eq!(t.exception_number(), Some(16 + 54));
+    }
+
+    #[test]
+    fn full_auto_reload_wrap_sets_the_update_flag() {
+        // A 16-bit counter with ARR = 0xFFFF wraps from 0xFFFF back to zero and
+        // must raise UIF — the masked counter must not hide the overflow.
+        let mut t = Timer::tim4();
+        let base = 0x4000_0800u32;
+        write_word(&mut t, base + 0x2C, 0xFFFF); // ARR
+        write_word(&mut t, base + 0x0C, UIE);
+        write_word(&mut t, base, CEN);
+        for _ in 0..0xFFFF {
+            t.tick(1);
+        }
+        assert_eq!(read_word(&mut t, base + 0x24), 0xFFFF);
+        assert_eq!(t.pending(), 0);
+        t.tick(1);
+        assert_eq!(read_word(&mut t, base + 0x24), 0);
+        assert_eq!(t.pending(), 1);
+    }
+
+    #[test]
+    fn tim1_update_routes_to_the_up_line() {
+        // The advanced TIM1's table lists break (24) first; the model must
+        // surface the update interrupt (25), not the break line.
+        let mut t = Timer::tim1();
+        assert_eq!(t.ranges()[0].base, 0x4001_2C00);
+        assert_eq!(t.exception_number(), Some(16 + 25));
+        write_word(&mut t, 0x4001_2C00 + 0x2C, 1); // ARR 1
+        write_word(&mut t, 0x4001_2C00 + 0x0C, UIE);
+        write_word(&mut t, 0x4001_2C00, CEN);
+        t.tick(2);
+        assert_eq!(t.pending(), 1);
     }
 
     #[test]
