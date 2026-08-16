@@ -365,7 +365,7 @@ impl<M: Bus> SystemMemory<M> {
                 }
                 if let Some(n) = device.exception_for_line(line) {
                     if n >= 16 {
-                        self.nvic.latch(1u64 << u32::from(n - 16));
+                        self.nvic.latch(1u128 << u32::from(n - 16));
                     }
                 }
             }

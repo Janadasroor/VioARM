@@ -1599,3 +1599,87 @@ fn can_rx0_dispatches_its_isr() {
     }
     panic!("the CAN1_RX0 ISR did not return to the spin loop");
 }
+
+/// A SETUP packet driven onto the USB OTG FS bus (IRQ 67, exception 83)
+/// wakes the controller's RX ISR, which pops the status word and clears
+/// GINTSTS. The IRQ sits on ISER2 bit 3, beyond the low 32 lines.
+#[test]
+fn otg_fs_dispatches_its_isr() {
+    use vioarm_core::board;
+
+    const FS_GRSTCTL: u32 = 0x5000_0010;
+    const FS_GUSBCFG: u32 = 0x5000_000C;
+    const FS_GAHBCFG: u32 = 0x5000_0008;
+    const FS_GINTSTS: u32 = 0x5000_0014;
+    const FS_GINTMSK: u32 = 0x5000_0018;
+    const NVIC_ISER2: u32 = 0xE000_E108;
+    const RESULT: u32 = 0x2000_0000;
+    const ISR: u32 = ENTRY + 0x20;
+
+    let mut m = Machine::armv7m(board::stm32f107());
+    // Spin, then the ISR pops the RX status word, stores it, clears GINTSTS,
+    // and returns.
+    m.load_image(&load_flat(ENTRY, &[0xFE, 0xE7]));
+    m.load_image(&load_flat(
+        ISR,
+        &[
+            0x03, 0x48, 0x01, 0x68, // ldr r0,[pc,#12]; ldr r1,[r0]   (GRXSTSR)
+            0x03, 0x48, 0x01, 0x60, // ldr r0,[pc,#12]; str r1,[r0]   (RESULT)
+            0x03, 0x48, 0x04, 0x49, // ldr r0,[pc,#12]; ldr r1,[pc,#16] (GINTSTS, mask)
+            0x01, 0x60, 0x70, 0x47, // str r1,[r0]; bx lr
+            0x1C, 0x00, 0x00, 0x50, // .word 0x5000001C (FS_GRXSTSR)
+            0x00, 0x00, 0x00, 0x20, // .word 0x20000000 (RESULT)
+            0x14, 0x00, 0x00, 0x50, // .word 0x50000014 (FS_GINTSTS)
+            0xFF, 0xFF, 0xFF, 0xFF, // .word 0xFFFFFFFF
+        ],
+    ));
+    {
+        let mem = m.core.mem();
+        mem.write_word(FLASH, 0x2000_8000).unwrap(); // SP
+        mem.write_word(FLASH + 4, ENTRY | 1).unwrap(); // reset vector
+        // Vector 83 = OTG_FS IRQ 67 at FLASH + 83 * 4.
+        mem.write_word(FLASH + 83 * 4, ISR | 1).unwrap();
+    }
+    m.reset().unwrap();
+    {
+        let mem = m.core.mem();
+        // Device mode, soft reset, re-assert device mode, then mask the RX
+        // level and enable the IRQ on ISER2 bit (67 - 64).
+        mem.write_word(FS_GRSTCTL, 1).unwrap(); // CSRST
+        mem.write_word(FS_GUSBCFG, 1 << 30).unwrap(); // FDMOD
+        mem.write_word(FS_GAHBCFG, 1).unwrap(); // GINT
+        mem.write_word(FS_GINTMSK, 1 << 4).unwrap(); // RXFLVL
+        mem.write_word(NVIC_ISER2, 1 << 3).unwrap(); // OTG_FS
+    }
+    // A SETUP packet driven onto the bus: the RX status FIFO queues it.
+    let frame: [u8; 10] = [0x02, 8, 0x80, 0x06, 0x00, 0x01, 0x00, 0x00, 0x12, 0x00];
+    {
+        let mem = m.core.mem();
+        for byte in frame {
+            for dev in mem.devices_mut() {
+                dev.drive_inputs(u32::from(byte));
+            }
+        }
+    }
+    let mut entered = false;
+    for _ in 0..64 {
+        m.step().unwrap();
+        if m.core.regs.pc & !1 == ISR {
+            entered = true;
+            break;
+        }
+    }
+    assert!(entered, "the OTG_FS ISR was dispatched");
+    // The ISR stores the RX status (PKTSTS=2, BCNT=8), clears GINTSTS, returns.
+    for _ in 0..64 {
+        m.step().unwrap();
+        if m.core.regs.pc & !1 == ENTRY {
+            let status = m.core.mem().read_word(RESULT).unwrap();
+            assert_eq!((status >> 4) & 0x7FF, 8, "BCNT 8");
+            assert_eq!((status >> 17) & 0xF, 2, "PKTSTS SETUP");
+            assert_eq!(m.core.mem().read_word(FS_GINTSTS).unwrap() & (1 << 4), 0);
+            return;
+        }
+    }
+    panic!("the OTG_FS ISR did not return to the spin loop");
+}

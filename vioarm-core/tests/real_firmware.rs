@@ -27,6 +27,10 @@ const RAM: u32 = 0x2000_0000;
 const FLASH_LEN: u32 = 0x10000;
 const RAM_LEN: u32 = 0x10000;
 const CODE_BASE: u32 = 0x0000_0100;
+/// The USB firmware is entered via IRQ 67, whose vector (exception 83) sits
+/// at `FLASH + 83 * 4 == 0x14C` — inside the region `CODE_BASE` occupies.
+/// Load that image higher so the vector table write cannot clobber code.
+const USB_CODE_BASE: u32 = 0x0000_1000;
 /// The initial stack pointer: high enough for the harness stacks yet within
 /// every board's RAM (the smallest, the F103's 20 KiB, ends at `0x2000_5000`).
 const INIT_SP: u32 = 0x2000_4000;
@@ -2394,4 +2398,211 @@ fn stm32f107_firmware_talks_can1() {
     assert_eq!(ti >> 21, 0x7E5, "transmitted identifier");
     assert_eq!(tx[4], 1, "transmitted DLC");
     assert_eq!(tx[8], 0x5A, "transmitted byte");
+}
+
+/// CMSIS firmware for the STM32F107 `OTG_FS` controller. The F1 headers expose
+/// no OTG register structs, so the controller is driven through raw volatile
+/// pointers at `0x50000000` (GLOBAL) / `0x50000800` (DEVICE) / `0x50001000`
+/// (FIFO 0). The core soft reset is followed by the device-mode setup, then
+/// the ISR serves the enumerated bus: a USBRST clears the endpoint flags, the
+/// RX FIFO pops the 8-byte SETUP, the STUP latch arms the IN reply, and the
+/// 18-byte device descriptor is pushed through endpoint 0.
+const STM32_F107_USB_FIRMWARE: &str = r#"
+#define STM32F10X_CL
+#include "stm32f10x.h"
+
+#define ENUM_DONE   (*(volatile unsigned *)0x20000000u)
+#define IN_READY    (*(volatile unsigned *)0x20000004u)
+#define XFR_DONE    (*(volatile unsigned *)0x20000008u)
+#define DESC_LEN    (*(volatile unsigned *)0x2000000Cu)
+#define CONFIGURED  (*(volatile unsigned *)0x20000010u)
+
+#define GAHBCFG   (*(volatile unsigned *)0x50000008u)
+#define GUSBCFG   (*(volatile unsigned *)0x5000000Cu)
+#define GRSTCTL   (*(volatile unsigned *)0x50000010u)
+#define GINTSTS   (*(volatile unsigned *)0x50000014u)
+#define GINTMSK   (*(volatile unsigned *)0x50000018u)
+#define GRXSTSR   (*(volatile unsigned *)0x5000001Cu)
+#define DIEPMSK   (*(volatile unsigned *)0x50000810u)
+#define DOEPMSK   (*(volatile unsigned *)0x50000814u)
+#define DAINTMSK  (*(volatile unsigned *)0x5000081Cu)
+#define DIEPCTL0  (*(volatile unsigned *)0x50000900u)
+#define DIEPINT0  (*(volatile unsigned *)0x50000908u)
+#define DIEPTSIZ0 (*(volatile unsigned *)0x50000910u)
+#define DOEPCTL0  (*(volatile unsigned *)0x50000B00u)
+#define DOEPINT0  (*(volatile unsigned *)0x50000B08u)
+#define DOEPTSIZ0 (*(volatile unsigned *)0x50000B10u)
+#define FS_FIFO0  ((volatile unsigned *)0x50001000u)
+
+void OTG_FS_IRQHandler(void) {
+    unsigned g = GINTSTS;
+    if (g & (1u << 12)) {                    /* USBRST */
+        DIEPINT0 = 0xFFFFFFFFu;
+        DOEPINT0 = 0xFFFFFFFFu;
+    }
+    if (g & (1u << 13)) {                    /* ENUMDNE */
+        ENUM_DONE = 1u;
+    }
+    if (g & (1u << 4)) {                     /* RXFLVL */
+        unsigned st = GRXSTSR;
+        if (((st >> 17) & 0xFu) == 2u) {     /* PKTSTS: SETUP */
+            (void)FS_FIFO0[0];
+            (void)FS_FIFO0[1];
+            DOEPTSIZ0 = (1u << 29) | (1u << 19) | 8u;
+            DOEPCTL0 |= 0x80000000u;         /* EPENA */
+        }
+    }
+    if (g & (1u << 19)) {                    /* OEPINT */
+        if (DOEPINT0 & (1u << 3)) {          /* STUP */
+            IN_READY = 1u;
+        }
+        DOEPINT0 = 0xFFFFFFFFu;
+    }
+    if (g & (1u << 18)) {                    /* IEPINT */
+        if (DIEPINT0 & 1u) {                 /* XFRC */
+            XFR_DONE = 1u;
+        }
+        DIEPINT0 = 0xFFFFFFFFu;
+    }
+    GINTSTS = g;
+}
+
+void reset(void) {
+    RCC->AHBENR |= RCC_AHBENR_OTGFSEN;
+    GUSBCFG = 1u << 30;                      /* FDMOD: device mode */
+    GRSTCTL = 1u;                            /* CSRST: core soft reset */
+    while (GRSTCTL & 1u) { }
+    GUSBCFG = 1u << 30;                      /* FDMOD again after the reset */
+    GAHBCFG = 1u;                            /* GINT: global interrupt enable */
+    GINTMSK = (1u << 12) | (1u << 13) | (1u << 4) | (1u << 18) | (1u << 19);
+    DAINTMSK = (1u << 0) | (1u << 16);
+    DIEPMSK = 1u;                            /* XFRCM */
+    DOEPMSK = (1u << 0) | (1u << 3);         /* XFRCM | STUPM */
+    NVIC->ISER[2] = 1u << (OTG_FS_IRQn - 64u);
+    CONFIGURED = 1u;
+
+    while (!IN_READY) { }
+    FS_FIFO0[0] = 0x02000112u;
+    FS_FIFO0[1] = 0x40000000u;
+    FS_FIFO0[2] = 0x57100483u;
+    FS_FIFO0[3] = 0x02010100u;
+    FS_FIFO0[4] = 0x00000100u;
+    DIEPTSIZ0 = (1u << 19) | 18u;            /* PKTCNT 1, XFRSIZ 18 */
+    DIEPCTL0 |= 0x80000000u;                 /* EPENA */
+    while (!XFR_DONE) { }
+    DESC_LEN = 18u;
+    __asm__ volatile("bkpt #0");
+}
+"#;
+
+/// Compile `STM32_F107_USB_FIRMWARE` against the F1 pack headers and run it
+/// on the F107 board in two phases: the firmware first soft-resets the OTG
+/// controller and arms the device interrupts (it soft-resets wipe the bus
+/// events, so the host stimulus has to arrive afterwards), then the injected
+/// bus reset plus `GET_DESCRIPTOR` SETUP stage is served by the ISR. Returns
+/// the four RAM snapshots and the descriptor bytes the host drained. `None`
+/// means the toolchain or pack was unavailable.
+fn run_usb_firmware() -> Option<(u32, u32, u32, u32, Vec<u8>)> {
+    let includes = [
+        "../packs/Keil.STM32F1xx_DFP/Device/Include",
+        "../packs/STM32F4xx_CMSIS/CMSIS/Core/Include",
+    ];
+    let mut include_paths = Vec::new();
+    for rel in includes {
+        let include = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel);
+        if !include.is_dir() {
+            eprintln!(
+                "skipping usb test: pack include dir {} not found",
+                include.display()
+            );
+            return None;
+        }
+        include_paths.push(
+            include
+                .to_str()
+                .expect("pack include path is not UTF-8")
+                .to_owned(),
+        );
+    }
+    let include_refs: Vec<&str> = include_paths.iter().map(String::as_str).collect();
+    let (code, symbols) =
+        match build_firmware_with_includes(STM32_F107_USB_FIRMWARE, &include_refs) {
+            Ok(image) => image,
+            Err(why) => {
+                eprintln!("skipping usb test: {why}");
+                return None;
+            }
+        };
+    let entry = *symbols.get("reset").expect("no reset symbol");
+    let irq = *symbols
+        .get("OTG_FS_IRQHandler")
+        .expect("no OTG_FS_IRQHandler symbol");
+    assert!(!code.is_empty(), "compiled .text must not be empty");
+
+    let mut m = Machine::new(board::stm32f107());
+    m.load_image(&load_flat(USB_CODE_BASE, &code));
+    {
+        let mem = m.core.mem();
+        mem.write_word(FLASH, INIT_SP).unwrap();
+        mem.write_word(FLASH + 4, (USB_CODE_BASE + entry) | 1).unwrap();
+        // Vector 83 = OTG_FS IRQ 67 at FLASH + 83 * 4.
+        mem.write_word(FLASH + 83 * 4, (USB_CODE_BASE + irq) | 1)
+            .unwrap();
+    }
+    m.reset().expect("reset from vector table");
+    // Phase 1: the firmware soft-resets the controller and waits for the
+    // SETUP stage (the soft reset wiped any earlier bus events).
+    let err = m.run(200_000);
+    assert_eq!(err, Err(HaltCause::CycleBudgetExhausted));
+    assert_eq!(
+        m.core.mem().read_word(board::RAM + 0x10).unwrap(),
+        1u32,
+        "the controller was configured before waiting"
+    );
+    // Phase 2: host bus reset, then the GET_DESCRIPTOR SETUP packet.
+    let reset_frame: &[u8] = &[0x00, 0x00];
+    let setup_frame: &[u8] = &[0x02, 8, 0x80, 0x06, 0x00, 0x01, 0x00, 0x00, 0x12, 0x00];
+    for frame in [reset_frame, setup_frame] {
+        for &byte in frame {
+            for device in m.core.mem().devices_mut() {
+                device.drive_inputs(u32::from(byte));
+            }
+        }
+    }
+    // Phase 3: the ISR stages the SETUP, the firmware answers with the
+    // 18-byte device descriptor, and the handshake completes at `bkpt`.
+    let err = m.run(200_000);
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
+    let enum_done = m.core.mem().read_word(board::RAM).unwrap();
+    let in_ready = m.core.mem().read_word(board::RAM + 4).unwrap();
+    let xfr_done = m.core.mem().read_word(board::RAM + 8).unwrap();
+    let desc_len = m.core.mem().read_word(board::RAM + 0xC).unwrap();
+    let mut tx = Vec::new();
+    for device in m.core.mem().devices_mut() {
+        tx.extend(device.drain_output());
+    }
+    Some((enum_done, in_ready, xfr_done, desc_len, tx))
+}
+
+/// On the STM32F107 board, CMSIS firmware enumerated over `OTG_FS` answers a
+/// `GET_DESCRIPTOR` SETUP packet: the RX FIFO pops the 8 setup bytes, the
+/// `STUP` latch arms the endpoint, and the 18-byte device descriptor is
+/// drained to the host channel through the `OTG_FS` interrupt.
+#[test]
+fn stm32f107_firmware_answers_usb_descriptor() {
+    let Some((enum_done, in_ready, xfr_done, desc_len, tx)) = run_usb_firmware() else {
+        return; // skipped
+    };
+    assert_eq!(enum_done, 1, "ENUMDNE was latched after the bus reset");
+    assert_eq!(in_ready, 1, "the SETUP stage was staged on endpoint 0");
+    assert_eq!(xfr_done, 1, "the IN transfer completed");
+    assert_eq!(desc_len, 18, "the descriptor length was reported");
+    // One EVT_IN frame: opcode 0x80, length 18, endpoint 0, then the
+    // 18-byte device descriptor (little-endian words 0x02000112, 0x40000000,
+    // 0x57100483, 0x02010100, 0x00000100).
+    let expected: &[u8] = &[
+        0x80, 0x12, 0x00, 0x12, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x40, 0x83, 0x04, 0x10,
+        0x57, 0x00, 0x01, 0x01, 0x02, 0x00, 0x01,
+    ];
+    assert_eq!(tx, expected, "the device descriptor reached the host");
 }

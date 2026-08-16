@@ -1,10 +1,10 @@
 //! The ARMv7-M nested vectored interrupt controller.
 //!
-//! Up to 64 external interrupts (exception `16..=79`) with set/clear enable,
-//! set/clear pending (two 32-bit words each), and one configurable priority
-//! byte per line at `IPR`. The "ready to take" decision lives in the
-//! `SystemMemory`, which wires device lines into the `pending` register and
-//! arbitrates by priority.
+//! Up to 96 external interrupts (exception `16..=111`) with set/clear enable,
+//! set/clear pending (three 32-bit words each, covering the F4 USB OTG lines
+//! at IRQ 67 and 74..=77), and one configurable priority byte per line at
+//! `IPR`. The "ready to take" decision lives in the `SystemMemory`, which
+//! wires device lines into the `pending` register and arbitrates by priority.
 
 use crate::device::Peripheral;
 use crate::error::BusError;
@@ -16,10 +16,10 @@ const ISPR: u32 = 0xE000_E200;
 const ICPR: u32 = 0xE000_E280;
 const IPR: u32 = 0xE000_E400;
 
-/// Two 32-bit words cover lines 0..63 (the range the STM32F1 needs).
-const WORDS: u32 = 2;
+/// Three 32-bit words cover lines 0..95 (the range the F1/F4 lines need).
+const WORDS: u32 = 3;
 const BANK_LEN: u32 = WORDS * 4;
-const IPR_LEN: u32 = 64;
+const IPR_LEN: u32 = 96;
 
 const ISER_END: u32 = ISER + BANK_LEN;
 const ICER_END: u32 = ICER + BANK_LEN;
@@ -27,7 +27,7 @@ const ISPR_END: u32 = ISPR + BANK_LEN;
 const ICPR_END: u32 = ICPR + BANK_LEN;
 const IPR_END: u32 = IPR + IPR_LEN;
 
-/// The NVIC register file: enabled and latched-pending masks for lines 0..63,
+/// The NVIC register file: enabled and latched-pending masks for lines 0..95,
 /// plus one configurable 8-bit priority byte per line.
 ///
 /// Lower priority value means higher priority, exactly as the architecture
@@ -35,9 +35,9 @@ const IPR_END: u32 = IPR + IPR_LEN;
 #[derive(Debug, Clone)]
 pub struct Nvic {
     ranges: [Region; 5],
-    enabled: u64,
-    pending: u64,
-    priority: [u8; 64],
+    enabled: u128,
+    pending: u128,
+    priority: [u8; 96],
 }
 
 impl Nvic {
@@ -53,13 +53,13 @@ impl Nvic {
             ],
             enabled: 0,
             pending: 0,
-            priority: [0; 64],
+            priority: [0; 96],
         }
     }
 
     /// Which of `lines` are both enabled and pending.
     #[must_use]
-    pub const fn ready(&self) -> u64 {
+    pub const fn ready(&self) -> u128 {
         self.enabled & self.pending
     }
 
@@ -71,14 +71,14 @@ impl Nvic {
     }
 
     /// Latch `lines` as pending (device asserts, or software `ISPR`).
-    pub fn latch(&mut self, lines: u64) {
+    pub fn latch(&mut self, lines: u128) {
         self.pending |= lines;
     }
 
     /// The interrupt currently being taken (exception `16 + line`) has been
     /// acknowledged; drop its pending latch.
     pub fn take(&mut self, line: u32) {
-        self.pending &= !(1u64 << line);
+        self.pending &= !(1u128 << line);
     }
 }
 
@@ -94,13 +94,13 @@ impl Peripheral for Nvic {
     }
 
     fn read(&mut self, addr: u32) -> Result<u8, BusError> {
-        // Word index (0..=1) and byte lane within the word.
+        // Word index (0..=2) and byte lane within the word.
         #[allow(clippy::cast_possible_truncation)]
-        let pick = |mask: u64, base: u32| -> u8 {
-            let word = if (addr - base) / 4 == 0 {
-                mask as u32
-            } else {
-                (mask >> 32) as u32
+        let pick = |mask: u128, base: u32| -> u8 {
+            let word = match (addr - base) / 4 {
+                0 => mask as u32,
+                1 => (mask >> 32) as u32,
+                _ => (mask >> 64) as u32,
             };
             (word >> (8 * ((addr - base) % 4))) as u8
         };
@@ -124,10 +124,10 @@ impl Peripheral for Nvic {
         let byte = |base: u32| (addr - base) % 4;
         let shift = |base: u32| 32 * bank(base) + 8 * byte(base);
         match addr {
-            ISER..ISER_END => self.enabled |= u64::from(val) << shift(ISER),
-            ICER..ICER_END => self.enabled &= !(u64::from(val) << shift(ICER)),
-            ISPR..ISPR_END => self.pending |= u64::from(val) << shift(ISPR),
-            ICPR..ICPR_END => self.pending &= !(u64::from(val) << shift(ICPR)),
+            ISER..ISER_END => self.enabled |= u128::from(val) << shift(ISER),
+            ICER..ICER_END => self.enabled &= !(u128::from(val) << shift(ICER)),
+            ISPR..ISPR_END => self.pending |= u128::from(val) << shift(ISPR),
+            ICPR..ICPR_END => self.pending &= !(u128::from(val) << shift(ICPR)),
             // IPR: one priority byte per line, low nibble significant on M3/M4.
             IPR..IPR_END => self.priority[(addr - IPR) as usize] = val,
             _ => return Err(BusError::Reserved),

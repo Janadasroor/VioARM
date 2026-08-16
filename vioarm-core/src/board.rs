@@ -28,6 +28,7 @@ use crate::device::stm32::spi::Spi;
 use crate::device::stm32::syscfg::Syscfg;
 use crate::device::stm32::timer::Timer;
 use crate::device::stm32::usart::Usart;
+use crate::device::stm32::usb::Usb;
 use crate::device::stm32::watchdog::{Iwdg, Wwdg};
 use crate::device::systick::SysTick;
 use crate::device::uart::UartTx;
@@ -148,8 +149,9 @@ pub const STM32_F107_RAM_LEN: u32 = 0x0001_0000;
 /// peripheral set mapped at its real addresses (from `STM32F107xx.svd`).
 ///
 /// The shared cores mount the same behaviors as the F103 board; the F107 adds
-/// Ethernet, USB OTG, and a second CAN, which the model does not yet expose,
-/// and its `FLASH` controller guards a 256 KiB main-flash region.
+/// Ethernet, USB OTG, and a second CAN, of which the USB OTG controller and
+/// the second CAN are modeled here, and its `FLASH` controller guards a
+/// 256 KiB main-flash region.
 #[must_use]
 pub fn stm32f107() -> BoardMemory {
     use crate::device::svd::stm32f107::Stm32f107;
@@ -197,6 +199,7 @@ pub fn stm32f107() -> BoardMemory {
     mem.attach(Box::new(I2c::i2c2_for::<Stm32f107>()));
     mem.attach(Box::new(Can::can1_for::<Stm32f107>()));
     mem.attach(Box::new(Can::can2_for::<Stm32f107>()));
+    mem.attach(Box::new(Usb::otg_fs_for::<Stm32f107>()));
     let dma_requests = Arc::new(Mutex::new(DmaRequests::new()));
     mem.attach(Box::new(Usart::for_device_with_dma::<Stm32f107>(
         dma_requests.clone(),
@@ -303,6 +306,8 @@ pub fn stm32f407() -> BoardMemory {
     mem.attach(Box::new(I2c::i2c3_for::<Stm32f407>()));
     mem.attach(Box::new(Can::can1_for::<Stm32f407>()));
     mem.attach(Box::new(Can::can2_for::<Stm32f407>()));
+    mem.attach(Box::new(Usb::otg_fs_for::<Stm32f407>()));
+    mem.attach(Box::new(Usb::otg_hs_for::<Stm32f407>()));
     let dma = Arc::new(Mutex::new(Vec::new()));
     mem.set_dma_mailbox(dma.clone());
     mem.attach(Box::new(DmaF4::dma1_for::<Stm32f407>(dma.clone())));

@@ -3168,7 +3168,7 @@ impl<B: PeripheralBus> Core<B> {
             11 => Exception::SvCall,
             14 => Exception::PendSV,
             15 => Exception::SysTick,
-            16..=79 => Exception::Irq(n - 16),
+            16..=111 => Exception::Irq(n - 16),
             _ => return Err(HaltCause::UnhandledException),
         };
         self.take_exception(ex, self.regs.pc)

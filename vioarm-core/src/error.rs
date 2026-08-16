@@ -74,7 +74,7 @@ pub enum Exception {
     /// Exception number 15: the system tick, driven by the `SysTick`
     /// peripheral.
     SysTick,
-    /// An external interrupt: exception number `16 + n` for IRQ `n` (0..=31).
+    /// An external interrupt: exception number `16 + n` for IRQ `n` (0..=95).
     Irq(u8),
 }
 

@@ -858,6 +858,46 @@ mod tests {
     }
 
     #[test]
+    fn generated_usb_family_matches_silicon_layout() {
+        // The OTG controller has one GLOBAL window per variant, named
+        // `USB_OTG_` on the F1 line and `OTG_FS_`/`OTG_HS_` on the F4 line.
+        // The model derives every window's base from the GLOBAL base, so the
+        // four windows must sit at the silicon strides.
+        let cases: &[(&'static super::PeripheralDef, u32, u32, &[u32])] = &[
+            (
+                super::stm32f107::peripheral("USB_OTG_GLOBAL").unwrap(),
+                0x5000_0000u32,
+                0x0400,
+                &[67],
+            ),
+            (
+                super::stm32f407::peripheral("OTG_FS_GLOBAL").unwrap(),
+                0x5000_0000,
+                0x0400,
+                &[42, 67],
+            ),
+            (
+                super::stm32f407::peripheral("OTG_HS_GLOBAL").unwrap(),
+                0x4004_0000,
+                0x0131,
+                &[74, 75, 76, 77],
+            ),
+        ];
+        for &(def, base, window, irqs) in cases {
+            assert_eq!(def.base, base, "base address of {}", def.name);
+            assert_eq!(def.window, window, "window of {}", def.name);
+            let got: Vec<u32> = def.irqs.iter().map(|i| u32::from(i.number)).collect();
+            assert_eq!(got, irqs, "IRQ lines of {}", def.name);
+        }
+        // The window bases are fixed strides from the GLOBAL base.
+        let f107 = super::stm32f107::peripheral("USB_OTG_GLOBAL").unwrap();
+        for (suffix, stride) in [("HOST", 0x400u32), ("DEVICE", 0x800), ("PWRCLK", 0xe00)] {
+            let def = super::stm32f107::peripheral(&format!("USB_OTG_{suffix}")).unwrap();
+            assert_eq!(def.base, f107.base + stride, "USB_OTG_{suffix}");
+        }
+    }
+
+    #[test]
     fn generated_stm32f107_matches_silicon_layout() {
         let cases = [
             ("RCC", 0x4002_1000u32),

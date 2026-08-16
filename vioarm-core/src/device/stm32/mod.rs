@@ -25,6 +25,7 @@ pub mod spi;
 pub mod syscfg;
 pub mod timer;
 pub mod usart;
+pub mod usb;
 pub mod watchdog;
 
 /// STM32F103 (medium-density) peripheral base addresses, from the SVD.
