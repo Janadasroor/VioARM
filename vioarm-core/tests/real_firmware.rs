@@ -882,6 +882,118 @@ fn stm32f103_firmware_samples_the_adc() {
     assert_eq!(irq_result, 0x0ABC);
 }
 
+/// Real CMSIS-style firmware against the STM32F103 device header: a polled
+/// master frame (`write DR`, wait `RXNE`, read `DR`) and an interrupt-driven
+/// frame through `SPI1_IRQHandler` — both clocking out the written byte and
+/// capturing the host-injected slave byte.
+const STM32_F103_SPI_FIRMWARE: &str = r#"
+#define STM32F10X_HD
+#include "stm32f10x.h"
+
+#define POLL_RESULT (*(volatile unsigned *)0x20000000u)
+#define IRQ_RESULT  (*(volatile unsigned *)0x20000004u)
+
+void SPI1_IRQHandler(void) {
+    if (SPI1->SR & SPI_SR_RXNE) {
+        IRQ_RESULT = SPI1->DR;
+    }
+}
+
+void reset(void) {
+    RCC->APB2ENR |= RCC_APB2ENR_SPI1EN;
+
+    /* Master mode, enabled. */
+    SPI1->CR1 = SPI_CR1_SPE | SPI_CR1_MSTR;
+
+    /* Polled frame: writing DR clocks out 0xAA, RXNE latches the host byte. */
+    SPI1->DR = 0xAA;
+    while (!(SPI1->SR & SPI_SR_RXNE)) { }
+    POLL_RESULT = SPI1->DR;
+
+    /* Interrupt-driven frame. */
+    NVIC->ISER[1] = 1u << (SPI1_IRQn - 32);
+    SPI1->CR2 = SPI_CR2_RXNEIE;
+    SPI1->DR = 0xBB;
+    while (!IRQ_RESULT) { }
+
+    __asm__ volatile("bkpt #0");
+}
+"#;
+
+/// Compile [`STM32_F103_SPI_FIRMWARE`], boot it on the F103 board, inject a
+/// host slave byte on the MISO line, and return the polled and IRQ frame
+/// results. `None` means the test was skipped (missing toolchain or pack).
+fn run_spi_firmware() -> Option<(u32, u32)> {
+    let includes = [
+        "../packs/Keil.STM32F1xx_DFP/Device/Include",
+        "../packs/STM32F4xx_CMSIS/CMSIS/Core/Include",
+    ];
+    let mut include_paths = Vec::new();
+    for rel in includes {
+        let include = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel);
+        if !include.is_dir() {
+            eprintln!(
+                "skipping spi test: pack include dir {} not found",
+                include.display()
+            );
+            return None;
+        }
+        include_paths.push(
+            include
+                .to_str()
+                .expect("pack include path is not UTF-8")
+                .to_owned(),
+        );
+    }
+    let include_refs: Vec<&str> = include_paths.iter().map(String::as_str).collect();
+    let (code, symbols) = match build_firmware_with_includes(STM32_F103_SPI_FIRMWARE, &include_refs)
+    {
+        Ok(image) => image,
+        Err(why) => {
+            eprintln!("skipping spi test: {why}");
+            return None;
+        }
+    };
+    let entry = *symbols.get("reset").expect("no reset symbol");
+    let irq = *symbols
+        .get("SPI1_IRQHandler")
+        .expect("no SPI1_IRQHandler symbol");
+    assert!(!code.is_empty(), "compiled .text must not be empty");
+
+    let mut m = Machine::new(board::stm32f103());
+    m.load_image(&load_flat(CODE_BASE, &code));
+    {
+        let mem = m.core.mem();
+        mem.write_word(FLASH, INIT_SP).unwrap();
+        mem.write_word(FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+        // Vector 51 = SPI1 IRQ 35 at FLASH + 51 * 4.
+        mem.write_word(FLASH + 51 * 4, (CODE_BASE + irq) | 1)
+            .unwrap();
+    }
+    m.reset().expect("reset from vector table");
+    // Host stimulus: the slave answers every frame with 0xA5.
+    for device in m.core.mem().devices_mut() {
+        device.drive_inputs(0xA5);
+    }
+    let err = m.run(100_000);
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
+    let polled = m.core.mem().read_word(board::RAM).unwrap();
+    let irq_result = m.core.mem().read_word(board::RAM + 4).unwrap();
+    Some((polled, irq_result))
+}
+
+/// On the STM32F103 board, firmware compiled against the real device header
+/// runs a polled and an interrupt-driven SPI frame, both exchanging a byte
+/// with the host-driven slave.
+#[test]
+fn stm32f103_firmware_shifts_bytes_over_spi() {
+    let Some((polled, irq_result)) = run_spi_firmware() else {
+        return; // skipped
+    };
+    assert_eq!(polled, 0xA5);
+    assert_eq!(irq_result, 0xA5);
+}
+
 /// Compile `firmware` against the STM32F4 device header, returning the flat
 /// `.text` and symbol map, or `None` if the toolchain or pack is missing.
 fn build_f4_firmware(firmware: &str) -> Option<(Vec<u8>, std::collections::HashMap<String, u32>)> {

@@ -1173,3 +1173,75 @@ fn adc_eoc_dispatches_its_isr() {
     }
     panic!("the ADC ISR did not return to the spin loop");
 }
+
+/// The SPI's `RXNE` interrupt: a master frame of a host-driven slave byte
+/// completes, raises IRQ 35, and the machine dispatches to the `SPI1` ISR,
+/// which drains the data register into RAM before the spin loop resumes.
+#[test]
+fn spi_rxne_dispatches_its_isr() {
+    use vioarm_core::board;
+
+    const SPI1_CR1: u32 = 0x4001_3000;
+    const SPI1_CR2: u32 = 0x4001_3004;
+    const SPI1_DR: u32 = 0x4001_300C;
+    const NVIC_ISER1: u32 = 0xE000_E104;
+    const RESULT: u32 = 0x2000_0000;
+    const ISR: u32 = ENTRY + 4;
+
+    // SP within the F103's 20 KiB RAM.
+    let mut m = Machine::new(board::stm32f103());
+    // Spin, then the ISR reads SPI1->DR, stores it to RAM 0x2000_0000, and
+    // returns. 16-bit Thumb only (the F103 boots an ARMv6-M core, so no
+    // Thumb-2). Bytes verified with clang -mcpu=cortex-m0.
+    m.load_image(&load_flat(ENTRY, &[0xFE, 0xE7]));
+    m.load_image(&load_flat(
+        ISR,
+        &[
+            0x03, 0x48, 0x00, 0x68, // ldr r0,[pc,#12]; ldr r0,[r0]
+            0x03, 0x49, 0x08, 0x60, // ldr r1,[pc,#12]; str r0,[r1]
+            0x70, 0x47, // bx lr
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // padding
+            0x0C, 0x30, 0x01, 0x40, // .word 0x4001300C (SPI1_DR)
+            0x00, 0x00, 0x00, 0x20, // .word 0x20000000 (RESULT)
+        ],
+    ));
+    {
+        let mem = m.core.mem();
+        mem.write_word(FLASH, 0x2000_4000).unwrap(); // SP
+        mem.write_word(FLASH + 4, ENTRY | 1).unwrap(); // reset vector
+        mem.write_word(FLASH + 51 * 4, ISR | 1).unwrap(); // SPI1 IRQ 35
+    }
+    m.reset().unwrap();
+    {
+        let mem = m.core.mem();
+        mem.write_word(NVIC_ISER1, 1 << 3).unwrap(); // enable SPI1
+        mem.write_word(SPI1_CR1, 0x44).unwrap(); // SPE | MSTR
+        mem.write_word(SPI1_CR2, 0x40).unwrap(); // RXNEIE
+    }
+    // Host stimulus: the slave will answer every frame with 0xAB.
+    for device in m.core.mem().devices_mut() {
+        device.drive_inputs(0xAB);
+    }
+    {
+        let mem = m.core.mem();
+        mem.write_word(SPI1_DR, 0x55).unwrap(); // begin a frame
+    }
+    let mut entered = false;
+    for _ in 0..64 {
+        m.step().unwrap();
+        if m.core.regs.pc & !1 == ISR {
+            entered = true;
+            break;
+        }
+    }
+    assert!(entered, "the SPI ISR was dispatched");
+    // The ISR drains the received byte into RAM and returns to the spin loop.
+    for _ in 0..64 {
+        m.step().unwrap();
+        if m.core.regs.pc & !1 == ENTRY {
+            assert_eq!(m.core.mem().read_word(RESULT).unwrap(), 0xAB);
+            return;
+        }
+    }
+    panic!("the SPI ISR did not return to the spin loop");
+}

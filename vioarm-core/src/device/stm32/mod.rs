@@ -19,6 +19,7 @@ pub mod flash;
 pub mod gpio;
 pub mod gpio_f4;
 pub mod rcc;
+pub mod spi;
 pub mod syscfg;
 pub mod timer;
 pub mod usart;
