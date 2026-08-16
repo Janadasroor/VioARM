@@ -1245,3 +1245,145 @@ fn spi_rxne_dispatches_its_isr() {
     }
     panic!("the SPI ISR did not return to the spin loop");
 }
+
+/// The I2C's `EV` interrupt: a master receive streams in a host-driven slave
+/// byte, `RXNE` raises IRQ 31, and the machine dispatches to the `I2C1` ISR,
+/// which drains the data register into RAM while the spin loop spins.
+#[test]
+fn i2c_ev_dispatches_its_isr() {
+    use vioarm_core::board;
+
+    const I2C1_CR1: u32 = 0x4000_5400;
+    const I2C1_CR2: u32 = 0x4000_5404;
+    const I2C1_DR: u32 = 0x4000_5410;
+    const I2C1_SR2: u32 = 0x4000_5418;
+    const NVIC_ISER0: u32 = 0xE000_E100;
+    const RESULT: u32 = 0x2000_0000;
+    const ISR: u32 = ENTRY + 4;
+
+    // SP within the F103's 20 KiB RAM.
+    let mut m = Machine::new(board::stm32f103());
+    // Spin, then the ISR reads I2C1->DR, stores it to RAM 0x2000_0000, and
+    // returns. 16-bit Thumb only (the F103 boots an ARMv6-M core, so no
+    // Thumb-2). Bytes verified with clang -mcpu=cortex-m0.
+    m.load_image(&load_flat(ENTRY, &[0xFE, 0xE7]));
+    m.load_image(&load_flat(
+        ISR,
+        &[
+            0x03, 0x48, 0x00, 0x68, // ldr r0,[pc,#12]; ldr r0,[r0]
+            0x03, 0x49, 0x08, 0x60, // ldr r1,[pc,#12]; str r0,[r1]
+            0x70, 0x47, // bx lr
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // padding
+            0x10, 0x54, 0x00, 0x40, // .word 0x40005410 (I2C1_DR)
+            0x00, 0x00, 0x00, 0x20, // .word 0x20000000 (RESULT)
+        ],
+    ));
+    {
+        let mem = m.core.mem();
+        mem.write_word(FLASH, 0x2000_4000).unwrap(); // SP
+        mem.write_word(FLASH + 4, ENTRY | 1).unwrap(); // reset vector
+                                                       // Vector 47 = I2C1 EV IRQ 31 at FLASH + 47 * 4.
+        mem.write_word(FLASH + 47 * 4, ISR | 1).unwrap();
+    }
+    m.reset().unwrap();
+    {
+        let mem = m.core.mem();
+        mem.write_word(NVIC_ISER0, 1 << 31).unwrap(); // enable I2C1_EV
+        mem.write_word(I2C1_CR1, 0x1).unwrap(); // PE
+        mem.write_word(I2C1_CR2, 0x600).unwrap(); // ITEVTEN | ITBUFEN
+    }
+    // Host stimulus: the connected slave returns 0xA5 for every read byte.
+    for device in m.core.mem().devices_mut() {
+        device.drive_inputs(0xA5);
+    }
+    {
+        let mem = m.core.mem();
+        mem.write_word(I2C1_CR1, 0x101).unwrap(); // PE | START
+    }
+    // Let the start complete (SB), then issue the read address.
+    for _ in 0..24 {
+        m.step().unwrap();
+    }
+    {
+        let mem = m.core.mem();
+        mem.write_word(I2C1_DR, 0xA1).unwrap(); // 0x50 << 1 | read
+    }
+    // The address completes (ADDR); reading SR2 acknowledges it and streams in
+    // the slave's byte, whose RXNE raises the EV interrupt.
+    for _ in 0..24 {
+        m.step().unwrap();
+    }
+    let _ = m.core.mem().read_word(I2C1_SR2).unwrap();
+    let mut drained = false;
+    for _ in 0..48 {
+        m.step().unwrap();
+        if m.core.regs.pc & !1 == ISR {
+            drained = true;
+            break;
+        }
+    }
+    assert!(drained, "the I2C EV ISR was dispatched");
+    // The ISR drains DR (0xA5) into RAM; keep running and verify the store.
+    for _ in 0..48 {
+        m.step().unwrap();
+    }
+    assert_eq!(m.core.mem().read_word(RESULT).unwrap(), 0xA5);
+}
+
+/// A level-sensitive interrupt line that stays asserted (the I2C EV line under
+/// `ITEVTEN`, with `SB` left set) must not starve the thread: after the
+/// handler's `EXC_RETURN`, the restored instruction executes before the
+/// pending exception is taken again. A thread loop that increments a RAM
+/// counter therefore makes progress no matter how hot the interrupt is.
+#[test]
+fn a_level_pending_line_still_lets_the_thread_advance() {
+    use vioarm_core::board;
+
+    const I2C1_CR1: u32 = 0x4000_5400;
+    const I2C1_CR2: u32 = 0x4000_5404;
+    const NVIC_ISER0: u32 = 0xE000_E100;
+    const COUNTER: u32 = 0x2000_0000;
+    const ISR: u32 = ENTRY + 0x20;
+
+    let mut m = Machine::new(board::stm32f103());
+    // Thread: COUNTER += 1; loop forever. 16-bit Thumb only (ARMv6-M core).
+    m.load_image(&load_flat(
+        ENTRY,
+        &[
+            0x02, 0x48, // ldr r0, [pc, #8]
+            0x01, 0x68, // ldr r1, [r0]
+            0x01, 0x31, // adds r1, #1
+            0x01, 0x60, // str r1, [r0]
+            0xfa, 0xe7, // b 0x10
+            0x00, 0x00, // padding
+            0x00, 0x00, 0x00, 0x20, // .word 0x20000000 (COUNTER)
+        ],
+    ));
+    // ISR: just return; the EV line stays pending so the dispatch repeats.
+    m.load_image(&load_flat(ISR, &[0x70, 0x47, 0x00, 0x00]));
+    {
+        let mem = m.core.mem();
+        mem.write_word(FLASH, 0x2000_4000).unwrap(); // SP
+        mem.write_word(FLASH + 4, ENTRY | 1).unwrap(); // reset vector
+                                                       // Vector 47 = I2C1 EV IRQ 31 at FLASH + 47 * 4.
+        mem.write_word(FLASH + 47 * 4, ISR | 1).unwrap();
+    }
+    m.reset().unwrap();
+    {
+        let mem = m.core.mem();
+        mem.write_word(NVIC_ISER0, 1 << 31).unwrap(); // enable I2C1_EV
+        mem.write_word(I2C1_CR1, 0x1).unwrap(); // PE
+        mem.write_word(I2C1_CR2, 0x200).unwrap(); // ITEVTEN
+        mem.write_word(I2C1_CR1, 0x101).unwrap(); // PE | START
+    }
+    // The start completes (SB set), which is a level event that never clears
+    // until a DR write: the EV line stays pending for the whole run.
+    for _ in 0..600 {
+        m.step().unwrap();
+    }
+    let count = m.core.mem().read_word(COUNTER).unwrap();
+    assert!(
+        count >= 8,
+        "the thread must keep executing between constant interrupts, got {count}"
+    );
+}

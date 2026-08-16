@@ -18,6 +18,7 @@ pub mod exti;
 pub mod flash;
 pub mod gpio;
 pub mod gpio_f4;
+pub mod i2c;
 pub mod rcc;
 pub mod spi;
 pub mod syscfg;

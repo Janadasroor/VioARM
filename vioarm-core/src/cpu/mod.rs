@@ -358,6 +358,11 @@ pub struct Core<B: PeripheralBus> {
     /// it and, if it was set, does not sleep. Also set when an exception is
     /// taken (an interrupt is itself a wakeup event).
     pub event: bool,
+    /// Set by `exception_return`: the last instruction was an `EXC_RETURN`, so
+    /// the architecture guarantees the restored instruction executes before a
+    /// new exception is taken. The `Machine` consumes it (via `take`) at the
+    /// start of the next step to skip that step's exception pre-check.
+    pub(crate) just_returned: bool,
     pub cycles: u64,
     /// Shared M-profile FP context-control state (`FPCCR`/`FPCAR`). The `SCB`
     /// device holds the same `Rc` so firmware writes through the bus and the
@@ -404,6 +409,7 @@ impl<B: PeripheralBus> Core<B> {
             exmon: None,
             sleeping: false,
             event: false,
+            just_returned: false,
             cycles: 0,
             fpu_ctx: std::sync::Arc::new(std::sync::Mutex::new(FpuCtx::new())),
             mem,
@@ -570,6 +576,7 @@ impl<B: PeripheralBus> Core<B> {
         self.itstate = 0;
         self.sleeping = false;
         self.event = false;
+        self.just_returned = false;
         Ok(())
     }
 
@@ -3269,6 +3276,7 @@ impl<B: PeripheralBus> Core<B> {
         {
             self.sleeping = true;
         }
+        self.just_returned = true;
         Ok(Next::Advance(self.regs.pc))
     }
 

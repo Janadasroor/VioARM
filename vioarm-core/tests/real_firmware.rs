@@ -994,6 +994,149 @@ fn stm32f103_firmware_shifts_bytes_over_spi() {
     assert_eq!(irq_result, 0xA5);
 }
 
+/// Real CMSIS-style firmware against the STM32F103 device header: a polled
+/// master write to slave 0x50 (`START`, address, three data bytes, `STOP`), a
+/// polled master read, and an interrupt-driven master read through
+/// `I2C1_EV_IRQHandler` — the host-injected slave byte always answering.
+const STM32_F103_I2C_FIRMWARE: &str = r#"
+#define STM32F10X_HD
+#include "stm32f10x.h"
+
+#define TX_RESULT  (*(volatile unsigned *)0x20000000u)
+#define RX_RESULT  (*(volatile unsigned *)0x20000004u)
+#define IRQ_RESULT (*(volatile unsigned *)0x20000008u)
+
+static void i2c_start(void) {
+    I2C1->CR1 |= I2C_CR1_START;
+    while (!(I2C1->SR1 & I2C_SR1_SB)) { }
+}
+static void i2c_send_addr(unsigned a) {
+    I2C1->DR = a;
+    while (!(I2C1->SR1 & I2C_SR1_ADDR)) { }
+    (void)I2C1->SR2; /* reading SR2 clears ADDR */
+}
+static void i2c_write(unsigned b) {
+    I2C1->DR = b;
+    while (!(I2C1->SR1 & I2C_SR1_TXE)) { }
+}
+static void i2c_stop(void) {
+    I2C1->CR1 |= I2C_CR1_STOP;
+}
+
+void I2C1_EV_IRQHandler(void) {
+    if (I2C1->SR1 & I2C_SR1_RXNE) {
+        IRQ_RESULT = I2C1->DR;
+    }
+}
+
+void reset(void) {
+    RCC->APB1ENR |= RCC_APB1ENR_I2C1EN;
+    I2C1->CR1 = I2C_CR1_PE;
+
+    /* Polled master transmit to slave 0x50. */
+    i2c_start();
+    i2c_send_addr(0xA0);
+    i2c_write(0x11);
+    i2c_write(0x22);
+    i2c_write(0x33);
+    i2c_stop();
+    TX_RESULT = 0xBE;
+
+    /* Polled master receive from slave 0x50. */
+    i2c_start();
+    i2c_send_addr(0xA1);
+    while (!(I2C1->SR1 & I2C_SR1_RXNE)) { }
+    RX_RESULT = I2C1->DR;
+    i2c_stop();
+
+    /* Interrupt-driven master receive. */
+    NVIC->ISER[0] = 1u << I2C1_EV_IRQn;
+    I2C1->CR2 = I2C_CR2_ITEVTEN | I2C_CR2_ITBUFEN;
+    i2c_start();
+    i2c_send_addr(0xA1);
+    while (!IRQ_RESULT) { }
+    i2c_stop();
+
+    __asm__ volatile("bkpt #0");
+}
+"#;
+
+/// Compile [`STM32_F103_I2C_FIRMWARE`], boot it on the F103 board, inject a
+/// host slave byte, and return the three results: the transmit sentinel, the
+/// polled receive, and the interrupt-driven receive. `None` means the test was
+/// skipped (missing toolchain or pack).
+fn run_i2c_firmware() -> Option<(u32, u32, u32)> {
+    let includes = [
+        "../packs/Keil.STM32F1xx_DFP/Device/Include",
+        "../packs/STM32F4xx_CMSIS/CMSIS/Core/Include",
+    ];
+    let mut include_paths = Vec::new();
+    for rel in includes {
+        let include = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel);
+        if !include.is_dir() {
+            eprintln!(
+                "skipping i2c test: pack include dir {} not found",
+                include.display()
+            );
+            return None;
+        }
+        include_paths.push(
+            include
+                .to_str()
+                .expect("pack include path is not UTF-8")
+                .to_owned(),
+        );
+    }
+    let include_refs: Vec<&str> = include_paths.iter().map(String::as_str).collect();
+    let (code, symbols) = match build_firmware_with_includes(STM32_F103_I2C_FIRMWARE, &include_refs)
+    {
+        Ok(image) => image,
+        Err(why) => {
+            eprintln!("skipping i2c test: {why}");
+            return None;
+        }
+    };
+    let entry = *symbols.get("reset").expect("no reset symbol");
+    let irq = *symbols
+        .get("I2C1_EV_IRQHandler")
+        .expect("no I2C1_EV_IRQHandler symbol");
+    assert!(!code.is_empty(), "compiled .text must not be empty");
+
+    let mut m = Machine::new(board::stm32f103());
+    m.load_image(&load_flat(CODE_BASE, &code));
+    {
+        let mem = m.core.mem();
+        mem.write_word(FLASH, INIT_SP).unwrap();
+        mem.write_word(FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+        // Vector 47 = I2C1 EV IRQ 31 at FLASH + 47 * 4.
+        mem.write_word(FLASH + 47 * 4, (CODE_BASE + irq) | 1)
+            .unwrap();
+    }
+    m.reset().expect("reset from vector table");
+    // Host stimulus: the connected slave answers every read with 0xA5.
+    for device in m.core.mem().devices_mut() {
+        device.drive_inputs(0xA5);
+    }
+    let err = m.run(100_000);
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
+    let tx = m.core.mem().read_word(board::RAM).unwrap();
+    let rx = m.core.mem().read_word(board::RAM + 4).unwrap();
+    let irq_result = m.core.mem().read_word(board::RAM + 8).unwrap();
+    Some((tx, rx, irq_result))
+}
+
+/// On the STM32F103 board, CMSIS firmware runs polled and interrupt-driven
+/// I2C master transfers against the host-driven slave.
+#[test]
+fn stm32f103_firmware_talks_i2c() {
+    let Some((tx, rx, irq_result)) = run_i2c_firmware() else {
+        return; // skipped
+    };
+    assert_eq!(tx, 0xBE);
+    assert_eq!(rx, 0xA5);
+    assert_eq!(irq_result, 0xA5);
+}
+
 /// Compile `firmware` against the STM32F4 device header, returning the flat
 /// `.text` and symbol map, or `None` if the toolchain or pack is missing.
 fn build_f4_firmware(firmware: &str) -> Option<(Vec<u8>, std::collections::HashMap<String, u32>)> {

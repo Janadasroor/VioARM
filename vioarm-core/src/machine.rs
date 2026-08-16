@@ -90,6 +90,50 @@ impl<M: PeripheralBus> Machine<M> {
         if self.core.mem().reset_requested() {
             self.reset()?;
         }
+        // An exception return (`bx lr` with an EXC_RETURN value) sets the
+        // core's `just_returned` flag: the architecture guarantees the
+        // restored instruction executes before a new exception is taken, so
+        // this step must run that instruction instead of re-entering the
+        // handler. Otherwise a level-sensitive line that stays asserted (for
+        // example a transmit buffer flag left set under `ITBUFEN`) would
+        // re-enter the handler forever and starve the thread of its first
+        // instruction back.
+        let just_returned = std::mem::take(&mut self.core.just_returned);
+        let (primask, faultmask, basepri, ipsr) = (
+            self.core.primask,
+            self.core.faultmask,
+            self.core.basepri,
+            self.core.ipsr,
+        );
+        if just_returned {
+            self.run_instruction()?;
+        } else if let Some(n) = self
+            .core
+            .mem()
+            .next_exception(primask, faultmask, basepri, ipsr)
+        {
+            self.core.enter_exception(n)?;
+            self.core.mem().acknowledge_exception(n);
+            self.core.cycles += 1;
+        } else {
+            self.run_instruction()?;
+        }
+        self.core.mem().tick_cycle();
+        Ok(())
+    }
+
+    /// Retire one instruction, then (unless that instruction was an exception
+    /// return) take any exception that now outranks the running context.
+    fn run_instruction(&mut self) -> Result<(), HaltCause> {
+        // Whether the core was already asleep: if so its `step()` returns
+        // immediately without a cycle, so we count the sleeping cycle here.
+        let was_sleeping = self.core.sleeping;
+        self.core.step()?;
+        if self.core.just_returned {
+            // The instruction was an exception return: the restored thread
+            // instruction must execute next, before any pending exception.
+            return Ok(());
+        }
         let (primask, faultmask, basepri, ipsr) = (
             self.core.primask,
             self.core.faultmask,
@@ -104,33 +148,12 @@ impl<M: PeripheralBus> Machine<M> {
             self.core.enter_exception(n)?;
             self.core.mem().acknowledge_exception(n);
             self.core.cycles += 1;
-        } else {
-            // Whether the core was already asleep: if so its `step()` returns
-            // immediately without a cycle, so we count the sleeping cycle here.
-            let was_sleeping = self.core.sleeping;
-            self.core.step()?;
-            let (primask, faultmask, basepri, ipsr) = (
-                self.core.primask,
-                self.core.faultmask,
-                self.core.basepri,
-                self.core.ipsr,
-            );
-            if let Some(n) = self
-                .core
-                .mem()
-                .next_exception(primask, faultmask, basepri, ipsr)
-            {
-                self.core.enter_exception(n)?;
-                self.core.mem().acknowledge_exception(n);
-                self.core.cycles += 1;
-            } else if was_sleeping {
-                // A sleeping core that no exception wakes still spends the
-                // cycle asleep; count it so `cycles()` advances monotonically
-                // while firmware sits in `WFI`/`WFE` (peripherals keep ticking).
-                self.core.cycles += 1;
-            }
+        } else if was_sleeping {
+            // A sleeping core that no exception wakes still spends the
+            // cycle asleep; count it so `cycles()` advances monotonically
+            // while firmware sits in `WFI`/`WFE` (peripherals keep ticking).
+            self.core.cycles += 1;
         }
-        self.core.mem().tick_cycle();
         Ok(())
     }
 

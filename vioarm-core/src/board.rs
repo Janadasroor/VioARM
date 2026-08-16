@@ -21,6 +21,7 @@ use crate::device::stm32::exti::Exti;
 use crate::device::stm32::flash::{FlashF1, FlashF4, FlashGate};
 use crate::device::stm32::gpio::Gpio as StmGpio;
 use crate::device::stm32::gpio_f4::GpioF4;
+use crate::device::stm32::i2c::I2c;
 use crate::device::stm32::rcc::Rcc;
 use crate::device::stm32::spi::Spi;
 use crate::device::stm32::syscfg::Syscfg;
@@ -82,6 +83,7 @@ pub const STM32_MAIN_FLASH: u32 = 0x0800_0000;
 #[must_use]
 pub fn stm32f103() -> BoardMemory {
     use crate::device::stm32;
+    use crate::device::svd::stm32f103::Stm32f103;
     let backing = FlatMemory::with_layout(
         &[FLASH, STM32_MAIN_FLASH, RAM],
         &[
@@ -113,6 +115,8 @@ pub fn stm32f103() -> BoardMemory {
     mem.attach(Box::new(Spi::spi1()));
     mem.attach(Box::new(Spi::spi2()));
     mem.attach(Box::new(Spi::spi3()));
+    mem.attach(Box::new(I2c::new()));
+    mem.attach(Box::new(I2c::i2c2_for::<Stm32f103>()));
     let dma = Arc::new(Mutex::new(Vec::new()));
     mem.set_dma_mailbox(dma.clone());
     mem.attach(Box::new(DmaF1::dma1(dma, dma_requests)));
@@ -169,6 +173,8 @@ pub fn stm32f107() -> BoardMemory {
     mem.attach(Box::new(Spi::spi1_for::<Stm32f107>()));
     mem.attach(Box::new(Spi::spi2_for::<Stm32f107>()));
     mem.attach(Box::new(Spi::spi3_for::<Stm32f107>()));
+    mem.attach(Box::new(I2c::for_device::<Stm32f107>()));
+    mem.attach(Box::new(I2c::i2c2_for::<Stm32f107>()));
     let dma_requests = Arc::new(Mutex::new(DmaRequests::new()));
     mem.attach(Box::new(Usart1::for_device_with_dma::<Stm32f107>(
         dma_requests.clone(),
@@ -248,6 +254,9 @@ pub fn stm32f407() -> BoardMemory {
     mem.attach(Box::new(Spi::spi1_for::<Stm32f407>()));
     mem.attach(Box::new(Spi::spi2_for::<Stm32f407>()));
     mem.attach(Box::new(Spi::spi3_for::<Stm32f407>()));
+    mem.attach(Box::new(I2c::for_device::<Stm32f407>()));
+    mem.attach(Box::new(I2c::i2c2_for::<Stm32f407>()));
+    mem.attach(Box::new(I2c::i2c3_for::<Stm32f407>()));
     let dma = Arc::new(Mutex::new(Vec::new()));
     mem.set_dma_mailbox(dma.clone());
     mem.attach(Box::new(DmaF4::dma1_for::<Stm32f407>(dma.clone())));
