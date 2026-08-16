@@ -10,12 +10,21 @@
 //! handler drains the data register, exactly as on silicon. The two things a
 //! table cannot express live in [`UsartBehavior`]: the `TXE`/`TC` status
 //! synthesis and the read-to-clear `RXNE` side effect.
+//!
+//! With a [`DmaRequests`] mailbox wired in, the USART also feeds the DMA
+//! controllers: `USART1` asserts a memory→peripheral request on DMA1 channel 4
+//! (the TX line) while `UE` and `TE` are set, and a peripheral→memory request
+//! on DMA1 channel 5 (the RX line) while a received byte is pending in `DR`.
+//! Reading `DR` (or writing zero to it) drops the RX request, mirroring the
+//! level request line that falls when the data register is drained.
 
+use crate::device::stm32::dma::DmaRequests;
 use crate::device::svd::stm32f103;
 use crate::device::svd::{Behavior, Device, RegisterFile, Registers};
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
 use crate::mem::bus::Region;
+use std::sync::{Arc, Mutex};
 
 /// Register offsets within the peripheral, per the SVD.
 const SR: u16 = 0x00;
@@ -32,12 +41,22 @@ const UE: u32 = 1 << 13;
 const TE: u32 = 1 << 3;
 const RXNEIE: u32 = 1 << 5;
 
+/// The F1 USART1→DMA1 request routing: TX on channel 4, RX on channel 5.
+const DMA1_CONTROLLER: u8 = 0;
+const TX_DMA_CHANNEL: u8 = 4;
+const RX_DMA_CHANNEL: u8 = 5;
+
 /// The cross-register side effects the SVD cannot express: status synthesis
-/// on `SR` reads, and `RXNE` acknowledge on `DR` reads and zero writes.
+/// on `SR` reads, `RXNE` acknowledge on `DR` reads and zero writes, and the
+/// DMA request lines asserted while data is ready to move.
 #[derive(Debug, Default)]
 struct UsartBehavior {
     /// Bytes firmware wrote to the data register, for host draining.
     output: Vec<u8>,
+    /// The DMA request mailbox, when a DMA controller is wired to this USART.
+    requests: Option<Arc<Mutex<DmaRequests>>>,
+    /// The request routing `(controller, tx_channel, rx_channel)`.
+    dma: Option<(u8, u8, u8)>,
 }
 
 impl Behavior for UsartBehavior {
@@ -57,8 +76,9 @@ impl Behavior for UsartBehavior {
             }
             DR => {
                 // Reading the data register drains the received byte and
-                // acknowledges `RXNE`.
+                // acknowledges `RXNE`, dropping the DMA RX request line.
                 view.set(SR, view.get(SR) & !RXNE);
+                self.drop_rx_request();
                 value
             }
             _ => value,
@@ -85,12 +105,30 @@ impl Behavior for UsartBehavior {
                     // matching the silicon rule that zero is not data.
                     if val == 0 {
                         view.set(SR, view.get(SR) & !RXNE);
+                        self.drop_rx_request();
                     }
                 }
                 // A transmit does not alter the received data.
                 view.get(DR)
             }
             _ => view.merged(offset, val, shift),
+        }
+    }
+
+fn tick(&mut self, view: &mut Registers<&mut [u32]>, _delta: u64) {
+        let (requests, dma) = (&self.requests, self.dma);
+        let (Some(requests), Some((controller, tx_channel, rx_channel))) = (requests, dma) else {
+            return;
+        };
+        let mut req = requests.lock().unwrap();
+        let cr1 = view.get(CR1);
+        // The TX line is high whenever the transmitter can take a byte.
+        if cr1 & (UE | TE) == (UE | TE) {
+            req.request(controller, tx_channel, true);
+        }
+        // The RX line is high while a received byte sits unread in `DR`.
+        if view.get(SR) & RXNE != 0 {
+            req.request(controller, rx_channel, false);
         }
     }
 
@@ -112,6 +150,20 @@ impl Behavior for UsartBehavior {
 
     fn drain_output(&mut self) -> Vec<u8> {
         core::mem::take(&mut self.output)
+    }
+}
+
+impl UsartBehavior {
+    /// Deassert the RX DMA request line (the data register was drained).
+    fn drop_rx_request(&mut self) {
+        if let (Some(requests), Some((controller, _, rx_channel))) =
+            (&self.requests, self.dma)
+        {
+            requests
+                .lock()
+                .unwrap()
+                .release(controller, rx_channel, false);
+        }
     }
 }
 
@@ -144,6 +196,37 @@ impl Usart1 {
             inner: RegisterFile::new(def, UsartBehavior::default()),
         }
     }
+
+    /// A new `USART1` sharing `requests` with its DMA controller. The F1
+    /// routes USART1 TX to DMA1 channel 4 and RX to DMA1 channel 5.
+    ///
+    /// # Panics
+    /// Panics if the generated device tables do not contain the `USART1`
+    /// peripheral (a build-time invariant enforced by conformance tests).
+    #[must_use]
+    pub fn with_dma(requests: Arc<Mutex<DmaRequests>>) -> Self {
+        Self::for_device_with_dma::<stm32f103::Stm32f103>(requests)
+    }
+
+    /// A new `USART1` on another chip's device tables, wired to its DMA
+    /// controller through the F1 request routing (TX on DMA1 channel 4, RX on
+    /// DMA1 channel 5).
+    ///
+    /// # Panics
+    /// Panics if `D`'s generated tables do not contain the `USART1`
+    /// peripheral.
+    #[must_use]
+    pub fn for_device_with_dma<D: Device>(requests: Arc<Mutex<DmaRequests>>) -> Self {
+        let def = D::peripheral("USART1").expect("generated tables contain USART1");
+        let behavior = UsartBehavior {
+            output: Vec::new(),
+            requests: Some(requests),
+            dma: Some((DMA1_CONTROLLER, TX_DMA_CHANNEL, RX_DMA_CHANNEL)),
+        };
+        Self {
+            inner: RegisterFile::new(def, behavior),
+        }
+    }
 }
 
 impl Default for Usart1 {
@@ -165,8 +248,12 @@ impl Peripheral for Usart1 {
         self.inner.write(addr, val)
     }
 
-    fn reset(&mut self) {
+fn reset(&mut self) {
         self.inner.reset();
+    }
+
+    fn tick(&mut self, delta: u64) {
+        self.inner.tick(delta);
     }
 
     fn name(&self) -> &'static str {
@@ -293,4 +380,29 @@ mod tests {
         );
         assert_eq!(u.drain_output(), b"");
     }
+
+    #[test]
+    fn dma_requests_follow_tx_enable_and_rx_pending() {
+        use super::DmaRequests;
+        use std::sync::{Arc, Mutex};
+        let requests = Arc::new(Mutex::new(DmaRequests::new()));
+        let mut u = Usart1::with_dma(requests.clone());
+        // Disabled: no TX request yet.
+        u.tick(1);
+        assert_eq!(requests.lock().unwrap().to_periph(), 0);
+        // UE + TE: the TX line asserts on DMA1 channel 4.
+        write_word(&mut u, BASE + u32::from(CR1), UE | TE);
+        u.tick(1);
+        assert_eq!(requests.lock().unwrap().to_periph(), 1 << 4);
+        // A received byte asserts the RX line on DMA1 channel 5.
+        u.drive_inputs(0x5A);
+        u.tick(1);
+        assert_eq!(requests.lock().unwrap().from_periph(), 1 << 5);
+        // Reading DR drains the byte and drops the RX request.
+        let _ = read_word(&mut u, BASE + u32::from(DR));
+        assert_eq!(requests.lock().unwrap().from_periph(), 0);
+        // The TX line stays asserted while the transmitter is enabled.
+        assert_eq!(requests.lock().unwrap().to_periph(), 1 << 4);
+    }
 }
+

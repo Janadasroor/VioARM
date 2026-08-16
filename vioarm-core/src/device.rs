@@ -106,6 +106,15 @@ pub trait InterruptSource: Peripheral {
     /// Acknowledge (clear) the latched `lines` the NVIC is taking. Lines the
     /// NVIC is not taking stay pending. The default clears nothing.
     fn acknowledge(&mut self, _lines: u32) {}
+
+    /// Which device-local lines the device can raise, as a bitmask of line
+    /// indices (bit `L` set == line `L` exists). A device that raises one NVIC
+    /// line keeps the default of a single line; a controller that raises one
+    /// NVIC line per channel (the F1 DMA) reports its full set so the NVIC
+    /// acknowledges the right line when it takes an exception.
+    fn lines(&self) -> u32 {
+        1
+    }
 }
 
 /// The lowest set bit index of `lines` — the NVIC's fixed-priority

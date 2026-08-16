@@ -317,8 +317,17 @@ impl<M: Bus> SystemMemory<M> {
                 let line = u32::from(n - 16);
                 self.nvic.take(line);
                 for device in &mut self.devices {
-                    if device.exception_number() == Some(n) {
-                        device.acknowledge(1);
+                    if let Some(base) = device.exception_number() {
+                        // Acknowledge the device's line `n - base`; a controller
+                        // that owns several consecutive lines (the F1 DMA)
+                        // acknowledges the one being serviced, and a single-line
+                        // device (base == n) keeps acknowledging `1`.
+                        if n >= base {
+                            let local = u32::from(n - base);
+                            if local < 32 && device.lines() & (1 << local) != 0 {
+                                device.acknowledge(1 << local);
+                            }
+                        }
                     }
                 }
             }
@@ -326,14 +335,19 @@ impl<M: Bus> SystemMemory<M> {
         }
     }
 
-    /// Copy each asserting device line into the NVIC's pending register.
+    /// Copy each asserting device line into the NVIC's pending register. A
+    /// device's `pending()` is a bitmask of its device-local lines; line `L`
+    /// maps to NVIC line `base - 16 + L`.
     fn latch_device_asserts(&mut self) {
         for device in &self.devices {
             let Some(n) = device.exception_number() else {
                 continue;
             };
-            if n >= 16 && device.pending() != 0 {
-                self.nvic.latch(1u64 << u32::from(n - 16));
+            if n >= 16 {
+                let mask = device.pending();
+                if mask != 0 {
+                    self.nvic.latch(u64::from(mask) << u32::from(n - 16));
+                }
             }
         }
     }
@@ -1104,7 +1118,7 @@ mod tests {
 
     #[test]
     fn dma_mailbox_units_land_after_device_ticks() {
-        use crate::device::stm32::dma::DmaF1;
+        use crate::device::stm32::dma::{DmaF1, DmaRequests};
         use std::sync::{Arc, Mutex};
 
         const DMA: u32 = 0x4002_0000;
@@ -1118,8 +1132,7 @@ mod tests {
         let mailbox = Arc::new(Mutex::new(Vec::new()));
         let mut sys = SystemMemory::new(backing);
         sys.set_dma_mailbox(mailbox.clone());
-        sys.attach(Box::new(DmaF1::dma1(mailbox)));
-
+        sys.attach(Box::new(DmaF1::dma1(mailbox, Arc::new(Mutex::new(DmaRequests::new())))));
         sys.write_word(DMA + 0x10, RAM + 0x100).unwrap(); // CPAR1
         sys.write_word(DMA + 0x14, RAM + 0x200).unwrap(); // CMAR1
         sys.write_word(DMA + 0x0C, 8).unwrap(); // CNDTR1

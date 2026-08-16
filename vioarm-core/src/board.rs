@@ -14,7 +14,7 @@
 
 use crate::device::gpio::Gpio;
 use crate::device::stm32::afio::Afio;
-use crate::device::stm32::dma::DmaF1;
+use crate::device::stm32::dma::{DmaF1, DmaRequests};
 use crate::device::stm32::exti::Exti;
 use crate::device::stm32::flash::{FlashF1, FlashGate};
 use crate::device::stm32::gpio::Gpio as StmGpio;
@@ -97,14 +97,15 @@ pub fn stm32f103() -> BoardMemory {
     mem.attach(Box::new(StmGpio::at(stm32::GPIOA, "gpioa")));
     mem.attach(Box::new(StmGpio::at(stm32::GPIOB, "gpiob")));
     mem.attach(Box::new(StmGpio::at(stm32::GPIOC, "gpioc")));
-    mem.attach(Box::new(Usart1::new()));
+    let dma_requests = Arc::new(Mutex::new(DmaRequests::new()));
+    mem.attach(Box::new(Usart1::with_dma(dma_requests.clone())));
     mem.attach(Box::new(Timer::tim2()));
     mem.attach(Box::new(Timer::tim3()));
     mem.attach(Box::new(Exti::new()));
     mem.attach(Box::new(Afio::new()));
     let dma = Arc::new(Mutex::new(Vec::new()));
     mem.set_dma_mailbox(dma.clone());
-    mem.attach(Box::new(DmaF1::dma1(dma)));
+    mem.attach(Box::new(DmaF1::dma1(dma, dma_requests)));
     mem.attach(Box::new(SysTick::new()));
     mem
 }
@@ -149,10 +150,22 @@ pub fn stm32f107() -> BoardMemory {
     mem.attach(Box::new(Timer::tim3_for::<Stm32f107>()));
     mem.attach(Box::new(Exti::for_device::<Stm32f107>()));
     mem.attach(Box::new(Afio::for_device::<Stm32f107>()));
+    let dma_requests = Arc::new(Mutex::new(DmaRequests::new()));
+    mem.attach(Box::new(Usart1::for_device_with_dma::<Stm32f107>(
+        dma_requests.clone(),
+    )));
     let dma = Arc::new(Mutex::new(Vec::new()));
     mem.set_dma_mailbox(dma.clone());
-    mem.attach(Box::new(DmaF1::dma_for::<Stm32f107>("DMA1", dma.clone())));
-    mem.attach(Box::new(DmaF1::dma_for::<Stm32f107>("DMA2", dma)));
+    mem.attach(Box::new(DmaF1::dma_for::<Stm32f107>(
+        "DMA1",
+        dma.clone(),
+        dma_requests.clone(),
+    )));
+    mem.attach(Box::new(DmaF1::dma_for::<Stm32f107>(
+        "DMA2",
+        dma,
+        dma_requests,
+    )));
     mem.attach(Box::new(SysTick::new()));
     mem
 }

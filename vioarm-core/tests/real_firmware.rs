@@ -770,11 +770,12 @@ void reset(void) {
     NVIC->ISER[0] = 1u << DMA1_Channel1_IRQn;
 
     /* 4. Memory-to-memory copy of 16 words, both sides incrementing. */
-    DMA1->CPAR1 = SRC_ADDR;
-    DMA1->CMAR1 = DST_ADDR;
-    DMA1->CNDTR1 = 16;
-    DMA1->CCR1 = DMA_CCR_MEM2MEM | DMA_CCR_PINC | DMA_CCR_MINC |
-                 DMA_CCR_PSIZE_32BIT | DMA_CCR_MSIZE_32BIT | DMA_CCR_TCIE | DMA_CCR_EN;
+    DMA1_Channel1->CPAR = SRC_ADDR;
+    DMA1_Channel1->CMAR = DST_ADDR;
+    DMA1_Channel1->CNDTR = 16;
+    DMA1_Channel1->CCR = DMA_CCR1_MEM2MEM | DMA_CCR1_PINC | DMA_CCR1_MINC |
+                         DMA_CCR1_PSIZE_1 | DMA_CCR1_MSIZE_1 |
+                         DMA_CCR1_TCIE | DMA_CCR1_EN;
 
     /* 5. Wait for the transfer-complete interrupt. */
     while (!DONE_WORD) { }
@@ -785,8 +786,8 @@ void reset(void) {
         if (dst[i] != (0xDEAD0000u | i)) { ok = 0; break; }
         if (src[i] != (0xDEAD0000u | i)) { ok = 0; break; }
     }
-    if (DMA1->CNDTR1 != 0) ok = 0;
-    if (DMA1->CCR1 & DMA_CCR_EN) ok = 0;
+    if (DMA1_Channel1->CNDTR != 0) ok = 0;
+    if (DMA1_Channel1->CCR & DMA_CCR1_EN) ok = 0;
 
     *(volatile unsigned *)RESULT_ADDR = ok;
     __asm__ volatile("bkpt #0");
@@ -798,36 +799,9 @@ void reset(void) {
 /// verifies the result.
 #[test]
 fn stm32f103_dma_transfers_memory_to_memory() {
-    let includes = [
-        "../packs/Keil.STM32F1xx_DFP/Device/Include",
-        "../packs/STM32F4xx_CMSIS/CMSIS/Core/Include",
-    ];
-    let mut include_paths = Vec::new();
-    for rel in includes {
-        let include = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel);
-        if !include.is_dir() {
-            eprintln!(
-                "skipping dma test: pack include dir {} not found",
-                include.display()
-            );
-            return;
-        }
-        include_paths.push(
-            include
-                .to_str()
-                .expect("pack include path is not UTF-8")
-                .to_owned(),
-        );
-    }
-    let include_refs: Vec<&str> = include_paths.iter().map(String::as_str).collect();
-    let (code, symbols) =
-        match build_firmware_with_includes(STM32_F103_DMA_FIRMWARE, &include_refs) {
-            Ok(image) => image,
-            Err(why) => {
-                eprintln!("skipping dma test: {why}");
-                return;
-            }
-        };
+    let Some((code, symbols)) = build_f1_dma_firmware(STM32_F103_DMA_FIRMWARE) else {
+        return; // skipped
+    };
     let entry = *symbols.get("reset").expect("no reset symbol");
     let irq = *symbols
         .get("DMA1_Channel1_IRQHandler")
@@ -840,7 +814,7 @@ fn stm32f103_dma_transfers_memory_to_memory() {
         let mem = m.core.mem();
         mem.write_word(FLASH, INIT_SP).unwrap();
         mem.write_word(FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
-        // Vector 27 = DMA1 IRQ 11 at FLASH + 27 * 4.
+        // Vector 27 = DMA1_Channel1 IRQ 11 at FLASH + 27 * 4.
         mem.write_word(FLASH + 27 * 4, (CODE_BASE + irq) | 1)
             .unwrap();
     }
@@ -856,6 +830,229 @@ fn stm32f103_dma_transfers_memory_to_memory() {
         m.core.mem().read_word(0x2000_0304).unwrap(),
         1,
         "the memory-to-memory copy was verified"
+    );
+}
+
+/// Compile `firmware` against the STM32F1 device header, returning the flat
+/// `.text` and symbol map, or `None` if the toolchain or pack is missing.
+fn build_f1_dma_firmware(
+    firmware: &str,
+) -> Option<(Vec<u8>, std::collections::HashMap<String, u32>)> {
+    let includes = [
+        "../packs/Keil.STM32F1xx_DFP/Device/Include",
+        "../packs/STM32F4xx_CMSIS/CMSIS/Core/Include",
+    ];
+    let mut include_paths = Vec::new();
+    for rel in includes {
+        let include = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel);
+        if !include.is_dir() {
+            eprintln!(
+                "skipping dma test: pack include dir {} not found",
+                include.display()
+            );
+            return None;
+        }
+        include_paths.push(
+            include
+                .to_str()
+                .expect("pack include path is not UTF-8")
+                .to_owned(),
+        );
+    }
+    let include_refs: Vec<&str> = include_paths.iter().map(String::as_str).collect();
+    match build_firmware_with_includes(firmware, &include_refs) {
+        Ok(image) => Some(image),
+        Err(why) => {
+            eprintln!("skipping dma test: {why}");
+            None
+        }
+    }
+}
+
+/// Real CMSIS-style firmware against the STM32F1 DMA request path: `USART1`
+/// transmits a byte string over DMA1 channel 4 (memory→peripheral), driven to
+/// completion by the channel-4 transfer-complete interrupt (IRQ 14, exception
+/// 30). `RESULT` is `1` only if `CNDTR` read zero, `EN` self-cleared, and the
+/// handler ran — and the host side asserts the transmitted bytes matched.
+const STM32_F103_DMA_TX_FIRMWARE: &str = r#"
+#define STM32F10X_HD
+#include "stm32f10x.h"
+
+#define TX_ADDR 0x20000100u
+#define DONE_ADDR 0x20000300u
+#define RESULT_ADDR 0x20000304u
+#define DONE_WORD (*(volatile unsigned *)DONE_ADDR)
+
+void DMA1_Channel4_IRQHandler(void) {
+    if (DMA1->ISR & DMA_ISR_TCIF4) {
+        DONE_WORD = 1;
+        DMA1->IFCR = DMA_IFCR_CTCIF4;
+    }
+}
+
+void reset(void) {
+    /* 1. Fill the transmit buffer. */
+    volatile unsigned char *tx = (volatile unsigned char *)TX_ADDR;
+    const unsigned char msg[] = "dma ok!\n";
+    unsigned len = 0;
+    while (msg[len] != 0) { tx[len] = msg[len]; ++len; }
+
+    /* 2. Enable clocks (gating is not enforced; kept for realism). */
+    RCC->APB2ENR |= RCC_APB2ENR_IOPAEN | RCC_APB2ENR_USART1EN;
+
+    /* 3. USART1 at 8 MHz HSI / 9600 baud, transmitter on. */
+    USART1->BRR = 0x341;
+    USART1->CR1 = USART_CR1_UE | USART_CR1_TE;
+
+    /* 4. Arm the DMA1 channel-4 IRQ (IRQ 14, exception 30). */
+    NVIC->ISER[0] = 1u << DMA1_Channel4_IRQn;
+
+    /* 5. DMA1 channel 4: memory -> USART1 DR, byte units, memory increment.
+          The USART1 TX request line feeds the channel every cycle. */
+    DMA1_Channel4->CPAR = (unsigned)&USART1->DR;
+    DMA1_Channel4->CMAR = TX_ADDR;
+    DMA1_Channel4->CNDTR = len;
+    DMA1_Channel4->CCR = DMA_CCR4_MINC | DMA_CCR4_TCIE | DMA_CCR4_EN;
+
+    /* 6. Wait for the transfer-complete interrupt. */
+    while (!DONE_WORD) { }
+
+    /* 7. Verify the channel completed cleanly. */
+    unsigned ok = 1;
+    if (DMA1_Channel4->CNDTR != 0) ok = 0;
+    if (DMA1_Channel4->CCR & DMA_CCR4_EN) ok = 0;
+    *(volatile unsigned *)RESULT_ADDR = ok;
+    __asm__ volatile("bkpt #0");
+}
+"#;
+
+/// On the STM32F103 board, `USART1` TX drives `DMA1` channel 4 over the
+/// peripheral-request line: the string reaches the host channel and the
+/// channel-4 IRQ fires on completion.
+#[test]
+fn stm32f103_dma_transmits_usart1_via_peripheral_request() {
+    let Some((code, symbols)) = build_f1_dma_firmware(STM32_F103_DMA_TX_FIRMWARE) else {
+        return; // skipped
+    };
+    let entry = *symbols.get("reset").expect("no reset symbol");
+    let irq = *symbols
+        .get("DMA1_Channel4_IRQHandler")
+        .expect("no DMA1_Channel4_IRQHandler symbol");
+    assert!(!code.is_empty(), "compiled .text must not be empty");
+
+    let mut m = Machine::new(board::stm32f103());
+    m.load_image(&load_flat(CODE_BASE, &code));
+    {
+        let mem = m.core.mem();
+        mem.write_word(FLASH, INIT_SP).unwrap();
+        mem.write_word(FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+        // Vector 30 = DMA1_Channel4 IRQ 14 at FLASH + 30 * 4.
+        mem.write_word(FLASH + 30 * 4, (CODE_BASE + irq) | 1)
+            .unwrap();
+    }
+    m.reset().expect("reset from vector table");
+    let err = m.run(100_000);
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
+    let mut tx = Vec::new();
+    for device in m.core.mem().devices_mut() {
+        tx.extend(device.drain_output());
+    }
+    assert_eq!(tx, b"dma ok!\n", "the DMA-fed USART TX reached the host");
+    assert_eq!(
+        m.core.mem().read_word(0x2000_0304).unwrap(),
+        1,
+        "the peripheral-request transmit was verified"
+    );
+}
+
+/// Real CMSIS-style firmware against the STM32F1 DMA request path in the
+/// receive direction: `USART1` RX fills a buffer through DMA1 channel 5
+/// (peripheral→memory), with the channel-5 transfer-complete interrupt (IRQ
+/// 15, exception 31) signaling completion. The host injects four bytes one at
+/// a time; `RESULT` is `1` only if they landed in order and the channel
+/// completed cleanly.
+const STM32_F103_DMA_RX_FIRMWARE: &str = r#"
+#define STM32F10X_HD
+#include "stm32f10x.h"
+
+#define RX_ADDR 0x20000100u
+#define DONE_ADDR 0x20000300u
+#define RESULT_ADDR 0x20000304u
+#define DONE_WORD (*(volatile unsigned *)DONE_ADDR)
+
+void DMA1_Channel5_IRQHandler(void) {
+    if (DMA1->ISR & DMA_ISR_TCIF5) {
+        DONE_WORD = 1;
+        DMA1->IFCR = DMA_IFCR_CTCIF5;
+    }
+}
+
+void reset(void) {
+    RCC->APB2ENR |= RCC_APB2ENR_IOPAEN | RCC_APB2ENR_USART1EN;
+
+    USART1->BRR = 0x341;
+    USART1->CR1 = USART_CR1_UE | USART_CR1_RE;
+
+    NVIC->ISER[0] = 1u << DMA1_Channel5_IRQn;
+
+    /* USART1 -> DMA1 channel 5, byte units, memory increment. */
+    DMA1_Channel5->CPAR = (unsigned)&USART1->DR;
+    DMA1_Channel5->CMAR = RX_ADDR;
+    DMA1_Channel5->CNDTR = 4;
+    DMA1_Channel5->CCR = DMA_CCR5_MINC | DMA_CCR5_TCIE | DMA_CCR5_EN;
+
+    while (!DONE_WORD) { }
+
+    volatile unsigned char *rx = (volatile unsigned char *)RX_ADDR;
+    unsigned ok = (rx[0] == 'd') & (rx[1] == 'm') & (rx[2] == 'a') & (rx[3] == '\n');
+    if (DMA1_Channel5->CNDTR != 0) ok = 0;
+    if (DMA1_Channel5->CCR & DMA_CCR5_EN) ok = 0;
+    *(volatile unsigned *)RESULT_ADDR = ok;
+    __asm__ volatile("bkpt #0");
+}
+"#;
+
+/// On the STM32F103 board, host-injected USART1 RX bytes are absorbed by `DMA1`
+/// channel 5 over the peripheral-request line and verified by the firmware.
+#[test]
+fn stm32f103_dma_receives_usart1_via_peripheral_request() {
+    let Some((code, symbols)) = build_f1_dma_firmware(STM32_F103_DMA_RX_FIRMWARE) else {
+        return; // skipped
+    };
+    let entry = *symbols.get("reset").expect("no reset symbol");
+    let irq = *symbols
+        .get("DMA1_Channel5_IRQHandler")
+        .expect("no DMA1_Channel5_IRQHandler symbol");
+    assert!(!code.is_empty(), "compiled .text must not be empty");
+
+    let mut m = Machine::new(board::stm32f103());
+    m.load_image(&load_flat(CODE_BASE, &code));
+    {
+        let mem = m.core.mem();
+        mem.write_word(FLASH, INIT_SP).unwrap();
+        mem.write_word(FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+        // Vector 31 = DMA1_Channel5 IRQ 15 at FLASH + 31 * 4.
+        mem.write_word(FLASH + 31 * 4, (CODE_BASE + irq) | 1)
+            .unwrap();
+    }
+    m.reset().expect("reset from vector table");
+    // Inject the four bytes one at a time, giving the DMA a few cycles to
+    // absorb each one before the next arrives on the wire. The final byte
+    // completes the transfer and halts the firmware.
+    for byte in b"dma\n" {
+        for device in m.core.mem().devices_mut() {
+            device.drive_inputs(u32::from(*byte));
+        }
+        if m.run(100) == Err(HaltCause::NonThumbTarget) {
+            break;
+        }
+    }
+    let err = m.run(100_000);
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
+    assert_eq!(
+        m.core.mem().read_word(0x2000_0304).unwrap(),
+        1,
+        "the DMA-fed USART RX was verified"
     );
 }
 

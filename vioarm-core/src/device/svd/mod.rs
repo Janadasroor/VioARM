@@ -173,6 +173,13 @@ pub trait Behavior: Send {
     /// Clear the latched `lines` the NVIC is taking.
     fn acknowledge(&mut self, _lines: u32) {}
 
+    /// Which device-local lines the device can raise, as a bitmask of line
+    /// indices. The default of a single line keeps one-line devices unchanged;
+    /// a multi-channel controller overrides it.
+    fn lines(&self) -> u32 {
+        1
+    }
+
     /// Restore post-reset behavior state, after the register words reload.
     fn reset(&mut self) {}
 
@@ -291,6 +298,10 @@ impl<B: Behavior> InterruptSource for RegisterFile<B> {
 
     fn acknowledge(&mut self, lines: u32) {
         self.behavior.acknowledge(lines);
+    }
+
+    fn lines(&self) -> u32 {
+        self.behavior.lines()
     }
 }
 
