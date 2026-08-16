@@ -12,6 +12,15 @@
 //! `CCR.STKALIGN`/`DIV_0_TRP` drive the core's exception-return and
 //! exception-entry behavior.
 //!
+//! The ARMv7-M MPU is modeled here too: the `MPU_TYPE`/`MPU_CTRL`/`MPU_RNR`/
+//! `MPU_RBAR`/`MPU_RASR` registers (plus their v7M `_A1`/`_A2`/`_A3` aliases,
+//! which index `MPU_RNR` like the base registers) with eight unified regions,
+//! subregion disable, `AP`/`XN` permissions, and the `PRIVDEFENA` background
+//! region. [`Scb::mpu_check`] answers permission queries from the core's
+//! fetch/data paths, and [`Scb::record_mpu_fault`] latches `MMFSR`, `MMFAR`,
+//! and `HFSR.FORCED` when a violation escalates to HardFault. The MPU is
+//! bypassed inside `NMI`/`HardFault` unless `HFNMIENA` is set.
+//!
 //! `VTOR` sets the base address of the exception vector table the core consults
 //! on exception entry. `SHCSR` stores the fault-enable and pending bits;
 //! `SVCALLPENDED` is wired into the interrupt controller so a written pend is
@@ -33,7 +42,7 @@
 use crate::cpu::FpuCtx;
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
-use crate::mem::bus::Region;
+use crate::mem::bus::{MpuAccess, Region};
 use std::sync::{Arc, Mutex};
 
 const ICSR: u32 = 0xE000_ED04;
@@ -47,10 +56,25 @@ const SHPR3: u32 = 0xE000_ED20;
 const SHCSR: u32 = 0xE000_ED24;
 const CFSR: u32 = 0xE000_ED28;
 const HFSR: u32 = 0xE000_ED2C;
+const MMFAR: u32 = 0xE000_ED34;
 const CPACR: u32 = 0xE000_ED88;
 const FPCCR: u32 = 0xE000_EF34;
 const FPCAR: u32 = 0xE000_EF38;
 const FPDSCR: u32 = 0xE000_EF3C;
+
+/// The MPU register window. One 4-byte-aligned window covers `MPU_TYPE` ..=
+/// `MPU_RASR_A3`, dispatched by byte offset; the aliases `_A1`/`_A2`/`_A3`
+/// behave exactly like the base registers on ARMv7-M (they are indexed by
+/// `MPU_RNR`, unlike the v8M PMSAv8 alias-region override), matching the QEMU
+/// oracle.
+const MPU: u32 = 0xE000_ED90;
+
+// MMFSR fault-status bits (CFSR bits 7:0). `IACCVIOL`/`DACCVIOL` are the
+// instruction/data access violations the MPU raises; `MMARVALID` marks
+// `MMFAR` as holding the faulting address.
+const MMFSR_IACCVIOL: u32 = 0x0000_0001;
+const MMFSR_DACCVIOL: u32 = 0x0000_0002;
+const MMFSR_MMARVALID: u32 = 0x0000_0080;
 
 const PENDSVSET: u8 = 0x10; // ICSR byte 3, bit 28: write 1 to pend.
 const PENDSVCLR: u8 = 0x08; // ICSR byte 3, bit 27: write 1 to clear.
@@ -91,13 +115,128 @@ const CFSR_MASK: u32 = 0xFFFF_FFFF;
 // HFSR.FORCED (W1C) is reported at bit 30 to match the QEMU oracle, which
 // stores it there instead of the architectural bit 31 (see cpu/mod.rs).
 const HFSR_MASK: u32 = 0x4000_0002;
+const HFSR_FORCED: u32 = 0x4000_0000;
+
+/// One MPU region, holding the raw `RBAR`/`RASR` words exactly as firmware
+/// wrote them. The base is kept in `RBAR` bits [31:5] (firmware's `REGION`/
+/// `VALID` bits are consumed on the word write); the region size, subregion
+/// disable, and access permissions decode from `RASR`.
+#[derive(Debug, Clone, Copy)]
+struct MpuRegion {
+    rbar: u32,
+    rasr: u32,
+}
+
+impl Default for MpuRegion {
+    fn default() -> Self {
+        Self { rbar: 0, rasr: 0 }
+    }
+}
+
+impl MpuRegion {
+    /// Whether the region is enabled: `RASR.ENABLE` set and a valid size
+    /// field (`SIZE >= 7`, i.e. at least 256 bytes; a smaller `SIZE` makes
+    /// `ENABLE` read as zero per the architecture).
+    #[must_use]
+    const fn enabled(&self) -> bool {
+        self.rasr & 0x1 != 0 && (self.rasr >> 1) & 0x1F >= 7
+    }
+
+    /// The region size in bytes: `2^(SIZE+1)`.
+    #[must_use]
+    const fn size(&self) -> u64 {
+        1u64 << (((self.rasr >> 1) & 0x1F) + 1)
+    }
+
+    /// Whether `addr` falls inside the (base-aligned) region range.
+    #[must_use]
+    fn contains(&self, addr: u32) -> bool {
+        let base = u64::from(self.rbar & !0x1F);
+        let a = u64::from(addr);
+        a >= base && a < base + self.size()
+    }
+
+    /// Whether `addr` falls in a subregion that `RASR.SRD` disables. A
+    /// disabled subregion means that address range is not covered by this
+    /// region, so lower-numbered regions and the background region apply.
+    #[must_use]
+    fn subregion_disabled(&self, addr: u32) -> bool {
+        let base = u64::from(self.rbar & !0x1F);
+        let sub = self.size() / 8;
+        let idx = ((u64::from(addr) - base) / sub) as u32;
+        (self.rasr >> 8) & (1 << idx) != 0
+    }
+
+    /// Whether the region's `AP`/`XN` fields permit `access` for the given
+    /// privilege. The caller has already established that `addr` is covered by
+    /// this region (and not a disabled subregion), so a denial here is final.
+    #[must_use]
+    fn permits(&self, access: MpuAccess, privileged: bool) -> bool {
+        // XN (RASR bit 28) forbids instruction fetches.
+        if access == MpuAccess::Fetch && self.rasr & 0x1000_0000 != 0 {
+            return false;
+        }
+        let ap = (self.rasr >> 24) & 0x7;
+        match access {
+            MpuAccess::Fetch | MpuAccess::Read => Self::ap_read(ap, privileged),
+            MpuAccess::Write => Self::ap_write(ap, privileged),
+        }
+    }
+
+    /// The AP read-permission matrix (ARMv7-M, PMSAv7): `true` when a read
+    /// (or instruction fetch) is allowed in the given privilege.
+    const fn ap_read(ap: u32, privileged: bool) -> bool {
+        match ap {
+            0 => false, // no access
+            1 => privileged, // PRIV rw / UNPRIV none
+            2 | 3 => true, // PRIV rw/UNPRIV ro, rw/rw
+            4 => false, // reserved
+            5 => privileged, // PRIV ro / UNPRIV none
+            6 | 7 => true, // ro/ro, PRIV ro / UNPRIV rw
+            _ => false,
+        }
+    }
+
+    /// The AP write-permission matrix: `true` when a store is allowed.
+    const fn ap_write(ap: u32, privileged: bool) -> bool {
+        match ap {
+            1 => privileged, // PRIV rw / UNPRIV none
+            2 => privileged, // PRIV rw / UNPRIV ro
+            3 => true, // rw/rw
+            7 => !privileged, // PRIV ro / UNPRIV rw (per the matrix)
+            0 | 4 | 5 | 6 | _ => false,
+        }
+    }
+}
+
+/// The MPU configuration: control bits, the region-number register, and the
+/// eight unified regions.
+#[derive(Debug, Clone)]
+struct Mpu {
+    /// `MPU_CTRL`: `ENABLE` (0), `HFNMIENA` (1), `PRIVDEFENA` (2).
+    ctrl: u32,
+    /// `MPU_RNR.REGION`: the region indexed by the base `RBAR`/`RASR` writes,
+    /// masked to the three bits the eight regions need.
+    rnr: u32,
+    regions: [MpuRegion; 8],
+}
+
+impl Default for Mpu {
+    fn default() -> Self {
+        Self {
+            ctrl: 0,
+            rnr: 0,
+            regions: [MpuRegion::default(); 8],
+        }
+    }
+}
 
 /// The System Control Block: interrupt control state, exception priorities,
 /// the reset/control registers (`AIRCR`/`SCR`/`CCR`), the coprocessor
 /// access-control register, and the FP context control.
 #[derive(Debug, Clone)]
 pub struct Scb {
-    ranges: [Region; 15],
+    ranges: [Region; 17],
     pendsv: bool,
     /// `SHPR1`: configurable priorities for the fault exceptions. Only the
     /// `UsageFault` byte (bits 15:8) is modeled; MemManage/BusFault are not
@@ -114,6 +253,16 @@ pub struct Scb {
     cfsr: u32,
     /// `HFSR`: `FORCED`/`VECTTBL`, write-1-to-clear.
     hfsr: u32,
+    /// `MMFAR`: the faulting address latched by an MPU access violation. The
+    /// core writes it through [`Scb::record_mpu_fault`]; firmware reads it.
+    mmfar: u32,
+    /// The MPU configuration and region registers.
+    mpu: Mpu,
+    /// The in-flight `MPU_RBAR` word. `RBAR` consumes its whole 32-bit value
+    /// on write (`VALID`/`REGION` redirect the store and update `MPU_RNR`),
+    /// so the four byte-writes of a word store are accumulated here and
+    /// applied when the last byte arrives.
+    rbar_pending: u32,
     /// The last `AIRCR` word written (key bytes included), so a 32-bit store's
     /// `VECTKEY` is recognized across its four byte-writes. Reads always
     /// report `VECTKEYSTAT`, never the stored key.
@@ -144,7 +293,9 @@ impl Scb {
                 Region::new(SHCSR, 4),
                 Region::new(CFSR, 4),
                 Region::new(HFSR, 4),
+                Region::new(MMFAR, 4),
                 Region::new(CPACR, 4),
+                Region::new(MPU, 0x2C),
                 Region::new(FPCCR, 4),
                 Region::new(FPCAR, 4),
                 Region::new(FPDSCR, 4),
@@ -158,6 +309,9 @@ impl Scb {
             shcsr: 0,
             cfsr: 0,
             hfsr: 0,
+            mmfar: 0,
+            mpu: Mpu::default(),
+            rbar_pending: 0,
             aircr: 0,
             scr: 0,
             ccr: CCR_RESET,
@@ -272,31 +426,172 @@ impl Scb {
         self.hfsr |= hfsr_bits & HFSR_MASK;
     }
 
-    fn read_reg(&self, base: u32, offset: u32) -> u8 {
-        let reg = match base {
-            ICSR => u32::from(self.pendsv) << 28,
-            VTOR => self.vtor,
-            // The read reports VECTKEYSTAT; the stored key bytes are never
-            // echoed back.
-            AIRCR => 0xFA05_0000 | (u32::from(self.prig()) << 8),
-            SCR => self.scr,
-            CCR => self.ccr,
-            SHPR1 => self.shpr1,
-            SHPR2 => self.shpr2,
-            SHPR3 => self.shpr3,
-            SHCSR => self.shcsr,
-            CFSR => self.cfsr,
-            HFSR => self.hfsr,
-            CPACR => self.cpacr,
-            FPCCR => self.fpu_ctx.lock().unwrap().fpccr(),
-            FPCAR => self.fpu_ctx.lock().unwrap().fpcar,
-            FPDSCR => self.fpu_ctx.lock().unwrap().fpdscr,
-            _ => 0,
+    /// Record an MPU access violation at `addr` (an instruction fetch when
+    /// `fetch`): latch `MMFSR.IACCVIOL`/`DACCVIOL` and `MMARVALID` in `CFSR`,
+    /// set `HFSR.FORCED`, and store `addr` in `MMFAR`. The core calls this
+    /// before escalating to `HardFault`.
+    pub fn record_mpu_fault(&mut self, addr: u32, fetch: bool) {
+        let cfsr_bits = if fetch {
+            MMFSR_IACCVIOL | MMFSR_MMARVALID
+        } else {
+            MMFSR_DACCVIOL | MMFSR_MMARVALID
         };
-        ((reg >> (8 * offset)) & 0xFF) as u8
+        self.cfsr |= cfsr_bits & CFSR_MASK;
+        self.hfsr |= HFSR_FORCED & HFSR_MASK;
+        self.mmfar = addr;
+    }
+
+    /// Whether the MPU permits the core's `access` to `addr` in the given
+    /// privilege and exception context. Disabled by reset, so plain execution
+    /// is unaffected until firmware enables it.
+    #[must_use]
+    pub fn mpu_check(
+        &self,
+        addr: u32,
+        access: MpuAccess,
+        privileged: bool,
+        exception: u8,
+    ) -> bool {
+        // `MPU_CTRL.ENABLE` clear: the MPU is off, every access is allowed.
+        if self.mpu.ctrl & 0x1 == 0 {
+            return true;
+        }
+        // Without `HFNMIENA` the MPU is bypassed inside NMI (2) and HardFault
+        // (3), so their handlers always run.
+        if self.mpu.ctrl & 0x2 == 0 && (exception == 2 || exception == 3) {
+            return true;
+        }
+        // The highest-numbered region that covers the address decides. A
+        // disabled subregion leaves that range uncovered, so lower regions
+        // (and the background) still apply.
+        for region in self.mpu.regions.iter().rev() {
+            if region.enabled()
+                && region.contains(addr)
+                && !region.subregion_disabled(addr)
+            {
+                return region.permits(access, privileged);
+            }
+        }
+        // No region matches: `PRIVDEFENA` grants privileged access to the
+        // background (the default memory map); unprivileged accesses fault.
+        self.mpu.ctrl & 0x4 != 0 && privileged
+    }
+
+    /// Read the MPU register word at byte offset `reg_off` (0, 4, 8, ..) from
+    /// the `0xE000_ED90` window base.
+    const fn mpu_read(&self, reg_off: u32) -> u32 {
+        match reg_off {
+            0x00 => 0x0000_0800, // MPU_TYPE: 8 unified regions
+            0x04 => self.mpu.ctrl,
+            0x08 => self.mpu.rnr,
+            // RBAR and aliases (0xC, 0x14, 0x1C, 0x24): the base in bits
+            // [31:5], `VALID` reads zero, and bits [3:0] report the current
+            // `MPU_RNR.REGION` (QEMU-consistent).
+            0x0C | 0x14 | 0x1C | 0x24 => {
+                let r = self.mpu_region_index();
+                (self.mpu.regions[r].rbar & !0x1F) | (self.mpu.rnr & 0xF)
+            }
+            // RASR and aliases (0x10, 0x18, 0x20, 0x28).
+            0x10 | 0x18 | 0x20 | 0x28 => {
+                let r = self.mpu_region_index();
+                self.mpu.regions[r].rasr
+            }
+            _ => 0,
+        }
+    }
+
+    /// Write one byte of the MPU register at window offset `reg_off` (the
+    /// register word start) and `byte` (0..3 within that word).
+    fn mpu_write(&mut self, reg_off: u32, byte: u32, val: u8) {
+        let shift = 8 * byte;
+        match reg_off {
+            // MPU_TYPE is read-only (falls through to the `_` no-op arm).
+            0x04 => {
+                self.mpu.ctrl = (self.mpu.ctrl & !(0xFF << shift))
+                    | (u32::from(val) << shift);
+                self.mpu.ctrl &= 0x7;
+            }
+            0x08 => {
+                self.mpu.rnr = (self.mpu.rnr & !(0xFF << shift))
+                    | (u32::from(val) << shift);
+                // Eight regions: only the low three bits are meaningful.
+                self.mpu.rnr &= 0x7;
+            }
+            // RBAR and aliases. A `VALID` set updates `MPU_RNR.REGION` to the
+            // word's `REGION` field and selects it; otherwise the current
+            // `MPU_RNR.REGION` is used. A `REGION` beyond the implemented
+            // eight drops the write, matching the oracle.
+            0x0C | 0x14 | 0x1C | 0x24 => {
+                self.rbar_pending = (self.rbar_pending & !(0xFF << shift))
+                    | (u32::from(val) << shift);
+                if byte == 3 {
+                    let w = self.rbar_pending;
+                    self.rbar_pending = 0;
+                    let region = if w & 0x10 != 0 {
+                        let r = w & 0x0F;
+                        if r < 8 {
+                            self.mpu.rnr = r;
+                            r as usize
+                        } else {
+                            return;
+                        }
+                    } else {
+                        self.mpu_region_index()
+                    };
+                    self.mpu.regions[region].rbar = w & !0x1F;
+                }
+            }
+            // RASR and aliases: plain read/write storage.
+            0x10 | 0x18 | 0x20 | 0x28 => {
+                let r = self.mpu_region_index();
+                self.mpu.regions[r].rasr = (self.mpu.regions[r].rasr & !(0xFF << shift))
+                    | (u32::from(val) << shift);
+            }
+            _ => {}
+        }
+    }
+
+    /// The `MPU_RNR.REGION` index (0..8) used by the base `RBAR`/`RASR`
+    /// accesses.
+    const fn mpu_region_index(&self) -> usize {
+        (self.mpu.rnr & 0x7) as usize
+    }
+
+    fn read_reg(&self, base: u32, offset: u32) -> u8 {
+        let byte = offset & 0x3;
+        let reg = if base == MPU {
+            self.mpu_read(offset & !0x3)
+        } else {
+            match base {
+                ICSR => u32::from(self.pendsv) << 28,
+                VTOR => self.vtor,
+                // The read reports VECTKEYSTAT; the stored key bytes are never
+                // echoed back.
+                AIRCR => 0xFA05_0000 | (u32::from(self.prig()) << 8),
+                SCR => self.scr,
+                CCR => self.ccr,
+                SHPR1 => self.shpr1,
+                SHPR2 => self.shpr2,
+                SHPR3 => self.shpr3,
+                SHCSR => self.shcsr,
+                CFSR => self.cfsr,
+                HFSR => self.hfsr,
+                MMFAR => self.mmfar,
+                CPACR => self.cpacr,
+                FPCCR => self.fpu_ctx.lock().unwrap().fpccr(),
+                FPCAR => self.fpu_ctx.lock().unwrap().fpcar,
+                FPDSCR => self.fpu_ctx.lock().unwrap().fpdscr,
+                _ => 0,
+            }
+        };
+        ((reg >> (8 * byte)) & 0xFF) as u8
     }
 
     fn write_reg(&mut self, base: u32, offset: u32, val: u8) {
+        if base == MPU {
+            self.mpu_write(offset & !0x3, offset & 0x3, val);
+            return;
+        }
         match base {
             ICSR => {
                 if offset == 3 {
@@ -435,6 +730,9 @@ impl Peripheral for Scb {
         self.shcsr = 0;
         self.cfsr = 0;
         self.hfsr = 0;
+        self.mmfar = 0;
+        self.mpu = Mpu::default();
+        self.rbar_pending = 0;
         self.aircr = 0;
         self.scr = 0;
         self.ccr = CCR_RESET;
@@ -466,6 +764,7 @@ mod tests {
     use super::Scb;
     use crate::cpu::FpuCtx;
     use crate::device::Peripheral;
+    use crate::mem::bus::MpuAccess;
     use std::sync::{Arc, Mutex};
 
     #[allow(clippy::cast_possible_truncation)]
@@ -743,5 +1042,150 @@ mod tests {
         s.reset();
         assert_eq!(read_word(&mut s, 0xE000_ED28), 0);
         assert_eq!(read_word(&mut s, 0xE000_ED2C), 0);
+    }
+
+    #[test]
+    fn mpu_type_reports_eight_unified_regions() {
+        let mut s = Scb::new();
+        assert_eq!(read_word(&mut s, 0xE000_ED90), 0x0000_0800);
+        // MPU_TYPE is read-only.
+        write_word(&mut s, 0xE000_ED90, 0);
+        assert_eq!(read_word(&mut s, 0xE000_ED90), 0x0000_0800);
+    }
+
+    #[test]
+    fn mpu_rbar_valid_redirects_and_updates_rnr() {
+        let mut s = Scb::new();
+        // RNR.REGION is three bits wide for eight regions: 0xA masks to 0x2.
+        write_word(&mut s, 0xE000_ED98, 0x0A);
+        assert_eq!(read_word(&mut s, 0xE000_ED98), 0x2);
+        // An RBAR write with VALID selects the REGION field and updates RNR.
+        write_word(&mut s, 0xE000_ED9C, 0x2000_0000 | 0x10 | 0x1);
+        assert_eq!(read_word(&mut s, 0xE000_ED9C), 0x2000_0000 | 0x1);
+        assert_eq!(read_word(&mut s, 0xE000_ED98), 0x1);
+        // A REGION field beyond the eight is dropped: RNR and the target
+        // region's base stay untouched.
+        write_word(&mut s, 0xE000_ED9C, 0x1000_0000 | 0x10 | 0x8);
+        assert_eq!(read_word(&mut s, 0xE000_ED9C), 0x2000_0000 | 0x1);
+        assert_eq!(read_word(&mut s, 0xE000_ED98), 0x1);
+    }
+
+    #[test]
+    fn mpu_aliases_index_the_rnr_region_like_the_base_registers() {
+        let mut s = Scb::new();
+        write_word(&mut s, 0xE000_ED98, 0x3);
+        write_word(&mut s, 0xE000_EDAC, 0x4000_0000); // RBAR_A2, region 3
+        write_word(&mut s, 0xE000_EDB0, 0x0300_0013); // RASR_A2, region 3
+        assert_eq!(read_word(&mut s, 0xE000_ED9C), 0x4000_0000 | 0x3);
+        assert_eq!(read_word(&mut s, 0xE000_EDA0), 0x0300_0013);
+    }
+
+    #[test]
+    fn mpu_disabled_allows_everything() {
+        let mut s = Scb::new();
+        // Region 0 configured but the MPU left disabled: every access passes.
+        write_word(&mut s, 0xE000_ED9C, 0x2000_0000);
+        write_word(&mut s, 0xE000_EDA0, 0x0300_0013);
+        assert!(s.mpu_check(0x1000_0000, MpuAccess::Read, true, 0));
+        assert!(s.mpu_check(0x1000_0000, MpuAccess::Write, false, 0));
+        assert!(s.mpu_check(0x1000_0000, MpuAccess::Fetch, true, 0));
+    }
+
+    #[test]
+    fn mpu_region_grants_within_and_denies_without() {
+        let mut s = Scb::new();
+        write_word(&mut s, 0xE000_ED94, 0x1); // ENABLE, no PRIVDEFENA
+        // Region 0: 0x2000_0000, 1 KiB (SIZE 9), rw/rw (AP 011).
+        write_word(&mut s, 0xE000_ED9C, 0x2000_0000);
+        write_word(&mut s, 0xE000_EDA0, 0x0300_0013);
+        assert!(s.mpu_check(0x2000_0004, MpuAccess::Read, true, 0));
+        assert!(s.mpu_check(0x2000_0004, MpuAccess::Write, false, 0));
+        // Past the region end, with no background, everything faults.
+        assert!(!s.mpu_check(0x2000_1000, MpuAccess::Read, true, 0));
+        assert!(!s.mpu_check(0x1000_0000, MpuAccess::Read, true, 0));
+        assert!(!s.mpu_check(0x1000_0000, MpuAccess::Write, false, 0));
+        // Disabling the MPU re-opens the map.
+        write_word(&mut s, 0xE000_ED94, 0);
+        assert!(s.mpu_check(0x1000_0000, MpuAccess::Read, true, 0));
+    }
+
+    #[test]
+    fn mpu_ap_xn_gate_privileged_and_fetch_access() {
+        let mut s = Scb::new();
+        write_word(&mut s, 0xE000_ED94, 0x1);
+        // Region 0: AP 001 (PRIV rw / UNPRIV none) plus XN (no fetch).
+        write_word(&mut s, 0xE000_ED9C, 0x2000_0000);
+        write_word(&mut s, 0xE000_EDA0, 0x1100_0013);
+        assert!(s.mpu_check(0x2000_0000, MpuAccess::Read, true, 0));
+        assert!(s.mpu_check(0x2000_0000, MpuAccess::Write, true, 0));
+        assert!(!s.mpu_check(0x2000_0000, MpuAccess::Read, false, 0));
+        assert!(!s.mpu_check(0x2000_0000, MpuAccess::Write, false, 0));
+        assert!(!s.mpu_check(0x2000_0000, MpuAccess::Fetch, true, 0));
+    }
+
+    #[test]
+    fn mpu_subregions_and_background_region() {
+        let mut s = Scb::new();
+        // ENABLE | PRIVDEFENA; no region yet.
+        write_word(&mut s, 0xE000_ED94, 0x5);
+        // Region 0: 1 KiB, SRD disables subregion 0 (0x2000_0000..0x7F).
+        write_word(&mut s, 0xE000_ED9C, 0x2000_0000);
+        write_word(&mut s, 0xE000_EDA0, 0x0300_0113);
+        // A disabled subregion falls through to the background region:
+        // privileged allowed, unprivileged denied.
+        assert!(s.mpu_check(0x2000_0040, MpuAccess::Read, true, 0));
+        assert!(!s.mpu_check(0x2000_0040, MpuAccess::Read, false, 0));
+        // A covered subregion uses the region's rw/rw permissions.
+        assert!(s.mpu_check(0x2000_0080, MpuAccess::Read, true, 0));
+        assert!(s.mpu_check(0x2000_0080, MpuAccess::Write, false, 0));
+        // Without PRIVDEFENA the background denies even privileged access.
+        write_word(&mut s, 0xE000_ED94, 0x1);
+        assert!(!s.mpu_check(0x1000_0000, MpuAccess::Read, true, 0));
+    }
+
+    #[test]
+    fn mpu_bypassed_in_nmi_and_hardfault_unless_hfnmiena() {
+        let mut s = Scb::new();
+        write_word(&mut s, 0xE000_ED94, 0x1); // ENABLE only
+        // Unmapped address faults in Thread mode but is bypassed in NMI (2)
+        // and HardFault (3).
+        assert!(!s.mpu_check(0x1000_0000, MpuAccess::Read, true, 0));
+        assert!(s.mpu_check(0x1000_0000, MpuAccess::Read, true, 2));
+        assert!(s.mpu_check(0x1000_0000, MpuAccess::Read, true, 3));
+        // HFNMIENA set: the bypass is gone.
+        write_word(&mut s, 0xE000_ED94, 0x3);
+        assert!(!s.mpu_check(0x1000_0000, MpuAccess::Read, true, 3));
+    }
+
+    #[test]
+    fn mpu_fault_records_mmfar_and_mmfsr() {
+        let mut s = Scb::new();
+        s.record_mpu_fault(0x2000_0040, false);
+        assert_eq!(read_word(&mut s, 0xE000_ED34), 0x2000_0040);
+        assert_eq!(read_word(&mut s, 0xE000_ED28), 0x0000_0082); // DACCVIOL|MMARVALID
+        assert_eq!(read_word(&mut s, 0xE000_ED2C), 0x4000_0000); // FORCED
+        s.record_mpu_fault(0x0800_0000, true);
+        assert_eq!(read_word(&mut s, 0xE000_ED28), 0x0000_0083); // + IACCVIOL
+        assert_eq!(read_word(&mut s, 0xE000_ED34), 0x0800_0000);
+        // Both MMFSR bits clear write-1-to-clear through the CFSR window.
+        s.write(0xE000_ED28, 0x83).unwrap();
+        assert_eq!(read_word(&mut s, 0xE000_ED28), 0);
+    }
+
+    #[test]
+    fn mpu_resets_to_disabled() {
+        let mut s = Scb::new();
+        write_word(&mut s, 0xE000_ED94, 0x7);
+        write_word(&mut s, 0xE000_ED98, 0x3);
+        write_word(&mut s, 0xE000_ED9C, 0x2000_0000 | 0x10);
+        s.record_mpu_fault(0x2000_0040, false);
+        s.reset();
+        assert_eq!(read_word(&mut s, 0xE000_ED90), 0x0000_0800); // TYPE unchanged
+        assert_eq!(read_word(&mut s, 0xE000_ED94), 0);
+        assert_eq!(read_word(&mut s, 0xE000_ED98), 0);
+        assert_eq!(read_word(&mut s, 0xE000_ED9C), 0);
+        assert_eq!(read_word(&mut s, 0xE000_ED34), 0);
+        assert_eq!(read_word(&mut s, 0xE000_ED28), 0);
+        assert!(s.mpu_check(0x2000_0000, MpuAccess::Read, true, 0));
     }
 }

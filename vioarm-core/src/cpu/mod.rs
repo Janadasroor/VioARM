@@ -11,7 +11,7 @@ pub mod fpu;
 pub mod registers;
 
 use crate::error::{Exception, HaltCause};
-use crate::mem::PeripheralBus;
+use crate::mem::{MpuAccess, PeripheralBus};
 use decode16::{
     decode16, decode16_v7m, AluOp, ExtendKind, Inst16, LsImm, LsReg, ReverseKind, Shift, ShiftImm,
 };
@@ -433,6 +433,9 @@ impl<B: PeripheralBus> Core<B> {
 
     /// Fetch and execute a single 16-bit-centric ARMv6-M instruction.
     fn step_v6m(&mut self, pc: u32) -> Result<Next, HaltCause> {
+        if !self.mpu_allows(pc, MpuAccess::Fetch) {
+            return self.mpu_fault(pc, pc, true);
+        }
         let hw = self.mem.read_half(pc).map_err(|_| HaltCause::FetchAbort)?;
         if is_thumb2(hw) {
             let lo = self
@@ -461,6 +464,9 @@ impl<B: PeripheralBus> Core<B> {
     fn step_v7m(&mut self, pc: u32) -> Result<Next, HaltCause> {
         if pc & 1 != 0 {
             return Err(HaltCause::FetchAbort);
+        }
+        if !self.mpu_allows(pc, MpuAccess::Fetch) {
+            return self.mpu_fault(pc, pc, true);
         }
         let h0 = self.mem.read_half(pc).map_err(|_| HaltCause::FetchAbort)?;
         let h1 = self
@@ -898,6 +904,9 @@ impl<B: PeripheralBus> Core<B> {
             }
             I::LdrLiteral { rt, imm } => {
                 let addr = ((pc + 4) & !3) + imm as u32;
+                if !self.mpu_allows(addr, MpuAccess::Read) {
+                    return self.mpu_fault(addr, pc, false);
+                }
                 let v = match self.mem.read_word(addr) {
                     Ok(v) => v,
                     Err(_) => return self.data_fault(addr, pc),
@@ -1044,6 +1053,9 @@ impl<B: PeripheralBus> Core<B> {
             I::Push { regs, include_lr } => {
                 let count = regs.count_ones() + u32::from(include_lr);
                 let mut addr = self.regs.sp.wrapping_sub(4 * count);
+                if !self.mpu_allows(addr, MpuAccess::Write) {
+                    return self.mpu_fault(addr, pc, false);
+                }
                 for r in 0..8 {
                     if regs & (1 << r) != 0 {
                         let v = self.regs.read(r);
@@ -1059,6 +1071,9 @@ impl<B: PeripheralBus> Core<B> {
             }
             I::Pop { regs, load_pc } => {
                 let mut addr = self.regs.sp;
+                if !self.mpu_allows(addr, MpuAccess::Read) {
+                    return self.mpu_fault(addr, pc, false);
+                }
                 for r in 0..8 {
                     if regs & (1 << r) != 0 {
                         let v = self.read_word_halt(addr)?;
@@ -1088,6 +1103,9 @@ impl<B: PeripheralBus> Core<B> {
                 }
                 let mut addr = base;
                 if is_load {
+                    if !self.mpu_allows(base, MpuAccess::Read) {
+                        return self.mpu_fault(base, pc, false);
+                    }
                     for r in 0..8 {
                         if regs & (1 << r) != 0 {
                             let v = self.read_word_halt(addr)?;
@@ -1101,6 +1119,9 @@ impl<B: PeripheralBus> Core<B> {
                             .write(rn, base.wrapping_add(4 * regs.count_ones()));
                     }
                 } else {
+                    if !self.mpu_allows(base, MpuAccess::Write) {
+                        return self.mpu_fault(base, pc, false);
+                    }
                     for r in 0..8 {
                         if regs & (1 << r) != 0 {
                             let v = self.regs.read(r);
@@ -1220,6 +1241,9 @@ impl<B: PeripheralBus> Core<B> {
             I::Barrier { .. } => Ok(Next::Advance(pc + 4)),
             I::Ldrex { rt, rn, size, off } => {
                 let addr = self.regs.read(rn).wrapping_add(off);
+                if !self.mpu_allows(addr, MpuAccess::Read) {
+                    return self.mpu_fault(addr, pc, false);
+                }
                 let v = match size {
                     ExSize::Word => match self.mem.read_word(addr) {
                         Ok(v) => v,
@@ -1251,6 +1275,9 @@ impl<B: PeripheralBus> Core<B> {
                 let ok = self.exmon == Some(addr);
                 self.exmon = None;
                 if ok {
+                    if !self.mpu_allows(addr, MpuAccess::Write) {
+                        return self.mpu_fault(addr, pc, false);
+                    }
                     let result = match size {
                         ExSize::Word => self.mem.write_word(addr, self.regs.read(rt)),
                         ExSize::Half => self.mem.write_half(addr, self.regs.read(rt) as u16),
@@ -1400,6 +1427,9 @@ impl<B: PeripheralBus> Core<B> {
                 if addr & 3 != 0 {
                     return self.data_fault(addr, pc);
                 }
+                if !self.mpu_allows(addr, if is_load { MpuAccess::Read } else { MpuAccess::Write }) {
+                    return self.mpu_fault(addr, pc, false);
+                }
                 if is_load {
                     let mut pc_target = None;
                     for r in 0..16 {
@@ -1464,6 +1494,9 @@ impl<B: PeripheralBus> Core<B> {
                 if address & 3 != 0 {
                     return self.data_fault(address, pc);
                 }
+                if !self.mpu_allows(address, if is_load { MpuAccess::Read } else { MpuAccess::Write }) {
+                    return self.mpu_fault(address, pc, false);
+                }
                 if is_load {
                     // The low word lands in `rt`, the high word in `rt2`;
                     // the decoder guarantees they are distinct registers.
@@ -1495,6 +1528,9 @@ impl<B: PeripheralBus> Core<B> {
                 } else {
                     base.wrapping_add(index_reg)
                 };
+                if !self.mpu_allows(table_addr, MpuAccess::Read) {
+                    return self.mpu_fault(table_addr, pc, false);
+                }
                 let index: u32 =
                     if half {
                         u32::from(self.mem.read_half(table_addr).map_err(|_| {
@@ -2433,6 +2469,9 @@ impl<B: PeripheralBus> Core<B> {
                 if addr & 3 != 0 {
                     return self.data_fault(addr, pc);
                 }
+                if !self.mpu_allows(addr, if is_load { MpuAccess::Read } else { MpuAccess::Write }) {
+                    return self.mpu_fault(addr, pc, false);
+                }
                 if is_load {
                     let v = self.read_word_halt(addr)?;
                     self.vfp.write_s(vd, v);
@@ -2454,6 +2493,9 @@ impl<B: PeripheralBus> Core<B> {
                 };
                 if addr & 7 != 0 {
                     return self.data_fault(addr, pc);
+                }
+                if !self.mpu_allows(addr, if is_load { MpuAccess::Read } else { MpuAccess::Write }) {
+                    return self.mpu_fault(addr, pc, false);
                 }
                 if is_load {
                     let lo = self.read_word_halt(addr)?;
@@ -2481,6 +2523,9 @@ impl<B: PeripheralBus> Core<B> {
                 let start = if dec_before { base.wrapping_sub(count) } else { base };
                 if start & 3 != 0 {
                     return self.data_fault(start, pc);
+                }
+                if !self.mpu_allows(start, if is_load { MpuAccess::Read } else { MpuAccess::Write }) {
+                    return self.mpu_fault(start, pc, false);
                 }
                 let mut addr = start;
                 for i in 0..u32::from(n) {
@@ -2517,6 +2562,9 @@ impl<B: PeripheralBus> Core<B> {
                 let start = if dec_before { base.wrapping_sub(count) } else { base };
                 if start & 7 != 0 {
                     return self.data_fault(start, pc);
+                }
+                if !self.mpu_allows(start, if is_load { MpuAccess::Read } else { MpuAccess::Write }) {
+                    return self.mpu_fault(start, pc, false);
                 }
                 let mut addr = start;
                 for i in 0..u32::from(n) {
@@ -2752,6 +2800,9 @@ impl<B: PeripheralBus> Core<B> {
                 | LsAccess::SextByte
                 | LsAccess::SextHalf
         );
+        if !self.mpu_allows(addr, if is_load { MpuAccess::Read } else { MpuAccess::Write }) {
+            return self.mpu_fault(addr, pc, false);
+        }
         if is_load {
             let v = match access {
                 LsAccess::Word { load: _ } => match self.mem.read_word(addr) {
@@ -2918,6 +2969,24 @@ impl<B: PeripheralBus> Core<B> {
     fn data_fault(&mut self, addr: u32, pc: u32) -> Result<Next, HaltCause> {
         let _ = addr;
         self.mem.record_fault(BFSR_PRECISERR, HFSR_FORCED);
+        self.take_exception(Exception::HardFault, pc)?;
+        Ok(Next::Advance(self.regs.pc))
+    }
+
+    /// Whether the MPU permits this core's `access` to `addr` right now.
+    /// The privilege comes from `CONTROL.nPRIV` in Thread mode; a bus with no
+    /// MPU (or one still disabled) always answers true.
+    fn mpu_allows(&mut self, addr: u32, access: MpuAccess) -> bool {
+        let privileged = !(self.ipsr == 0 && self.control & 1 != 0);
+        self.mem.mpu_check(addr, access, privileged, self.ipsr)
+    }
+
+    /// Escalate an MPU access violation at `addr` (from the instruction at
+    /// `pc`) to HardFault. `fetch` distinguishes an instruction access
+    /// violation from a data access violation in the recorded `MMFSR`; the
+    /// faulting address is latched in `MMFAR`. Continues into the handler.
+    fn mpu_fault(&mut self, addr: u32, pc: u32, fetch: bool) -> Result<Next, HaltCause> {
+        self.mem.mpu_fault(addr, fetch);
         self.take_exception(Exception::HardFault, pc)?;
         Ok(Next::Advance(self.regs.pc))
     }
@@ -6111,5 +6180,75 @@ mod tests {
         c.step().unwrap();
         assert_eq!(c.ipsr, 0);
         assert_eq!(c.vfp.read_s(1), 0x1122_3344);
+    }
+
+    /// Configure region 0 to cover `0x2000_0000` for 2 KiB with rw/rw access
+    /// (`RASR = 0x0300_0015`) and enable the MPU, leaving everything above the
+    /// region (and below the background) unmapped.
+    fn enable_mpu_region0(mem: &mut crate::mem::system::SystemMemory<crate::mem::flat::FlatMemory>) {
+        mem.write_word(0xE000_ED94, 0x1).unwrap(); // MPU_CTRL: ENABLE
+        mem.write_word(0xE000_ED98, 0).unwrap(); // MPU_RNR: region 0
+        mem.write_word(0xE000_ED9C, 0x2000_0000).unwrap(); // MPU_RBAR
+        mem.write_word(0xE000_EDA0, 0x0300_0015).unwrap(); // MPU_RASR
+    }
+
+    #[test]
+    fn mpu_data_violation_escalates_to_hardfault() {
+        const CODE: u32 = 0x2000_0100;
+        const DATA: u32 = 0x2000_0800; // in RAM, outside region 0
+        const HF_HANDLER: u32 = 0x2000_0600;
+        const SP: u32 = 0x2000_0C00;
+        let mut c = armv7m_sys_core();
+        c.mem().write_word(3 * 4, HF_HANDLER | 1).unwrap();
+        enable_mpu_region0(c.mem());
+        c.regs.sp = SP;
+        c.regs.msp = SP;
+        c.regs.write(1, DATA);
+        c.regs.pc = CODE;
+        load_inst(&mut c, CODE, &[0x08, 0x68]); // ldr r0, [r1]
+        load_inst(&mut c, HF_HANDLER, &[0x70, 0x47]); // bx lr
+        c.step().unwrap();
+        // The data access to the unmapped address is a DACCVIOL escalated to
+        // HardFault with the faulting address in MMFAR.
+        assert_eq!(c.ipsr, 3);
+        assert_eq!(c.regs.pc, HF_HANDLER);
+        assert_eq!(c.mem().read_word(0xE000_ED28).unwrap(), 0x0000_0082); // DACCVIOL|MMARVALID
+        assert_eq!(c.mem().read_word(0xE000_ED2C).unwrap(), 0x4000_0000); // FORCED
+        assert_eq!(c.mem().read_word(0xE000_ED34).unwrap(), DATA);
+        // The stacked return address is the faulting instruction.
+        assert_eq!(c.mem().read_word(SP - FRAME_BYTES + 24).unwrap(), CODE);
+    }
+
+    #[test]
+    fn mpu_fetch_violation_escalates_to_hardfault() {
+        const CODE: u32 = 0x2000_0800; // outside region 0
+        const HF_HANDLER: u32 = 0x2000_0600;
+        const SP: u32 = 0x2000_0C00;
+        let mut c = armv7m_sys_core();
+        c.mem().write_word(3 * 4, HF_HANDLER | 1).unwrap();
+        enable_mpu_region0(c.mem());
+        c.regs.sp = SP;
+        c.regs.msp = SP;
+        c.regs.pc = CODE;
+        load_inst(&mut c, CODE, &[0x70, 0x47]); // bx lr
+        load_inst(&mut c, HF_HANDLER, &[0x70, 0x47]); // bx lr
+        c.step().unwrap();
+        assert_eq!(c.ipsr, 3);
+        assert_eq!(c.regs.pc, HF_HANDLER);
+        // An instruction access violation: IACCVIOL|MMARVALID, MMFAR = CODE.
+        assert_eq!(c.mem().read_word(0xE000_ED28).unwrap(), 0x0000_0081);
+        assert_eq!(c.mem().read_word(0xE000_ED34).unwrap(), CODE);
+    }
+
+    #[test]
+    fn mpu_disabled_does_not_disturb_execution() {
+        const CODE: u32 = 0x2000_0100;
+        let mut c = armv7m_sys_core();
+        c.regs.write(0, 7);
+        c.regs.pc = CODE;
+        load_inst(&mut c, CODE, &[0x00, 0x68]); // ldr r0, [r0]
+        c.step().unwrap();
+        assert_eq!(c.ipsr, 0);
+        assert_eq!(c.mem().read_word(0xE000_ED28).unwrap(), 0);
     }
 }

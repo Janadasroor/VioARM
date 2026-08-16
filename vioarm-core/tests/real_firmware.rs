@@ -988,3 +988,77 @@ fn cpacr_denies_vfp_with_nocp_usage_fault() {
     // NOCP (UFSR bit 1 -> CFSR bit 17).
     assert_eq!(m.core.mem().read_word(0x2000_0004).unwrap(), 0x0002_0000);
 }
+
+/// ARMv7-M firmware that enables the MPU with a flash region (covering the
+/// code) and a 32 KiB SRAM region, then reads from an address outside every
+/// region. The access is denied and escalates to `HardFault`, whose handler
+/// records its entry in SRAM and `bkpt`s; the trap's `UsageFault` folds into
+/// the already-active `HardFault` and locks the core up, leaving the fault
+/// snapshot intact.
+const MPU_FAULT_FIRMWARE: &str = r#"
+#define MPU_CTRL 0xE000ED94u
+#define MPU_RNR  0xE000ED98u
+#define MPU_RBAR 0xE000ED9Cu
+#define MPU_RASR 0xE000EDA0u
+#define ENTRY    0x20000000u
+
+void HardFault_Handler(void) {
+    *(volatile unsigned *)ENTRY = 3;
+    __asm__ volatile("bkpt #0"); /* UsageFault -> active HardFault -> lockup */
+}
+
+void reset(void) {
+    /* region 0: 8 KiB of flash, rw/rw (fetch + any literal reads). */
+    *(volatile unsigned *)MPU_RNR = 0;
+    *(volatile unsigned *)MPU_RBAR = 0x00000000u;
+    *(volatile unsigned *)MPU_RASR = 0x03000019u;
+    /* region 1: 32 KiB of SRAM, rw/rw (stack, globals, handler record). */
+    *(volatile unsigned *)MPU_RNR = 1;
+    *(volatile unsigned *)MPU_RBAR = 0x20000000u;
+    *(volatile unsigned *)MPU_RASR = 0x0300001Du;
+    *(volatile unsigned *)MPU_CTRL = 1; /* ENABLE, no PRIVDEFENA */
+    volatile unsigned bad = *(volatile unsigned *)0x20008000u; /* unmapped */
+    (void)bad;
+}
+"#;
+
+/// A read from an address outside every MPU region raises a `DACCVIOL`
+/// escalated to `HardFault`, with the denied address latched in `MMFAR` and
+/// the escalation recorded as `HFSR.FORCED`.
+#[test]
+fn mpu_denies_unmapped_access_for_real_firmware() {
+    let (code, symbols) = match build_firmware_v7m_with_includes(MPU_FAULT_FIRMWARE, &[]) {
+        Ok(image) => image,
+        Err(why) => {
+            eprintln!("skipping mpu test: {why}");
+            return;
+        }
+    };
+    let entry = *symbols.get("reset").expect("no reset symbol");
+    let hf = *symbols
+        .get("HardFault_Handler")
+        .expect("no HardFault_Handler symbol");
+    assert!(!code.is_empty(), "compiled .text must not be empty");
+
+    let mut m = Machine::armv7m(board::stm32f103());
+    m.load_image(&load_flat(CODE_BASE, &code));
+    {
+        let mem = m.core.mem();
+        mem.write_word(FLASH, INIT_SP).unwrap();
+        mem.write_word(FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+        mem.write_word(FLASH + 3 * 4, (CODE_BASE + hf) | 1).unwrap();
+    }
+    m.reset().expect("reset from vector table");
+    let err = m.run(100_000);
+    // The handler's bkpt folds into the active HardFault and locks the core.
+    assert_eq!(err, Err(HaltCause::UnhandledException));
+    assert_eq!(
+        m.core.mem().read_word(0x2000_0000).unwrap(),
+        3,
+        "the HardFault handler ran"
+    );
+    // MMFSR: DACCVIOL|MMARVALID; MMFAR = the denied address; HFSR: FORCED.
+    assert_eq!(m.core.mem().read_word(0xE000_ED28).unwrap() & 0xFF, 0x82);
+    assert_eq!(m.core.mem().read_word(0xE000_ED2C).unwrap(), 0x4000_0000);
+    assert_eq!(m.core.mem().read_word(0xE000_ED34).unwrap(), 0x2000_8000);
+}

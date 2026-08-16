@@ -13,7 +13,7 @@ use crate::device::stm32::dma::DmaUnit;
 use crate::device::stm32::flash::{FlashErase, FlashGate};
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
-use crate::mem::bus::{Bus, PeripheralBus, Region};
+use crate::mem::bus::{Bus, MpuAccess, PeripheralBus, Region};
 use crate::cpu::FpuCtx;
 use std::sync::{Arc, Mutex};
 
@@ -475,6 +475,20 @@ impl<M: Bus> PeripheralBus for SystemMemory<M> {
 
     fn record_fault(&mut self, cfsr_bits: u32, hfsr_bits: u32) {
         self.scb.record_fault(cfsr_bits, hfsr_bits);
+    }
+
+    fn mpu_check(
+        &mut self,
+        addr: u32,
+        access: MpuAccess,
+        privileged: bool,
+        exception: u8,
+    ) -> bool {
+        self.scb.mpu_check(addr, access, privileged, exception)
+    }
+
+    fn mpu_fault(&mut self, addr: u32, fetch: bool) {
+        self.scb.record_mpu_fault(addr, fetch);
     }
 }
 

@@ -96,6 +96,18 @@ pub trait Bus {
     }
 }
 
+/// What the CPU is doing with an address, as far as MPU permission checks are
+/// concerned: an instruction fetch, a data read, or a data write.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MpuAccess {
+    /// An instruction fetch.
+    Fetch,
+    /// A data read.
+    Read,
+    /// A data write.
+    Write,
+}
+
 /// A `Bus` whose machine can also advance time and deliver interrupts.
 ///
 /// Plain memory implements the default no-ops; a `SystemMemory` with an NVIC
@@ -135,4 +147,25 @@ pub trait PeripheralBus: Bus {
     /// OR in). The core calls this when it folds a fault into HardFault, so
     /// firmware can read the cause back. Default: no recording (plain memory).
     fn record_fault(&mut self, _cfsr_bits: u32, _hfsr_bits: u32) {}
+
+    /// Whether the memory-protection unit (if any) permits the core's `access`
+    /// to `addr` in the given privilege and exception context. `privileged` is
+    /// whether the core is executing privileged; `exception` is the current
+    /// exception number (0 in Thread mode) so the NMI/HardFault bypass can be
+    /// honored. The core calls this before every instruction fetch and data
+    /// access. Default: always permitted (plain memory has no MPU).
+    fn mpu_check(
+        &mut self,
+        _addr: u32,
+        _access: MpuAccess,
+        _privileged: bool,
+        _exception: u8,
+    ) -> bool {
+        true
+    }
+
+    /// Record an MPU access violation at `addr` (an instruction fetch when
+    /// `fetch` is true), so firmware reads the cause back through `MMFAR` and
+    /// the `MMFSR` bits in `CFSR`. Default: no recording (plain memory).
+    fn mpu_fault(&mut self, _addr: u32, _fetch: bool) {}
 }
