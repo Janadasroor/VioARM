@@ -21,6 +21,7 @@ pub mod rcc;
 pub mod syscfg;
 pub mod timer;
 pub mod usart;
+pub mod watchdog;
 
 /// STM32F103 (medium-density) peripheral base addresses, from the SVD.
 pub const RCC: u32 = 0x4002_1000;

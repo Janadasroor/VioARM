@@ -41,6 +41,10 @@ pub struct SystemMemory<M: Bus> {
     /// controllers push `(src, dst, len)` units here because they have no view
     /// of the bus; this bus performs the actual copy.
     dma_mailbox: Option<Arc<Mutex<Vec<DmaUnit>>>>,
+    /// The shared watchdog reset latch. The IWDG/WWDG devices set it when their
+    /// counter underflows; `reset_requested()` folds it into the SCB's latch so
+    /// the `Machine` performs a full reset, and `reset_devices()` clears it.
+    watchdog: Option<Arc<Mutex<bool>>>,
 }
 
 impl<M: Bus + core::fmt::Debug> core::fmt::Debug for SystemMemory<M> {
@@ -51,6 +55,7 @@ impl<M: Bus + core::fmt::Debug> core::fmt::Debug for SystemMemory<M> {
             .field("scb", &self.scb)
             .field("flash", &self.flash)
             .field("dma_mailbox", &self.dma_mailbox)
+            .field("watchdog", &self.watchdog)
             .field(
                 "devices",
                 &self.devices.iter().map(|d| d.name()).collect::<Vec<_>>(),
@@ -70,6 +75,7 @@ impl<M: Bus> SystemMemory<M> {
             scb: Scb::new(),
             flash: None,
             dma_mailbox: None,
+            watchdog: None,
         }
     }
 
@@ -105,6 +111,14 @@ impl<M: Bus> SystemMemory<M> {
         self.dma_mailbox = Some(mailbox);
     }
 
+    /// Install the shared watchdog reset latch. The `IWDG`/`WWDG` devices must
+    /// be attached with clones of the same `Arc`; when one underflows it sets
+    /// the latch and the `Machine` performs a full reset. `None` (the default)
+    /// leaves watchdog underflows unable to reset the machine.
+    pub fn set_watchdog_reset(&mut self, latch: Arc<Mutex<bool>>) {
+        self.watchdog = Some(latch);
+    }
+
     /// The attached devices, in attach order.
     pub fn devices(&self) -> &[Box<dyn InterruptSource>] {
         &self.devices
@@ -133,13 +147,21 @@ impl<M: Bus> SystemMemory<M> {
         if let Some(gate) = &self.flash {
             gate.lock().unwrap().reset();
         }
+        if let Some(latch) = &self.watchdog {
+            *latch.lock().unwrap() = false;
+        }
     }
 
-    /// Whether `AIRCR.SYSRESETREQ` has been latched since the last reset; the
+    /// Whether a reset has been latched since the last one — either by
+    /// `AIRCR.SYSRESETREQ` through the SCB or by an IWDG/WWDG underflow. The
     /// `Machine` performs a full reset when set.
     #[must_use]
-    pub const fn reset_requested(&self) -> bool {
+    pub fn reset_requested(&self) -> bool {
         self.scb.reset_requested()
+            || self
+                .watchdog
+                .as_ref()
+                .is_some_and(|latch| *latch.lock().unwrap())
     }
 
     /// Advance every un-gated device by exactly `delta` cycles, then latch any
@@ -183,14 +205,7 @@ impl<M: Bus> SystemMemory<M> {
     /// orders which pending exception is activated within the same group.
     fn split_priority(&self, p: u8) -> (u8, u8) {
         let sub = self.scb.prig() & 0x7;
-        (
-            p >> sub,
-            if sub == 0 {
-                0
-            } else {
-                p & ((1u8 << sub) - 1)
-            },
-        )
+        (p >> sub, if sub == 0 { 0 } else { p & ((1u8 << sub) - 1) })
     }
 
     /// Fold candidate exception `n` with priority parts `group`/`sub` and raw
@@ -407,7 +422,11 @@ impl<M: Bus> SystemMemory<M> {
     }
 
     /// Read from the gated flash region, executing a pending erase first.
-    fn flash_region_read(&mut self, gate: &Arc<Mutex<FlashGate>>, addr: u32) -> Result<u8, BusError> {
+    fn flash_region_read(
+        &mut self,
+        gate: &Arc<Mutex<FlashGate>>,
+        addr: u32,
+    ) -> Result<u8, BusError> {
         let mut guard = gate.lock().unwrap();
         if let Some(erase) = guard.erase.take() {
             let (region, page) = (guard.region, guard.page_size);
@@ -497,17 +516,18 @@ impl<M: Bus> PeripheralBus for SystemMemory<M> {
         self.reset_devices();
     }
 
+    /// Whether the SCB or a watchdog has latched a reset request. The generic
+    /// `Machine` sees this through the trait, so it must be overridden here —
+    /// the default (false) would never reboot the machine.
+    fn reset_requested(&self) -> bool {
+        SystemMemory::reset_requested(self)
+    }
+
     fn record_fault(&mut self, cfsr_bits: u32, hfsr_bits: u32) {
         self.scb.record_fault(cfsr_bits, hfsr_bits);
     }
 
-    fn mpu_check(
-        &mut self,
-        addr: u32,
-        access: MpuAccess,
-        privileged: bool,
-        exception: u8,
-    ) -> bool {
+    fn mpu_check(&mut self, addr: u32, access: MpuAccess, privileged: bool, exception: u8) -> bool {
         self.scb.mpu_check(addr, access, privileged, exception)
     }
 
@@ -1054,7 +1074,10 @@ mod tests {
     ) {
         let backing = FlatMemory::with_layout(&[RAM, MAIN_FLASH], &[RAM_LEN, MAIN_FLASH_LEN]);
         let gate = std::sync::Arc::new(std::sync::Mutex::new(
-            crate::device::stm32::flash::FlashGate::new(Region::new(MAIN_FLASH, MAIN_FLASH_LEN), 1024),
+            crate::device::stm32::flash::FlashGate::new(
+                Region::new(MAIN_FLASH, MAIN_FLASH_LEN),
+                1024,
+            ),
         ));
         let mut sys = SystemMemory::new(backing);
         sys.set_flash_gate(gate.clone());
@@ -1113,7 +1136,8 @@ mod tests {
             g.program = true;
         }
         sys.write_word(MAIN_FLASH, 0x1111_1111).unwrap();
-        sys.write_word(MAIN_FLASH + MAIN_FLASH_LEN - 4, 0x2222_2222).unwrap();
+        sys.write_word(MAIN_FLASH + MAIN_FLASH_LEN - 4, 0x2222_2222)
+            .unwrap();
         gate.lock().unwrap().erase = Some(FlashErase::Mass);
         assert_eq!(sys.read_word(MAIN_FLASH).unwrap(), 0);
         assert_eq!(sys.read_word(MAIN_FLASH + MAIN_FLASH_LEN - 4).unwrap(), 0);
@@ -1142,7 +1166,10 @@ mod tests {
         let mailbox = Arc::new(Mutex::new(Vec::new()));
         let mut sys = SystemMemory::new(backing);
         sys.set_dma_mailbox(mailbox.clone());
-        sys.attach(Box::new(DmaF1::dma1(mailbox, Arc::new(Mutex::new(DmaRequests::new())))));
+        sys.attach(Box::new(DmaF1::dma1(
+            mailbox,
+            Arc::new(Mutex::new(DmaRequests::new())),
+        )));
         sys.write_word(DMA + 0x10, RAM + 0x100).unwrap(); // CPAR1
         sys.write_word(DMA + 0x14, RAM + 0x200).unwrap(); // CMAR1
         sys.write_word(DMA + 0x0C, 8).unwrap(); // CNDTR1

@@ -111,6 +111,31 @@ void reset(void) {
 }
 "#;
 
+/// A firmware that arms the independent watchdog with a short timeout, never
+/// refreshes it, and relies on the watchdog reset to reboot the part. A boot
+/// counter in RAM survives those resets, so the test can count how many times
+/// the watchdog actually fired.
+const IWDG_FIRMWARE: &str = r#"
+#define BOOTCOUNT 0x20000000u
+#define IWDG_KR  0x40003000u
+#define IWDG_RLR 0x40003008u
+
+void reset(void) {
+    unsigned n = (*(volatile unsigned *)BOOTCOUNT)++;
+    if (n < 3) {
+        *(volatile unsigned *)IWDG_KR = 0x5555u;  /* unlock RLR */
+        *(volatile unsigned *)IWDG_RLR = 0x10u;   /* short timeout */
+        *(volatile unsigned *)IWDG_KR = 0xCCCCu;  /* start; never refresh */
+        while (1) { }
+    }
+    /* Three watchdog resets observed: arm a long timeout and spin. */
+    *(volatile unsigned *)IWDG_KR = 0x5555u;
+    *(volatile unsigned *)IWDG_RLR = 0xFFFu;
+    *(volatile unsigned *)IWDG_KR = 0xCCCCu;
+    while (1) { }
+}
+"#;
+
 /// A firmware that drives GPIO outputs, reads back host-driven inputs, and
 /// transmits a line of text on the virtual UART before halting.
 const IO_FIRMWARE: &str = r#"
@@ -395,6 +420,43 @@ fn wfi_sleeps_until_systick_wakes() {
     let ticks = m.core.mem().read_word(RAM).unwrap();
     assert!(ticks >= 3, "handler ran only {ticks} times");
     assert_eq!(m.core.mem().read_word(RAM + 4).unwrap(), ticks);
+}
+
+/// An un-refreshed IWDG underflow resets the whole machine; the firmware's
+/// reset handler re-runs and the RAM boot counter proves how many resets the
+/// watchdog caused.
+#[test]
+fn iwdg_underflow_resets_the_machine() {
+    let (code, symbols) = match build_firmware(IWDG_FIRMWARE) {
+        Ok(image) => image,
+        Err(why) => {
+            eprintln!("skipping iwdg-reset test: {why}");
+            return;
+        }
+    };
+    let entry = *symbols.get("reset").expect("no reset symbol");
+    assert!(!code.is_empty(), "compiled .text must not be empty");
+
+    let mut m = Machine::new(board::stm32f103());
+    m.load_image(&load_flat(CODE_BASE, &code));
+    {
+        let mem = m.core.mem();
+        mem.write_word(board::FLASH, INIT_SP).unwrap();
+        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1)
+            .unwrap();
+        mem.write_word(board::RAM, 0).unwrap(); // BOOTCOUNT
+    }
+    m.reset().expect("reset from vector table");
+    // The first three boots arm a 0x10-timeout IWDG and are reset by it; the
+    // fourth boots into the 0xFFF timeout, so the budget cuts the run short
+    // there. Four boots means the watchdog reset the machine three times.
+    let err = m.run(2000);
+    assert_eq!(err, Err(HaltCause::CycleBudgetExhausted));
+    assert_eq!(
+        m.core.mem().read_word(board::RAM).unwrap(),
+        4,
+        "the watchdog reset the machine three times"
+    );
 }
 
 /// On the virtual board, firmware drives GPIO outputs, reads back
@@ -708,9 +770,7 @@ fn stm32f407_firmware_uses_real_peripherals() {
 
 /// Compile `firmware` against the STM32F4 device header, returning the flat
 /// `.text` and symbol map, or `None` if the toolchain or pack is missing.
-fn build_f4_firmware(
-    firmware: &str,
-) -> Option<(Vec<u8>, std::collections::HashMap<String, u32>)> {
+fn build_f4_firmware(firmware: &str) -> Option<(Vec<u8>, std::collections::HashMap<String, u32>)> {
     let includes = [
         "../packs/STM32F4xx_CMSIS/Device/Include",
         "../packs/STM32F4xx_CMSIS/CMSIS/Core/Include",
@@ -900,7 +960,8 @@ fn stm32f407_dma_transfers_memory_to_memory() {
         mem.write_word(FLASH, INIT_SP).unwrap();
         mem.write_word(FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
         // Vector 29 = DMA1_Stream2 IRQ 13 at FLASH + 29 * 4.
-        mem.write_word(FLASH + 29 * 4, (CODE_BASE + irq) | 1).unwrap();
+        mem.write_word(FLASH + 29 * 4, (CODE_BASE + irq) | 1)
+            .unwrap();
     }
     m.reset().expect("reset from vector table");
     let err = m.run(100_000);
@@ -1059,7 +1120,7 @@ fn stm32f103_flash_programming_is_gated_and_lands() {
         mem.write_word(FLASH, INIT_SP).unwrap();
         mem.write_word(FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
     }
-m.reset().expect("reset from vector table");
+    m.reset().expect("reset from vector table");
     let err = m.run(100_000);
     assert_eq!(err, Err(HaltCause::NonThumbTarget));
     assert_eq!(

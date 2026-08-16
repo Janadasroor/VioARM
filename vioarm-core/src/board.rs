@@ -24,6 +24,7 @@ use crate::device::stm32::rcc::Rcc;
 use crate::device::stm32::syscfg::Syscfg;
 use crate::device::stm32::timer::Timer;
 use crate::device::stm32::usart::Usart1;
+use crate::device::stm32::watchdog::{Iwdg, Wwdg};
 use crate::device::systick::SysTick;
 use crate::device::uart::UartTx;
 use crate::mem::bus::Region;
@@ -107,6 +108,10 @@ pub fn stm32f103() -> BoardMemory {
     let dma = Arc::new(Mutex::new(Vec::new()));
     mem.set_dma_mailbox(dma.clone());
     mem.attach(Box::new(DmaF1::dma1(dma, dma_requests)));
+    let watchdog = Arc::new(Mutex::new(false));
+    mem.set_watchdog_reset(watchdog.clone());
+    mem.attach(Box::new(Iwdg::new(watchdog.clone())));
+    mem.attach(Box::new(Wwdg::new(watchdog)));
     mem.attach(Box::new(SysTick::new()));
     mem
 }
@@ -167,6 +172,10 @@ pub fn stm32f107() -> BoardMemory {
         dma,
         dma_requests,
     )));
+    let watchdog = Arc::new(Mutex::new(false));
+    mem.set_watchdog_reset(watchdog.clone());
+    mem.attach(Box::new(Iwdg::for_device::<Stm32f107>(watchdog.clone())));
+    mem.attach(Box::new(Wwdg::for_device::<Stm32f107>(watchdog)));
     mem.attach(Box::new(SysTick::new()));
     mem
 }
@@ -224,6 +233,10 @@ pub fn stm32f407() -> BoardMemory {
     mem.set_dma_mailbox(dma.clone());
     mem.attach(Box::new(DmaF4::dma1_for::<Stm32f407>(dma.clone())));
     mem.attach(Box::new(DmaF4::dma2_for::<Stm32f407>(dma)));
+    let watchdog = Arc::new(Mutex::new(false));
+    mem.set_watchdog_reset(watchdog.clone());
+    mem.attach(Box::new(Iwdg::for_device::<Stm32f407>(watchdog.clone())));
+    mem.attach(Box::new(Wwdg::for_device::<Stm32f407>(watchdog)));
     mem.attach(Box::new(SysTick::new()));
     mem
 }

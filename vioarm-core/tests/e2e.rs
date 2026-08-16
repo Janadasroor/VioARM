@@ -1016,3 +1016,95 @@ fn sev_then_wfe_does_not_sleep() {
     assert!(!m.core.event, "WFE consumes the event");
     assert_eq!(regs.r[0], 5);
 }
+
+/// An IWDG underflow latches a reset request; the `Machine` then performs a
+/// full reset and re-boots from the vector table, consuming the latch.
+#[test]
+fn iwdg_underflow_requests_a_full_reset() {
+    use std::sync::{Arc, Mutex};
+    use vioarm_core::device::stm32::watchdog::Iwdg;
+    use vioarm_core::mem::system::SystemMemory;
+
+    let backing = FlatMemory::with_layout(&[FLASH, RAM], &[0x10000, 0x10000]);
+    let mut sys = SystemMemory::new(backing);
+    let latch = Arc::new(Mutex::new(false));
+    sys.set_watchdog_reset(latch.clone());
+    sys.attach(Box::new(Iwdg::new(latch.clone())));
+    let mut m = Machine::new(sys);
+    m.load_image(&load_flat(ENTRY, &[0xFE, 0xE7])); // b . (spin)
+    {
+        let mem = m.core.mem();
+        mem.write_word(FLASH, 0x2000_0000).unwrap(); // SP
+        mem.write_word(FLASH + 4, ENTRY | 1).unwrap(); // reset vector
+    }
+    m.reset().unwrap();
+    {
+        let mem = m.core.mem();
+        mem.write_word(0x4000_3000, 0x5555).unwrap(); // unlock
+        mem.write_word(0x4000_3008, 0x0010).unwrap(); // RLR = 0x10
+        mem.write_word(0x4000_3000, 0xCCCC).unwrap(); // start
+    }
+    // The counter runs 0x10..=0x01 over 16 cycles; the 17th underflows and
+    // latches a reset request.
+    for _ in 0..16 {
+        m.step().unwrap();
+        assert!(!m.core.mem().reset_requested());
+    }
+    m.step().unwrap();
+    assert!(
+        m.core.mem().reset_requested(),
+        "underflow latches the reset"
+    );
+    // The next step performs the full reset and re-boots from the vector table.
+    m.step().unwrap();
+    assert!(
+        !m.core.mem().reset_requested(),
+        "the reset consumed the latch"
+    );
+    assert_eq!(m.core.regs.pc & !1, ENTRY, "re-booted at the reset entry");
+}
+
+/// A WWDG underflow also latches the machine's reset request; the `Machine`
+/// performs the same full reset and re-boot.
+#[test]
+fn wwdg_underflow_requests_a_full_reset() {
+    use std::sync::{Arc, Mutex};
+    use vioarm_core::device::stm32::watchdog::Wwdg;
+    use vioarm_core::mem::system::SystemMemory;
+
+    let backing = FlatMemory::with_layout(&[FLASH, RAM], &[0x10000, 0x10000]);
+    let mut sys = SystemMemory::new(backing);
+    let latch = Arc::new(Mutex::new(false));
+    sys.set_watchdog_reset(latch.clone());
+    sys.attach(Box::new(Wwdg::new(latch.clone())));
+    let mut m = Machine::new(sys);
+    m.load_image(&load_flat(ENTRY, &[0xFE, 0xE7])); // b . (spin)
+    {
+        let mem = m.core.mem();
+        mem.write_word(FLASH, 0x2000_0000).unwrap(); // SP
+        mem.write_word(FLASH + 4, ENTRY | 1).unwrap(); // reset vector
+    }
+    m.reset().unwrap();
+    {
+        let mem = m.core.mem();
+        mem.write_word(0x4000_2C00, 0x0080 | 0x007F).unwrap(); // WDGA | T = 0x7F
+    }
+    // The 7-bit counter runs 0x7F..=0x40 over 63 cycles; the 64th underflows
+    // past the window and latches a reset request.
+    for _ in 0..63 {
+        m.step().unwrap();
+        assert!(!m.core.mem().reset_requested());
+    }
+    m.step().unwrap();
+    assert!(
+        m.core.mem().reset_requested(),
+        "underflow latches the reset"
+    );
+    // The next step performs the full reset and re-boots from the vector table.
+    m.step().unwrap();
+    assert!(
+        !m.core.mem().reset_requested(),
+        "the reset consumed the latch"
+    );
+    assert_eq!(m.core.regs.pc & !1, ENTRY, "re-booted at the reset entry");
+}
