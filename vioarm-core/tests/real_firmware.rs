@@ -2255,3 +2255,143 @@ fn mpu_denies_unmapped_access_for_real_firmware() {
     assert_eq!(m.core.mem().read_word(0xE000_ED2C).unwrap(), 0x4000_0000);
     assert_eq!(m.core.mem().read_word(0xE000_ED34).unwrap(), 0x2000_8000);
 }
+
+/// Real CMSIS firmware against the `bxCAN` controller on the connectivity
+/// line: `STM32F10X_CL` exposes `CAN1` and the `USB_LP_CAN1_RX0` interrupt.
+/// The firmware takes the controller through its init handshake, arms the
+/// FIFO-0 message-pending interrupt, latches an incoming frame's identifier,
+/// DLC and first byte in the handler, then transmits a frame of its own and
+/// polls the mailbox empty bit.
+const STM32_F107_CAN_FIRMWARE: &str = r#"
+#define STM32F10X_CL
+#include "stm32f10x.h"
+
+#define RX_ID   (*(volatile unsigned *)0x20000000u)
+#define RX_DLC  (*(volatile unsigned *)0x20000004u)
+#define RX_D0   (*(volatile unsigned *)0x20000008u)
+#define TX_DONE (*(volatile unsigned *)0x2000000Cu)
+
+void USB_LP_CAN1_RX0_IRQHandler(void) {
+    if (CAN1->RF0R & CAN_RF0R_FMP0) {
+        RX_ID  = CAN1->sFIFOMailBox[0].RIR & 0xFFFFu;
+        RX_DLC = CAN1->sFIFOMailBox[0].RDTR & CAN_TDT0R_DLC;
+        RX_D0  = CAN1->sFIFOMailBox[0].RDLR & 0xFFu;
+        CAN1->RF0R = CAN_RF0R_RFOM0;    /* release the FIFO slot */
+    }
+}
+
+void reset(void) {
+    RCC->APB1ENR |= RCC_APB1ENR_CAN1EN;
+    CAN1->MCR = CAN_MCR_INRQ;           /* enter initialization mode */
+    while (!(CAN1->MSR & CAN_MSR_INAK)) { }
+    CAN1->BTR = (4u - 1u) | (8u << 16) | (1u << 20);   /* BRP=4, TS1=8, TS2=1 */
+    CAN1->MCR = 0u;                     /* leave initialization mode */
+    while (CAN1->MSR & CAN_MSR_INAK) { }
+    CAN1->IER = CAN_IER_FMPIE0;
+    NVIC->ISER[0] = 1u << USB_LP_CAN1_RX0_IRQn;
+    while (!RX_D0) { }                  /* wait for the incoming frame */
+    CAN1->sTxMailBox[0].TDLR = 0x5Au;
+    CAN1->sTxMailBox[0].TDTR = 1u;
+    CAN1->sTxMailBox[0].TIR = (0x7E5u << 21) | CAN_TI0R_TXRQ;
+    while (!(CAN1->TSR & CAN_TSR_TME0)) { }    /* wait for the mailbox to empty */
+    TX_DONE = 1u;
+    __asm__ volatile("bkpt #0");
+}
+"#;
+
+/// Compile `STM32_F107_CAN_FIRMWARE` against the F1 pack headers, run it on
+/// the F107 board, and return the four RAM snapshots plus the transmitted
+/// frame. `None` means the toolchain or pack was unavailable.
+fn run_can_firmware() -> Option<(u32, u32, u32, u32, Vec<u8>)> {
+    let includes = [
+        "../packs/Keil.STM32F1xx_DFP/Device/Include",
+        "../packs/STM32F4xx_CMSIS/CMSIS/Core/Include",
+    ];
+    let mut include_paths = Vec::new();
+    for rel in includes {
+        let include = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel);
+        if !include.is_dir() {
+            eprintln!(
+                "skipping can test: pack include dir {} not found",
+                include.display()
+            );
+            return None;
+        }
+        include_paths.push(
+            include
+                .to_str()
+                .expect("pack include path is not UTF-8")
+                .to_owned(),
+        );
+    }
+    let include_refs: Vec<&str> = include_paths.iter().map(String::as_str).collect();
+    let (code, symbols) = match build_firmware_with_includes(STM32_F107_CAN_FIRMWARE, &include_refs)
+    {
+        Ok(image) => image,
+        Err(why) => {
+            eprintln!("skipping can test: {why}");
+            return None;
+        }
+    };
+    let entry = *symbols.get("reset").expect("no reset symbol");
+    let irq = *symbols
+        .get("USB_LP_CAN1_RX0_IRQHandler")
+        .expect("no CAN1_RX0 handler symbol");
+    assert!(!code.is_empty(), "compiled .text must not be empty");
+
+    let mut m = Machine::new(board::stm32f107());
+    m.load_image(&load_flat(CODE_BASE, &code));
+    {
+        let mem = m.core.mem();
+        mem.write_word(FLASH, INIT_SP).unwrap();
+        mem.write_word(FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+        // Vector 36 = CAN1_RX0 IRQ 20 at FLASH + 36 * 4.
+        mem.write_word(FLASH + 36 * 4, (CODE_BASE + irq) | 1)
+            .unwrap();
+    }
+    m.reset().expect("reset from vector table");
+    // Host stimulus: a standard frame, id 0x123, DLC 3, bytes AA BB CC.
+    let mut frame = [0u8; 16];
+    frame[0..4].copy_from_slice(&0x123u32.to_le_bytes());
+    frame[4] = 3;
+    frame[8..11].copy_from_slice(&[0xAA, 0xBB, 0xCC]);
+    for byte in frame {
+        for device in m.core.mem().devices_mut() {
+            device.drive_inputs(u32::from(byte));
+        }
+    }
+    let err = m.run(200_000);
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
+    let rx_id = m.core.mem().read_word(board::RAM).unwrap();
+    let rx_dlc = m.core.mem().read_word(board::RAM + 4).unwrap();
+    let rx_d0 = m.core.mem().read_word(board::RAM + 8).unwrap();
+    let tx_done = m.core.mem().read_word(board::RAM + 12).unwrap();
+    let mut tx = Vec::new();
+    for device in m.core.mem().devices_mut() {
+        tx.extend(device.drain_output());
+    }
+    Some((rx_id, rx_dlc, rx_d0, tx_done, tx))
+}
+
+/// On the STM32F107 board, CMSIS firmware talks `bxCAN`: the FIFO-0 message
+/// pending interrupt wakes the handler for the injected frame, and the
+/// transmitted frame reaches the host channel with its identifier intact.
+#[test]
+fn stm32f107_firmware_talks_can1() {
+    let Some((rx_id, rx_dlc, rx_d0, tx_done, tx)) = run_can_firmware() else {
+        return; // skipped
+    };
+    assert_eq!(rx_id, 0x123, "received identifier");
+    assert_eq!(rx_dlc, 3, "received DLC");
+    assert_eq!(rx_d0, 0xAA, "first received byte");
+    assert_eq!(tx_done, 1, "the transmit completed");
+    // The transmitted frame is one 16-byte host descriptor: id 0x7E5,
+    // DLC 1, byte 0x5A.
+    assert_eq!(tx.len(), 16, "one transmitted frame drained");
+    let mut ti = [0u8; 4];
+    ti.copy_from_slice(&tx[0..4]);
+    let ti = u32::from_le_bytes(ti) & !0x1; // clear the TXRQ latch
+    assert_eq!(ti >> 21, 0x7E5, "transmitted identifier");
+    assert_eq!(tx[4], 1, "transmitted DLC");
+    assert_eq!(tx[8], 0x5A, "transmitted byte");
+}

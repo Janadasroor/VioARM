@@ -1522,3 +1522,80 @@ fn a_level_pending_line_still_lets_the_thread_advance() {
         "the thread must keep executing between constant interrupts, got {count}"
     );
 }
+
+/// A frame driven onto the CAN1 RX0 line (IRQ 20, exception 36) wakes the
+/// controller's receive ISR, which latches the identifier and releases the
+/// FIFO slot. F107 is a real Cortex-M3, so the image boots an ARMv7-M core;
+/// the handler is written in the 16-bit Thumb subset so the bytes stay
+/// portable. Verified with clang -mcpu=cortex-m0.
+#[test]
+fn can_rx0_dispatches_its_isr() {
+    use vioarm_core::board;
+
+    const CAN1_IER: u32 = 0x4000_6414;
+    const CAN1_RF0R: u32 = 0x4000_640C;
+    const NVIC_ISER0: u32 = 0xE000_E100;
+    const RESULT: u32 = 0x2000_0000;
+    const ISR: u32 = ENTRY + 0x20;
+
+    let mut m = Machine::armv7m(board::stm32f107());
+    // Spin, then the ISR reads RI0R, stores it, releases RFOM0, and returns.
+    m.load_image(&load_flat(ENTRY, &[0xFE, 0xE7]));
+    m.load_image(&load_flat(
+        ISR,
+        &[
+            0x03, 0x48, 0x00, 0x68, // ldr r0,[pc,#12]; ldr r0,[r0]   (RI0R)
+            0x03, 0x49, 0x08, 0x60, // ldr r1,[pc,#12]; str r0,[r1]   (RESULT)
+            0x03, 0x48, 0x20, 0x21, // ldr r0,[pc,#12]; movs r1,#32   (RF0R, RFOM0)
+            0x01, 0x60, 0x70, 0x47, // str r1,[r0]; bx lr
+            0xB0, 0x65, 0x00, 0x40, // .word 0x400065B0 (CAN1_RI0R)
+            0x00, 0x00, 0x00, 0x20, // .word 0x20000000 (RESULT)
+            0x0C, 0x64, 0x00, 0x40, // .word 0x4000640C (CAN1_RF0R)
+        ],
+    ));
+    {
+        let mem = m.core.mem();
+        mem.write_word(FLASH, 0x2000_8000).unwrap(); // SP
+        mem.write_word(FLASH + 4, ENTRY | 1).unwrap(); // reset vector
+                                                       // Vector 36 = CAN1_RX0 IRQ 20 at FLASH + 36 * 4.
+        mem.write_word(FLASH + 36 * 4, ISR | 1).unwrap();
+    }
+    m.reset().unwrap();
+    {
+        let mem = m.core.mem();
+        mem.write_word(NVIC_ISER0, 1 << 20).unwrap(); // enable CAN1_RX0
+        mem.write_word(CAN1_IER, 1 << 1).unwrap(); // FMPIE0
+    }
+    // A standard frame, id 0x123, DLC 3, bytes AA BB CC, driven onto the bus.
+    let mut frame = [0u8; 16];
+    frame[0..4].copy_from_slice(&0x123u32.to_le_bytes());
+    frame[4] = 3;
+    frame[8..11].copy_from_slice(&[0xAA, 0xBB, 0xCC]);
+    {
+        let mem = m.core.mem();
+        for byte in frame {
+            for dev in mem.devices_mut() {
+                dev.drive_inputs(u32::from(byte));
+            }
+        }
+    }
+    let mut entered = false;
+    for _ in 0..64 {
+        m.step().unwrap();
+        if m.core.regs.pc & !1 == ISR {
+            entered = true;
+            break;
+        }
+    }
+    assert!(entered, "the CAN1_RX0 ISR was dispatched");
+    // The ISR stores the id into RAM, releases the FIFO slot, and returns.
+    for _ in 0..64 {
+        m.step().unwrap();
+        if m.core.regs.pc & !1 == ENTRY {
+            assert_eq!(m.core.mem().read_word(RESULT).unwrap(), 0x123);
+            assert_eq!(m.core.mem().read_word(CAN1_RF0R).unwrap() & 0b11, 0);
+            return;
+        }
+    }
+    panic!("the CAN1_RX0 ISR did not return to the spin loop");
+}

@@ -825,6 +825,39 @@ mod tests {
     }
 
     #[test]
+    fn generated_can_family_matches_silicon_layout() {
+        // CAN1 and CAN2 on the connectivity and F4 lines. Each controller has
+        // four lines: transmit, receive FIFO 0, receive FIFO 1, status/error.
+        let cases = [
+            (
+                super::stm32f107::peripheral("CAN1").unwrap(),
+                0x4000_6400u32,
+                [19u32, 20, 21, 22],
+            ),
+            (
+                super::stm32f107::peripheral("CAN2").unwrap(),
+                0x4000_6800,
+                [63, 64, 65, 66],
+            ),
+            (
+                super::stm32f407::peripheral("CAN1").unwrap(),
+                0x4000_6400,
+                [19, 20, 21, 22],
+            ),
+            (
+                super::stm32f407::peripheral("CAN2").unwrap(),
+                0x4000_6800,
+                [63, 64, 65, 66],
+            ),
+        ];
+        for (def, base, irqs) in cases {
+            assert_eq!(def.base, base, "base address of {}", def.name);
+            let got: Vec<u32> = def.irqs.iter().map(|i| u32::from(i.number)).collect();
+            assert_eq!(got, irqs, "IRQ lines of {}", def.name);
+        }
+    }
+
+    #[test]
     fn generated_stm32f107_matches_silicon_layout() {
         let cases = [
             ("RCC", 0x4002_1000u32),

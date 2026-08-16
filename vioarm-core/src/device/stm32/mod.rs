@@ -12,6 +12,7 @@
 
 pub mod adc;
 pub mod afio;
+pub mod can;
 pub mod dma;
 pub mod dma_f4;
 pub mod exti;
