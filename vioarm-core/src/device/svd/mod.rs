@@ -303,6 +303,19 @@ impl<B: Behavior> InterruptSource for RegisterFile<B> {
     fn lines(&self) -> u32 {
         self.behavior.lines()
     }
+
+    fn exception_for_line(&self, line: u32) -> Option<u8> {
+        // The table lists each IRQ a peripheral can raise; a controller whose
+        // lines are not consecutive (the F4 DMA) gets the exact mapping, and
+        // everything else keeps the consecutive default.
+        self.def.irqs.get(line as usize).map_or_else(
+            || {
+                self.exception_number()
+                    .map(|base| base.wrapping_add(u8::try_from(line).unwrap_or(u8::MAX)))
+            },
+            |irq| Some(16 + irq.number),
+        )
+    }
 }
 
 impl<B: Behavior> RegisterFile<B> {

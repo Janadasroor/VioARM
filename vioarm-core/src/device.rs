@@ -115,6 +115,17 @@ pub trait InterruptSource: Peripheral {
     fn lines(&self) -> u32 {
         1
     }
+
+    /// The exception number raised when device-local `line` is taken.
+    ///
+    /// Most devices raise one line, so the default maps `line` onto
+    /// `exception_number() + line`. A controller whose lines are *not*
+    /// consecutive — the F4 DMA1 puts streams 0..=6 on IRQ 11..=17 but stream
+    /// 7 on IRQ 47 — overrides this per line.
+    fn exception_for_line(&self, line: u32) -> Option<u8> {
+        self.exception_number()
+            .map(|base| base.wrapping_add(u8::try_from(line).unwrap_or(u8::MAX)))
+    }
 }
 
 /// The lowest set bit index of `lines` — the NVIC's fixed-priority

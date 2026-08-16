@@ -15,8 +15,9 @@
 use crate::device::gpio::Gpio;
 use crate::device::stm32::afio::Afio;
 use crate::device::stm32::dma::{DmaF1, DmaRequests};
+use crate::device::stm32::dma_f4::DmaF4;
 use crate::device::stm32::exti::Exti;
-use crate::device::stm32::flash::{FlashF1, FlashGate};
+use crate::device::stm32::flash::{FlashF1, FlashF4, FlashGate};
 use crate::device::stm32::gpio::Gpio as StmGpio;
 use crate::device::stm32::gpio_f4::GpioF4;
 use crate::device::stm32::rcc::Rcc;
@@ -174,22 +175,41 @@ pub fn stm32f107() -> BoardMemory {
 pub const STM32_F407_FLASH: u32 = FLASH;
 /// STM32F407 flash size in bytes (1 MiB).
 pub const STM32_F407_FLASH_LEN: u32 = 0x0010_0000;
-/// STM32F407 main SRAM size in bytes (128 KiB at `0x2000_0000`; the 64 KiB CCM
-/// at `0x1000_0000` is not modeled).
+/// STM32F407 main SRAM size in bytes (128 KiB at `0x2000_0000`).
 pub const STM32_F407_RAM_LEN: u32 = 0x0002_0000;
+/// STM32F407 core-coupled-memory base (64 KiB at `0x1000_0000`).
+pub const STM32_F407_CCM: u32 = 0x1000_0000;
+/// STM32F407 core-coupled-memory size in bytes.
+pub const STM32_F407_CCM_LEN: u32 = 0x0001_0000;
 
-/// An STM32F407 board: the M0 core with the F4 peripheral set mapped at its
+/// An STM32F407 board: the M4 core with the F4 peripheral set mapped at its
 /// real addresses (from `STM32F407.svd`).
 ///
 /// GPIO uses the F4 register semantics (`MODER`/`BSRR`/`AFR`, no `CRL`/`CRH`);
 /// RCC/EXTI/USART/TIM mount the same chip-agnostic cores as the F1 boards, and
-/// `SYSCFG` replaces `AFIO` as the `EXTI` line-router.
+/// `SYSCFG` replaces `AFIO` as the `EXTI` line-router. The main flash at
+/// `0x0800_0000` is a gated store guarded by the F4 `FLASH` controller, the
+/// 64 KiB CCM sits at `0x1000_0000`, and `DMA1`/`DMA2` use the F4 stream
+/// register set.
 #[must_use]
 pub fn stm32f407() -> BoardMemory {
     use crate::device::svd::stm32f407::Stm32f407;
-    let backing =
-        FlatMemory::with_layout(&[FLASH, RAM], &[STM32_F407_FLASH_LEN, STM32_F407_RAM_LEN]);
+    let backing = FlatMemory::with_layout(
+        &[FLASH, STM32_MAIN_FLASH, STM32_F407_CCM, RAM],
+        &[
+            STM32_F407_FLASH_LEN,
+            STM32_F407_FLASH_LEN,
+            STM32_F407_CCM_LEN,
+            STM32_F407_RAM_LEN,
+        ],
+    );
+    let gate = Arc::new(Mutex::new(FlashGate::new(
+        Region::new(STM32_MAIN_FLASH, STM32_F407_FLASH_LEN),
+        16 * 1024,
+    )));
     let mut mem = SystemMemory::new(backing);
+    mem.set_flash_gate(gate.clone());
+    mem.attach(Box::new(FlashF4::for_device::<Stm32f407>(gate)));
     mem.attach(Box::new(Rcc::for_device::<Stm32f407>()));
     mem.attach(Box::new(GpioF4::at_in::<Stm32f407>(0x4002_0000, "gpioa")));
     mem.attach(Box::new(GpioF4::at_in::<Stm32f407>(0x4002_0400, "gpiob")));
@@ -200,6 +220,10 @@ pub fn stm32f407() -> BoardMemory {
     mem.attach(Box::new(Timer::tim2_for::<Stm32f407>()));
     mem.attach(Box::new(Exti::for_device::<Stm32f407>()));
     mem.attach(Box::new(Syscfg::for_device::<Stm32f407>()));
+    let dma = Arc::new(Mutex::new(Vec::new()));
+    mem.set_dma_mailbox(dma.clone());
+    mem.attach(Box::new(DmaF4::dma1_for::<Stm32f407>(dma.clone())));
+    mem.attach(Box::new(DmaF4::dma2_for::<Stm32f407>(dma)));
     mem.attach(Box::new(SysTick::new()));
     mem
 }

@@ -317,16 +317,14 @@ impl<M: Bus> SystemMemory<M> {
                 let line = u32::from(n - 16);
                 self.nvic.take(line);
                 for device in &mut self.devices {
-                    if let Some(base) = device.exception_number() {
-                        // Acknowledge the device's line `n - base`; a controller
-                        // that owns several consecutive lines (the F1 DMA)
-                        // acknowledges the one being serviced, and a single-line
-                        // device (base == n) keeps acknowledging `1`.
-                        if n >= base {
-                            let local = u32::from(n - base);
-                            if local < 32 && device.lines() & (1 << local) != 0 {
-                                device.acknowledge(1 << local);
-                            }
+                    // Acknowledge whichever device line maps to exception `n`:
+                    // a single-line device keeps line 0, a controller with
+                    // consecutive lines (the F1 DMA) services `n - base`, and
+                    // one whose lines scatter (the F4 DMA) matches per line.
+                    let lines = device.lines();
+                    for l in 0..32 {
+                        if lines & (1 << l) != 0 && device.exception_for_line(l) == Some(n) {
+                            device.acknowledge(1 << l);
                         }
                     }
                 }
@@ -336,17 +334,24 @@ impl<M: Bus> SystemMemory<M> {
     }
 
     /// Copy each asserting device line into the NVIC's pending register. A
-    /// device's `pending()` is a bitmask of its device-local lines; line `L`
-    /// maps to NVIC line `base - 16 + L`.
+    /// device's `pending()` is a bitmask of its device-local lines; each set
+    /// line maps to an NVIC line through `exception_for_line`, so a controller
+    /// whose lines are consecutive (the F1 DMA) lands a contiguous band and one
+    /// whose lines scatter (the F4 DMA) still reaches the right vector.
     fn latch_device_asserts(&mut self) {
         for device in &self.devices {
-            let Some(n) = device.exception_number() else {
+            let mask = device.pending();
+            if mask == 0 {
                 continue;
-            };
-            if n >= 16 {
-                let mask = device.pending();
-                if mask != 0 {
-                    self.nvic.latch(u64::from(mask) << u32::from(n - 16));
+            }
+            for line in 0..32 {
+                if mask & (1 << line) == 0 {
+                    continue;
+                }
+                if let Some(n) = device.exception_for_line(line) {
+                    if n >= 16 {
+                        self.nvic.latch(1u64 << u32::from(n - 16));
+                    }
                 }
             }
         }
@@ -412,7 +417,7 @@ impl<M: Bus> SystemMemory<M> {
         self.backing.read(addr)
     }
 
-    /// Zero the backing flash bank for a page or mass erase.
+    /// Zero the backing flash bank for a page, sector, or mass erase.
     fn perform_erase(&mut self, erase: FlashErase, region: Region, page_size: u32) {
         match erase {
             FlashErase::Mass => {
@@ -424,6 +429,11 @@ impl<M: Bus> SystemMemory<M> {
                 let base = (addr / page_size) * page_size;
                 for off in 0..page_size {
                     let _ = self.backing.write(base + off, 0);
+                }
+            }
+            FlashErase::Range(addr, len) => {
+                for off in 0..len {
+                    let _ = self.backing.write(addr + off, 0);
                 }
             }
         }

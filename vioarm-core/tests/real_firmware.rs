@@ -636,6 +636,270 @@ fn stm32f407_firmware_uses_real_peripherals() {
     assert_eq!(tx, b"ok!\n");
 }
 
+/// Compile `firmware` against the STM32F4 device header, returning the flat
+/// `.text` and symbol map, or `None` if the toolchain or pack is missing.
+fn build_f4_firmware(
+    firmware: &str,
+) -> Option<(Vec<u8>, std::collections::HashMap<String, u32>)> {
+    let includes = [
+        "../packs/STM32F4xx_CMSIS/Device/Include",
+        "../packs/STM32F4xx_CMSIS/CMSIS/Core/Include",
+    ];
+    let mut include_paths = Vec::new();
+    for rel in includes {
+        let include = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel);
+        if !include.is_dir() {
+            eprintln!(
+                "skipping f4 test: pack include dir {} not found",
+                include.display()
+            );
+            return None;
+        }
+        include_paths.push(
+            include
+                .to_str()
+                .expect("pack include path is not UTF-8")
+                .to_owned(),
+        );
+    }
+    let include_refs: Vec<&str> = include_paths.iter().map(String::as_str).collect();
+    match build_firmware_v7m_with_includes(firmware, &include_refs) {
+        Ok(image) => Some(image),
+        Err(why) => {
+            eprintln!("skipping f4 test: {why}");
+            None
+        }
+    }
+}
+
+/// Real CMSIS-style firmware against the STM32F407 flash controller: the
+/// `FLASH` register window and the gated `0x0800_0000` main flash. The first
+/// program write is issued *before* the unlock and must be rejected; then the
+/// KEYR handshake, a sector erase (SNB = 1), and a program must land. The
+/// result snapshot is `0xBEEFCAFE` only if the reject, the program, and the
+/// erase all behaved.
+const STM32_F407_FLASH_FIRMWARE: &str = r#"
+#define STM32F407xx
+#include "stm32f4xx.h"
+
+#define TARGET_ADDR 0x08000000u
+#define PROBE_ADDR  0x08004000u
+#define RESULT_ADDR 0x20000000u
+
+void reset(void) {
+    /* 1. Still locked: CR.PG is ignored and the program write must not land. */
+    FLASH->CR |= FLASH_CR_PG;
+    *(volatile unsigned *)TARGET_ADDR = 0xDEADBEEF;
+    unsigned locked = *(volatile unsigned *)TARGET_ADDR;
+
+    /* 2. Unlock through the KEYR key sequence. */
+    FLASH->KEYR = 0x45670123u;
+    FLASH->KEYR = 0xCDEF89ABu;
+
+    /* 3. Program two words while CR.PG is set. */
+    FLASH->CR |= FLASH_CR_PG;
+    *(volatile unsigned *)TARGET_ADDR = 0x5A5A5A5Au;
+    *(volatile unsigned *)PROBE_ADDR = 0x5A5A5A5Au;
+    FLASH->SR = FLASH_SR_EOP;
+    unsigned before = *(volatile unsigned *)PROBE_ADDR;
+
+    /* 4. Erase sector 1 (SNB = 1, 0x4000..0x7FFF) and confirm the wipe. */
+    FLASH->CR &= ~FLASH_CR_PG;
+    FLASH->CR |= FLASH_CR_SER;
+    FLASH->CR = (FLASH->CR & ~FLASH_CR_SNB) | (1u << FLASH_CR_SNB_Pos);
+    FLASH->CR |= FLASH_CR_STRT;
+    while (FLASH->SR & FLASH_SR_BSY) { }
+    FLASH->SR = FLASH_SR_EOP;
+    unsigned after_erase = *(volatile unsigned *)PROBE_ADDR;
+
+    /* 5. Reprogram a word in sector 0. */
+    FLASH->CR &= ~FLASH_CR_SER;
+    FLASH->CR |= FLASH_CR_PG;
+    *(volatile unsigned *)TARGET_ADDR = 0xBEEFCAFE;
+    FLASH->SR = FLASH_SR_EOP;
+    unsigned programmed = *(volatile unsigned *)TARGET_ADDR;
+
+    /* 6. All checks: locked reject, program landed, erase wiped, final lands. */
+    unsigned ok = (locked == 0u) && (before == 0x5A5A5A5Au)
+                  && (after_erase == 0u);
+    *(volatile unsigned *)RESULT_ADDR = ok ? programmed : 0xFFFFFFFFu;
+    __asm__ volatile("bkpt #0");
+}
+"#;
+
+/// On the STM32F407 board, CMSIS firmware unlocks the `FLASH` controller,
+/// programs words, erases sector 1 with `SER`+`SNB`+`STRT`, and confirms that a
+/// pre-unlock write was rejected by the write gate.
+#[test]
+fn stm32f407_flash_programming_is_gated_and_lands() {
+    let Some((code, symbols)) = build_f4_firmware(STM32_F407_FLASH_FIRMWARE) else {
+        return; // skipped
+    };
+    let entry = *symbols.get("reset").expect("no reset symbol");
+    assert!(!code.is_empty(), "compiled .text must not be empty");
+
+    let mut m = Machine::armv7m(board::stm32f407());
+    m.load_image(&load_flat(CODE_BASE, &code));
+    {
+        let mem = m.core.mem();
+        mem.write_word(FLASH, INIT_SP).unwrap();
+        mem.write_word(FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+    }
+    m.reset().expect("reset from vector table");
+    let err = m.run(100_000);
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
+    assert_eq!(
+        m.core.mem().read_word(0x2000_0000).unwrap(),
+        0xBEEF_CAFE,
+        "the programmed word landed in the target buffer"
+    );
+}
+
+/// Real CMSIS-style firmware against the STM32F407 DMA1: a memory-to-memory
+/// copy of 16 words through stream 2, driven to completion by the stream-2
+/// transfer-complete interrupt (IRQ 13, exception 29). `RESULT` is `1` only if
+/// the copy landed, `NDTR` reads zero, `EN` self-cleared, and the handler ran.
+const STM32_F407_DMA_FIRMWARE: &str = r#"
+#define STM32F407xx
+#include "stm32f4xx.h"
+
+#define SRC_ADDR 0x20000100u
+#define DST_ADDR 0x20000200u
+#define DONE_ADDR 0x20000300u
+#define RESULT_ADDR 0x20000304u
+#define DONE_WORD (*(volatile unsigned *)DONE_ADDR)
+
+void DMA1_Stream2_IRQHandler(void) {
+    if (DMA1->LISR & DMA_LISR_TCIF2) {
+        DONE_WORD = 1;
+        DMA1->LIFCR = DMA_LIFCR_CTCIF2;
+    }
+}
+
+void reset(void) {
+    /* 1. Fill the source buffer. */
+    for (int i = 0; i < 16; ++i)
+        *(volatile unsigned *)(SRC_ADDR + 4u * (unsigned)i) = 0x4000u + (unsigned)i;
+
+    /* 2. Enable the DMA1 clock and arm the stream-2 IRQ (IRQ 13, exception 29). */
+    RCC->AHB1ENR |= RCC_AHB1ENR_DMA1EN;
+    NVIC->ISER[0] = 1u << DMA1_Stream2_IRQn;
+
+    /* 3. Stream 2: 16 words, word-sized, memory-to-memory, both sides increment. */
+    DMA1_Stream2->PAR = SRC_ADDR;
+    DMA1_Stream2->M0AR = DST_ADDR;
+    DMA1_Stream2->NDTR = 16;
+    DMA1_Stream2->FCR = 0u; /* FIFO enabled, full threshold */
+    DMA1_Stream2->CR = DMA_SxCR_DIR_1 | DMA_SxCR_PINC | DMA_SxCR_MINC
+                     | DMA_SxCR_PSIZE_1 | DMA_SxCR_MSIZE_1
+                     | DMA_SxCR_TCIE | DMA_SxCR_EN;
+
+    /* 4. Wait for the transfer-complete interrupt. */
+    while (!DONE_WORD) { }
+
+    /* 5. Verify the stream completed cleanly and the copy landed. */
+    unsigned ok = 1;
+    if (DMA1_Stream2->NDTR != 0) ok = 0;
+    if (DMA1_Stream2->CR & DMA_SxCR_EN) ok = 0;
+    for (int i = 0; i < 16; ++i) {
+        if (*(volatile unsigned *)(DST_ADDR + 4u * (unsigned)i) != 0x4000u + (unsigned)i)
+            ok = 0;
+    }
+    *(volatile unsigned *)RESULT_ADDR = ok;
+    __asm__ volatile("bkpt #0");
+}
+"#;
+
+/// On the STM32F407 board, `DMA1` stream 2 copies memory to memory and the
+/// stream-2 IRQ fires through the scattered NVIC line on completion.
+#[test]
+fn stm32f407_dma_transfers_memory_to_memory() {
+    let Some((code, symbols)) = build_f4_firmware(STM32_F407_DMA_FIRMWARE) else {
+        return; // skipped
+    };
+    let entry = *symbols.get("reset").expect("no reset symbol");
+    let irq = *symbols
+        .get("DMA1_Stream2_IRQHandler")
+        .expect("no DMA1_Stream2_IRQHandler symbol");
+    assert!(!code.is_empty(), "compiled .text must not be empty");
+
+    let mut m = Machine::armv7m(board::stm32f407());
+    m.load_image(&load_flat(CODE_BASE, &code));
+    {
+        let mem = m.core.mem();
+        mem.write_word(FLASH, INIT_SP).unwrap();
+        mem.write_word(FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+        // Vector 29 = DMA1_Stream2 IRQ 13 at FLASH + 29 * 4.
+        mem.write_word(FLASH + 29 * 4, (CODE_BASE + irq) | 1).unwrap();
+    }
+    m.reset().expect("reset from vector table");
+    let err = m.run(100_000);
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
+    assert_eq!(
+        m.core.mem().read_word(0x2000_0300).unwrap(),
+        1,
+        "the transfer-complete IRQ fired"
+    );
+    assert_eq!(
+        m.core.mem().read_word(0x2000_0304).unwrap(),
+        1,
+        "the memory-to-memory copy was verified"
+    );
+}
+
+/// Firmware that round-trips words through the 64 KiB CCM RAM at
+/// `0x1000_0000`, then deliberately touches `0x1001_0000` (just past the CCM)
+/// where no memory is mapped, which must fault and halt the machine.
+const STM32_F407_CCM_FIRMWARE: &str = r"
+#define RESULT_ADDR 0x20000000u
+
+void reset(void) {
+    *(volatile unsigned *)0x10000000u = 0xCCM1u;
+    *(volatile unsigned *)0x1000FFF8u = 0xCCM2u;
+    unsigned a = *(volatile unsigned *)0x10000000u;
+    unsigned b = *(volatile unsigned *)0x1000FFF8u;
+    *(volatile unsigned *)RESULT_ADDR =
+        (a == 0xCCM1u && b == 0xCCM2u) ? 1u : 0u;
+    *(volatile unsigned *)0x10010000u = 0xBADu; /* unmapped: faults */
+}
+";
+
+/// On the STM32F407 board, the CCM RAM at `0x1000_0000` round-trips words, and
+/// an access past its 64 KiB end faults the core (the run halts rather than
+/// spinning past the bad write).
+#[test]
+fn stm32f407_ccm_ram_reads_and_writes() {
+    let (code, symbols) = match build_firmware(STM32_F407_CCM_FIRMWARE) {
+        Ok(image) => image,
+        Err(why) => {
+            eprintln!("skipping ccm test: {why}");
+            return;
+        }
+    };
+    let entry = *symbols.get("reset").expect("no reset symbol");
+    assert!(!code.is_empty(), "compiled .text must not be empty");
+
+    let mut m = Machine::armv7m(board::stm32f407());
+    m.load_image(&load_flat(CODE_BASE, &code));
+    {
+        let mem = m.core.mem();
+        mem.write_word(FLASH, INIT_SP).unwrap();
+        mem.write_word(FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+    }
+    m.reset().expect("reset from vector table");
+    let err = m.run(100_000);
+    assert_eq!(
+        err,
+        Err(HaltCause::NonThumbTarget),
+        "the unmapped CCM access faults (a mapped one would spin to the budget)"
+    );
+    assert_eq!(
+        m.core.mem().read_word(0x2000_0000).unwrap(),
+        1,
+        "the CCM round-trip matched"
+    );
+}
+
 /// Real CMSIS-style firmware against the STM32F103 flash controller: the
 /// `FLASH` register window and the `0x0800_0000` main-flash gate. The first
 /// program write is issued *before* the unlock and must be rejected; then the
@@ -725,13 +989,13 @@ fn stm32f103_flash_programming_is_gated_and_lands() {
         mem.write_word(FLASH, INIT_SP).unwrap();
         mem.write_word(FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
     }
-    m.reset().expect("reset from vector table");
+m.reset().expect("reset from vector table");
     let err = m.run(100_000);
     assert_eq!(err, Err(HaltCause::NonThumbTarget));
     assert_eq!(
         m.core.mem().read_word(0x2000_0000).unwrap(),
         0xBEEF,
-        "the locked write was rejected and the program landed"
+        "the programmed halfword landed in the target buffer"
     );
 }
 
