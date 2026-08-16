@@ -13,7 +13,8 @@ pub mod registers;
 use crate::error::{Exception, HaltCause};
 use crate::mem::{MpuAccess, PeripheralBus};
 use decode16::{
-    decode16, decode16_v7m, AluOp, ExtendKind, Inst16, LsImm, LsReg, ReverseKind, Shift, ShiftImm,
+    decode16, decode16_v7m, AluOp, ExtendKind, Hint, Inst16, LsImm, LsReg, ReverseKind, Shift,
+    ShiftImm,
 };
 use decode32::{
     decode32, decode32_v7m, is_thumb2, is_thumb2_v7m, thumb_expand_imm, BitfieldOp, DpOp, DspMulOp,
@@ -348,10 +349,15 @@ pub struct Core<B: PeripheralBus> {
     /// `None` means open; `STREX*` succeeds only while it matches, and any
     /// exception entry or return clears it.
     pub exmon: Option<u32>,
-    /// Whether the core is asleep (`SCR.SLEEPONEXIT` on exception return to
-    /// Thread mode). A sleeping core does not execute until an exception wakes
-    /// it; peripherals keep ticking.
+    /// Whether the core is asleep. Set by `WFI`, `WFE` (when no event is
+    /// pending), and by `SCR.SLEEPONEXIT` on exception return to Thread mode. A
+    /// sleeping core does not execute until an exception wakes it or (for
+    /// `WFE`) an event is signaled; peripherals keep ticking.
     pub sleeping: bool,
+    /// The 1-bit event latch used by `WFE`/`SEV`. `SEV` sets it; `WFE` clears
+    /// it and, if it was set, does not sleep. Also set when an exception is
+    /// taken (an interrupt is itself a wakeup event).
+    pub event: bool,
     pub cycles: u64,
     /// Shared M-profile FP context-control state (`FPCCR`/`FPCAR`). The `SCB`
     /// device holds the same `Rc` so firmware writes through the bus and the
@@ -397,6 +403,7 @@ impl<B: PeripheralBus> Core<B> {
             itstate: 0,
             exmon: None,
             sleeping: false,
+            event: false,
             cycles: 0,
             fpu_ctx: std::sync::Arc::new(std::sync::Mutex::new(FpuCtx::new())),
             mem,
@@ -562,6 +569,7 @@ impl<B: PeripheralBus> Core<B> {
         self.ipsr = 0;
         self.itstate = 0;
         self.sleeping = false;
+        self.event = false;
         Ok(())
     }
 
@@ -997,7 +1005,29 @@ impl<B: PeripheralBus> Core<B> {
             // undefined instruction: it escalates to HardFault stacking the
             // BKPT's own address (so the handler can skip it), matching QEMU.
             I::Bkpt { .. } => self.hardfault_on_undefined(pc, 2),
-            I::Hint { .. } => Ok(Next::Advance(pc + 2)),
+            I::Hint { kind } => {
+                // `WFI` sleeps until an exception pends (the `Machine` peeks
+                // every cycle and wakes the core through `take_exception`).
+                // `WFE` sleeps only when no event is pending: `SEV` and any
+                // exception entry set the event latch, and `WFE` consumes it.
+                match kind {
+                    Hint::Wfi => self.sleeping = true,
+                    Hint::Wfe => {
+                        if self.event {
+                            self.event = false;
+                        } else {
+                            self.sleeping = true;
+                        }
+                    }
+                    Hint::Sev => {
+                        self.event = true;
+                        // SEV signals an event to this core, waking a WFE.
+                        self.sleeping = false;
+                    }
+                    Hint::Nop | Hint::Yield => {}
+                }
+                Ok(Next::Advance(pc + 2))
+            }
             I::Cps { disable, im } => {
                 // The `i` bit (bit1) controls PRIMASK. On ARMv7-M the `f` bit
                 // (bit0) is a FAULTMASK alias; ARMv6-M has neither `f` nor `a`.
@@ -3013,9 +3043,11 @@ impl<B: PeripheralBus> Core<B> {
             return Err(HaltCause::UnhandledException);
         }
         // Exception entry clears the local exclusive monitor and wakes the core
-        // from a `SCR.SLEEPONEXIT` sleep.
+        // from a `WFI`/`WFE`/`SCR.SLEEPONEXIT` sleep. An interrupt is itself a
+        // wakeup event, so it also sets the event latch consumed by `WFE`.
         self.exmon = None;
         self.sleeping = false;
+        self.event = true;
         // The vector table lives at `VTOR` (128-byte aligned), defaulting to
         // address zero when no `SCB` is on the bus. Exception `n`'s entry is
         // the `n`-th word of that table.
@@ -3874,6 +3906,69 @@ mod tests {
         c.enter_exception(14).unwrap();
         assert!(!c.sleeping);
         assert_eq!(c.ipsr, 14);
+    }
+
+    #[test]
+    fn wfi_wfe_sleep_and_sev_generates_an_event() {
+        use crate::mem::flat::FlatMemory;
+        use crate::mem::system::SystemMemory;
+        const WFI_ADDR: u32 = 0x2000_0100;
+        const WFE_ADDR: u32 = 0x2000_0200;
+        const SEV_ADDR: u32 = 0x2000_0300;
+        const NOP_ADDR: u32 = 0x2000_0400;
+        const SP: u32 = 0x2000_0800;
+        let backing = FlatMemory::with_layout(&[0x0000_0000, 0x2000_0000], &[0x1000, 0x1000]);
+        let mut c = Core::armv7m(SystemMemory::new(backing));
+        c.regs.sp = SP;
+        c.regs.msp = SP;
+
+        // WFI sleeps and a sleeping core does not advance.
+        load_inst(&mut c, WFI_ADDR, &[0x30, 0xbf]); // wfi
+        c.regs.pc = WFI_ADDR;
+        c.step().unwrap();
+        assert!(c.sleeping);
+        assert_eq!(c.regs.pc, WFI_ADDR + 2);
+        let pc = c.regs.pc;
+        c.step().unwrap();
+        assert!(c.sleeping);
+        assert_eq!(c.regs.pc, pc, "a sleeping core must not execute");
+
+        // WFE with no event pending sleeps too.
+        c.sleeping = false;
+        load_inst(&mut c, WFE_ADDR, &[0x20, 0xbf]); // wfe
+        c.regs.pc = WFE_ADDR;
+        c.step().unwrap();
+        assert!(c.sleeping);
+
+        // SEV sets the event latch without sleeping.
+        c.sleeping = false;
+        load_inst(&mut c, SEV_ADDR, &[0x40, 0xbf]); // sev
+        c.regs.pc = SEV_ADDR;
+        c.step().unwrap();
+        assert!(c.event);
+        assert!(!c.sleeping);
+
+        // WFE with an event pending does not sleep and consumes the event.
+        load_inst(&mut c, WFE_ADDR, &[0x20, 0xbf]);
+        c.regs.pc = WFE_ADDR;
+        c.step().unwrap();
+        assert!(!c.sleeping, "WFE with a pending event must not sleep");
+        assert!(!c.event, "WFE consumes the event");
+
+        // Exception entry wakes the core and is itself a wakeup event.
+        c.mem().write_word(0x3C, 0x2000_0500 | 1).unwrap(); // SysTick vector
+        c.enter_exception(15).unwrap();
+        assert!(!c.sleeping);
+        assert!(c.event);
+
+        // A plain NOP hint stays awake.
+        c.sleeping = false;
+        c.event = false;
+        load_inst(&mut c, NOP_ADDR, &[0x00, 0xbf]); // nop
+        c.regs.pc = NOP_ADDR;
+        c.step().unwrap();
+        assert!(!c.sleeping);
+        assert_eq!(c.regs.pc, NOP_ADDR + 2);
     }
 
     #[test]

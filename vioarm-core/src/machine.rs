@@ -105,6 +105,9 @@ impl<M: PeripheralBus> Machine<M> {
             self.core.mem().acknowledge_exception(n);
             self.core.cycles += 1;
         } else {
+            // Whether the core was already asleep: if so its `step()` returns
+            // immediately without a cycle, so we count the sleeping cycle here.
+            let was_sleeping = self.core.sleeping;
             self.core.step()?;
             let (primask, faultmask, basepri, ipsr) = (
                 self.core.primask,
@@ -119,6 +122,11 @@ impl<M: PeripheralBus> Machine<M> {
             {
                 self.core.enter_exception(n)?;
                 self.core.mem().acknowledge_exception(n);
+                self.core.cycles += 1;
+            } else if was_sleeping {
+                // A sleeping core that no exception wakes still spends the
+                // cycle asleep; count it so `cycles()` advances monotonically
+                // while firmware sits in `WFI`/`WFE` (peripherals keep ticking).
                 self.core.cycles += 1;
             }
         }

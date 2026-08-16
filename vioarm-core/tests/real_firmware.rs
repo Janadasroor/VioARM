@@ -83,6 +83,34 @@ void reset(void) {
 }
 "#;
 
+/// The same timer exercise, but the thread sits in `WFI` between interrupts.
+/// A sleeping core must still tick `SysTick` and be woken by it, then resume
+/// the instruction after the `WFI`.
+const WFI_SYSTICK_FIRMWARE: &str = r#"
+#define TICKS    0x20000000u
+#define COUNT    0x20000004u
+#define PERIOD   0x20000008u
+#define SYST_CSR 0xE000E010u
+#define SYST_RVR 0xE000E014u
+#define SYST_CVR 0xE000E018u
+
+void SysTick_Handler(void) {
+    (*(volatile unsigned *)TICKS)++;
+}
+
+void reset(void) {
+    *(volatile unsigned *)SYST_RVR = *(volatile unsigned *)PERIOD - 1;
+    *(volatile unsigned *)SYST_CVR = 0;
+    *(volatile unsigned *)SYST_CSR = 0x7; /* ENABLE | TICKINT | CLKSOURCE */
+    while (*(volatile unsigned *)TICKS < 3) {
+        __asm__ volatile("wfi");
+    }
+    *(volatile unsigned *)SYST_CSR = 0; /* stop the timer */
+    *(volatile unsigned *)COUNT = *(volatile unsigned *)TICKS;
+    __asm__ volatile("bkpt #0");
+}
+"#;
+
 /// A firmware that drives GPIO outputs, reads back host-driven inputs, and
 /// transmits a line of text on the virtual UART before halting.
 const IO_FIRMWARE: &str = r#"
@@ -322,6 +350,48 @@ fn systick_handler_fires_and_returns() {
     let err = m.run(100_000);
     assert_eq!(err, Err(HaltCause::NonThumbTarget));
     // The handler ran at least three times before the firmware stopped it.
+    let ticks = m.core.mem().read_word(RAM).unwrap();
+    assert!(ticks >= 3, "handler ran only {ticks} times");
+    assert_eq!(m.core.mem().read_word(RAM + 4).unwrap(), ticks);
+}
+
+/// A firmware that sits in `WFI` between `SysTick` interrupts is woken by each
+/// one and resumes the instruction after the `WFI`, exactly like the busy-wait
+/// variant above.
+#[test]
+fn wfi_sleeps_until_systick_wakes() {
+    let (code, symbols) = match build_firmware(WFI_SYSTICK_FIRMWARE) {
+        Ok(image) => image,
+        Err(why) => {
+            eprintln!("skipping wfi-systick test: {why}");
+            return;
+        }
+    };
+    let entry = *symbols.get("reset").expect("no reset symbol");
+    let systick = *symbols
+        .get("SysTick_Handler")
+        .expect("no SysTick_Handler symbol");
+    assert!(!code.is_empty(), "compiled .text must not be empty");
+
+    let mut sysmem = SystemMemory::new(FlatMemory::with_layout(
+        &[FLASH, RAM],
+        &[FLASH_LEN, RAM_LEN],
+    ));
+    sysmem.attach(Box::new(SysTick::new()));
+    let mut m = Machine::new(sysmem);
+    m.load_image(&load_flat(CODE_BASE, &code));
+    {
+        let mem = m.core.mem();
+        mem.write_word(FLASH, INIT_SP).unwrap();
+        mem.write_word(FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+        // Vector 15 (SysTick) at FLASH + 15 * 4.
+        mem.write_word(FLASH + 60, (CODE_BASE + systick) | 1)
+            .unwrap();
+        mem.write_word(RAM + 8, 20).unwrap(); // PERIOD
+    }
+    m.reset().expect("reset from vector table");
+    let err = m.run(100_000);
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
     let ticks = m.core.mem().read_word(RAM).unwrap();
     assert!(ticks >= 3, "handler ran only {ticks} times");
     assert_eq!(m.core.mem().read_word(RAM + 4).unwrap(), ticks);
