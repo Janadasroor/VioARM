@@ -32,6 +32,12 @@ pub enum SysReg {
     Epsr,
     Msp,
     Psp,
+    /// ARMv8-M mainline and baseline stack-limit register for the main stack.
+    /// A write that would move the *current* SP below it raises a StackFault
+    /// (escalating to HardFault on the baseline, which has no StackFault).
+    MspLim,
+    /// Stack-limit register for the process stack.
+    PspLim,
     Primask,
     /// `BASEPRI` masks configurable-priority exceptions at priority `>=` its
     /// value; `0` disables the mask.
@@ -57,6 +63,8 @@ impl From<u8> for SysReg {
             0x06 => Self::Epsr,
             0x08 => Self::Msp,
             0x09 => Self::Psp,
+            0x0A => Self::MspLim,
+            0x0B => Self::PspLim,
             0x10 => Self::Primask,
             0x11 => Self::Basepri,
             0x12 => Self::BasepriMax,

@@ -3087,6 +3087,50 @@ fn m33_baseline_lda_stl() {
     conformance_v8m("m33_baseline_lda_stl", &mut a, "halt", &mt);
 }
 
+/// MSPLIM/PSPLIM are readable/writable on the ARMv8-M baseline and on the M33
+/// mainline oracle. Only register round-trips are diffed: a stack-limit
+/// *violation* raises a StackFault (IPSR=4) on the M33 but folds to HardFault
+/// on the baseline, so that behavior is pinned by VioARM unit tests instead.
+#[test]
+fn m33_baseline_splim() {
+    let Some(mt) = qemu_m33() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+
+    // Reset state: both limits read as zero.
+    a.mrs(1, 0x0A); // r1 = MSPLIM = 0
+    a.mrs(2, 0x0B); // r2 = PSPLIM = 0
+
+    // MSPLIM round-trip.
+    a.mov_imm32(5, 0x2000_1000);
+    a.msr(0x0A, 5);
+    a.mrs(1, 0x0A); // r1 = 0x2000_1000
+
+    // PSPLIM round-trip.
+    a.mov_imm32(5, 0x2000_2000);
+    a.msr(0x0B, 5);
+    a.mrs(2, 0x0B); // r2 = 0x2000_2000
+
+    // Writing the *non-current* stack's limit below the active SP never
+    // faults; the value round-trips. The active SP here sits in flash, well
+    // below 0x2000_1000.
+    a.mov_imm32(5, 0x1000_0000);
+    a.msr(0x0B, 5); // PSPLIM = 0x1000_0000
+    a.mrs(2, 0x0B); // r2 = 0x1000_0000
+
+    // Restore both limits to their reset value so nothing downstream is
+    // constrained, then confirm.
+    a.mov_imm32(5, 0);
+    a.msr(0x0A, 5);
+    a.msr(0x0B, 5);
+    a.mrs(1, 0x0A); // r1 = 0
+    a.mrs(2, 0x0B); // r2 = 0
+
+    a.label("halt");
+    a.b("halt");
+    conformance_v8m("m33_baseline_splim", &mut a, "halt", &mt);
+}
+
 /// The full ARMv6-M 16-bit subset is baseline-valid, so the Thumb-1 ALU suite
 /// must diff identically against the M33.
 #[test]

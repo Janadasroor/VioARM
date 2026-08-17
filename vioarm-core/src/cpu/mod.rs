@@ -382,6 +382,11 @@ pub struct Core<B: PeripheralBus> {
     /// at `0x1000_0000`) set this before resetting so the vector table is read
     /// from the right region.
     vector_base: u32,
+    /// ARMv8-M baseline stack-limit register for the main stack (`MSPLIM`).
+    /// Zero (the reset value) disables the limit. RAZ/WI on ARMv6-M/ARMv7-M.
+    msp_lim: u32,
+    /// ARMv8-M baseline stack-limit register for the process stack (`PSPLIM`).
+    psp_lim: u32,
     mem: B,
 }
 
@@ -432,6 +437,8 @@ impl<B: PeripheralBus> Core<B> {
             cycles: 0,
             fpu_ctx: std::sync::Arc::new(std::sync::Mutex::new(FpuCtx::new())),
             vector_base: 0,
+            msp_lim: 0,
+            psp_lim: 0,
             mem,
         }
     }
@@ -693,6 +700,9 @@ impl<B: PeripheralBus> Core<B> {
             {
                 0
             }
+            // The ARMv8-M stack-limit registers only exist on the baseline
+            // here; their encodings RAZ on ARMv6-M/ARMv7-M like BASEPRI.
+            SysReg::MspLim | SysReg::PspLim if self.isa != Isa::Armv8MBaseline => 0,
             // Unprivileged reads of these special-purpose registers are RAZ.
             SysReg::Msp
             | SysReg::Psp
@@ -700,6 +710,8 @@ impl<B: PeripheralBus> Core<B> {
             | SysReg::Basepri
             | SysReg::BasepriMax
             | SysReg::Faultmask
+            | SysReg::MspLim
+            | SysReg::PspLim
                 if unprivileged =>
             {
                 0
@@ -719,6 +731,8 @@ impl<B: PeripheralBus> Core<B> {
                 }
             }
             SysReg::Primask => u32::from(self.primask),
+            SysReg::MspLim => self.msp_lim,
+            SysReg::PspLim => self.psp_lim,
             SysReg::Basepri | SysReg::BasepriMax => u32::from(self.basepri),
             SysReg::Faultmask => u32::from(self.faultmask),
             SysReg::Control => self.control,
@@ -770,6 +784,11 @@ impl<B: PeripheralBus> Core<B> {
                 if self.isa != Isa::Armv7M =>
             {
             }
+            // The stack-limit registers only exist on the ARMv8-M baseline
+            // here; their encodings are RAZ/WI on ARMv6-M/ARMv7-M.
+            SysReg::MspLim | SysReg::PspLim if self.isa != Isa::Armv8MBaseline => {} 
+            SysReg::MspLim => self.msp_lim = v,
+            SysReg::PspLim => self.psp_lim = v,
             SysReg::Basepri => self.basepri = v as u8,
             SysReg::BasepriMax => {
                 // Raises the mask (moves toward higher priority / lower
@@ -1189,7 +1208,14 @@ impl<B: PeripheralBus> Core<B> {
             }
             I::Push { regs, include_lr } => {
                 let count = regs.count_ones() + u32::from(include_lr);
-                let mut addr = self.regs.sp.wrapping_sub(4 * count);
+                let new_sp = self.regs.sp.wrapping_sub(4 * count);
+                // ARMv8-M: a PUSH that would move the current SP below its
+                // stack limit raises a StackFault (HardFault on the baseline)
+                // and the SP is not updated.
+                if self.stack_limit_violation(new_sp) {
+                    return self.stack_fault(pc);
+                }
+                let mut addr = new_sp;
                 if !self.mpu_allows(addr, MpuAccess::Write) {
                     return self.mpu_fault(addr, pc, false);
                 }
@@ -1203,7 +1229,7 @@ impl<B: PeripheralBus> Core<B> {
                 if include_lr {
                     self.write_word_halt(addr, self.regs.lr)?;
                 }
-                self.regs.sp = self.regs.sp.wrapping_sub(4 * count);
+                self.regs.sp = new_sp;
                 Ok(Next::Advance(pc + 2))
             }
             I::Pop { regs, load_pc } => {
@@ -1256,6 +1282,14 @@ impl<B: PeripheralBus> Core<B> {
                             .write(rn, base.wrapping_add(4 * regs.count_ones()));
                     }
                 } else {
+                    // A store to SP (STMDB sp!...) is a PUSH.W; the ARMv8-M
+                    // stack-limit check applies to the new SP value.
+                    if rn == 13 {
+                        let new_sp = base.wrapping_sub(4 * regs.count_ones());
+                        if self.stack_limit_violation(new_sp) {
+                            return self.stack_fault(pc);
+                        }
+                    }
                     if !self.mpu_allows(base, MpuAccess::Write) {
                         return self.mpu_fault(base, pc, false);
                     }
@@ -1372,6 +1406,20 @@ impl<B: PeripheralBus> Core<B> {
             }
             I::Msr { rn, sys } => {
                 let v = self.regs.read(rn);
+                // ARMv8-M stack-limit check precedes the write: an `MSR MSP`/
+                // `MSR PSP` that would move the *current* stack pointer below
+                // its limit is ignored and raises a StackFault (HardFault on
+                // the baseline, which has no StackFault exception).
+                let cur_sp_write = match sys {
+                    SysReg::Msp if !self.sp_is_process() => Some(v & !3),
+                    SysReg::Psp if self.sp_is_process() => Some(v & !3),
+                    _ => None,
+                };
+                if let Some(new_sp) = cur_sp_write {
+                    if self.stack_limit_violation(new_sp) {
+                        return self.stack_fault(pc);
+                    }
+                }
                 self.sysreg_write(sys, v)?;
                 Ok(Next::Advance(pc + 4))
             }
@@ -3304,6 +3352,31 @@ impl<B: PeripheralBus> Core<B> {
         Ok(Next::Advance(self.regs.pc))
     }
 
+    /// ARMv8-M stack-limit check: whether updating the *currently active* SP
+    /// to `new_sp` would place it below that stack's limit register
+    /// (`MSPLIM`/`PSPLIM`). The limits are architecturally zero (disabled) on
+    /// ARMv6-M/ARMv7-M, so the check never fires there.
+    fn stack_limit_violation(&self, new_sp: u32) -> bool {
+        let limit = if self.sp_is_process() {
+            self.psp_lim
+        } else {
+            self.msp_lim
+        };
+        self.isa == Isa::Armv8MBaseline && new_sp < limit
+    }
+
+    /// A stack-limit violation. The baseline has no StackFault exception, so
+    /// it escalates to HardFault with `HFSR.FORCED` set; the stacked return
+    /// address is the faulting instruction so the handler can grow the stack
+    /// and retry. (A StackFault raised while stacking the fault frame would
+    /// itself STKOF on silicon, locking the core up; that escalation is not
+    /// modelled here.)
+    fn stack_fault(&mut self, pc: u32) -> Result<Next, HaltCause> {
+        self.mem.record_fault(0, HFSR_FORCED);
+        self.take_exception(Exception::HardFault, pc)?;
+        Ok(Next::Advance(self.regs.pc))
+    }
+
     /// Enter Handler mode for `ex`, pushing the eight-word frame onto the
     /// interrupted context's stack and switching to the main stack pointer.
     /// `return_pc` is where execution resumes on exception return.
@@ -4203,6 +4276,121 @@ mod tests {
         // With nPRIV set the special-purpose register reads are RAZ.
         assert_eq!(c.sysreg_read(SysReg::Primask).unwrap(), 0);
         assert_eq!(c.sysreg_read(SysReg::Msp).unwrap(), 0);
+    }
+
+    #[test]
+    fn v8m_baseline_msplim_psplim() {
+        // MSPLIM/PSPLIM are readable/writable on the ARMv8-M baseline (their
+        // encodings RAZ on ARMv6-M/ARMv7-M). msr msplim, r0 = f380 880a;
+        // mrs r0, msplim = f3ef 800a; the psplim pair uses sys byte 0x0b.
+        let mut c = armv8m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(0, 0x2000_1000);
+        load_inst(&mut c, 0x2000_0000, &[0x80, 0xf3, 0x0a, 0x88]); // msr msplim, r0
+        c.step().unwrap();
+        assert_eq!(c.msp_lim, 0x2000_1000);
+        load_inst(&mut c, 0x2000_0004, &[0xef, 0xf3, 0x0a, 0x80]); // mrs r0, msplim
+        c.step().unwrap();
+        assert_eq!(c.regs.read(0), 0x2000_1000);
+        c.regs.write(0, 0x2000_1800);
+        load_inst(&mut c, 0x2000_0008, &[0x80, 0xf3, 0x0b, 0x88]); // msr psplim, r0
+        c.step().unwrap();
+        assert_eq!(c.psp_lim, 0x2000_1800);
+        load_inst(&mut c, 0x2000_000c, &[0xef, 0xf3, 0x0b, 0x80]); // mrs r0, psplim
+        c.step().unwrap();
+        assert_eq!(c.regs.read(0), 0x2000_1800);
+        // A write to the *non-current* stack's limit never trips the check,
+        // even when it lands below the active SP: PSPLIM is writable while
+        // the main stack is in use.
+        c.regs.write(0, 0x2000_0050);
+        load_inst(&mut c, 0x2000_0010, &[0x80, 0xf3, 0x0b, 0x88]); // msr psplim, r0
+        c.step().unwrap();
+        assert_eq!(c.psp_lim, 0x2000_0050);
+        assert_eq!(c.ipsr, 0);
+        // Unprivileged reads of the limit registers are RAZ.
+        c.sysreg_write(SysReg::Control, 0x1).unwrap();
+        assert_eq!(c.sysreg_read(SysReg::MspLim).unwrap(), 0);
+        assert_eq!(c.sysreg_read(SysReg::PspLim).unwrap(), 0);
+    }
+
+    #[test]
+    fn msplim_raz_wi_on_v6m_and_v7m() {
+        let mut c = core(); // ARMv6-M
+        c.sysreg_write(SysReg::MspLim, 0x2000_1000).unwrap();
+        c.sysreg_write(SysReg::PspLim, 0x2000_1000).unwrap();
+        assert_eq!(c.sysreg_read(SysReg::MspLim).unwrap(), 0);
+        assert_eq!(c.sysreg_read(SysReg::PspLim).unwrap(), 0);
+        let mut c = armv7m_core();
+        c.sysreg_write(SysReg::MspLim, 0x2000_1000).unwrap();
+        assert_eq!(c.sysreg_read(SysReg::MspLim).unwrap(), 0);
+    }
+
+    #[test]
+    fn msplim_push_violation_hardfaults() {
+        const HANDLER: u32 = 0x2000_0400;
+        let mut c = Core::armv8m(crate::mem::flat::FlatMemory::with_layout(
+            &[0x0000_0000, 0x2000_0000],
+            &[0x1000, 0x1000],
+        ));
+        c.mem().write_word(0xc, HANDLER | 1).unwrap(); // HardFault vector
+        c.regs.sp = 0x2000_0800;
+        c.regs.msp = 0x2000_0800;
+        c.sysreg_write(SysReg::MspLim, 0x2000_07f0).unwrap();
+        // push {r0-r4} (b41f, no LR): new SP 0x7ec < limit 0x7f0 -> HardFault.
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(0, 0xDEAD_BEEF);
+        load_inst(&mut c, 0x2000_0000, &[0x1f, 0xb4]);
+        c.step().unwrap();
+        assert_eq!(c.ipsr, 3);
+        assert_eq!(c.regs.pc, HANDLER);
+        assert_eq!(c.regs.sp, 0x2000_0800 - FRAME_BYTES);
+        // The PUSH store did not complete: the frame's LR slot (SP-4) holds
+        // the stacked EXC_RETURN, not the register value the push would have
+        // written.
+        assert_ne!(c.mem().read_word(0x2000_0800 - 4).unwrap(), 0xDEAD_BEEF);
+    }
+
+    #[test]
+    fn msplim_push_within_limit_succeeds() {
+        let mut c = armv8m_core();
+        c.regs.sp = 0x2000_0800;
+        c.regs.msp = 0x2000_0800;
+        c.sysreg_write(SysReg::MspLim, 0x2000_07f0).unwrap();
+        c.regs.pc = 0x2000_0000;
+        // push {r0-r3} (b40f, no LR): new SP 0x7f0 is not below the limit.
+        c.regs.write(1, 0xAABBCCDD);
+        load_inst(&mut c, 0x2000_0000, &[0x0f, 0xb4]);
+        c.step().unwrap();
+        assert_eq!(c.ipsr, 0);
+        assert_eq!(c.regs.sp, 0x2000_07f0);
+        assert_eq!(c.mem().read_word(0x2000_07f4).unwrap(), 0xAABBCCDD);
+    }
+
+    #[test]
+    fn msr_msp_below_limit_hardfaults() {
+        const HANDLER: u32 = 0x2000_0400;
+        let mut c = Core::armv8m(crate::mem::flat::FlatMemory::with_layout(
+            &[0x0000_0000, 0x2000_0000],
+            &[0x1000, 0x1000],
+        ));
+        c.mem().write_word(0xc, HANDLER | 1).unwrap(); // HardFault vector
+        c.regs.sp = 0x2000_0800;
+        c.regs.msp = 0x2000_0800;
+        c.sysreg_write(SysReg::MspLim, 0x2000_0800).unwrap();
+        // msr msp, r0 (f380 8808) with r0 below the limit: ignored + fault.
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(0, 0x2000_0700);
+        load_inst(&mut c, 0x2000_0000, &[0x80, 0xf3, 0x08, 0x88]);
+        c.step().unwrap();
+        assert_eq!(c.ipsr, 3);
+        assert_eq!(c.regs.pc, HANDLER);
+        // The write was suppressed: the stacked frame still holds the old SP.
+        assert_eq!(c.regs.sp, 0x2000_0800 - FRAME_BYTES);
+        assert_eq!(c.sysreg_read(SysReg::Msp).unwrap(), 0x2000_0800 - FRAME_BYTES);
+        // Writing the *non-current* process stack below PSPLIM is allowed.
+        c.sysreg_write(SysReg::PspLim, 0x2000_0800).unwrap();
+        c.sysreg_write(SysReg::Psp, 0x2000_0050).unwrap();
+        assert_eq!(c.ipsr, 3, "non-current stack write must not fault");
     }
 
     #[test]
