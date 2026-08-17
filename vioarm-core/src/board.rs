@@ -18,6 +18,7 @@ use crate::device::stm32::afio::Afio;
 use crate::device::stm32::can::Can;
 use crate::device::stm32::dma::{DmaF1, DmaRequests};
 use crate::device::stm32::dma_f4::DmaF4;
+use crate::device::stm32::eth::{Eth, EthMailbox};
 use crate::device::stm32::exti::Exti;
 use crate::device::stm32::flash::{FlashF1, FlashF4, FlashGate};
 use crate::device::stm32::gpio::Gpio as StmGpio;
@@ -200,6 +201,9 @@ pub fn stm32f107() -> BoardMemory {
     mem.attach(Box::new(Can::can1_for::<Stm32f107>()));
     mem.attach(Box::new(Can::can2_for::<Stm32f107>()));
     mem.attach(Box::new(Usb::otg_fs_for::<Stm32f107>()));
+    let eth_mailbox = Arc::new(Mutex::new(EthMailbox::default()));
+    mem.set_eth_mailbox(eth_mailbox.clone());
+    mem.attach(Box::new(Eth::for_device::<Stm32f107>(eth_mailbox)));
     let dma_requests = Arc::new(Mutex::new(DmaRequests::new()));
     mem.attach(Box::new(Usart::for_device_with_dma::<Stm32f107>(
         dma_requests.clone(),
@@ -308,6 +312,9 @@ pub fn stm32f407() -> BoardMemory {
     mem.attach(Box::new(Can::can2_for::<Stm32f407>()));
     mem.attach(Box::new(Usb::otg_fs_for::<Stm32f407>()));
     mem.attach(Box::new(Usb::otg_hs_for::<Stm32f407>()));
+    let eth_mailbox = Arc::new(Mutex::new(EthMailbox::default()));
+    mem.set_eth_mailbox(eth_mailbox.clone());
+    mem.attach(Box::new(Eth::for_device::<Stm32f407>(eth_mailbox)));
     let dma = Arc::new(Mutex::new(Vec::new()));
     mem.set_dma_mailbox(dma.clone());
     mem.attach(Box::new(DmaF4::dma1_for::<Stm32f407>(dma.clone())));

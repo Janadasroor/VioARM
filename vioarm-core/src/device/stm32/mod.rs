@@ -15,6 +15,7 @@ pub mod afio;
 pub mod can;
 pub mod dma;
 pub mod dma_f4;
+pub mod eth;
 pub mod exti;
 pub mod flash;
 pub mod gpio;

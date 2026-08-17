@@ -2525,14 +2525,14 @@ fn run_usb_firmware() -> Option<(u32, u32, u32, u32, Vec<u8>)> {
         );
     }
     let include_refs: Vec<&str> = include_paths.iter().map(String::as_str).collect();
-    let (code, symbols) =
-        match build_firmware_with_includes(STM32_F107_USB_FIRMWARE, &include_refs) {
-            Ok(image) => image,
-            Err(why) => {
-                eprintln!("skipping usb test: {why}");
-                return None;
-            }
-        };
+    let (code, symbols) = match build_firmware_with_includes(STM32_F107_USB_FIRMWARE, &include_refs)
+    {
+        Ok(image) => image,
+        Err(why) => {
+            eprintln!("skipping usb test: {why}");
+            return None;
+        }
+    };
     let entry = *symbols.get("reset").expect("no reset symbol");
     let irq = *symbols
         .get("OTG_FS_IRQHandler")
@@ -2544,7 +2544,8 @@ fn run_usb_firmware() -> Option<(u32, u32, u32, u32, Vec<u8>)> {
     {
         let mem = m.core.mem();
         mem.write_word(FLASH, INIT_SP).unwrap();
-        mem.write_word(FLASH + 4, (USB_CODE_BASE + entry) | 1).unwrap();
+        mem.write_word(FLASH + 4, (USB_CODE_BASE + entry) | 1)
+            .unwrap();
         // Vector 83 = OTG_FS IRQ 67 at FLASH + 83 * 4.
         mem.write_word(FLASH + 83 * 4, (USB_CODE_BASE + irq) | 1)
             .unwrap();
@@ -2601,8 +2602,182 @@ fn stm32f107_firmware_answers_usb_descriptor() {
     // 18-byte device descriptor (little-endian words 0x02000112, 0x40000000,
     // 0x57100483, 0x02010100, 0x00000100).
     let expected: &[u8] = &[
-        0x80, 0x12, 0x00, 0x12, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x40, 0x83, 0x04, 0x10,
-        0x57, 0x00, 0x01, 0x01, 0x02, 0x00, 0x01,
+        0x80, 0x12, 0x00, 0x12, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x40, 0x83, 0x04, 0x10, 0x57,
+        0x00, 0x01, 0x01, 0x02, 0x00, 0x01,
     ];
     assert_eq!(tx, expected, "the device descriptor reached the host");
+}
+
+/// Real CMSIS-style firmware against the STM32F107 Ethernet controller: a
+/// single self-chained RX descriptor (OWN, 1536-byte buffer) receives a
+/// host-injected frame through the `ETH` interrupt (IRQ 61, exception 77),
+/// and the received bytes are echoed back through a TX descriptor after a
+/// `DMATPDR` poll demand. The ISR mirrors the Keil `EMAC_STM32F10x` driver:
+/// read `DMASR`, write-one-to-clear `NIS|RS|TS`, then act on the latches.
+const STM32_F107_ETH_FIRMWARE: &str = r#"
+#define STM32F10X_CL
+#include "stm32f10x.h"
+
+#define RX_DONE (*(volatile unsigned *)0x20000000u)
+#define TX_DONE (*(volatile unsigned *)0x20000004u)
+#define RX_W0   (*(volatile unsigned *)0x20000008u)
+#define RX_W1   (*(volatile unsigned *)0x2000000Cu)
+
+#define RX_RING 0x20000100u
+#define RX_BUF  0x20000200u
+#define TX_RING 0x20000300u
+#define TX_BUF  0x20000400u
+
+void ETH_IRQHandler(void) {
+    unsigned dmasr = ETH->DMASR;
+    ETH->DMASR = dmasr & (ETH_DMASR_NIS | ETH_DMASR_RS | ETH_DMASR_TS);
+    if (dmasr & ETH_DMASR_RS) {
+        RX_DONE = 1u;
+        RX_W0 = *(volatile unsigned *)RX_BUF;
+        RX_W1 = *(volatile unsigned *)(RX_BUF + 4);
+    }
+    if (dmasr & ETH_DMASR_TS) {
+        TX_DONE = 1u;
+    }
+}
+
+void reset(void) {
+    /* 1. One RX descriptor, self-chained, 1536-byte buffer. */
+    volatile unsigned *rx = (volatile unsigned *)RX_RING;
+    rx[0] = 0x80000000u;              /* OWN */
+    rx[1] = 0x4000u | 0x600u;         /* RCH | RBS1 = 1536 */
+    rx[2] = RX_BUF;
+    rx[3] = RX_RING;
+
+    /* 2. One TX descriptor, self-chained. */
+    volatile unsigned *tx = (volatile unsigned *)TX_RING;
+    tx[0] = 0x00100000u | 0x20000000u | 0x10000000u; /* TCH | LS | FS */
+    tx[1] = 0u;
+    tx[2] = TX_BUF;
+    tx[3] = TX_RING;
+
+    /* 3. Point the DMA at the rings and arm the interrupts. */
+    ETH->DMARDLAR = RX_RING;
+    ETH->DMATDLAR = TX_RING;
+    ETH->DMASR = 0xFFFFFFFFu;
+    ETH->DMAIER = ETH_DMAIER_NISE | ETH_DMAIER_RIE | ETH_DMAIER_TIE;
+
+    /* 4. Receiver and transmitter on, DMA RX and TX started. */
+    ETH->MACCR = ETH_MACCR_RE | ETH_MACCR_TE;
+    ETH->DMAOMR = ETH_DMAOMR_SR | ETH_DMAOMR_ST;
+
+    /* 5. Enable the ETH IRQ (IRQ 61, exception 77). */
+    NVIC->ISER[1] = 1u << (ETH_IRQn - 32);
+
+    /* 6. Wait for the host-injected frame to arrive through the IRQ. */
+    while (!RX_DONE) { }
+
+    /* 7. Echo the six received bytes back out through the TX descriptor. */
+    {
+        volatile unsigned char *s = (volatile unsigned char *)RX_BUF;
+        volatile unsigned char *d = (volatile unsigned char *)TX_BUF;
+        unsigned i;
+        for (i = 0; i < 6; ++i) d[i] = s[i];
+    }
+    tx[1] = 6u;                          /* TBS1 */
+    tx[0] |= 0x80000000u;                /* OWN */
+    ETH->DMASR = ETH_DMASR_TPSS;         /* clear the TX process-stopped bit */
+    ETH->DMATPDR = 0u;                   /* poll demand */
+    while (!TX_DONE) { }
+
+    __asm__ volatile("bkpt #0");
+}
+"#;
+
+/// Compile `STM32_F107_ETH_FIRMWARE` against the F1 pack headers and run it
+/// on the F107 board: the firmware arms the DMA rings and waits, the injected
+/// RX frame wakes `ETH_IRQHandler`, and the echoed bytes come back through the
+/// TX path. Returns the two RX snapshot words, the two completion flags, and
+/// the transmitted host frame. `None` means the toolchain or pack was
+/// unavailable.
+fn run_eth_firmware() -> Option<(u32, u32, u32, u32, Vec<u8>)> {
+    let includes = [
+        "../packs/Keil.STM32F1xx_DFP/Device/Include",
+        "../packs/STM32F4xx_CMSIS/CMSIS/Core/Include",
+    ];
+    let mut include_paths = Vec::new();
+    for rel in includes {
+        let include = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel);
+        if !include.is_dir() {
+            eprintln!(
+                "skipping eth test: pack include dir {} not found",
+                include.display()
+            );
+            return None;
+        }
+        include_paths.push(
+            include
+                .to_str()
+                .expect("pack include path is not UTF-8")
+                .to_owned(),
+        );
+    }
+    let include_refs: Vec<&str> = include_paths.iter().map(String::as_str).collect();
+    let (code, symbols) = match build_firmware_with_includes(STM32_F107_ETH_FIRMWARE, &include_refs)
+    {
+        Ok(image) => image,
+        Err(why) => {
+            eprintln!("skipping eth test: {why}");
+            return None;
+        }
+    };
+    let entry = *symbols.get("reset").expect("no reset symbol");
+    let irq = *symbols
+        .get("ETH_IRQHandler")
+        .expect("no ETH_IRQHandler symbol");
+    assert!(!code.is_empty(), "compiled .text must not be empty");
+
+    let mut m = Machine::new(board::stm32f107());
+    m.load_image(&load_flat(USB_CODE_BASE, &code));
+    {
+        let mem = m.core.mem();
+        mem.write_word(FLASH, INIT_SP).unwrap();
+        mem.write_word(FLASH + 4, (USB_CODE_BASE + entry) | 1)
+            .unwrap();
+        // Vector 77 = ETH IRQ 61 at FLASH + 77 * 4. Loaded at `USB_CODE_BASE`
+        // (0x1000) so the vector-table write cannot clobber the code image.
+        mem.write_word(FLASH + 77 * 4, (USB_CODE_BASE + irq) | 1)
+            .unwrap();
+    }
+    m.reset().expect("reset from vector table");
+    // Host stimulus: a 6-byte frame on the channel (opcode 0x01, len 6).
+    for byte in [0x01u8, 6, 0, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46] {
+        for device in m.core.mem().devices_mut() {
+            device.drive_inputs(u32::from(byte));
+        }
+    }
+    let err = m.run(200_000);
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
+    let rx_done = m.core.mem().read_word(board::RAM).unwrap();
+    let tx_done = m.core.mem().read_word(board::RAM + 4).unwrap();
+    let rx_w0 = m.core.mem().read_word(board::RAM + 8).unwrap();
+    let rx_w1 = m.core.mem().read_word(board::RAM + 0xC).unwrap();
+    let mut tx = Vec::new();
+    for device in m.core.mem().devices_mut() {
+        tx.extend(device.drain_output());
+    }
+    Some((rx_w0, rx_w1, rx_done, tx_done, tx))
+}
+
+/// On the STM32F107 board, CMSIS firmware drives the Ethernet DMA rings: the
+/// injected RX frame lands in the buffer through the `ETH` interrupt, and the
+/// echoed bytes return over the TX path to the host channel.
+#[test]
+fn stm32f107_firmware_talks_ethernet() {
+    let Some((rx_w0, rx_w1, rx_done, tx_done, tx)) = run_eth_firmware() else {
+        return; // skipped
+    };
+    assert_eq!(rx_done, 1, "the RX interrupt fired");
+    assert_eq!(tx_done, 1, "the TX interrupt fired");
+    // The injected frame bytes 0x41..0x46 landed in the RX buffer.
+    assert_eq!(rx_w0, 0x4443_4241, "first received word");
+    assert_eq!(rx_w1, 0x0000_4645, "second received word");
+    // The echoed frame reached the host channel: EVT_TX, length 6, the bytes.
+    let expected: &[u8] = &[0x80, 6, 0, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46];
+    assert_eq!(tx, expected, "the echoed frame reached the host");
 }

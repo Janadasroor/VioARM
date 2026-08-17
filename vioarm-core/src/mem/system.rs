@@ -7,14 +7,15 @@
 //! memory they overlap, which matches how an `SoC` overlays peripherals on its
 //! bus.
 
+use crate::cpu::FpuCtx;
 use crate::device::nvic::Nvic;
 use crate::device::scb::Scb;
 use crate::device::stm32::dma::DmaUnit;
+use crate::device::stm32::eth::{EthMailbox, EthMemOp};
 use crate::device::stm32::flash::{FlashErase, FlashGate};
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
 use crate::mem::bus::{Bus, MpuAccess, PeripheralBus, Region};
-use crate::cpu::FpuCtx;
 use std::sync::{Arc, Mutex};
 
 /// A `Bus` over flat backing memory plus a set of MMIO devices and the NVIC.
@@ -41,6 +42,10 @@ pub struct SystemMemory<M: Bus> {
     /// controllers push `(src, dst, len)` units here because they have no view
     /// of the bus; this bus performs the actual copy.
     dma_mailbox: Option<Arc<Mutex<Vec<DmaUnit>>>>,
+    /// The shared Ethernet mailbox, drained after every device tick. The
+    /// controller pushes read/write requests here because it has no view of the
+    /// bus; this bus performs them, appending read results to the mailbox.
+    eth_mailbox: Option<Arc<Mutex<EthMailbox>>>,
     /// The shared watchdog reset latch. The IWDG/WWDG devices set it when their
     /// counter underflows; `reset_requested()` folds it into the SCB's latch so
     /// the `Machine` performs a full reset, and `reset_devices()` clears it.
@@ -55,6 +60,7 @@ impl<M: Bus + core::fmt::Debug> core::fmt::Debug for SystemMemory<M> {
             .field("scb", &self.scb)
             .field("flash", &self.flash)
             .field("dma_mailbox", &self.dma_mailbox)
+            .field("eth_mailbox", &self.eth_mailbox)
             .field("watchdog", &self.watchdog)
             .field(
                 "devices",
@@ -75,6 +81,7 @@ impl<M: Bus> SystemMemory<M> {
             scb: Scb::new(),
             flash: None,
             dma_mailbox: None,
+            eth_mailbox: None,
             watchdog: None,
         }
     }
@@ -109,6 +116,15 @@ impl<M: Bus> SystemMemory<M> {
     /// units undelivered (a controller with no bus).
     pub fn set_dma_mailbox(&mut self, mailbox: Arc<Mutex<Vec<DmaUnit>>>) {
         self.dma_mailbox = Some(mailbox);
+    }
+
+    /// Install the shared Ethernet mailbox. The attached Ethernet controller
+    /// must push through the same `Arc`; this bus performs its read/write
+    /// requests after each device tick and appends read results to the
+    /// mailbox. `None` (the default) leaves the Ethernet controller unable to
+    /// reach memory.
+    pub fn set_eth_mailbox(&mut self, mailbox: Arc<Mutex<EthMailbox>>) {
+        self.eth_mailbox = Some(mailbox);
     }
 
     /// Install the shared watchdog reset latch. The `IWDG`/`WWDG` devices must
@@ -177,6 +193,8 @@ impl<M: Bus> SystemMemory<M> {
         }
         // DMA units queued by the controllers above land on this bus now.
         self.drain_dma_units();
+        // So do the Ethernet controller's descriptor reads and frame writes.
+        self.drain_eth_ops();
         self.latch_device_asserts();
     }
 
@@ -194,6 +212,40 @@ impl<M: Bus> SystemMemory<M> {
                     continue;
                 };
                 let _ = self.write(dst.wrapping_add(u32::from(i)), byte);
+            }
+        }
+    }
+
+    /// Perform the Ethernet controller's queued memory requests. Reads go
+    /// through the full bus path and their bytes are appended to the mailbox's
+    /// results FIFO, in request order, for the controller to consume on a later
+    /// tick; writes are performed directly. A request whose address is reserved
+    /// is dropped.
+    fn drain_eth_ops(&mut self) {
+        let Some(mailbox) = self.eth_mailbox.clone() else {
+            return;
+        };
+        let ops = core::mem::take(&mut mailbox.lock().unwrap().ops);
+        for op in ops {
+            match op {
+                EthMemOp::Read { addr, len } => {
+                    let mut bytes = Vec::with_capacity(usize::from(len));
+                    for i in 0..len {
+                        let Some(byte) = self.read(addr.wrapping_add(u32::from(i))).ok() else {
+                            break;
+                        };
+                        bytes.push(byte);
+                    }
+                    mailbox.lock().unwrap().results.push_back(bytes);
+                }
+                EthMemOp::Write { addr, bytes } => {
+                    for (i, byte) in bytes.iter().enumerate() {
+                        let _ = self.write(
+                            addr.wrapping_add(u32::try_from(i).unwrap_or(u32::MAX)),
+                            *byte,
+                        );
+                    }
+                }
             }
         }
     }

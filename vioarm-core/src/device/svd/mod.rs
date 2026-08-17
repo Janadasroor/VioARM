@@ -1156,6 +1156,46 @@ mod tests {
     }
 
     #[test]
+    fn generated_eth_family_matches_silicon_layout() {
+        // The four Ethernet windows exist on both the F1 connectivity line and
+        // the F4. The F4 MAC window is trimmed to 0x61 (no MACRWUFFR), which is
+        // exactly the divergence the controller model must respect.
+        let f107 = [
+            ("ETHERNET_MAC", 0x4002_8000u32, 0x0400u32),
+            ("ETHERNET_MMC", 0x4002_8100, 0x0400),
+            ("ETHERNET_PTP", 0x4002_8700, 0x0400),
+            ("ETHERNET_DMA", 0x4002_9000, 0x0400),
+        ];
+        for (name, base, window) in f107 {
+            let def = super::stm32f107::peripheral(name)
+                .unwrap_or_else(|| panic!("generated tables contain {name}"));
+            assert_eq!(def.base, base, "F107 {name} base");
+            assert_eq!(def.window, window, "F107 {name} window");
+        }
+        let mac = super::stm32f107::peripheral("ETHERNET_MAC").unwrap();
+        let irqs: Vec<(u8, &str)> = mac.irqs.iter().map(|i| (i.number, i.name)).collect();
+        assert_eq!(irqs, [(61, "ETH"), (62, "ETH_WKUP")]);
+        assert!(mac.registers.iter().any(|r| r.name == "MACRWUFFR"));
+
+        let f407 = [
+            ("Ethernet_MAC", 0x4002_8000u32, 0x61u32),
+            ("Ethernet_MMC", 0x4002_8100, 0x0400),
+            ("Ethernet_PTP", 0x4002_8700, 0x0400),
+            ("Ethernet_DMA", 0x4002_9000, 0x0400),
+        ];
+        for (name, base, window) in f407 {
+            let def = super::stm32f407::peripheral(name)
+                .unwrap_or_else(|| panic!("generated tables contain {name}"));
+            assert_eq!(def.base, base, "F407 {name} base");
+            assert_eq!(def.window, window, "F407 {name} window");
+        }
+        let mac = super::stm32f407::peripheral("Ethernet_MAC").unwrap();
+        let irqs: Vec<(u8, &str)> = mac.irqs.iter().map(|i| (i.number, i.name)).collect();
+        assert_eq!(irqs, [(61, "ETH"), (62, "ETH_WKUP")]);
+        assert!(mac.registers.iter().all(|r| r.name != "MACRWUFFR"));
+    }
+
+    #[test]
     fn generated_tables_are_internally_consistent() {
         let tables = [
             super::stm32f103::PERIPHERALS,

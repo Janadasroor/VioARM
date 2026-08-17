@@ -1600,6 +1600,103 @@ fn can_rx0_dispatches_its_isr() {
     panic!("the CAN1_RX0 ISR did not return to the spin loop");
 }
 
+/// A host frame injected on the Ethernet channel (IRQ 61, exception 77) wakes
+/// the controller's ISR, which reads `DMASR`, stores it, clears the latched
+/// bits, and returns. The DMA engine copied the frame into the ring buffer
+/// first, so the test asserts both the ISR side effect and the landed bytes.
+/// The vector sits at `FLASH + 77 * 4 = FLASH + 0x134`; the IRQ is bit 29 of
+/// `ISER1`. F107 is a Cortex-M3, and the handler uses the 16-bit Thumb subset.
+#[test]
+fn eth_dispatches_its_isr() {
+    use vioarm_core::board;
+
+    const MAC_CR: u32 = 0x4002_8000;
+    const DMA_OMR: u32 = 0x4002_9018;
+    const DMA_IER: u32 = 0x4002_901c;
+    const DMA_SR: u32 = 0x4002_9014;
+    const DMA_RDLAR: u32 = 0x4002_900c;
+    const NVIC_ISER1: u32 = 0xE000_E104;
+    const RESULT: u32 = 0x2000_0000;
+    const RING: u32 = 0x2000_0100;
+    const BUF: u32 = 0x2000_0200;
+    const ISR: u32 = ENTRY + 0x20;
+
+    let mut m = Machine::armv7m(board::stm32f107());
+    m.load_image(&load_flat(ENTRY, &[0xFE, 0xE7])); // spin
+                                                    // ldr r0,[pc,#12]; ldr r1,[r0]   (DMASR)
+                                                    // ldr r2,[pc,#12]; str r1,[r2]   (RESULT)
+                                                    // ldr r2,[pc,#12]; ands r1,r2    (mask, write-one-to-clear)
+                                                    // str r1,[r0]; bx lr
+    m.load_image(&load_flat(
+        ISR,
+        &[
+            0x03, 0x48, 0x01, 0x68, // ldr r0,[pc,#12]; ldr r1,[r0]
+            0x03, 0x4a, 0x11, 0x60, // ldr r2,[pc,#12]; str r1,[r2]
+            0x03, 0x4a, 0x11, 0x40, // ldr r2,[pc,#12]; ands r1,r2
+            0x01, 0x60, 0x70, 0x47, // str r1,[r0]; bx lr
+            0x14, 0x90, 0x02, 0x40, // .word 0x40029014 (DMA_SR)
+            0x00, 0x00, 0x00, 0x20, // .word 0x20000000 (RESULT)
+            0x41, 0x00, 0x01, 0x00, // .word 0x00010041 (NIS|RS|TS)
+        ],
+    ));
+    {
+        let mem = m.core.mem();
+        mem.write_word(FLASH, 0x2000_8000).unwrap(); // SP
+        mem.write_word(FLASH + 4, ENTRY | 1).unwrap(); // reset vector
+                                                       // Vector 77 = ETH IRQ 61 at FLASH + 77 * 4.
+        mem.write_word(FLASH + 77 * 4, ISR | 1).unwrap();
+    }
+    m.reset().unwrap();
+    {
+        let mem = m.core.mem();
+        mem.write_word(NVIC_ISER1, 1 << 29).unwrap(); // enable ETH
+                                                      // One RX descriptor ring: OWN set, 1536-byte buffer, self-chained.
+        mem.write_word(RING, 0x8000_0000).unwrap();
+        mem.write_word(RING + 4, 0x4000 | 0x0600).unwrap(); // RCH | RBS1
+        mem.write_word(RING + 8, BUF).unwrap();
+        mem.write_word(RING + 0x0c, RING).unwrap();
+        mem.write_word(DMA_RDLAR, RING).unwrap();
+        mem.write_word(MAC_CR, 1 << 2).unwrap(); // RE
+        mem.write_word(DMA_OMR, 1 << 1).unwrap(); // SR
+        mem.write_word(DMA_IER, (1 << 16) | (1 << 6)).unwrap(); // NISE|RIE
+    }
+    // Drive a 6-byte frame onto the channel.
+    {
+        let mem = m.core.mem();
+        for byte in [0x01u8, 6, 0, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46] {
+            for dev in mem.devices_mut() {
+                dev.drive_inputs(u32::from(byte));
+            }
+        }
+    }
+    let mut entered = false;
+    for _ in 0..128 {
+        m.step().unwrap();
+        if m.core.regs.pc & !1 == ISR {
+            entered = true;
+            break;
+        }
+    }
+    assert!(entered, "the ETH ISR was dispatched");
+    for _ in 0..64 {
+        m.step().unwrap();
+        if m.core.regs.pc & !1 == ENTRY {
+            // the bits; the DMA engine landed the frame bytes in the buffer.
+            let dmasr = m.core.mem().read_word(RESULT).unwrap();
+            assert_eq!(
+                dmasr & 0x0001_0040,
+                0x0001_0040,
+                "NIS|RS latched into DMASR"
+            );
+            assert_eq!(m.core.mem().read_word(BUF).unwrap(), 0x4443_4241);
+            assert_eq!(m.core.mem().read_word(BUF + 4).unwrap(), 0x0000_4645);
+            assert_eq!(m.core.mem().read_word(DMA_SR).unwrap() & 0x0001_0040, 0);
+            return;
+        }
+    }
+    panic!("the ETH ISR did not return to the spin loop");
+}
+
 /// A SETUP packet driven onto the USB OTG FS bus (IRQ 67, exception 83)
 /// wakes the controller's RX ISR, which pops the status word and clears
 /// GINTSTS. The IRQ sits on ISER2 bit 3, beyond the low 32 lines.
@@ -1637,7 +1734,7 @@ fn otg_fs_dispatches_its_isr() {
         let mem = m.core.mem();
         mem.write_word(FLASH, 0x2000_8000).unwrap(); // SP
         mem.write_word(FLASH + 4, ENTRY | 1).unwrap(); // reset vector
-        // Vector 83 = OTG_FS IRQ 67 at FLASH + 83 * 4.
+                                                       // Vector 83 = OTG_FS IRQ 67 at FLASH + 83 * 4.
         mem.write_word(FLASH + 83 * 4, ISR | 1).unwrap();
     }
     m.reset().unwrap();
