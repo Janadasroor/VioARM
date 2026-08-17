@@ -47,6 +47,11 @@ pub struct QemuMachine {
     pub machine: String,
     pub cpu: String,
     pub fpu: bool,
+    /// Where the loader places the raw image. Boards that boot from address 0
+    /// (micro:bit, mps2-an385/386) use 0; the ARMv8-M reference boards
+    /// (mps2-an505 & co.) boot from flash at `0x1000_0000`, which the reset
+    /// vector field in the image already points back into.
+    pub load_addr: u32,
 }
 
 impl QemuMachine {
@@ -72,13 +77,31 @@ impl QemuMachine {
         Self::for_cpu("cortex-m0", "microbit", false)
     }
 
+    /// An ARMv8-M mainline reference (`Cortex-M33` on the mps2-an505), the
+    /// conformance oracle for the ARMv8-M baseline subset: every instruction
+    /// the baseline (Cortex-M23) implements behaves identically on the M33.
+    /// The board boots from flash at `0x1000_0000`, so the loader goes there
+    /// too. `cortex-m33` carries an FPU, so the per-instruction dump always
+    /// includes the VFP block; the baseline programs never touch it, leaving
+    /// both sides' (zeroed) VFP state in agreement.
+    #[must_use]
+    pub fn detect_m33() -> Option<Self> {
+        Self::for_cpu_at("cortex-m33", "mps2-an505", false, 0x1000_0000)
+    }
+
     #[must_use]
     fn for_cpu(cpu: &str, machine: &str, fpu: bool) -> Option<Self> {
+        Self::for_cpu_at(cpu, machine, fpu, 0)
+    }
+
+    #[must_use]
+    fn for_cpu_at(cpu: &str, machine: &str, fpu: bool, load_addr: u32) -> Option<Self> {
         find_qemu().map(|exe| Self {
             exe,
             machine: machine.to_string(),
             cpu: cpu.to_string(),
             fpu,
+            load_addr,
         })
     }
 
@@ -220,8 +243,9 @@ pub fn run_until_pc(
     let _ = std::fs::remove_file(&log_path);
 
     let device = format!(
-        "loader,file={},addr=0,force-raw=on",
-        bin_path.to_string_lossy()
+        "loader,file={},addr={:#x},force-raw=on",
+        bin_path.to_string_lossy(),
+        mt.load_addr
     );
     let mut child = Command::new(&mt.exe)
         .arg("-machine")

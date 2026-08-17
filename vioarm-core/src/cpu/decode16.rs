@@ -2,10 +2,11 @@
 //!
 //! Every encoding in this file is verified against
 //! `llvm-mc -triple=thumbv6m-none-eabi` in the test suite. ARMv6-M has no IT
-//! block, no `cbz`/`cbnz` (ARMv8-M+), and no immediate `ldrsb`/`ldrsh` (those
-//! are Thumb-2). The 32-bit ARMv6-M instructions (`bl`, `mrs`/`msr`, and the
-//! barriers) live in `super::decode32`. The ARMv7-M `IT` instruction is not
-//! part of `decode16` either: `decode16_v7m` layers it on top.
+//! block (that is ARMv7-M+ and, for the baseline, ARMv8-M+), and no immediate
+//! `ldrsb`/`ldrsh` (those are Thumb-2). `cbz`/`cbnz` *are* ARMv6-M. The 32-bit
+//! ARMv6-M instructions (`bl`, `mrs`/`msr`, and the barriers) live in
+//! `super::decode32`. The ARMv7-M `IT` instruction is not part of `decode16`
+//! either: `decode16_v7m` layers it on top.
 
 use super::decode::DecodeError;
 use crate::error::HaltCause;

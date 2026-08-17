@@ -17,7 +17,8 @@ use decode16::{
     ShiftImm,
 };
 use decode32::{
-    decode32, decode32_v7m, is_thumb2, is_thumb2_v7m, thumb_expand_imm, BitfieldOp, DpOp, DspMulOp,
+    decode32, decode32_v7m, decode32_v8m, is_thumb2, is_thumb2_v7m, thumb_expand_imm, BitfieldOp,
+    DpOp, DspMulOp,
     DualMulOp, ExSize, ExtendAddOp, Inst32, MemOp, MulOp, ParOp, ParSat, QaddOp, SatOp, ShiftType,
     SysReg, UnaryOp, Vfp2Op, Vfp3Op, VrintOp,
 };
@@ -27,12 +28,20 @@ use registers::{Registers, Xpsr, APSR_FLAGS, APSR_GE, APSR_Q, APSR_QFLAGS, XPSR_
 ///
 /// ARMv6-M (Cortex-M0/M0+) is a 16-bit ISA plus `bl`/`mrs`/`msr`/barriers;
 /// ARMv7-M (Cortex-M3/M4) adds the full Thumb-2 set, IT blocks, and a
-/// programmable exception-priority model. The decoder and executor select
-/// behavior on this field so a single core type serves both.
+/// programmable exception-priority model. ARMv8-M baseline (Cortex-M23) is a
+/// strict superset of ARMv6-M and a strict subset of ARMv7-M (and of the
+/// ARMv8-M mainline, whose Cortex-M33 is the conformance oracle): it adds
+/// IT blocks, the `b.w` T4 branch, `sdiv`/`udiv`, `movw`/`movt`, the
+/// exclusive `ldrex`/`strex` family and `clrex`, unprivileged state
+/// (`CONTROL.nPRIV`), and the TrustZone security extension — but no BASEPRI,
+/// FAULTMASK, or UsageFault, and none of the ARMv7-M Thumb-2 data-processing,
+/// load/store, bitfield, or DSP encodings. The decoder and executor select
+/// behavior on this field so a single core type serves all.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Isa {
     Armv6M,
     Armv7M,
+    Armv8MBaseline,
 }
 
 /// `LR` value loaded on exception entry, causing `bx lr`/`pop {pc}` to return
@@ -368,6 +377,11 @@ pub struct Core<B: PeripheralBus> {
     /// device holds the same `Rc` so firmware writes through the bus and the
     /// core's exception/FP logic agree on one value.
     pub fpu_ctx: std::sync::Arc<std::sync::Mutex<FpuCtx>>,
+    /// Base address of the reset vector table. Boots on 0x0000_0000-located
+    /// flash by default; machines that place flash elsewhere (ARMv8-M boards
+    /// at `0x1000_0000`) set this before resetting so the vector table is read
+    /// from the right region.
+    vector_base: u32,
     mem: B,
 }
 
@@ -381,6 +395,11 @@ impl<B: PeripheralBus> Core<B> {
     /// Create an uninitialized ARMv7-M core over `mem`.
     pub fn armv7m(mem: B) -> Self {
         Self::new_with_isa(mem, Isa::Armv7M)
+    }
+
+    /// Create an uninitialized ARMv8-M baseline core over `mem`.
+    pub fn armv8m(mem: B) -> Self {
+        Self::new_with_isa(mem, Isa::Armv8MBaseline)
     }
 
     /// An ARMv7-M core whose FP context-control state is shared with the `SCB`
@@ -412,6 +431,7 @@ impl<B: PeripheralBus> Core<B> {
             just_returned: false,
             cycles: 0,
             fpu_ctx: std::sync::Arc::new(std::sync::Mutex::new(FpuCtx::new())),
+            vector_base: 0,
             mem,
         }
     }
@@ -419,6 +439,12 @@ impl<B: PeripheralBus> Core<B> {
     /// Borrow the bus.
     pub fn mem(&mut self) -> &mut B {
         &mut self.mem
+    }
+
+    /// Set the base address of the reset vector table (see the `vector_base`
+    /// field). Defaults to `0x0000_0000`.
+    pub fn set_vector_base(&mut self, base: u32) {
+        self.vector_base = base;
     }
 
     /// Fetch and execute a single instruction. On success the machine has
@@ -435,6 +461,7 @@ impl<B: PeripheralBus> Core<B> {
         let next = match self.isa {
             Isa::Armv6M => self.step_v6m(pc)?,
             Isa::Armv7M => self.step_v7m(pc)?,
+            Isa::Armv8MBaseline => self.step_v8m(pc)?,
         };
         match next {
             Next::Advance(a) => self.regs.pc = a,
@@ -488,6 +515,39 @@ impl<B: PeripheralBus> Core<B> {
             .map_err(|_| HaltCause::FetchAbort)?;
         if is_thumb2_v7m(h0) {
             match decode32_v7m(h0, h1) {
+                Ok(inst) => self.exec_it_step(pc, 4, |s| s.exec32(pc, inst)),
+                Err(_) => self.hardfault_on_undefined(pc, 4),
+            }
+        } else {
+            match decode16_v7m(h0) {
+                Ok(inst) => self.exec_it_step(pc, 2, |s| s.exec(pc, inst)),
+                Err(_) => self.hardfault_on_undefined(pc, 2),
+            }
+        }
+    }
+
+    /// Fetch and execute a single ARMv8-M baseline instruction.
+    ///
+    /// ARMv8-M baseline mixes 16-bit and 32-bit instructions like ARMv7-M and
+    /// supports IT blocks, so the fetch and 16-bit path mirror `step_v7m`.
+    /// The 32-bit path is the ARMv7-M Thumb-2 decoder filtered down to the
+    /// baseline subset (`sdiv`/`udiv`, `movw`/`movt`, `b.w`, the exclusive
+    /// family, `clrex`, and the shared `bl`/`mrs`/`msr`/barriers); every
+    /// other Thumb-2 encoding faults as undefined, matching Cortex-M23.
+    fn step_v8m(&mut self, pc: u32) -> Result<Next, HaltCause> {
+        if pc & 1 != 0 {
+            return Err(HaltCause::FetchAbort);
+        }
+        if !self.mpu_allows(pc, MpuAccess::Fetch) {
+            return self.mpu_fault(pc, pc, true);
+        }
+        let h0 = self.mem.read_half(pc).map_err(|_| HaltCause::FetchAbort)?;
+        let h1 = self
+            .mem
+            .read_half(pc.wrapping_add(2))
+            .map_err(|_| HaltCause::FetchAbort)?;
+        if is_thumb2_v7m(h0) {
+            match decode32_v8m(h0, h1) {
                 Ok(inst) => self.exec_it_step(pc, 4, |s| s.exec32(pc, inst)),
                 Err(_) => self.hardfault_on_undefined(pc, 4),
             }
@@ -554,12 +614,12 @@ impl<B: PeripheralBus> Core<B> {
         Err(HaltCause::CycleBudgetExhausted)
     }
 
-    /// Bootstrap the core from the reset vector table: `sp = [0x0000_0000]`,
-    /// `pc = [0x0000_0004] & ~1`. Returns `NonThumbTarget` if the reset
+    /// Bootstrap the core from the reset vector table: `sp = [vector_base]`,
+    /// `pc = [vector_base + 4] & ~1`. Returns `NonThumbTarget` if the reset
     /// vector is not a Thumb address.
     pub fn reset_from_vector_table(&mut self) -> Result<(), HaltCause> {
-        let sp = self.read_word_halt(0)?;
-        let pc = self.read_word_halt(4)?;
+        let sp = self.read_word_halt(self.vector_base)?;
+        let pc = self.read_word_halt(self.vector_base.wrapping_add(4))?;
         if pc & 1 == 0 {
             return Err(HaltCause::NonThumbTarget);
         }
@@ -624,10 +684,13 @@ impl<B: PeripheralBus> Core<B> {
             }
             SysReg::Ipsr => u32::from(self.ipsr),
             SysReg::Epsr => XPSR_T,
-            // ARMv6-M (Cortex-M0/M0+) has no BASEPRI or FAULTMASK register:
-            // reads of their sysreg encodings are UNPREDICTABLE on silicon,
-            // and the QEMU M0 reference RAZes them.
-            SysReg::Basepri | SysReg::BasepriMax | SysReg::Faultmask if self.isa == Isa::Armv6M => {
+            // ARMv6-M (Cortex-M0/M0+) and ARMv8-M baseline (Cortex-M23) have
+            // no BASEPRI or FAULTMASK register: reads of their sysreg
+            // encodings are UNPREDICTABLE on silicon, and the QEMU M0/M33
+            // references RAZ them.
+            SysReg::Basepri | SysReg::BasepriMax | SysReg::Faultmask
+                if self.isa != Isa::Armv7M =>
+            {
                 0
             }
             // Unprivileged reads of these special-purpose registers are RAZ.
@@ -701,9 +764,11 @@ impl<B: PeripheralBus> Core<B> {
                 }
             }
             SysReg::Primask => self.primask = v & 1 != 0,
-            // ARMv6-M has no BASEPRI/FAULTMASK: writes are UNPREDICTABLE on
-            // silicon and ignored by the QEMU M0 reference.
-            SysReg::Basepri | SysReg::BasepriMax | SysReg::Faultmask if self.isa == Isa::Armv6M => {
+            // ARMv6-M and ARMv8-M baseline have no BASEPRI/FAULTMASK: writes
+            // are UNPREDICTABLE on silicon and ignored by the QEMU references.
+            SysReg::Basepri | SysReg::BasepriMax | SysReg::Faultmask
+                if self.isa != Isa::Armv7M =>
+            {
             }
             SysReg::Basepri => self.basepri = v as u8,
             SysReg::BasepriMax => {
@@ -744,9 +809,11 @@ impl<B: PeripheralBus> Core<B> {
                 // mode, or Thread mode while nPRIV is still clear. Once the
                 // thread drops to unprivileged (nPRIV=1), further writes are
                 // ignored, so an unprivileged thread cannot re-privilege
-                // itself.
+                // itself. ARMv8-M baseline has no FPU, so CONTROL.FPCA is
+                // RAZ/WI there (bit 2 masked off); ARMv7-M keeps it.
                 if self.ipsr != 0 || self.control & 1 == 0 {
-                    let new = v & 0x7;
+                    let mask = if self.isa == Isa::Armv7M { 0x7 } else { 0x3 };
+                    let new = v & mask;
                     let want_process = new & 0x2 != 0;
                     let was_process = self.sp_is_process();
                     if want_process != was_process {
@@ -3786,6 +3853,13 @@ mod tests {
         ))
     }
 
+    fn armv8m_core() -> Core<crate::mem::flat::FlatMemory> {
+        Core::armv8m(crate::mem::flat::FlatMemory::with_layout(
+            &[0x2000_0000],
+            &[0x1000],
+        ))
+    }
+
     /// A Cortex-M4-style core with a shared FP context-control state, plus
     /// both a low vector region and SRAM.
     fn armv7m_fpu_core() -> (
@@ -3990,6 +4064,92 @@ mod tests {
         );
         c.step().unwrap();
         assert_eq!(c.ipsr, 3, "ARMv6-M must fold the fault to HardFault");
+    }
+
+    #[test]
+    fn v8m_baseline_undefined_faults_fold_to_hardfault() {
+        // ARMv8-M baseline has no UsageFault, so an undecodable 32-bit
+        // encoding folds straight to HardFault even though the same bytes
+        // are a valid ARMv7-M instruction.
+        let mut c = Core::armv8m(crate::mem::flat::FlatMemory::with_layout(
+            &[0x0000_0000, 0x2000_0000],
+            &[0x1000, 0x1000],
+        ));
+        c.regs.pc = 0x2000_0000;
+        c.regs.sp = 0x2000_0040;
+        load_inst(&mut c, 0x2000_0000, &[0x09, 0xea, 0x0a, 0x08]); // and.w r8, r9, r10
+        load_inst(
+            &mut c,
+            0x0000_0000,
+            &[
+                0x40, 0x00, 0x00, 0x20, 0x61, 0x00, 0x00, 0x20, 0, 0, 0, 0, 0x81, 0x00, 0x00, 0x20,
+            ],
+        );
+        c.step().unwrap();
+        assert_eq!(c.ipsr, 3, "baseline must fold the undefined encoding to HardFault");
+    }
+
+    #[test]
+    fn v8m_baseline_v7m_only_executes_on_v7m() {
+        // The same wide data-processing instruction is fine on ARMv7-M.
+        let mut c = armv7m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(8, 0x0F);
+        c.regs.write(9, 0xFF);
+        c.regs.write(10, 0x0F);
+        load_inst(&mut c, 0x2000_0000, &[0x09, 0xea, 0x0a, 0x08]); // and.w r8, r9, r10
+        c.step().unwrap();
+        assert_eq!(c.regs.r[8], 0x0F);
+        assert_eq!(c.ipsr, 0);
+    }
+
+    #[test]
+    fn v8m_baseline_sysregs() {
+        // BASEPRI and FAULTMASK do not exist on the baseline: writes are
+        // ignored, reads RAZ.
+        let mut c = armv8m_core();
+        c.sysreg_write(SysReg::Basepri, 0x80).unwrap();
+        c.sysreg_write(SysReg::BasepriMax, 0x40).unwrap();
+        c.sysreg_write(SysReg::Faultmask, 1).unwrap();
+        assert_eq!(c.basepri, 0);
+        assert!(!c.faultmask);
+        assert_eq!(c.sysreg_read(SysReg::Basepri).unwrap(), 0);
+        assert_eq!(c.sysreg_read(SysReg::BasepriMax).unwrap(), 0);
+        assert_eq!(c.sysreg_read(SysReg::Faultmask).unwrap(), 0);
+        // Unlike ARMv6-M the baseline has an unprivileged state: CONTROL.nPRIV
+        // and SPSEL are both writable, and FPCA (bit 2, no FPU) is RAZ/WI.
+        c.sysreg_write(SysReg::Control, 0x7).unwrap();
+        assert_eq!(c.sysreg_read(SysReg::Control).unwrap(), 0x3);
+        // With nPRIV set the special-purpose register reads are RAZ.
+        assert_eq!(c.sysreg_read(SysReg::Primask).unwrap(), 0);
+        assert_eq!(c.sysreg_read(SysReg::Msp).unwrap(), 0);
+    }
+
+    #[test]
+    fn v8m_baseline_it_block() {
+        // IT blocks are part of the baseline (unlike ARMv6-M). An IT EQ move
+        // executes when Z is set and is suppressed when it is clear; the NOP
+        // that follows the single-instruction block always runs.
+        // it eq (bf08), moveq r0, #1 (2001), nop (bf00).
+        let mut c = armv8m_core();
+        c.regs.pc = 0x2000_0000;
+        c.xpsr.set_nzcv(false, true, false, false); // Z set
+        load_inst(&mut c, 0x2000_0000, &[0x08, 0xbf, 0x01, 0x20, 0x00, 0xbf]);
+        for _ in 0..3 {
+            c.step().unwrap();
+        }
+        assert_eq!(c.regs.r[0], 1, "gated move must execute when Z is set");
+        assert_eq!(c.ipsr, 0);
+
+        let mut c = armv8m_core();
+        c.regs.pc = 0x2000_0000;
+        c.xpsr.set_nzcv(false, false, false, false); // Z clear
+        load_inst(&mut c, 0x2000_0000, &[0x08, 0xbf, 0x01, 0x20, 0x00, 0xbf]);
+        for _ in 0..3 {
+            c.step().unwrap();
+        }
+        assert_eq!(c.regs.r[0], 0, "gated move must be suppressed when Z is clear");
+        assert_eq!(c.ipsr, 0);
     }
 
     #[test]

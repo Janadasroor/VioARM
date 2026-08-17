@@ -24,6 +24,7 @@ use vioarm_qemu::asm::{Asm, Image, SP};
 use vioarm_qemu::qemu::{run_until_pc as qemu_run, QemuMachine};
 use vioarm_qemu::vioarm::run_until_pc as vio_run;
 use vioarm_qemu::vioarm::run_until_pc_v6m as vio_run_v6m;
+use vioarm_qemu::vioarm::run_until_pc_v8m as vio_run_v8m;
 use vioarm_qemu::{compare_traces, CpuState};
 
 /// Run `bin` in QEMU up to `stop`, retrying up to three times when the spawn
@@ -107,6 +108,17 @@ fn qemu_m0() -> Option<QemuMachine> {
     mt
 }
 
+/// An ARMv8-M mainline (Cortex-M33, mps2-an505) QEMU reference, the oracle for
+/// the ARMv8-M baseline subset. Returns `None` when `qemu-system-arm` is
+/// missing.
+fn qemu_m33() -> Option<QemuMachine> {
+    let mt = QemuMachine::detect_m33();
+    if mt.is_none() {
+        eprintln!("skipping ARMv8-M baseline conformance tests: `qemu-system-arm` not found on PATH");
+    }
+    mt
+}
+
 /// The ARMv6-M variant of [`conformance`]: runs `a` through the v6m VioARM
 /// machine (no FPU) against the Cortex-M0 reference.
 fn conformance_m0(name: &str, a: &mut Asm, halt: &str, mt: &QemuMachine) {
@@ -115,6 +127,30 @@ fn conformance_m0(name: &str, a: &mut Asm, halt: &str, mt: &QemuMachine) {
         .addr(halt)
         .unwrap_or_else(|| panic!("{name}: no label {halt:?}"));
     let (vio, reached) = vio_run_v6m(&img.bytes, stop);
+    assert!(
+        reached,
+        "{name}: vioarm never reached halt @ {stop:#x} (last {})",
+        snapshot_like(&vio)
+    );
+    let qemu = qemu_run_retry(mt, &img.bytes, stop);
+    assert!(
+        !qemu.is_empty() && qemu.last().expect("empty").r[15] & !1 == stop,
+        "{name}: qemu never reached halt @ {stop:#x} (got {} states)",
+        qemu.len()
+    );
+    compare_traces(name, &vio, &qemu).expect("traces agree");
+}
+
+/// The ARMv8-M baseline variant of [`conformance`]: runs `a` through the
+/// ARMv8-M baseline VioARM machine (Cortex-M23 semantics, no FPU) against the
+/// Cortex-M33 mainline reference. The image is laid out for flash at
+/// `0x1000_0000` so both simulators execute at identical addresses.
+fn conformance_v8m(name: &str, a: &mut Asm, halt: &str, mt: &QemuMachine) {
+    let img: Image = a.clone().finish_at(SP, 0x1000_0000).expect("assemble");
+    let stop = img
+        .addr(halt)
+        .unwrap_or_else(|| panic!("{name}: no label {halt:?}"));
+    let (vio, reached) = vio_run_v8m(&img.bytes, stop);
     assert!(
         reached,
         "{name}: vioarm never reached halt @ {stop:#x} (last {})",
@@ -2851,4 +2887,207 @@ fn m0_hardfault_undef() {
 
     halt16(&mut a);
     conformance_m0("m0_hardfault_undef", &mut a, "halt", &mt);
+}
+
+// ---------------------------------------------------------------------------
+// ARMv8-M baseline conformance against the Cortex-M33 mainline oracle: every
+// instruction the baseline (Cortex-M23) implements behaves identically on the
+// M33, so a baseline-valid binary's trace must agree exactly. The programs use
+// only baseline encodings — the ARMv6-M 16-bit set plus the baseline Thumb-2
+// additions (B.W, MOVW/MOVT, SDIV/UDIV, LDREX/STREX family, CLREX, MRS/MSR,
+// IT blocks, CBZ/CBNZ). BASEPRI/FAULTMASK are deliberately excluded: the M33
+// *has* them (they are mainline), so their baseline RAZ/WI behavior cannot be
+// diffed and is pinned by unit tests in `vioarm-core` instead.
+//
+// Like the M3 reference, QEMU's M33 model cannot execute a *taken*
+// conditional branch when it is the single conditional instruction of an IT
+// block (verified empirically: the M33 lockups exactly like the M3), so IT
+// conformance is restricted to suppressed branches, mirroring the shared M3
+// suite.
+// ---------------------------------------------------------------------------
+
+/// The system registers that exist on both the baseline and mainline behave
+/// identically on the M33: MSP/PSP/PRIMASK round-trips, and — unlike ARMv6-M —
+/// CONTROL.nPRIV and SPSEL are both writable.
+#[test]
+fn m33_baseline_sysreg() {
+    let Some(mt) = qemu_m33() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+
+    // MSP/PSP bank probe (privileged).
+    a.mov_imm32(5, 0x4000_0000);
+    a.msr(0x08, 5); // MSR MSP, r5
+    a.mrs(2, 0x08); // r2 = MSP
+    a.mrs(6, 0x09); // r6 = PSP
+    a.mov_imm32(5, 0x5000_0000);
+    a.msr(0x09, 5); // MSR PSP, r5
+    a.mrs(7, 0x09); // r7 = PSP
+    a.mrs(3, 0x08); // r3 = MSP
+
+    // PRIMASK 0 -> 0, then 1 -> 1.
+    a.movs_imm8(0, 0);
+    a.msr(0x10, 0);
+    a.mrs(1, 0x10);
+    a.movs_imm8(0, 1);
+    a.msr(0x10, 0);
+    a.mrs(1, 0x10);
+
+    // CONTROL: nPRIV then SPSEL, both writable on the baseline.
+    a.movs_imm8(0, 1);
+    a.msr(0x14, 0); // CONTROL.nPRIV = 1
+    a.mrs(1, 0x14); // r1 = 1
+    a.movs_imm8(0, 2);
+    a.msr(0x14, 0); // CONTROL.SPSEL = 1 (thread switches to PSP)
+    a.mrs(1, 0x14); // r1 = 3
+    a.mrs(4, 0x09); // r4 = PSP (0x5000_0000)
+    a.movs_imm8(0, 0);
+    a.msr(0x14, 0); // back to privileged, MSP
+    a.mrs(1, 0x14); // r1 = 0
+
+    a.label("halt");
+    a.b("halt");
+    conformance_v8m("m33_baseline_sysreg", &mut a, "halt", &mt);
+}
+
+/// The baseline Thumb-2 additions: MOVW/MOVT, SDIV/UDIV, the exclusive family,
+/// CLREX, CBZ/CBNZ, IT blocks, and the wide B.W/BL branches.
+#[test]
+fn m33_baseline_additions() {
+    let Some(mt) = qemu_m33() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+
+    // MOVW/MOVT compose any 32-bit constant.
+    a.movw(0, 0x4567);
+    a.movt(0, 0x8123);
+    a.mov_imm32(1, 0x1020_3040);
+
+    // SDIV/UDIV: positive, negative, MIN/-1 (saturates to MIN), zero.
+    a.mov_imm32(2, 0x8000_0000);
+    a.mov_imm32(3, 0xFFFF_FFFF); // -1
+    a.mov_imm32(4, 0x0000_0007);
+    a.sdiv(5, 1, 4); // 0x10203040 / 7
+    a.sdiv(6, 2, 3); // MIN / -1 -> MIN
+    a.udiv(7, 2, 4); // 0x80000000 / 7
+    a.udiv(8, 3, 4); // 0xFFFFFFFF / 7
+    a.udiv(8, 1, 4);
+
+    // Exclusive word/byte/halfword on SRAM, plus CLREX clearing the monitor.
+    // The 16-bit STR/LDR* helpers only address R0-R7, so the base stays in a
+    // low register even though the 32-bit exclusive instructions accept any.
+    a.mov_imm32(3, 0x2000_1000);
+    a.mov_imm32(4, 8);
+    a.mov_imm32(0, 0x1122_3344);
+    a.mov_imm32(1, 0xAABB_CCDD);
+    a.str_imm(0, 3, 0); // seed
+    a.ldrex(1, 3, 0);
+    a.strex(5, 1, 3, 0); // success
+    a.ldr_imm(1, 3, 0); // verify
+    a.adds_reg(4, 3, 4); // r4 = base + 8
+    a.ldrexb(1, 4);
+    a.strexb(5, 1, 4); // byte success
+    a.ldrb_imm(1, 4, 0);
+    a.ldrexh(1, 4);
+    a.strexh(5, 1, 4); // halfword success
+    a.ldrh_imm(1, 4, 0);
+    a.ldrex(1, 3, 0); // tag [r3]
+    a.clrex(); // clear the monitor
+    a.strex(5, 1, 3, 0); // fails, no store
+    a.ldr_imm(2, 3, 0); // still 0xAABBCCDD
+    a.dmb();
+    a.ldrex(1, 3, 0); // re-tag
+    a.strex(5, 1, 3, 0); // succeeds
+    a.dsb();
+
+    // CBZ/CBNZ (16-bit, forward-only, within +2..126 bytes).
+    a.movs_imm8(2, 0);
+    a.cbz(2, "cbz_local"); // taken
+    a.movs_imm8(4, 0xEE); // skipped
+    a.nop(); // padding so the target lands at offset +2
+    a.label("cbz_local");
+    a.movs_imm8(2, 1);
+    a.cbnz(2, "cbnz_local"); // taken
+    a.movs_imm8(4, 0xEE); // skipped
+    a.nop(); // padding so the target lands at offset +2
+    a.label("cbnz_local");
+
+    // IT blocks: executed, suppressed, and a suppressed conditional branch
+    // inside a single-instruction IT (the taken-branch-inside-IT case is
+    // intentionally absent, mirroring the shared M3 suite's limitation).
+    a.movs_imm8(0, 1);
+    a.cmp_imm8(0, 1); // Z = 1
+    a.it(0, 0b1000); // it eq
+    a.movs_imm8(3, 0x33); // EQ true -> executes
+    a.it(1, 0b1000); // it ne
+    a.movs_imm8(4, 0x44); // NE false -> suppressed
+    a.it(1, 0b1000); // it ne
+    a.bc(1, "it_nt"); // bne suppressed (Z=1), falls through
+    a.movs_imm8(6, 0x66);
+    a.label("it_nt");
+    a.movs_imm8(7, 0x77);
+
+    // BL + BX LR subroutine; wide B.W into the landing loop.
+    a.bl("sub");
+    a.movs_imm8(8, 0x88); // after return
+    a.b("halt");
+    a.label("sub");
+    a.movs_imm8(9, 0x99);
+    a.bx(14);
+    a.label("halt");
+    a.b("halt");
+    conformance_v8m("m33_baseline_additions", &mut a, "halt", &mt);
+}
+
+/// The full ARMv6-M 16-bit subset is baseline-valid, so the Thumb-1 ALU suite
+/// must diff identically against the M33.
+#[test]
+fn m33_baseline_alu_thumb1() {
+    let Some(mt) = qemu_m33() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+
+    a.movs_imm8(0, 0x45);
+    a.lsls_imm(0, 0, 8); // r0 = 0x4500
+    a.movs_imm8(1, 0xFF);
+    a.movs_imm8(2, 0x80);
+    a.movs_imm8(3, 0x03);
+    a.adds_imm8(4, 0x40);
+    a.adds_imm8(4, 0x40);
+    a.adds_reg(4, 4, 4);
+    a.adcs(4, 3);
+    a.cmp_imm8(0, 0xFF);
+    a.subs_imm8(2, 1);
+    a.subs_imm3(2, 2, 1);
+    a.sbcs(2, 3);
+    a.adds_imm3(5, 2, 3);
+    a.lsls_imm(5, 5, 7);
+    a.lsrs_imm(5, 5, 20);
+    a.asrs_imm(5, 5, 2);
+    a.rors_reg(5, 5);
+    a.ands(0, 1);
+    a.eors(0, 1);
+    a.orrs(1, 2);
+    a.bics(3, 3);
+    a.mvns(0, 2);
+    a.tst(0, 1);
+    a.cmn(0, 1);
+    a.cmp_reg(0, 1);
+    a.negs(0, 3);
+    a.muls(0, 3);
+    a.lsls_reg(2, 1);
+    a.lsrs_reg(2, 1);
+    a.asrs_reg(2, 4);
+    a.mov_reg(8, 0);
+    a.add_high(8, 0);
+    a.add_high(8, 8);
+    a.cmp_high(8, 0);
+    a.mov_reg(10, 0);
+    a.mov_reg(11, 1);
+    a.add_high(10, 11);
+    a.nop();
+
+    a.label("halt");
+    a.b("halt");
+    conformance_v8m("m33_baseline_alu_thumb1", &mut a, "halt", &mt);
 }

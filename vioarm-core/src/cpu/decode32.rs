@@ -921,6 +921,38 @@ pub fn decode32_v7m(hi: u16, lo: u16) -> Result<Inst32, DecodeError> {
         .unwrap_or_else(|| Err(err_for(hi)))
 }
 
+/// Decode the two halfwords of a 32-bit ARMv8-M baseline instruction.
+///
+/// ARMv8-M baseline (Cortex-M23) is a subset of ARMv7-M: it adds only
+/// `sdiv`/`udiv`, `movw`/`movt`, `b.w` (T4), the `ldrex`/`strex` family with
+/// `clrex`, plus the ARMv6-M `bl`/`mrs`/`msr`/barriers. Every other ARMv7-M
+/// Thumb-2 encoding — wide data processing, `ldm`/`stm`, `ldrd`/`strd`,
+/// table branches, bitfield/saturate/DSP, `b<c>.w`, `blx` (immediate), and
+/// the VFP set — is undefined on the baseline. The v7-M decoder therefore
+/// runs first and its result is filtered to the baseline subset.
+///
+/// # Errors
+///
+/// Returns [`DecodeError`] when the halfwords do not form a known ARMv8-M
+/// baseline 32-bit instruction.
+pub fn decode32_v8m(hi: u16, lo: u16) -> Result<Inst32, DecodeError> {
+    match decode32_v7m(hi, lo) {
+        Ok(
+            inst @ (Inst32::Bl { .. }
+            | Inst32::BranchWide { .. }
+            | Inst32::Mrs { .. }
+            | Inst32::Msr { .. }
+            | Inst32::Barrier { .. }
+            | Inst32::Ldrex { .. }
+            | Inst32::Strex { .. }
+            | Inst32::Clrex
+            | Inst32::MovWide { .. }
+            | Inst32::Div { .. }),
+        ) => Ok(inst),
+        Ok(_) | Err(_) => Err(err_for(hi)),
+    }
+}
+
 /// Build the typed undefined-instruction error for a first halfword.
 const fn err_for(hi: u16) -> DecodeError {
     DecodeError {
@@ -2500,6 +2532,14 @@ mod tests {
         decode32_v7m(hi, lo)
     }
 
+    /// Decode a byte quadruple (little-endian halfword pair) as an ARMv8-M
+    /// baseline 32-bit instruction.
+    fn v8m_bytes(bytes: [u8; 4]) -> Result<Inst32, DecodeError> {
+        let hi = u16::from_le_bytes([bytes[0], bytes[1]]);
+        let lo = u16::from_le_bytes([bytes[2], bytes[3]]);
+        decode32_v8m(hi, lo)
+    }
+
     fn reg(
         op: DpOp,
         rd: u8,
@@ -2840,6 +2880,83 @@ mod tests {
                 high: false
             })
         );
+    }
+
+    #[test]
+    fn v8m_baseline_decodes_subset() {
+        // The ARMv8-M baseline Thumb-2 subset decodes identically to ARMv7-M.
+        // b.w +10.
+        assert_eq!(v8m_bytes([0x00, 0xf0, 0x05, 0xb8]), Ok(Inst32::BranchWide { off: 10 }));
+        // movw r9, #0x1234 / movt r9, #0xabcd.
+        assert_eq!(
+            v8m_bytes([0x41, 0xf2, 0x34, 0x29]),
+            Ok(Inst32::MovWide { rd: 9, imm: 0x1234, high: false })
+        );
+        assert_eq!(
+            v8m_bytes([0xca, 0xf6, 0xcd, 0x39]),
+            Ok(Inst32::MovWide { rd: 9, imm: 0xABCD, high: true })
+        );
+        // sdiv r0, r0, r1 / udiv r2, r4, r5.
+        assert_eq!(
+            v8m_bytes([0x90, 0xfb, 0xf1, 0xf0]),
+            Ok(Inst32::Div { signed: true, rd: 0, rn: 0, rm: 1 })
+        );
+        assert_eq!(
+            v8m_bytes([0xb4, 0xfb, 0xf5, 0xf2]),
+            Ok(Inst32::Div { signed: false, rd: 2, rn: 4, rm: 5 })
+        );
+        // ldrex r0, [r2] / strex r1, r0, [r2] + byte/halfword forms.
+        assert_eq!(
+            v8m_bytes([0x52, 0xe8, 0x00, 0x0f]),
+            Ok(Inst32::Ldrex { rt: 0, rn: 2, size: ExSize::Word, off: 0 })
+        );
+        assert_eq!(
+            v8m_bytes([0x42, 0xe8, 0x00, 0x01]),
+            Ok(Inst32::Strex { rd: 1, rt: 0, rn: 2, size: ExSize::Word, off: 0 })
+        );
+        assert_eq!(
+            v8m_bytes([0xc2, 0xe8, 0x41, 0x0f]),
+            Ok(Inst32::Strex { rd: 1, rt: 0, rn: 2, size: ExSize::Byte, off: 0 })
+        );
+        assert_eq!(
+            v8m_bytes([0xc2, 0xe8, 0x51, 0x0f]),
+            Ok(Inst32::Strex { rd: 1, rt: 0, rn: 2, size: ExSize::Half, off: 0 })
+        );
+        // clrex, barriers, bl, mrs.
+        assert_eq!(v8m_bytes([0xbf, 0xf3, 0x2f, 0x8f]), Ok(Inst32::Clrex));
+        assert_eq!(
+            v8m_bytes([0xbf, 0xf3, 0x5f, 0x8f]),
+            Ok(Inst32::Barrier { kind: Barrier::Dmb })
+        );
+        assert_eq!(
+            v8m_bytes([0xff, 0xf7, 0xfe, 0xff]),
+            Ok(Inst32::Bl { off: -4 })
+        );
+        assert!(matches!(v8m_bytes([0xef, 0xf3, 0x7f, 0x80]), Ok(Inst32::Mrs { .. })));
+    }
+
+    #[test]
+    fn v8m_baseline_rejects_v7m_only() {
+        // Encodings that are valid ARMv7-M but outside the ARMv8-M baseline
+        // subset must fault as undefined.
+        let rejects = [
+            [0x00, 0xf0, 0x04, 0xa8], // beq.w (conditional T3)
+            [0x00, 0xf0, 0x00, 0xe8], // blx immediate (T2)
+            [0xd1, 0xf8, 0x04, 0x00], // ldr.w r0, [r1, #4]
+            [0x09, 0xea, 0x0a, 0x08], // and.w r8, r9, r10 (wide DP)
+            [0x09, 0xeb, 0x0a, 0x08], // add.w r8, r9, r10
+            [0x09, 0xfb, 0x08, 0xf3], // mul r3, r9, r8
+            [0xd2, 0xe8, 0x05, 0xf0], // tbb [r2, r5]
+            [0x90, 0xe8, 0x0f, 0x00], // ldmia r0!, {r0-r3}
+            [0x30, 0xee, 0x81, 0x0a], // vadd.f32 s0, s1, s2
+        ];
+        for b in rejects {
+            assert!(
+                v8m_bytes(b).is_err(),
+                "ARMv8-M baseline must reject {b:02x?}"
+            );
+            assert!(v7m_bytes(b).is_ok(), "control: {b:02x?} must decode on v7-M");
+        }
     }
 
     #[test]

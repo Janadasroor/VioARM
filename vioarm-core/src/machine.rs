@@ -45,6 +45,14 @@ impl<M: PeripheralBus> Machine<M> {
         }
     }
 
+    /// A machine over an ARMv8-M baseline (Cortex-M23) core.
+    #[must_use]
+    pub fn armv8m(mem: M) -> Self {
+        Self {
+            core: Core::armv8m(mem),
+        }
+    }
+
     /// Load an image's segments into the machine's memory.
     #[allow(clippy::cast_possible_truncation)]
     pub fn load_image(&mut self, img: &LoadedImage) {
@@ -56,9 +64,10 @@ impl<M: PeripheralBus> Machine<M> {
         }
     }
 
-    /// Boot from the reset vector table (`[0x0000_0000]` SP, `[0x0000_0004]`
-    /// PC), resetting peripherals to their post-reset state. Silently ignored
-    /// if there is nothing there yet.
+    /// Boot from the reset vector table (SP at the vector base, PC four bytes
+    /// later — address 0 for flash-at-0 machines, or the base configured via
+    /// [`Core::set_vector_base`]), resetting peripherals to their post-reset
+    /// state. Silently ignored if there is nothing there yet.
     ///
     /// # Errors
     ///

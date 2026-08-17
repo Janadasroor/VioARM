@@ -47,6 +47,22 @@ pub fn new_machine_v6m(bin: &[u8]) -> Machine<SystemMemory<FlatMemory>> {
     m
 }
 
+/// Build an ARMv8-M baseline (Cortex-M23) machine and load `bin` at the flash
+/// base `0x1000_0000`, mirroring the mps2-an505 board the M33 reference boots
+/// from. The image (built with `finish_at`) carries its vector table at
+/// image offset 0, so it lands at `0x1000_0000` with the code at
+/// `0x1000_0100`, and both simulators run at identical addresses. There is no
+/// FPU on the baseline, so no FP context is shared.
+#[must_use]
+pub fn new_machine_v8m(bin: &[u8]) -> Machine<SystemMemory<FlatMemory>> {
+    let backing = FlatMemory::with_layout(&[0x1000_0000, 0x2000_0000], &[FLASH_LEN, SRAM_LEN]);
+    let mem = SystemMemory::new(backing);
+    let mut m = Machine::armv8m(mem);
+    m.core.set_vector_base(0x1000_0000);
+    m.load_image(&load_flat(0x1000_0000, bin));
+    m
+}
+
 /// Snapshot the machine's architectural state. `pc` is stored Thumb-masked by
 /// the core, exactly as QEMU reports `R15`. `xpsr` carries the modeled xPSR
 /// bits plus the CPU's live `ITSTATE` folded in at bits [26:25]/[15:10], the
@@ -85,6 +101,13 @@ pub fn run_until_pc(bin: &[u8], stop_pc: u32) -> (Vec<CpuState>, bool) {
 #[must_use]
 pub fn run_until_pc_v6m(bin: &[u8], stop_pc: u32) -> (Vec<CpuState>, bool) {
     run_machine(new_machine_v6m(bin), stop_pc)
+}
+
+/// Run `bin` under an ARMv8-M baseline VioARM machine, collecting the state
+/// after every instruction until the PC reaches `stop_pc`.
+#[must_use]
+pub fn run_until_pc_v8m(bin: &[u8], stop_pc: u32) -> (Vec<CpuState>, bool) {
+    run_machine(new_machine_v8m(bin), stop_pc)
 }
 
 #[must_use]

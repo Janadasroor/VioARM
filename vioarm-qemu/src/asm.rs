@@ -1872,8 +1872,19 @@ impl Asm {
     /// Returns an error string for an undefined label or an out-of-range
     /// narrow branch/literal.
     pub fn finish(self, sp: u32) -> Result<Image, String> {
+        self.finish_at(sp, 0)
+    }
+
+    /// Like [`finish`](Self::finish), but lay the image out for a flash base
+    /// above address 0. The vector table still occupies the first `CODE_BASE`
+    /// bytes of the image (loaded at `flash_base`), the code labels resolve to
+    /// `flash_base + CODE_BASE + offset`, and every vector (including reset)
+    /// points back into that flash window — the layout the ARMv8-M reference
+    /// boards (mps2-an505 & co.) require, since they do not boot from address 0.
+    pub fn finish_at(self, sp: u32, flash_base: u32) -> Result<Image, String> {
+        let code_base = CODE_BASE + flash_base;
         // First pass: sizes are fixed, so compute every label's address.
-        let mut pc = CODE_BASE;
+        let mut pc = code_base;
         let mut labels = HashMap::new();
         for item in &self.items {
             match item {
@@ -1888,10 +1899,10 @@ impl Asm {
         }
 
         // Second pass: emit bytes, resolving targets now that labels exist.
-        let mut code: Vec<u8> = Vec::with_capacity((pc - CODE_BASE) as usize);
-        let mut cur = CODE_BASE;
+        let mut code: Vec<u8> = Vec::with_capacity((pc - code_base) as usize);
+        let mut cur = code_base;
         let mut emit = |cur: &mut u32, bytes: &[u8]| {
-            let idx = (*cur - CODE_BASE) as usize;
+            let idx = (*cur - code_base) as usize;
             debug_assert_eq!(idx, code.len());
             code.extend_from_slice(bytes);
             *cur += bytes.len() as u32;
@@ -2061,7 +2072,7 @@ impl Asm {
 
         let mut bytes = vec![0u8; CODE_BASE as usize];
         bytes[0..4].copy_from_slice(&sp.to_le_bytes());
-        bytes[4..8].copy_from_slice(&(CODE_BASE | 1).to_le_bytes());
+        bytes[4..8].copy_from_slice(&(code_base | 1).to_le_bytes());
         for (exc, name) in &self.vectors {
             let handler = labels
                 .get(name)
