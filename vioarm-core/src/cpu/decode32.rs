@@ -143,6 +143,24 @@ pub enum ExSize {
     Word,
 }
 
+/// The four members of the ARMv8-M `TT` security-state-read family.
+///
+/// The variant selects the target security state and privilege of the read:
+/// `TT` targets the current (secure, privileged) state, `TTTT` forces an
+/// unprivileged target, and `TTA`/`TTAT` target the opposite (Non-secure)
+/// state, `TTAT` additionally unprivileged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TtVariant {
+    /// `TT Rd, Rn` — the current secure state, privileged.
+    Tt,
+    /// `TTTT Rd, Rn` — the current secure state, unprivileged.
+    Tttt,
+    /// `TTA Rd, Rn` — the opposite secure state, privileged.
+    Tta,
+    /// `TTAT Rd, Rn` — the opposite secure state, unprivileged.
+    Ttat,
+}
+
 /// A decoded 32-bit instruction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Inst32 {
@@ -541,6 +559,14 @@ pub enum Inst32 {
         n: u8,
         writeback: bool,
         dec_before: bool,
+    },
+    /// ARMv8-M `TT` family: read the security state of the address in `rn`
+    /// into `rd` without performing an access. The result word is the
+    /// concatenated SAU/IDAU/MPU attribution bits. Flags are not affected.
+    Tt {
+        variant: TtVariant,
+        rd: u8,
+        rn: u8,
     },
 }
 
@@ -970,6 +996,9 @@ pub fn decode32_v7m(hi: u16, lo: u16) -> Result<Inst32, DecodeError> {
 /// Returns [`DecodeError`] when the halfwords do not form a known ARMv8-M
 /// baseline 32-bit instruction.
 pub fn decode32_v8m(hi: u16, lo: u16) -> Result<Inst32, DecodeError> {
+    if let Some(result) = decode_tt(hi, lo) {
+        return result;
+    }
     match decode32_v7m(hi, lo) {
         Ok(
             inst @ (Inst32::Bl { .. }
@@ -985,6 +1014,35 @@ pub fn decode32_v8m(hi: u16, lo: u16) -> Result<Inst32, DecodeError> {
         ) => Ok(inst),
         Ok(_) | Err(_) => decode_lda_stl(hi, lo).unwrap_or_else(|| Err(err_for(hi))),
     }
+}
+
+/// Decode the ARMv8-M `TT` instruction family. The encodings share the
+/// `1110 1000 0100 Rn` first-halfword space with the ARMv7-M `LDRD`/`STRD`
+/// pair, distinguished by the second halfword's `1111 0...` prefix; `TT` is
+/// ARMv8-M only and never reaches the ARMv7-M decoder. The architecture
+/// carries `Rn` in the first halfword and reserves the low six bits of the
+/// second; the constrained-unpredictable forms (`Rd` of 13/15, `Rn` of 15, a
+/// non-zero low halfword) are undefined.
+const fn decode_tt(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
+    if hi & 0xFFF0 != 0xE840 {
+        return None;
+    }
+    if lo & 0xF800 != 0xF000 {
+        return None;
+    }
+    let rn = (hi & 0xF) as u8;
+    let rd = ((lo >> 8) & 0xF) as u8;
+    let op = ((lo >> 6) & 0x3) as u8;
+    if rd == 13 || rd == 15 || rn == 15 || lo & 0x3F != 0 {
+        return Some(Err(err_for(hi)));
+    }
+    let variant = match op {
+        0 => TtVariant::Tt,
+        1 => TtVariant::Tttt,
+        2 => TtVariant::Tta,
+        _ => TtVariant::Ttat,
+    };
+    Some(Ok(Inst32::Tt { variant, rd, rn }))
 }
 
 /// Build the typed undefined-instruction error for a first halfword.
@@ -3122,6 +3180,52 @@ mod tests {
         assert!(v8m_bytes([0xd3, 0xe8, 0xaf, 0x01]).is_err()); // stray load nibble
         assert!(v8m_bytes([0xc3, 0xe8, 0xef, 0x0f]).is_err()); // stlex with rd = 15
         assert!(v8m_bytes([0xd3, 0xe8, 0x6f, 0x0f]).is_err()); // unknown selector 0x6
+    }
+
+    #[test]
+    fn v8m_baseline_tt() {
+        // The TT family decodes on the baseline, `Rn` from the first halfword
+        // and the variant from the second halfword's op field.
+        assert_eq!(
+            v8m_bytes([0x40, 0xe8, 0x00, 0xf4]),
+            Ok(Inst32::Tt { variant: TtVariant::Tt, rd: 4, rn: 0 })
+        );
+        assert_eq!(
+            v8m_bytes([0x40, 0xe8, 0x40, 0xf7]),
+            Ok(Inst32::Tt { variant: TtVariant::Tttt, rd: 7, rn: 0 })
+        );
+        assert_eq!(
+            v8m_bytes([0x40, 0xe8, 0x80, 0xf5]),
+            Ok(Inst32::Tt { variant: TtVariant::Tta, rd: 5, rn: 0 })
+        );
+        assert_eq!(
+            v8m_bytes([0x40, 0xe8, 0xc0, 0xf6]),
+            Ok(Inst32::Tt { variant: TtVariant::Ttat, rd: 6, rn: 0 })
+        );
+        // A non-zero `Rn` lives in the first halfword; the second halfword's
+        // low bits stay reserved.
+        assert_eq!(
+            v8m_bytes([0x41, 0xe8, 0x00, 0xf4]),
+            Ok(Inst32::Tt { variant: TtVariant::Tt, rd: 4, rn: 1 })
+        );
+
+        // ...while ARMv7-M (and the boundary) rejects the family.
+        for b in [
+            [0x40, 0xe8, 0x00, 0xf4], // tt r4, r0
+            [0x40, 0xe8, 0x80, 0xf5], // tta r5, r0
+            [0x40, 0xe8, 0x40, 0xf7], // tttt r7, r0
+        ] {
+            assert!(v7m_bytes(b).is_err(), "ARMv7-M must reject {b:02x?}");
+            assert!(v8m_bytes(b).is_ok(), "ARMv8-M baseline must decode {b:02x?}");
+        }
+
+        // Constrained-unpredictable forms: Rd of 13/15, Rn of 15, and the
+        // mirrored-Rm second halfword (non-zero low bits) all reject.
+        assert!(v8m_bytes([0x40, 0xe8, 0x00, 0xfd]).is_err()); // rd = 13
+        assert!(v8m_bytes([0x40, 0xe8, 0x00, 0xff]).is_err()); // rd = 15
+        assert!(v8m_bytes([0x4f, 0xe8, 0x00, 0xf4]).is_err()); // rn = 15
+        assert!(v8m_bytes([0x40, 0xe8, 0x01, 0xf4]).is_err()); // low-nibble mirror
+        assert!(v8m_bytes([0x40, 0xe8, 0x30, 0xf4]).is_err()); // reserved bits 5:4
     }
 
     #[test]

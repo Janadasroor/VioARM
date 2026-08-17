@@ -20,7 +20,7 @@ use decode32::{
     decode32, decode32_v7m, decode32_v8m, is_thumb2, is_thumb2_v7m, thumb_expand_imm, BitfieldOp,
     DpOp, DspMulOp,
     DualMulOp, ExSize, ExtendAddOp, Inst32, MemOp, MulOp, ParOp, ParSat, QaddOp, SatOp, ShiftType,
-    SysReg, UnaryOp, Vfp2Op, Vfp3Op, VrintOp,
+    SysReg, TtVariant, UnaryOp, Vfp2Op, Vfp3Op, VrintOp,
 };
 use registers::{Registers, Xpsr, APSR_FLAGS, APSR_GE, APSR_Q, APSR_QFLAGS, XPSR_T};
 
@@ -332,6 +332,25 @@ const NVIC_IPR: u32 = 0xE000_E400;
 const CPACR_ADDR: u32 = 0xE000_ED88;
 const CPACR_FULL: u32 = 0x00F0_0000;
 
+/// The SAU/IDAU security attribution for one address, as reported to the
+/// `TT` instruction family. The field layout mirrors QEMU's
+/// `V8M_SAttributes`, so result bits map one-to-one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SAttrs {
+    /// Non-secure attribution.
+    ns: bool,
+    /// Non-secure-callable attribution.
+    nsc: bool,
+    /// Matching SAU region number.
+    sregion: u8,
+    /// Whether an SAU region matched.
+    srvalid: bool,
+    /// IDAU region number.
+    iregion: u8,
+    /// Whether an IDAU is present to attribute the address.
+    irvalid: bool,
+}
+
 /// The core CPU state plus its bus.
 pub struct Core<B: PeripheralBus> {
     pub regs: Registers,
@@ -387,6 +406,11 @@ pub struct Core<B: PeripheralBus> {
     msp_lim: u32,
     /// ARMv8-M baseline stack-limit register for the process stack (`PSPLIM`).
     psp_lim: u32,
+    /// Whether the core is executing in the Secure security state (ARMv8-M
+    /// TrustZone). ARMv8-M baseline resets Secure. ARMv6-M/ARMv7-M have no
+    /// security extension and keep this false; the `TT` family does not decode
+    /// there.
+    pub secure: bool,
     mem: B,
 }
 
@@ -439,6 +463,7 @@ impl<B: PeripheralBus> Core<B> {
             vector_base: 0,
             msp_lim: 0,
             psp_lim: 0,
+            secure: isa == Isa::Armv8MBaseline,
             mem,
         }
     }
@@ -669,6 +694,51 @@ impl<B: PeripheralBus> Core<B> {
     /// `SPSEL` is only consulted for thread-mode accesses.
     const fn sp_is_process(&self) -> bool {
         self.ipsr == 0 && self.control & 0x2 != 0
+    }
+
+    /// The SAU/IDAU security attribution for `addr` in the security state
+    /// `targetsec` (the state the `TT` family *probes*), matching QEMU's
+    /// `v8m_security_lookup` with the SAU disabled (VioARM does not yet model
+    /// the SAU registers, so the reset state applies: no regions,
+    /// `SAU_CTRL.ENABLE == 0`, giving attribution case 0 where the IDAU
+    /// decides). The SAU/IDAU exempt system aliases are attributed `!targetsec`
+    /// and otherwise the address is Secure unless the IDAU's region says
+    /// Non-secure-callable.
+    fn security_attribution(&mut self, addr: u32, targetsec: bool) -> SAttrs {
+        let idau = self.mem.idau_attribution(addr);
+        let mut s = SAttrs {
+            ns: false,
+            nsc: false,
+            sregion: 0,
+            srvalid: false,
+            iregion: 0,
+            irvalid: false,
+        };
+        // The architectural SAU-exempt system aliases (subsumed by the ARMSSE
+        // IDAU's own exempt range, but kept for a no-IDAU machine).
+        let sau_exempt = matches!(
+            addr,
+            0xE000_0000..=0xE000_2FFF
+                | 0xE000_E000..=0xE000_EFFF
+                | 0xE002_E000..=0xE002_EFFF
+                | 0xE004_0000..=0xE004_1FFF
+                | 0xE00F_F000..=0xE00F_FFFF
+        );
+        if sau_exempt || matches!(idau, Some(i) if i.exempt) {
+            s.ns = !targetsec;
+            return s;
+        }
+        if let Some(idau) = idau {
+            s.irvalid = true;
+            s.iregion = idau.region;
+            // The IDAU can only strengthen a Non-secure attribution to Secure
+            // (through the NS/NSC attribute), never downgrade to Non-secure.
+            if !idau.ns && (s.ns || s.nsc) {
+                s.ns = false;
+                s.nsc = idau.nsc;
+            }
+        }
+        s
     }
 
     /// Read a system register for `mrs`.
@@ -1559,6 +1629,62 @@ impl<B: PeripheralBus> Core<B> {
                         return self.data_fault(addr, pc);
                     }
                 }
+                Ok(Next::Advance(pc + 4))
+            }
+            I::Tt { variant, rd, rn } => {
+                use TtVariant as V;
+                // `TTA`/`TTAT` probe the opposite security state; the `TTTT`/
+                // `TTAT` unprivileged-force only feeds the (disabled) MPU
+                // lookup, so it does not change the permission bits here.
+                let alt = matches!(variant, V::Tta | V::Ttat);
+                if alt && !self.secure {
+                    // TTA/TTAT read the opposite security state; from
+                    // Non-secure they are UNPREDICTABLE and QEMU UNDEFs them.
+                    return self.hardfault_on_undefined(pc, 4);
+                }
+                let addr = self.regs.read(rn);
+                // The MPU gate and target privilege follow `arm_current_el`:
+                // a privileged thread is EL 1, unprivileged thread EL 0.
+                let current_el = u8::from(self.ipsr != 0 || self.control & 1 == 0);
+                let targetsec = self.secure != alt;
+                // PMSAv8 MPU lookup for the target security/privilege state.
+                // VioARM models the MPU as disabled, so the background default
+                // map grants read/write and no region matches.
+                let (r, rw) = if current_el != 0 || alt {
+                    (true, true)
+                } else {
+                    (false, false)
+                };
+                let s = if self.secure {
+                    self.security_attribution(addr, targetsec)
+                } else {
+                    // A Non-secure read of the security state reports
+                    // Non-secure with no SAU/IDAU attribution at all.
+                    SAttrs {
+                        ns: true,
+                        nsc: false,
+                        sregion: 0,
+                        srvalid: false,
+                        iregion: 0,
+                        irvalid: false,
+                    }
+                };
+                let (nsr, nsrw) = if self.secure {
+                    (s.ns && r, s.ns && rw)
+                } else {
+                    (false, false)
+                };
+                let value = (u32::from(s.iregion) << 24)
+                    | (u32::from(s.irvalid) << 23)
+                    | (u32::from(!s.ns) << 22)
+                    | (u32::from(nsrw) << 21)
+                    | (u32::from(nsr) << 20)
+                    | (u32::from(rw) << 19)
+                    | (u32::from(r) << 18)
+                    | (u32::from(s.srvalid) << 17)
+                    | (u32::from(false) << 16)
+                    | (u32::from(s.sregion) << 8);
+                self.regs.write(rd, value);
                 Ok(Next::Advance(pc + 4))
             }
             I::DpReg {
@@ -4013,6 +4139,17 @@ mod tests {
         ))
     }
 
+    /// An ARMv8-M baseline core over a `SystemMemory` (SCB + the ARMSSE IDAU),
+    /// so the TT family's region attribution and fault folding behave like the
+    /// conformance machine.
+    fn armv8m_sys_core() -> Core<crate::mem::system::SystemMemory<crate::mem::flat::FlatMemory>> {
+        let backing = crate::mem::flat::FlatMemory::with_layout(
+            &[0x0000_0000, 0x2000_0000],
+            &[0x1000, 0x1000],
+        );
+        Core::armv8m(crate::mem::system::SystemMemory::new(backing))
+    }
+
     /// A Cortex-M4-style core with a shared FP context-control state, plus
     /// both a low vector region and SRAM.
     fn armv7m_fpu_core() -> (
@@ -4254,6 +4391,116 @@ mod tests {
         c.step().unwrap();
         assert_eq!(c.regs.r[8], 0x0F);
         assert_eq!(c.ipsr, 0);
+    }
+
+    #[test]
+    fn v8m_baseline_tt_reads_security_state() {
+        // Secure privileged thread (reset state): TT reads the attribution.
+        let mut c = armv8m_sys_core();
+        c.mem().write_word(3 * 4, 0x2000_0401).unwrap(); // HardFault vector
+        c.regs.pc = 0x2000_0000;
+        c.regs.sp = 0x2000_0040;
+        // Non-exempt address: IDAU region Addr[31:28], irvalid, Secure.
+        c.regs.write(0, 0x2000_0000);
+        load_inst(&mut c, 0x2000_0000, &[0x40, 0xe8, 0x00, 0xf4]); // tt r4, r0
+        c.step().unwrap();
+        assert_eq!(c.regs.read(4), 0x02CC_0000);
+        // System alias: exempt, no region/validity, still Secure.
+        c.regs.write(0, 0xE000_0000);
+        load_inst(&mut c, 0x2000_0004, &[0x40, 0xe8, 0x00, 0xf4]); // tt r4, r0
+        c.step().unwrap();
+        assert_eq!(c.regs.read(4), 0x004C_0000);
+        // Region 15, not exempt.
+        c.regs.write(0, 0xFFFF_FFFF);
+        load_inst(&mut c, 0x2000_0008, &[0x40, 0xe8, 0x00, 0xf4]); // tt r4, r0
+        c.step().unwrap();
+        assert_eq!(c.regs.read(4), 0x0FCC_0000);
+        // TTTT: force an unprivileged target; without an MPU the permission
+        // bits are unchanged.
+        c.regs.write(0, 0x2000_0000);
+        load_inst(&mut c, 0x2000_000c, &[0x40, 0xe8, 0x40, 0xf7]); // tttt r7, r0
+        c.step().unwrap();
+        assert_eq!(c.regs.read(7), 0x02CC_0000);
+        // TTA: probe the opposite (Non-secure) state. The exempt alias flips
+        // Non-secure (S=0, NSR/NSRW set)...
+        c.regs.write(0, 0xE000_0000);
+        load_inst(&mut c, 0x2000_0010, &[0x40, 0xe8, 0x80, 0xf5]); // tta r5, r0
+        c.step().unwrap();
+        assert_eq!(c.regs.read(5), 0x003C_0000);
+        // ...but a non-exempt address stays Secure while the SAU is disabled.
+        c.regs.write(0, 0x2000_0000);
+        load_inst(&mut c, 0x2000_0014, &[0x40, 0xe8, 0x80, 0xf5]); // tta r5, r0
+        c.step().unwrap();
+        assert_eq!(c.regs.read(5), 0x02CC_0000);
+        // TTAT on the exempt alias: unprivileged Non-secure.
+        c.regs.write(0, 0xE000_0000);
+        load_inst(&mut c, 0x2000_0018, &[0x40, 0xe8, 0xc0, 0xf6]); // ttat r6, r0
+        c.step().unwrap();
+        assert_eq!(c.regs.read(6), 0x003C_0000);
+        assert_eq!(c.ipsr, 0, "TT must not fault");
+    }
+
+    #[test]
+    fn v8m_baseline_tt_from_nonsecure() {
+        let mk = || {
+            let mut c = armv8m_sys_core();
+            c.mem().write_word(3 * 4, 0x2000_0401).unwrap(); // HardFault vector
+            c.secure = false;
+            c.regs.pc = 0x2000_0000;
+            c.regs.sp = 0x2000_0040;
+            c.regs.write(0, 0x2000_0000);
+            c
+        };
+        // A Non-secure TT reports Non-secure with no SAU/IDAU attribution.
+        let mut c = mk();
+        load_inst(&mut c, 0x2000_0000, &[0x40, 0xe8, 0x00, 0xf4]); // tt r4, r0
+        c.step().unwrap();
+        assert_eq!(c.regs.read(4), 0x000C_0000);
+        // TTA/TTAT read the opposite security state; from Non-secure they are
+        // UNPREDICTABLE and QEMU UNDEFs them (HardFault on the baseline).
+        let mut c = mk();
+        load_inst(&mut c, 0x2000_0000, &[0x40, 0xe8, 0x80, 0xf5]); // tta r5, r0
+        c.step().unwrap();
+        assert_eq!(c.ipsr, 3, "TTA from Non-secure must UNDEF to HardFault");
+        let mut c = mk();
+        load_inst(&mut c, 0x2000_0000, &[0x40, 0xe8, 0xc0, 0xf6]); // ttat r6, r0
+        c.step().unwrap();
+        assert_eq!(c.ipsr, 3, "TTAT from Non-secure must UNDEF to HardFault");
+    }
+
+    #[test]
+    fn v8m_baseline_tt_undef_forms() {
+        // The constrained-unpredictable decode rejections are also caught at
+        // execution: a non-zero low halfword (the mirrored-Rm form) faults.
+        let mut c = armv8m_sys_core();
+        c.mem().write_word(3 * 4, 0x2000_0401).unwrap(); // HardFault vector
+        c.regs.pc = 0x2000_0000;
+        c.regs.sp = 0x2000_0040;
+        c.regs.write(0, 0x2000_0000);
+        load_inst(&mut c, 0x2000_0000, &[0x40, 0xe8, 0x01, 0xf4]); // tt r4, r0 mirror-Rm
+        c.step().unwrap();
+        assert_eq!(c.ipsr, 3, "mirror-Rm TT must UNDEF to HardFault");
+    }
+
+    #[test]
+    fn v8m_baseline_tt_undef_on_v6m_and_v7m() {
+        // TT is not an ARMv6-M/ARMv7-M instruction: the encoding faults.
+        for isa in [Isa::Armv6M, Isa::Armv7M] {
+            let mut c = Core::new_with_isa(
+                crate::mem::flat::FlatMemory::with_layout(
+                    &[0x0000_0000, 0x2000_0000],
+                    &[0x1000, 0x1000],
+                ),
+                isa,
+            );
+            c.mem().write_word(3 * 4, 0x2000_0081).unwrap(); // HardFault vector
+            c.regs.pc = 0x2000_0000;
+            c.regs.sp = 0x2000_0040;
+            c.regs.write(0, 0x2000_0000);
+            load_inst(&mut c, 0x2000_0000, &[0x40, 0xe8, 0x00, 0xf4]); // tt r4, r0
+            c.step().unwrap();
+            assert_eq!(c.ipsr, 3, "{isa:?} must UNDEF TT to HardFault");
+        }
     }
 
     #[test]

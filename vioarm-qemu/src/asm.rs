@@ -1072,6 +1072,34 @@ impl Asm {
         self.raw(0xDF00 | u16::from(imm));
     }
 
+    // ----------------------------- TT family -------------------------------
+
+    /// `TT Rd, Rn` (ARMv8-M): read the security state of the address in `Rn`
+    /// into `Rd` without performing an access. The second halfword's low bits
+    /// are kept zero (the ARMv8-M encoding reserves them; QEMU UNDEFs the
+    /// mirror-Rm forms some assemblers emit).
+    pub fn tt(&mut self, rd: u8, rn: u8) {
+        self.tt_family(rd, rn, 0);
+    }
+    /// `TTTT Rd, Rn` — unprivileged target state.
+    pub fn tttt(&mut self, rd: u8, rn: u8) {
+        self.tt_family(rd, rn, 1);
+    }
+    /// `TTA Rd, Rn` — opposite (Non-secure) target state.
+    pub fn tta(&mut self, rd: u8, rn: u8) {
+        self.tt_family(rd, rn, 2);
+    }
+    /// `TTAT Rd, Rn` — opposite (Non-secure) unprivileged target state.
+    pub fn ttat(&mut self, rd: u8, rn: u8) {
+        self.tt_family(rd, rn, 3);
+    }
+
+    fn tt_family(&mut self, rd: u8, rn: u8, op: u8) {
+        let hi = 0xE840 | u16::from(rn);
+        let lo = 0xF000 | u16::from(op) << 6 | u16::from(rd) << 8;
+        self.raw32(hi as u32 | (lo as u32) << 16);
+    }
+
     // ---------------------------- divide / multiply ----------------------------
 
     pub fn sdiv(&mut self, rd: u8, rn: u8, rm: u8) {

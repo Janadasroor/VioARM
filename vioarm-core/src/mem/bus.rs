@@ -108,6 +108,25 @@ pub enum MpuAccess {
     Write,
 }
 
+/// An IDAU's security attribution for one address — the implementation-defined
+/// half of the ARMv8-M security attribution.
+///
+/// The core consults this through `PeripheralBus` for the `TT` instruction
+/// family. A `None` (no IDAU) machine falls back to the `irvalid = false`
+/// case.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct IdauAttribution {
+    /// The IDAU region number (the address `Addr[31:28]` on the ARMSSE).
+    pub region: u8,
+    /// Whether the region is attributed Non-secure.
+    pub ns: bool,
+    /// Whether the region is a Non-secure-callable region.
+    pub nsc: bool,
+    /// Whether the IDAU exempts the address from the SAU/IDAU attribution
+    /// (the ARMSSE exempts its system-address aliases).
+    pub exempt: bool,
+}
+
 /// A `Bus` whose machine can also advance time and deliver interrupts.
 ///
 /// Plain memory implements the default no-ops; a `SystemMemory` with an NVIC
@@ -168,4 +187,11 @@ pub trait PeripheralBus: Bus {
     /// `fetch` is true), so firmware reads the cause back through `MMFAR` and
     /// the `MMFSR` bits in `CFSR`. Default: no recording (plain memory).
     fn mpu_fault(&mut self, _addr: u32, _fetch: bool) {}
+
+    /// The IDAU's security attribution for `addr`, or `None` when the machine
+    /// has no IDAU. The core consults this for the `TT` instruction family's
+    /// security lookup. Default: no IDAU.
+    fn idau_attribution(&mut self, _addr: u32) -> Option<IdauAttribution> {
+        None
+    }
 }

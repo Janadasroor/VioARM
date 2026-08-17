@@ -15,7 +15,7 @@ use crate::device::stm32::eth::{EthMailbox, EthMemOp};
 use crate::device::stm32::flash::{FlashErase, FlashGate};
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
-use crate::mem::bus::{Bus, MpuAccess, PeripheralBus, Region};
+use crate::mem::bus::{Bus, IdauAttribution, MpuAccess, PeripheralBus, Region};
 use std::sync::{Arc, Mutex};
 
 /// A `Bus` over flat backing memory plus a set of MMIO devices and the NVIC.
@@ -585,6 +585,23 @@ impl<M: Bus> PeripheralBus for SystemMemory<M> {
 
     fn mpu_fault(&mut self, addr: u32, fetch: bool) {
         self.scb.record_mpu_fault(addr, fetch);
+    }
+
+    /// The ARMSSE (mps2-an505-style) IDAU, which attributes by address bit
+    /// `[31:28]`: even regions are Non-secure, the odd `NSC`-capable regions
+    /// `0x1xxxxxxx`/`0x3xxxxxxx` are Non-secure-callable only while the
+    /// corresponding `NSCFG` bit is set (reset: not NSC), and the system
+    /// aliases `0xE0000000..0xE00FFFFF`/`0xF0000000..0xF00FFFFF` are exempt.
+    fn idau_attribution(&mut self, addr: u32) -> Option<IdauAttribution> {
+        let region = ((addr >> 28) & 0xF) as u8;
+        let ns = region & 1 == 0;
+        let exempt = addr & 0xEFF0_0000 == 0xE000_0000;
+        Some(IdauAttribution {
+            region,
+            ns,
+            nsc: false,
+            exempt,
+        })
     }
 }
 

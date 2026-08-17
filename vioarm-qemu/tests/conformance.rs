@@ -3131,6 +3131,58 @@ fn m33_baseline_splim() {
     conformance_v8m("m33_baseline_splim", &mut a, "halt", &mt);
 }
 
+/// The ARMv8-M `TT` family reads the security state of an address without
+/// performing an access. On the mps2-an505 the ARMSSE IDAU attributes by
+/// address bit [31:28] (even regions Non-secure, odd Secure) with the system
+/// aliases exempt, and with the SAU disabled every non-exempt address reads
+/// Secure. VioARM runs the same TrustZone model, so `TT`/`TTTT`/`TTA`/`TTAT`
+/// over representative addresses must diff identically against the M33.
+#[test]
+fn m33_baseline_tt() {
+    let Some(mt) = qemu_m33() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+
+    // TT: region attribution by Addr[31:28], Secure with the SAU off.
+    a.mov_imm32(0, 0x0000_0000);
+    a.tt(4, 0); // region 0
+    a.mov_imm32(0, 0x1000_0000);
+    a.tt(4, 0); // region 1
+    a.mov_imm32(0, 0x2000_0000);
+    a.tt(4, 0); // region 2
+    a.mov_imm32(0, 0xE000_0000);
+    a.tt(4, 0); // system alias, exempt (no irvalid/iregion)
+    a.mov_imm32(0, 0xE100_0000);
+    a.tt(4, 0); // region 14 but not exempt
+    a.mov_imm32(0, 0xF000_0000);
+    a.tt(4, 0); // F alias, exempt
+    a.mov_imm32(0, 0xFFFF_FFFF);
+    a.tt(4, 0); // region 15
+
+    // TTTT forces an unprivileged target; without an MPU the permission bits
+    // are unchanged.
+    a.mov_imm32(0, 0x2000_0000);
+    a.tttt(5, 0);
+    a.mov_imm32(0, 0xE000_0000);
+    a.tttt(5, 0);
+
+    // TTA/TTAT probe the opposite (Non-secure) state: the exempt aliases flip
+    // to Non-secure (S=0, NSR/NSRW set), non-exempt addresses stay Secure
+    // because the SAU is disabled.
+    a.mov_imm32(0, 0x2000_0000);
+    a.tta(6, 0);
+    a.mov_imm32(0, 0xE000_0000);
+    a.tta(6, 0);
+    a.mov_imm32(0, 0x2000_0000);
+    a.ttat(7, 0);
+    a.mov_imm32(0, 0xE000_0000);
+    a.ttat(7, 0);
+
+    a.label("halt");
+    a.b("halt");
+    conformance_v8m("m33_baseline_tt", &mut a, "halt", &mt);
+}
+
 /// The full ARMv6-M 16-bit subset is baseline-valid, so the Thumb-1 ALU suite
 /// must diff identically against the M33.
 #[test]
