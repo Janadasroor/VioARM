@@ -35,6 +35,18 @@ pub fn new_machine(bin: &[u8]) -> Machine<SystemMemory<FlatMemory>> {
     m
 }
 
+/// Build an ARMv6-M (Cortex-M0) machine over a bare memory and load `bin` at
+/// address 0. There is no FPU on ARMv6-M, so the core and the system bus need
+/// no shared FP context.
+#[must_use]
+pub fn new_machine_v6m(bin: &[u8]) -> Machine<SystemMemory<FlatMemory>> {
+    let backing = FlatMemory::with_layout(&[0x0000_0000, 0x2000_0000], &[FLASH_LEN, SRAM_LEN]);
+    let mem = SystemMemory::new(backing);
+    let mut m = Machine::new(mem);
+    m.load_image(&load_flat(0x0000_0000, bin));
+    m
+}
+
 /// Snapshot the machine's architectural state. `pc` is stored Thumb-masked by
 /// the core, exactly as QEMU reports `R15`. `xpsr` carries the modeled xPSR
 /// bits plus the CPU's live `ITSTATE` folded in at bits [26:25]/[15:10], the
@@ -65,7 +77,18 @@ pub fn snapshot(m: &Machine<SystemMemory<FlatMemory>>) -> CpuState {
 /// trace and whether the landing loop was reached.
 #[must_use]
 pub fn run_until_pc(bin: &[u8], stop_pc: u32) -> (Vec<CpuState>, bool) {
-    let mut m = new_machine(bin);
+    run_machine(new_machine(bin), stop_pc)
+}
+
+/// Run `bin` under an ARMv6-M (Cortex-M0) VioARM machine, collecting the state
+/// after every instruction until the PC reaches `stop_pc`.
+#[must_use]
+pub fn run_until_pc_v6m(bin: &[u8], stop_pc: u32) -> (Vec<CpuState>, bool) {
+    run_machine(new_machine_v6m(bin), stop_pc)
+}
+
+#[must_use]
+fn run_machine(mut m: Machine<SystemMemory<FlatMemory>>, stop_pc: u32) -> (Vec<CpuState>, bool) {
     m.reset().expect("reset should pick the reset vector");
     let mut states = Vec::new();
     states.push(snapshot(&m));

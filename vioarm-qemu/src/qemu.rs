@@ -63,6 +63,15 @@ impl QemuMachine {
         Self::for_cpu("cortex-m4", "mps2-an386", true)
     }
 
+    /// An ARMv6-M reference (`Cortex-M0` on the BBC micro:bit's nRF51), for
+    /// diffing the ARMv6-M instruction subset and its exception model. The M0
+    /// has no FPU, so the dump carries no VFP block. The board's SRAM is only
+    /// 16 KiB (nRF51), well below the harness's `0x2000_2000` stack top.
+    #[must_use]
+    pub fn detect_m0() -> Option<Self> {
+        Self::for_cpu("cortex-m0", "microbit", false)
+    }
+
     #[must_use]
     fn for_cpu(cpu: &str, machine: &str, fpu: bool) -> Option<Self> {
         find_qemu().map(|exe| Self {

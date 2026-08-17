@@ -25,6 +25,11 @@ enum Item {
     B {
         target: String,
     },
+    /// Narrow unconditional `B imm11`, Â±2 KiB — the only unconditional branch
+    /// ARMv6-M (Cortex-M0) provides.
+    B16 {
+        target: String,
+    },
     Bl {
         target: String,
     },
@@ -78,7 +83,7 @@ fn size_of(item: &Item) -> u32 {
         | Item::BcWide { .. }
         | Item::LdrdLit { .. }
         | Item::MemLit { .. } => 4,
-        Item::Bc { .. } | Item::Cbz { .. } | Item::LdrLit { .. } => 2,
+        Item::B16 { .. } | Item::Bc { .. } | Item::Cbz { .. } | Item::LdrLit { .. } => 2,
         Item::PadTo4 | Item::DcU32(_) => 4,
     }
 }
@@ -410,6 +415,13 @@ impl Asm {
 
     pub fn b(&mut self, target: impl Into<String>) {
         self.emit(Item::B {
+            target: target.into(),
+        });
+    }
+
+    /// 16-bit unconditional branch `B imm11` (ARMv6-M-valid, Â±2 KiB).
+    pub fn b16(&mut self, target: impl Into<String>) {
+        self.emit(Item::B16 {
             target: target.into(),
         });
     }
@@ -1913,6 +1925,18 @@ impl Asm {
                     let bytes = [hi as u8, (hi >> 8) as u8, lo as u8, (lo >> 8) as u8];
                     emit(&mut cur, &bytes);
                 }
+                Item::B16 { target } => {
+                    let t = labels
+                        .get(target)
+                        .copied()
+                        .ok_or_else(|| format!("undefined label {target:?}"))?;
+                    let off = i64::from(t) - i64::from(cur + 4);
+                    if off < -2048 || off > 2046 || off % 2 != 0 {
+                        return Err(format!("16-bit branch to {target:?} out of Â±2 KiB range"));
+                    }
+                    let imm11 = ((off >> 1) as i16) as u16 & 0x7FF;
+                    emit(&mut cur, &(0xE000 | imm11).to_le_bytes());
+                }
                 Item::Bc { cc, target } => {
                     let t = labels
                         .get(target)
@@ -2208,5 +2232,21 @@ mod tests {
                 0x01, 0x60, // str r1, [r0]
             ]
         );
+    }
+
+    #[test]
+    fn narrow_unconditional_branch() {
+        // A self-loop: `b .` at address X has off = X - (X+4) = -4,
+        // imm11 = 0x7FE -> 0xE7FE.
+        let mut a = Asm::new();
+        a.label("loop");
+        a.b16("loop");
+        assert_eq!(code_bytes(a), [0xfe, 0xe7]);
+        // A 2-byte forward hop: off = -2 -> imm11 = 0x7FF -> 0xE7FF.
+        let mut a = Asm::new();
+        a.label("fwd");
+        a.b16("next");
+        a.label("next");
+        assert_eq!(code_bytes(a), [0xff, 0xe7]);
     }
 }

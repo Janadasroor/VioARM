@@ -716,6 +716,29 @@ impl<B: PeripheralBus> Core<B> {
                 }
             }
             SysReg::Faultmask => self.faultmask = v & 1 != 0,
+            SysReg::Control if self.isa == Isa::Armv6M => {
+                // ARMv6-M (Cortex-M0/M0+): CONTROL.nPRIV and CONTROL.FPCA are
+                // RAZ/WI — there is no unprivileged state and no FPU — so only
+                // SPSEL is writable, and only in Thread mode (Handler mode
+                // always uses MSP). Matches QEMU, which gates nPRIV on
+                // ARM_FEATURE_M_MAIN and SPSEL on thread mode.
+                if self.ipsr == 0 {
+                    let new = v & 0x2;
+                    let want_process = new != 0;
+                    let was_process = self.sp_is_process();
+                    if want_process != was_process {
+                        let r = &mut self.regs;
+                        if want_process {
+                            r.msp = r.sp;
+                            r.sp = r.psp;
+                        } else {
+                            r.psp = r.sp;
+                            r.sp = r.msp;
+                        }
+                    }
+                    self.control = new;
+                }
+            }
             SysReg::Control => {
                 // MSR CONTROL is only honored in a privileged context: Handler
                 // mode, or Thread mode while nPRIV is still clear. Once the
@@ -3830,9 +3853,10 @@ mod tests {
         assert!(c.primask);
         assert_eq!(c.sysreg_read(SysReg::Primask).unwrap(), 1);
         assert_eq!(c.sysreg_read(SysReg::Control).unwrap(), 0);
-        // MSR CONTROL preserves the nPRIV/FPCA bits we model.
-        c.sysreg_write(SysReg::Control, 0x5).unwrap();
-        assert_eq!(c.sysreg_read(SysReg::Control).unwrap(), 0x5);
+        // On ARMv6-M (the default `Core::new` ISA) nPRIV/FPCA are RAZ/WI, so
+        // only SPSEL survives a write.
+        c.sysreg_write(SysReg::Control, 0x7).unwrap();
+        assert_eq!(c.sysreg_read(SysReg::Control).unwrap(), 0x2);
         // Reserved sysreg reads/writes are typed errors, not silent.
         assert!(matches!(
             c.sysreg_read(SysReg::Other(0x7f)),

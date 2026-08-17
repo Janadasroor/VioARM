@@ -23,6 +23,7 @@ use std::time::Duration;
 use vioarm_qemu::asm::{Asm, Image, SP};
 use vioarm_qemu::qemu::{run_until_pc as qemu_run, QemuMachine};
 use vioarm_qemu::vioarm::run_until_pc as vio_run;
+use vioarm_qemu::vioarm::run_until_pc_v6m as vio_run_v6m;
 use vioarm_qemu::{compare_traces, CpuState};
 
 /// Run `bin` in QEMU up to `stop`, retrying up to three times when the spawn
@@ -94,6 +95,38 @@ fn qemu_m4() -> Option<QemuMachine> {
         eprintln!("skipping ARMv7E-M conformance tests: `qemu-system-arm` not found on PATH");
     }
     mt
+}
+
+/// An ARMv6-M (Cortex-M0, BBC micro:bit) QEMU reference. Returns `None` when
+/// `qemu-system-arm` is missing.
+fn qemu_m0() -> Option<QemuMachine> {
+    let mt = QemuMachine::detect_m0();
+    if mt.is_none() {
+        eprintln!("skipping ARMv6-M conformance tests: `qemu-system-arm` not found on PATH");
+    }
+    mt
+}
+
+/// The ARMv6-M variant of [`conformance`]: runs `a` through the v6m VioARM
+/// machine (no FPU) against the Cortex-M0 reference.
+fn conformance_m0(name: &str, a: &mut Asm, halt: &str, mt: &QemuMachine) {
+    let img: Image = a.clone().finish(SP).expect("assemble");
+    let stop = img
+        .addr(halt)
+        .unwrap_or_else(|| panic!("{name}: no label {halt:?}"));
+    let (vio, reached) = vio_run_v6m(&img.bytes, stop);
+    assert!(
+        reached,
+        "{name}: vioarm never reached halt @ {stop:#x} (last {})",
+        snapshot_like(&vio)
+    );
+    let qemu = qemu_run_retry(mt, &img.bytes, stop);
+    assert!(
+        !qemu.is_empty() && qemu.last().expect("empty").r[15] & !1 == stop,
+        "{name}: qemu never reached halt @ {stop:#x} (got {} states)",
+        qemu.len()
+    );
+    compare_traces(name, &vio, &qemu).expect("traces agree");
 }
 
 /// Re-encode a `MOVW Rd, #imm16` into the 4 bytes at `addr` of `bytes`. Used
@@ -2560,4 +2593,262 @@ fn scb_div0_records_cfsr_hfsr() {
 
     a.vec(3, "hf_handler");
     conformance("scb_div0_records_cfsr_hfsr", &mut a, "halt", &mt);
+}
+
+// ---------------------------------------------------------------------------
+// ARMv6-M (Cortex-M0) conformance: the 16-bit Thumb-1 subset, the system
+// registers that exist on M0, and the RAZ/WI treatment of the ARMv7-M-only
+// BASEPRI/FAULTMASK (QEMU's M0 model reads them as 0 and ignores writes,
+// matching VioARM's ARMv6-M gating). All these programs use only instructions
+// legal on ARMv6-M — the same encodings the shared M3 suite exercises, minus
+// the 32-bit Thumb-2 forms — and the `b .` landing loop is the 16-bit form.
+// ---------------------------------------------------------------------------
+
+/// The 16-bit `B .` self-loop, legal on ARMv6-M (`a.b()` emits the 32-bit `B.W`
+/// which Cortex-M0 does not decode).
+fn halt16(a: &mut Asm) {
+    a.label("halt");
+    a.raw(0xE7FE);
+}
+
+#[test]
+fn m0_sysreg() {
+    let Some(mt) = qemu_m0() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+
+    // MSP read (Thread mode, main stack), then a write with a 16-bit value.
+    a.mrs(2, 0x08); // r2 = MSP
+    a.movs_imm8(5, 0x40);
+    a.msr(0x08, 5); // MSR MSP, r5 (low byte)
+    a.mrs(3, 0x08); // r3 = MSP after write
+
+    // PRIMASK 0 -> 0, then 1 -> 1 (M0 implements PRIMASK).
+    a.movs_imm8(0, 0);
+    a.msr(0x10, 0);
+    a.mrs(1, 0x10);
+    a.movs_imm8(0, 1);
+    a.msr(0x10, 0);
+    a.mrs(1, 0x10);
+
+    // BASEPRI: ARMv7-M only. On M0 QEMU reads it as 0 and ignores writes —
+    // exactly VioARM's gating, so the diff pins the RAZ/WI behavior.
+    a.movs_imm8(0, 0x80);
+    a.msr(0x11, 0); // MSR BASEPRI, r0 (ignored)
+    a.mrs(1, 0x11); // r1 = 0
+    a.msr(0x12, 0); // MSR BASEPRI_MAX, r0 (ignored)
+    a.mrs(1, 0x12); // r1 = 0
+
+    // FAULTMASK: also ARMv7-M only, same RAZ/WI on M0.
+    a.movs_imm8(0, 1);
+    a.msr(0x13, 0); // MSR FAULTMASK, r0 (ignored)
+    a.mrs(1, 0x13); // r1 = 0
+    a.movs_imm8(0, 0);
+    a.msr(0x13, 0); // still ignored
+    a.mrs(1, 0x13); // r1 = 0
+
+    // CONTROL: nPRIV is RAZ/WI on M0 (no unprivileged state); SPSEL is the
+    // only writable bit, and only in Thread mode.
+    a.movs_imm8(0, 1);
+    a.msr(0x14, 0); // CONTROL = 1 (nPRIV ignored)
+    a.mrs(1, 0x14); // r1 = 0
+    a.movs_imm8(0, 2);
+    a.msr(0x14, 0); // CONTROL = 2 (SPSEL=1 -> PSP active)
+    a.mrs(1, 0x14); // r1 = 2
+    a.mrs(2, 0x09); // r2 = PSP (0 at reset)
+    a.movs_imm8(0, 0);
+    a.msr(0x14, 0); // CONTROL = 0 (back to MSP)
+    a.mrs(1, 0x14); // r1 = 0
+
+    // MSP read again.
+    a.mrs(2, 0x08);
+
+    halt16(&mut a);
+    conformance_m0("m0_sysreg", &mut a, "halt", &mt);
+}
+
+#[test]
+fn m0_alu_thumb1() {
+    let Some(mt) = qemu_m0() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+
+    // Build operand values with 16-bit instructions only.
+    a.movs_imm8(0, 0x45);
+    a.lsls_imm(0, 0, 8); // r0 = 0x4500
+    a.movs_imm8(1, 0xFF);
+    a.movs_imm8(2, 0x80);
+    a.movs_imm8(3, 0x03);
+    a.adds_imm8(4, 0x40);
+    a.adds_imm8(4, 0x40);
+    a.adds_reg(4, 4, 4);
+    a.adcs(4, 3);
+    a.cmp_imm8(0, 0xFF);
+    a.subs_imm8(2, 1);
+    a.subs_imm3(2, 2, 1);
+    a.sbcs(2, 3);
+    a.adds_imm3(5, 2, 3);
+    a.lsls_imm(5, 5, 7);
+    a.lsrs_imm(5, 5, 20);
+    a.asrs_imm(5, 5, 2);
+    a.rors_reg(5, 5);
+    a.ands(0, 1);
+    a.eors(0, 1);
+    a.orrs(1, 2);
+    a.bics(3, 3);
+    a.mvns(0, 2);
+    a.tst(0, 1);
+    a.cmn(0, 1);
+    a.cmp_reg(0, 1);
+    a.negs(0, 3);
+    a.muls(0, 3);
+    a.lsls_reg(2, 1);
+    a.lsrs_reg(2, 1);
+    a.asrs_reg(2, 4);
+    a.mov_reg(8, 0);
+    a.add_high(8, 0);
+    a.add_high(8, 8);
+    a.cmp_high(8, 0);
+    a.mov_reg(10, 0);
+    a.mov_reg(11, 1);
+    a.add_high(10, 11);
+    a.nop();
+
+    halt16(&mut a);
+    conformance_m0("m0_alu_thumb1", &mut a, "halt", &mt);
+}
+
+#[test]
+fn m0_loadstore_thumb1() {
+    let Some(mt) = qemu_m0() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+
+    // Base into low RAM via 16-bit construction.
+    a.movs_imm8(0, 0x20);
+    a.lsls_imm(0, 0, 24); // r0 = 0x2000_0000
+    a.movs_imm8(1, 0x40);
+
+    // Word, byte, and halfword immediate-offset forms.
+    a.str_imm(1, 0, 0); // [r0] = 0x40
+    a.ldr_imm(2, 0, 0); // r2 = 0x40
+    a.movs_imm8(1, 0xAB);
+    a.strb_imm(1, 0, 4); // [r0+4] = 0xAB
+    a.ldrb_imm(3, 0, 4); // r3 = 0xAB
+    a.movs_imm8(1, 0x7F);
+    a.strh_imm(1, 0, 8); // [r0+8] = 0x7F
+    a.ldrh_imm(3, 0, 8); // r3 = 0x7F
+
+    // Register-offset form.
+    a.movs_imm8(1, 0x33);
+    a.movs_imm8(6, 4); // r6 = 4 (offset)
+    a.ls_reg(4, 2, 0, 6); // ldr r2, [r0, r6] = [0x2000_0004] = 0xAB
+    a.ls_reg(0, 1, 0, 6); // str r1, [r0, r6] = [0x2000_0004] = r1
+
+    // SP-relative and literal loads.
+    a.movs_imm8(1, 0x55);
+    a.str_sp(1, 0); // [sp] = 0x55
+    a.ldr_sp(3, 0); // r3 = 0x55
+    a.ldr_lit(4, "lit"); // r4 = 0x11223344
+    a.addr_sp(5, 8); // r5 = sp + 8
+
+    // Push/pop.
+    a.push(0x3F, true); // push {r0-r5, lr}
+    a.pop(0x3F, false); // pop {r0-r5}
+    a.movs_imm8(6, 0x66);
+
+    a.b16("past_pool");
+    a.align4();
+    a.label("lit");
+    a.dc_u32(0x1122_3344);
+    a.label("past_pool");
+
+    halt16(&mut a);
+    conformance_m0("m0_loadstore_thumb1", &mut a, "halt", &mt);
+}
+
+#[test]
+fn m0_branch_bl() {
+    let Some(mt) = qemu_m0() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+
+    // 16-bit conditional branch (not taken).
+    a.movs_imm8(0, 0);
+    a.cmp_imm8(0, 1);
+    a.bc(1, "not_taken"); // bne -> taken (flags differ)
+    a.movs_imm8(1, 0xAA); // skipped
+    a.label("not_taken");
+    a.movs_imm8(1, 0xBB);
+
+    // BL to a forward label and back via bx (M0-valid).
+    a.movs_imm8(2, 0x11);
+    a.bl("sub");
+    a.movs_imm8(3, 0x22);
+    a.b16("past_sub");
+    a.label("sub");
+    a.movs_imm8(4, 0x33);
+    a.bx(14);
+    a.label("past_sub");
+
+    // CBZ / CBNZ (16-bit). Targets must be >= pc+6 (the offset is from pc+4).
+    a.movs_imm8(0, 0);
+    a.cbz(0, "zero_taken");
+    a.movs_imm8(5, 0xCC); // skipped
+    a.movs_imm8(6, 0xEE); // padding (skipped)
+    a.label("zero_taken");
+    a.movs_imm8(0, 1);
+    a.cbnz(0, "nz_taken");
+    a.movs_imm8(6, 0xDD); // skipped
+    a.movs_imm8(7, 0xEE); // padding (skipped)
+    a.label("nz_taken");
+
+    halt16(&mut a);
+    conformance_m0("m0_branch_bl", &mut a, "halt", &mt);
+}
+
+#[test]
+fn m0_exception_svc() {
+    let Some(mt) = qemu_m0() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+    a.vec(11, "svc_handler"); // SVC exception 11
+
+    a.movs_imm8(0, 1);
+    a.svc(0);
+    a.movs_imm8(1, 0x22); // after first return
+    a.movs_imm8(0, 2);
+    a.svc(0);
+    a.movs_imm8(2, 0x33); // after second return
+    a.b16("halt");
+
+    a.label("svc_handler");
+    a.movs_imm8(9, 0x99); // marker
+    a.bx(14); // EXC_RETURN THREAD_MSP
+
+    halt16(&mut a);
+    conformance_m0("m0_exception_svc", &mut a, "halt", &mt);
+}
+
+#[test]
+fn m0_hardfault_undef() {
+    let Some(mt) = qemu_m0() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+    a.vec(3, "hf_handler"); // HardFault vector
+
+    // An undefined 16-bit encoding: on ARMv6-M the only exceptions are Reset,
+    // NMI, HardFault, SVCall, PendSV, and SysTick, so this escalates to
+    // HardFault directly (no UsageFault on M0). The handler must not `bx lr`
+    // back to the faulting instruction (that would re-fault and lock up), so
+    // it lands on the shared halt loop instead.
+    a.raw(0xDEFF); // undefined
+    a.movs_imm8(1, 0xAA); // never reached
+
+    a.label("hf_handler");
+    a.movs_imm8(9, 0x77); // marker
+    a.b16("halt");
+
+    halt16(&mut a);
+    conformance_m0("m0_hardfault_undef", &mut a, "halt", &mt);
 }
