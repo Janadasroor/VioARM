@@ -157,8 +157,7 @@ impl Behavior for FlashBehavior {
             KEYR => {
                 // Reassemble the full 32-bit key word from the byte lanes; a
                 // standard word store arrives as four lanes (0, 8, 16, 24).
-                self.key_word = (self.key_word & !(0xFF << shift))
-                    | (u32::from(val) << shift);
+                self.key_word = (self.key_word & !(0xFF << shift)) | (u32::from(val) << shift);
                 if shift == 24 {
                     let word = self.key_word;
                     self.unlock_write(word);
@@ -219,7 +218,8 @@ impl Behavior for FlashBehavior {
         let gate = self.gate.lock().unwrap();
         let synth = match offset {
             SR => {
-                value | if gate.eop { SR_EOP } else { 0 }
+                value
+                    | if gate.eop { SR_EOP } else { 0 }
                     | if gate.wrprterr { SR_WRPRTERR } else { 0 }
             }
             CR => {
@@ -405,8 +405,7 @@ impl Behavior for FlashF4Behavior {
         match offset {
             KEYR4 => {
                 // Reassemble the full 32-bit key word from the byte lanes.
-                self.key_word = (self.key_word & !(0xFF << shift))
-                    | (u32::from(val) << shift);
+                self.key_word = (self.key_word & !(0xFF << shift)) | (u32::from(val) << shift);
                 if shift == 24 {
                     let word = self.key_word;
                     if self.unlock_write(word) {
@@ -475,7 +474,8 @@ impl Behavior for FlashF4Behavior {
         let gate = self.gate.lock().unwrap();
         let synth = match offset {
             SR4 => {
-                value | if gate.eop { SR4_EOP } else { 0 }
+                value
+                    | if gate.eop { SR4_EOP } else { 0 }
                     | if gate.wrprterr { SR4_WRPERR } else { 0 }
             }
             CR4 => {
@@ -562,7 +562,7 @@ impl InterruptSource for FlashF4 {
 
 #[cfg(test)]
 mod f4_tests {
-    use super::{FlashF4, FlashErase, FlashGate, KEY1, KEY2, Region};
+    use super::{FlashErase, FlashF4, FlashGate, Region, KEY1, KEY2};
     use crate::device::{InterruptSource, Peripheral};
     use crate::error::BusError;
     use std::sync::{Arc, Mutex};
@@ -704,7 +704,7 @@ mod f4_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::{FlashF1, FlashErase, FlashGate, KEY1, KEY2, Region};
+    use super::{FlashErase, FlashF1, FlashGate, Region, KEY1, KEY2};
     use crate::device::stm32::flash::{
         CR_EOPIE, CR_MER, CR_PER, CR_PG, CR_STRT, SR_EOP, SR_WRPRTERR,
     };
@@ -719,7 +719,10 @@ mod tests {
     const AR: u32 = 0x14;
 
     fn gate() -> Arc<Mutex<FlashGate>> {
-        Arc::new(Mutex::new(FlashGate::new(Region::new(0x0800_0000, 0x1_0000), 1024)))
+        Arc::new(Mutex::new(FlashGate::new(
+            Region::new(0x0800_0000, 0x1_0000),
+            1024,
+        )))
     }
 
     fn device(g: Arc<Mutex<FlashGate>>) -> FlashF1 {

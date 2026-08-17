@@ -2272,7 +2272,8 @@ fn decode_vfp_sp(hi: u16, lo: u16, w: u32) -> Option<Result<Inst32, DecodeError>
     // Every remaining op has bit4 clear.
     if lo & 0x0010 != 0 {
         return Some(Err(err_for(hi)));
-    }    let b23 = (w >> 23) & 1;
+    }
+    let b23 = (w >> 23) & 1;
     let b21 = (w >> 21) & 1;
     let b20 = (w >> 20) & 1;
     let b19_16 = (w >> 16) & 0xF;
@@ -2473,7 +2474,9 @@ fn decode_vfp_sp(hi: u16, lo: u16, w: u32) -> Option<Result<Inst32, DecodeError>
 /// `f = (bit7 ? 0x8000 : 0) | (bit6 ? 0x3e00 : 0x4000) | (imm8 & 0x3f) << 3`,
 /// placed in the high halfword. The value is the ARM `VFPExpandImm` result.
 const fn vfp_expand_imm(imm8: u32) -> u32 {
-    let f = ((imm8 >> 7) & 1) * 0x8000 | (((imm8 >> 6) & 1) * 0x3E00) | (((imm8 >> 6) & 1 ^ 1) * 0x4000)
+    let f = ((imm8 >> 7) & 1) * 0x8000
+        | (((imm8 >> 6) & 1) * 0x3E00)
+        | (((imm8 >> 6) & 1 ^ 1) * 0x4000)
         | ((imm8 & 0x3F) << 3);
     f << 16
 }
@@ -2911,10 +2914,7 @@ mod tests {
             v7m_bytes([0x51, 0xf8, 0x08, 0x0e]),
             Ok({
                 let mut m = mem(MemOp::Ldr, 0, 1, 8, true, true, false);
-                if let Inst32::Mem {
-                    unprivileged, ..
-                } = &mut m
-                {
+                if let Inst32::Mem { unprivileged, .. } = &mut m {
                     *unprivileged = true;
                 }
                 m
@@ -2925,10 +2925,7 @@ mod tests {
             v7m_bytes([0x42, 0xf8, 0x04, 0x3e]),
             Ok({
                 let mut m = mem(MemOp::Str, 3, 2, 4, true, true, false);
-                if let Inst32::Mem {
-                    unprivileged, ..
-                } = &mut m
-                {
+                if let Inst32::Mem { unprivileged, .. } = &mut m {
                     *unprivileged = true;
                 }
                 m

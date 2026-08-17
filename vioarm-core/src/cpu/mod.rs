@@ -298,8 +298,8 @@ const UFSR_UNDEFINSTR: u32 = 0x0001_0000; // UFSR bit 0 -> combined bit 16
 const UFSR_NOCP: u32 = 0x0002_0000; // UFSR bit 1 -> combined bit 17
 const UFSR_DIVBYZERO: u32 = 0x0200_0000; // UFSR bit 9 -> combined bit 25
 const BFSR_PRECISERR: u32 = 0x0000_0100; // BFSR bit 0 -> combined bit 8
-// QEMU reports HFSR.FORCED at bit 30 (0x4000_0000) rather than the ARMv7-M
-// architectural bit 31; the differential oracle is the arbiter here.
+                                         // QEMU reports HFSR.FORCED at bit 30 (0x4000_0000) rather than the ARMv7-M
+                                         // architectural bit 31; the differential oracle is the arbiter here.
 const HFSR_FORCED: u32 = 0x4000_0000;
 
 /// `SHCSR.USGFAULTENA` (bit 18): a distinct `UsageFault` exception, enabled by
@@ -1464,7 +1464,14 @@ impl<B: PeripheralBus> Core<B> {
                 if addr & 3 != 0 {
                     return self.data_fault(addr, pc);
                 }
-                if !self.mpu_allows(addr, if is_load { MpuAccess::Read } else { MpuAccess::Write }) {
+                if !self.mpu_allows(
+                    addr,
+                    if is_load {
+                        MpuAccess::Read
+                    } else {
+                        MpuAccess::Write
+                    },
+                ) {
                     return self.mpu_fault(addr, pc, false);
                 }
                 if is_load {
@@ -1531,7 +1538,14 @@ impl<B: PeripheralBus> Core<B> {
                 if address & 3 != 0 {
                     return self.data_fault(address, pc);
                 }
-                if !self.mpu_allows(address, if is_load { MpuAccess::Read } else { MpuAccess::Write }) {
+                if !self.mpu_allows(
+                    address,
+                    if is_load {
+                        MpuAccess::Read
+                    } else {
+                        MpuAccess::Write
+                    },
+                ) {
                     return self.mpu_fault(address, pc, false);
                 }
                 if is_load {
@@ -1730,10 +1744,7 @@ impl<B: PeripheralBus> Core<B> {
                 let m = self.regs.read(rm);
                 let m_swap = matches!(
                     op,
-                    DualMulOp::Smladx
-                        | DualMulOp::Smlsdx
-                        | DualMulOp::Smlaldx
-                        | DualMulOp::Smlsldx
+                    DualMulOp::Smladx | DualMulOp::Smlsdx | DualMulOp::Smlaldx | DualMulOp::Smlsldx
                 );
                 match op {
                     // Word forms write the single `Rd`.
@@ -2329,7 +2340,13 @@ impl<B: PeripheralBus> Core<B> {
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss
             )]
-            I::VfpCvtInt { to_float, signed, rz, vd, vm } => {
+            I::VfpCvtInt {
+                to_float,
+                signed,
+                rz,
+                vd,
+                vm,
+            } => {
                 let a = self.vfp.read_s(vm);
                 let mut st = self.vfp.float_status();
                 let result = if to_float {
@@ -2458,8 +2475,10 @@ impl<B: PeripheralBus> Core<B> {
                     self.regs.write(rt, lo);
                     self.regs.write(rt2, hi);
                 } else {
-                    self.vfp.write_s(if is_dp { 2 * vm } else { vm }, self.regs.read(rt));
-                    self.vfp.write_s(if is_dp { 2 * vm + 1 } else { vm + 1 }, self.regs.read(rt2));
+                    self.vfp
+                        .write_s(if is_dp { 2 * vm } else { vm }, self.regs.read(rt));
+                    self.vfp
+                        .write_s(if is_dp { 2 * vm + 1 } else { vm + 1 }, self.regs.read(rt2));
                 }
                 Ok(Next::Advance(pc + 4))
             }
@@ -2490,7 +2509,13 @@ impl<B: PeripheralBus> Core<B> {
                 }
                 Ok(Next::Advance(pc + 4))
             }
-            I::VfpLdSt { is_load, vd, rn, add, imm } => {
+            I::VfpLdSt {
+                is_load,
+                vd,
+                rn,
+                add,
+                imm,
+            } => {
                 // VLDR/VSTR (single). `Rn == 15` is the literal form, whose
                 // base is the word-aligned `pc + 4`.
                 let base = if rn == 15 {
@@ -2506,7 +2531,14 @@ impl<B: PeripheralBus> Core<B> {
                 if addr & 3 != 0 {
                     return self.data_fault(addr, pc);
                 }
-                if !self.mpu_allows(addr, if is_load { MpuAccess::Read } else { MpuAccess::Write }) {
+                if !self.mpu_allows(
+                    addr,
+                    if is_load {
+                        MpuAccess::Read
+                    } else {
+                        MpuAccess::Write
+                    },
+                ) {
                     return self.mpu_fault(addr, pc, false);
                 }
                 if is_load {
@@ -2517,7 +2549,13 @@ impl<B: PeripheralBus> Core<B> {
                 }
                 Ok(Next::Advance(pc + 4))
             }
-            I::VfpLdStD { is_load, vd, rn, add, imm } => {
+            I::VfpLdStD {
+                is_load,
+                vd,
+                rn,
+                add,
+                imm,
+            } => {
                 let base = if rn == 15 {
                     (pc.wrapping_add(4)) & !3
                 } else {
@@ -2531,7 +2569,14 @@ impl<B: PeripheralBus> Core<B> {
                 if addr & 7 != 0 {
                     return self.data_fault(addr, pc);
                 }
-                if !self.mpu_allows(addr, if is_load { MpuAccess::Read } else { MpuAccess::Write }) {
+                if !self.mpu_allows(
+                    addr,
+                    if is_load {
+                        MpuAccess::Read
+                    } else {
+                        MpuAccess::Write
+                    },
+                ) {
                     return self.mpu_fault(addr, pc, false);
                 }
                 if is_load {
@@ -2546,7 +2591,14 @@ impl<B: PeripheralBus> Core<B> {
                 Ok(Next::Advance(pc + 4))
             }
             #[allow(clippy::cast_possible_truncation)]
-            I::VfpLdStMult { is_load, vd, rn, n, writeback, dec_before } => {
+            I::VfpLdStMult {
+                is_load,
+                vd,
+                rn,
+                n,
+                writeback,
+                dec_before,
+            } => {
                 // VLDM/VSTM with `Rn == PC` and write-back is UNPREDICTABLE.
                 if writeback && rn == 15 {
                     return self.hardfault_on_undefined(pc, 4);
@@ -2557,11 +2609,22 @@ impl<B: PeripheralBus> Core<B> {
                     self.regs.read(rn)
                 };
                 let count = u32::from(n) * 4;
-                let start = if dec_before { base.wrapping_sub(count) } else { base };
+                let start = if dec_before {
+                    base.wrapping_sub(count)
+                } else {
+                    base
+                };
                 if start & 3 != 0 {
                     return self.data_fault(start, pc);
                 }
-                if !self.mpu_allows(start, if is_load { MpuAccess::Read } else { MpuAccess::Write }) {
+                if !self.mpu_allows(
+                    start,
+                    if is_load {
+                        MpuAccess::Read
+                    } else {
+                        MpuAccess::Write
+                    },
+                ) {
                     return self.mpu_fault(start, pc, false);
                 }
                 let mut addr = start;
@@ -2586,7 +2649,14 @@ impl<B: PeripheralBus> Core<B> {
                 Ok(Next::Advance(pc + 4))
             }
             #[allow(clippy::cast_possible_truncation)]
-            I::VfpLdStMultD { is_load, vd, rn, n, writeback, dec_before } => {
+            I::VfpLdStMultD {
+                is_load,
+                vd,
+                rn,
+                n,
+                writeback,
+                dec_before,
+            } => {
                 if writeback && rn == 15 {
                     return self.hardfault_on_undefined(pc, 4);
                 }
@@ -2596,11 +2666,22 @@ impl<B: PeripheralBus> Core<B> {
                     self.regs.read(rn)
                 };
                 let count = u32::from(n) * 8;
-                let start = if dec_before { base.wrapping_sub(count) } else { base };
+                let start = if dec_before {
+                    base.wrapping_sub(count)
+                } else {
+                    base
+                };
                 if start & 7 != 0 {
                     return self.data_fault(start, pc);
                 }
-                if !self.mpu_allows(start, if is_load { MpuAccess::Read } else { MpuAccess::Write }) {
+                if !self.mpu_allows(
+                    start,
+                    if is_load {
+                        MpuAccess::Read
+                    } else {
+                        MpuAccess::Write
+                    },
+                ) {
                     return self.mpu_fault(start, pc, false);
                 }
                 let mut addr = start;
@@ -2837,7 +2918,14 @@ impl<B: PeripheralBus> Core<B> {
                 | LsAccess::SextByte
                 | LsAccess::SextHalf
         );
-        if !self.mpu_allows(addr, if is_load { MpuAccess::Read } else { MpuAccess::Write }) {
+        if !self.mpu_allows(
+            addr,
+            if is_load {
+                MpuAccess::Read
+            } else {
+                MpuAccess::Write
+            },
+        ) {
             return self.mpu_fault(addr, pc, false);
         }
         if is_load {
@@ -2959,7 +3047,11 @@ impl<B: PeripheralBus> Core<B> {
         let enabled = self.mem.read_word(SHCSR_ADDR).unwrap_or(0) & SHCSR_USGFAULTENA != 0;
         // FAULTMASK raises the current priority to -1, below which nothing can
         // preempt, so a distinct UsageFault cannot be taken under it.
-        let current = if self.faultmask { 0 } else { self.current_priority() };
+        let current = if self.faultmask {
+            0
+        } else {
+            self.current_priority()
+        };
         if enabled && self.priority_byte(6) < current {
             self.mem.record_fault(ufsr_bit, 0);
             self.take_exception(Exception::UsageFault, pc)?;
@@ -3226,9 +3318,10 @@ impl<B: PeripheralBus> Core<B> {
         // captured before the registers below switch the active pointer.
         let handler_msp = self.regs.sp;
         let align = sxpsr & XPSR_ALIGN != 0;
-        let mut sp = frame
-            .wrapping_add(FRAME_BYTES)
-            .wrapping_add(if ftype { 0 } else { FP_FRAME_BYTES });
+        let mut sp =
+            frame
+                .wrapping_add(FRAME_BYTES)
+                .wrapping_add(if ftype { 0 } else { FP_FRAME_BYTES });
         if align {
             sp |= 4;
         }
@@ -3997,14 +4090,14 @@ mod tests {
         load_inst(&mut c, SVC_ADDR, &[0x00, 0xdf]); // svc #0
         load_inst(&mut c, SVC_HANDLER, &[0x00, 0xde]); // udf (0xDE00) -> HardFault
         load_inst(&mut c, SVC_HANDLER + 2, &[0x70, 0x47]); // bx lr
-        // HardFault handler: bx lr (returns to SVC).
+                                                           // HardFault handler: bx lr (returns to SVC).
         load_inst(&mut c, HF_HANDLER, &[0x70, 0x47]); // bx lr
         c.regs.pc = SVC_ADDR;
         c.step().unwrap(); // take SVC
         assert_eq!(c.ipsr, 11);
         c.step().unwrap(); // the UDEF in SVC takes a HardFault preempting it
-        // HardFault nests on top: ipsr = 3, a second frame is stacked (32
-        // bytes), and LR points back into Handler mode via EXC_RETURN_HANDLER.
+                           // HardFault nests on top: ipsr = 3, a second frame is stacked (32
+                           // bytes), and LR points back into Handler mode via EXC_RETURN_HANDLER.
         assert_eq!(c.ipsr, 3);
         assert_eq!(c.regs.pc, HF_HANDLER);
         assert_eq!(c.regs.lr, EXC_RETURN_HANDLER);
@@ -4012,9 +4105,7 @@ mod tests {
         // Patch the stacked SVC-handler PC so the fault handler's return skips
         // the UDEF (the way firmware would repair the fault).
         let hf_sp = c.regs.sp;
-        c.mem()
-            .write_word(hf_sp + 24, SVC_HANDLER + 2)
-            .unwrap();
+        c.mem().write_word(hf_sp + 24, SVC_HANDLER + 2).unwrap();
         c.step().unwrap(); // bx lr -> return to SVC
         assert_eq!(c.ipsr, 11);
         assert_eq!(c.regs.sp, SP - FRAME_BYTES);
@@ -4068,9 +4159,9 @@ mod tests {
         c.step().unwrap(); // take SVC
         assert_eq!(c.ipsr, 11);
         c.step().unwrap(); // SVC in the handler: cannot preempt -> HardFault
-        // HardFault nests on top of the SVC frame; the stacked return address
-        // keeps SVC semantics (instruction *after* the offending SVC), so a
-        // bare `bx lr` returns straight into the SVC handler.
+                           // HardFault nests on top of the SVC frame; the stacked return address
+                           // keeps SVC semantics (instruction *after* the offending SVC), so a
+                           // bare `bx lr` returns straight into the SVC handler.
         assert_eq!(c.ipsr, 3);
         assert_eq!(c.regs.pc, HF_HANDLER);
         assert_eq!(c.regs.lr, EXC_RETURN_HANDLER);
@@ -4107,8 +4198,8 @@ mod tests {
         load_inst(&mut c, HF_HANDLER, &[0x70, 0x47]); // bx lr (fault skipped)
         c.regs.pc = SVC_ADDR;
         c.step().unwrap(); // masked SVC cannot be taken -> HardFault
-        // Priority -1 HardFault still preempts Thread mode; the stacked return
-        // address keeps SVC semantics (instruction *after* the offending SVC).
+                           // Priority -1 HardFault still preempts Thread mode; the stacked return
+                           // address keeps SVC semantics (instruction *after* the offending SVC).
         assert_eq!(c.ipsr, 3);
         assert_eq!(c.regs.pc, HF_HANDLER);
         assert_eq!(c.regs.lr, EXC_RETURN_THREAD_MSP);
@@ -6199,10 +6290,7 @@ mod tests {
         assert_eq!(c.mem().read_word(0xE000_ED28).unwrap(), 0x0001_0000);
         assert_eq!(c.mem().read_word(0xE000_ED2C).unwrap(), 0);
         // The stacked return address is the faulting instruction.
-        assert_eq!(
-            c.mem().read_word(SP - FRAME_BYTES + 24).unwrap(),
-            CODE
-        );
+        assert_eq!(c.mem().read_word(SP - FRAME_BYTES + 24).unwrap(), CODE);
     }
 
     #[test]
@@ -6288,7 +6376,9 @@ mod tests {
     /// Configure region 0 to cover `0x2000_0000` for 2 KiB with rw/rw access
     /// (`RASR = 0x0300_0015`) and enable the MPU, leaving everything above the
     /// region (and below the background) unmapped.
-    fn enable_mpu_region0(mem: &mut crate::mem::system::SystemMemory<crate::mem::flat::FlatMemory>) {
+    fn enable_mpu_region0(
+        mem: &mut crate::mem::system::SystemMemory<crate::mem::flat::FlatMemory>,
+    ) {
         mem.write_word(0xE000_ED94, 0x1).unwrap(); // MPU_CTRL: ENABLE
         mem.write_word(0xE000_ED98, 0).unwrap(); // MPU_RNR: region 0
         mem.write_word(0xE000_ED9C, 0x2000_0000).unwrap(); // MPU_RBAR

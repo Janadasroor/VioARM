@@ -24,7 +24,16 @@ pub const XPSR_MASK: u32 = 0xF90F_0000 | 0x0600_FC00;
 /// `N:Z:C:V`, `DN`, `FZ`, `RMode` (bits 23:22), and the sticky exception
 /// flags `IDC`, `IXC`, `UFC`, `OFC`, `DZC`, `IOC`. Bits VioARM does not track
 /// (e.g. `AHP`, `QC`) are masked out of the diff.
-pub const FPSCR_MASK: u32 = 0xF000_0000 | (1 << 25) | (1 << 24) | (0b11 << 22) | (1 << 7) | (1 << 4) | (1 << 3) | (1 << 2) | (1 << 1) | (1 << 0);
+pub const FPSCR_MASK: u32 = 0xF000_0000
+    | (1 << 25)
+    | (1 << 24)
+    | (0b11 << 22)
+    | (1 << 7)
+    | (1 << 4)
+    | (1 << 3)
+    | (1 << 2)
+    | (1 << 1)
+    | (1 << 0);
 
 /// VFP (FPv4-SP) architectural state: the S0-S31 single-precision bank and
 /// FPSCR.
@@ -87,7 +96,15 @@ impl fmt::Display for CpuState {
             self.r[12],
         )?;
         if let Some(v) = self.vfp {
-            write!(f, " fpscr(masked)={:08x} s0={:08x} s1={:08x} s2={:08x} s3={:08x}", v.masked_fpscr(), v.s[0], v.s[1], v.s[2], v.s[3])?;
+            write!(
+                f,
+                " fpscr(masked)={:08x} s0={:08x} s1={:08x} s2={:08x} s3={:08x}",
+                v.masked_fpscr(),
+                v.s[0],
+                v.s[1],
+                v.s[2],
+                v.s[3]
+            )?;
         }
         Ok(())
     }

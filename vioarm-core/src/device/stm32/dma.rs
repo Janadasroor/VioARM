@@ -195,9 +195,7 @@ impl Behavior for DmaBehavior {
                 word
             }
             // `CNDTR` is writable only while the channel is disabled.
-            offset
-                if offset >= CNDTR_CH && (offset - CNDTR_CH) % CH_STRIDE == 0 =>
-            {
+            offset if offset >= CNDTR_CH && (offset - CNDTR_CH) % CH_STRIDE == 0 => {
                 let ch = (offset - CNDTR_CH) / CH_STRIDE;
                 if view.get(CCR_CH + ch * CH_STRIDE) & EN != 0 {
                     view.get(offset)
@@ -322,10 +320,7 @@ impl DmaF1 {
     /// Panics if the generated device tables do not contain the `DMA1`
     /// peripheral (a build-time invariant enforced by conformance tests).
     #[must_use]
-    pub fn dma1(
-        mailbox: Arc<Mutex<Vec<DmaUnit>>>,
-        requests: Arc<Mutex<DmaRequests>>,
-    ) -> Self {
+    pub fn dma1(mailbox: Arc<Mutex<Vec<DmaUnit>>>, requests: Arc<Mutex<DmaRequests>>) -> Self {
         Self::dma_for::<stm32f103::Stm32f103>("DMA1", mailbox, requests)
     }
 
@@ -404,7 +399,10 @@ impl InterruptSource for DmaF1 {
 
 #[cfg(test)]
 mod tests {
-    use super::{DmaF1, DmaRequests, DmaUnit, CNDTR_CH, CPAR_CH, CMAR_CH, CCR_CH, EN, ISR, MEM2MEM, MINC, PINC};
+    use super::{
+        DmaF1, DmaRequests, DmaUnit, CCR_CH, CMAR_CH, CNDTR_CH, CPAR_CH, EN, ISR, MEM2MEM, MINC,
+        PINC,
+    };
     use crate::device::{InterruptSource, Peripheral};
     use crate::error::BusError;
     use std::sync::{Arc, Mutex};
@@ -652,7 +650,11 @@ mod tests {
         req.lock().unwrap().request(1, 5, true);
         d.tick(1);
         assert_eq!(*m.lock().unwrap(), vec![(0x4000, 0x3000, 1)]);
-        assert_eq!(read_word(&mut d, D2 + 0x0C + 4 * 0x14), 0, "CNDTR exhausted");
+        assert_eq!(
+            read_word(&mut d, D2 + 0x0C + 4 * 0x14),
+            0,
+            "CNDTR exhausted"
+        );
     }
 
     #[test]

@@ -65,7 +65,9 @@ fn conformance(name: &str, a: &mut Asm, halt: &str, mt: &QemuMachine) {
 }
 
 fn snapshot_like(states: &[CpuState]) -> String {
-    states.last().map_or_else(|| "no states".to_string(), std::string::ToString::to_string)
+    states
+        .last()
+        .map_or_else(|| "no states".to_string(), std::string::ToString::to_string)
 }
 
 /// A flag-sync prologue: `ADDS r0, #0` forces `N=0 C=0 V=0 Z=1` identically in
@@ -363,7 +365,7 @@ fn loadstore_neg() {
     a.ldrsh_lit_neg(4, "litpool8"); // r4 = sext(hword[+8]) = 0xFFFFCCDD
     a.ldr_lit_neg(5, "litpool12"); // r5 = word = 0xEEFF0011
     a.ldrsh_lit_neg(6, "litpool16"); // r6 = sext(hword[+16]) = 0xFFFFAABB
-    // Positive literal with the pool after the loads (`U == 1`).
+                                     // Positive literal with the pool after the loads (`U == 1`).
     a.ldr_lit_wide(7, "pospool");
     a.ldrb_lit_wide(8, "pospool4");
     a.ldrsb_lit_wide(9, "pospool8");
@@ -408,7 +410,7 @@ fn memory() {
     a.strh_imm(0, 4, 6);
     a.str_wide(1, 4, 12);
     a.ls_reg(0, 0, 4, 3); // str r0, [r4, r3]
-    // loads
+                          // loads
     a.ldr_imm(5, 4, 0); // word
     a.ldrb_imm(6, 4, 4); // byte
     a.ldrh_imm(7, 4, 6); // halfword
@@ -684,9 +686,9 @@ fn exception_msp_align() {
     a.mov_imm32(0, 0x2000_2002);
     a.msr(0x08, 0); // MSR MSP, r0
     a.mrs(1, 0x08); // r1 = 0x20002000
-    // A word-aligned but 8-misaligned MSP (0x20002004): exception entry must
-    // decrement SP by 4 (setting xPSR.ALIGN), push the frame at 0x20001fe0,
-    // and the handler's THREAD_MSP return must re-align SP back to 0x20002004.
+                    // A word-aligned but 8-misaligned MSP (0x20002004): exception entry must
+                    // decrement SP by 4 (setting xPSR.ALIGN), push the frame at 0x20001fe0,
+                    // and the handler's THREAD_MSP return must re-align SP back to 0x20002004.
     a.mov_imm32(0, 0x2000_2004);
     a.msr(0x08, 0); // MSR MSP, r0
     a.svc(0); // taken with SP%8 == 4 -> ALIGN adjustment
@@ -910,7 +912,6 @@ fn data_faults() {
     conformance("data_faults", &mut a, "halt", &mt);
 }
 
-
 /// Like [`conformance`], but for programs that are *supposed* to halt before
 /// ever reaching the landing loop: a double fault (HardFault taken while a
 /// HardFault handler is active) locks the core up. Both implementations must
@@ -937,10 +938,7 @@ fn conformance_halt(name: &str, a: &mut Asm, halt: &str, mt: &QemuMachine) {
         "{name}: qemu produced no state (failed to boot under load)"
     );
     assert!(
-        !qemu
-            .last()
-            .map(|s| s.r[15] & !1 == stop)
-            .unwrap_or(false),
+        !qemu.last().map(|s| s.r[15] & !1 == stop).unwrap_or(false),
         "{name}: qemu reached halt @ {stop:#x} instead of locking up (got {} states)",
         qemu.len()
     );
@@ -1067,7 +1065,7 @@ fn exception_masks_persist() {
     a.movs_imm8(0, 0x80);
     a.msr(0x11, 0); // BASEPRI = 0x80
     a.raw(0xDE00); // UDEF -> HardFault (fixed priority, masks don't block it)
-    // resumed here after the handler patches PAST the UDEF:
+                   // resumed here after the handler patches PAST the UDEF:
     a.mrs(4, 0x10); // r4 = PRIMASK after return (still 1)
     a.mrs(5, 0x11); // r5 = BASEPRI after return (still 0x80)
     a.b("halt");
@@ -1139,12 +1137,12 @@ fn it_blocks() {
     // A single wide (32-bit) instruction inside IT, condition true.
     a.it(1, 0b1000);
     a.movw(10, 0x2222); // executes (NE true), one slot
-    // A suppressed (not-taken) conditional branch inside IT. clang emits the
-    // canonical `it ne; bne` for conditional branches, and with the condition
-    // false (Z=1 -> NE fails) the branch is suppressed and ITSTATE advances
-    // normally. NOTE: a *taken* branch inside an IT block is intentionally
-    // absent here -- QEMU 10.2 (reference model) HardFault-lockups on it even
-    // for clang's canonical sequence, so it is not differentially testable.
+                        // A suppressed (not-taken) conditional branch inside IT. clang emits the
+                        // canonical `it ne; bne` for conditional branches, and with the condition
+                        // false (Z=1 -> NE fails) the branch is suppressed and ITSTATE advances
+                        // normally. NOTE: a *taken* branch inside an IT block is intentionally
+                        // absent here -- QEMU 10.2 (reference model) HardFault-lockups on it even
+                        // for clang's canonical sequence, so it is not differentially testable.
     a.movs_imm8(0, 0); // Z=1 -> NE false
     a.it(1, 0b1000); // [T], single, cond NE
     a.bc(1, "it_nt"); // bne: suppressed (NE false), falls through
@@ -1213,7 +1211,7 @@ fn control_flow() {
     a.bc(1, "taken_ne"); // bne (Z=0) not taken
     a.movs_imm8(3, 0x22); // executed
     a.label("taken_ne");
-// CBZ/CBNZ (targets must stay within ±126 bytes; the minimum reachable
+    // CBZ/CBNZ (targets must stay within ±126 bytes; the minimum reachable
     // offset is +2 past `pc+4`, so the skipped instruction alone is not enough)
     a.movs_imm8(2, 0); // r2 = 0
     a.cbz(2, "cbz_local"); // taken
@@ -1236,16 +1234,16 @@ fn control_flow() {
     a.it(0xB, 0b1100); // ite lt
     a.movs_imm8(7, 0x77); // LT false (0x7F >= 0x80) -> else
     a.adds_imm8(7, 1); // LT true -> executed
-    // BL / BX LR subroutine
+                       // BL / BX LR subroutine
     a.bl("sub");
     a.movs_imm8(8, 0x88); // after return
-    // pop {pc} return path
+                          // pop {pc} return path
     a.bl("sub2");
     a.b("wide_gap_src");
     a.label("sub");
     a.movs_imm8(9, 0x99);
     a.bx(14);
-a.label("sub2");
+    a.label("sub2");
     a.push(0b1000_0000, true); // {r7, lr} so {r7, pc} POP reads LR two words into the list
     a.movs_imm8(10, 0xAA);
     a.pop(0b1000_0000, true); // {r7, pc}
@@ -1293,7 +1291,7 @@ fn thumb2_dp() {
     a.mov_wide(5, 0);
     a.mvn_wide(5, 0);
     a.asr_wide(5, 0, 0, 7); // ANDS r5, r0, r0, ASR #7
-    // addw / subw
+                            // addw / subw
     a.addw(5, 0, 0x1234);
     a.subw(5, 0, 0x0500);
     // divide
@@ -1316,7 +1314,7 @@ fn thumb2_dp() {
     a.ssat(5, 0, 12, 0);
     a.usat(6, 2, 12, 0);
     a.ssat(6, 0, 8, 2); // with shift
-    // unary
+                        // unary
     a.rev_wide(5, 0);
     a.rev16_wide(5, 0);
     a.revsh_wide(5, 0);
@@ -1366,7 +1364,11 @@ fn tables() {
         a.label(&format!("tbb{i}"));
         a.tb(15, 0);
         a.dc_u32(0); // patched below
-        let next = if i == 3 { "tbh0_in" } else { &format!("tbb{}_in", i + 1) };
+        let next = if i == 3 {
+            "tbh0_in"
+        } else {
+            &format!("tbb{}_in", i + 1)
+        };
         for (k, v) in [(0u8, 0x10u8), (1, 0x20), (2, 0x30), (3, 0x40)] {
             a.label(&format!("tbb{i}_c{k}"));
             a.movs_imm8(1, v);
@@ -1383,7 +1385,11 @@ fn tables() {
         a.tbh(15, 0);
         a.dc_u32(0); // patched below (four halfword entries)
         a.dc_u32(0);
-        let next = if i == 3 { "rtbb_in" } else { &format!("tbh{}_in", i + 1) };
+        let next = if i == 3 {
+            "rtbb_in"
+        } else {
+            &format!("tbh{}_in", i + 1)
+        };
         for (k, v) in [(0u8, 0xA0u8), (1, 0xB0), (2, 0xC0), (3, 0xD0)] {
             a.label(&format!("tbh{i}_c{k}"));
             a.movs_imm8(1, v);
@@ -1541,13 +1547,13 @@ fn ldrd_strd() {
     a.strd_post_neg(2, 3, 4, 16); // [r4], r4 -= 16
     a.mov_imm32(4, 0x2000_2420);
     a.ldrd_post_neg(9, 10, 4, 16); // [r4], r4 -= 16
-    // writeback base must not overlap the pair: r0:r1 vs r4 is fine; verify
-    // r4 advanced by the writebacks while the pair registers kept their data.
+                                   // writeback base must not overlap the pair: r0:r1 vs r4 is fine; verify
+                                   // r4 advanced by the writebacks while the pair registers kept their data.
     a.mov_imm32(4, 0x2000_2400); // fresh base
     a.strd(0, 1, 4, 0); // offset store, no writeback
     a.strd_pre(2, 3, 4, 64); // pre-indexed: [r4+64], r4 += 64
     a.ldrd_pre(5, 6, 4, 64); // reads the pair just stored, r4 += 64
-    // PC-relative `LDRD` literal from a 4-aligned pool
+                             // PC-relative `LDRD` literal from a 4-aligned pool
     a.ldrd_lit(5, 6, "pair");
     a.b("past_pair");
     a.align4();
@@ -2439,7 +2445,7 @@ fn scb_shcsr_svcallpend_takes_svc() {
     a.mov_imm32(1, 0x0007_0000);
     a.str_imm(1, 0, 0);
     a.ldr_imm(2, 0, 0); // r2 = 0x0007_0000
-    // Pend an SVC: the machine must take the SVC vector before the next step.
+                        // Pend an SVC: the machine must take the SVC vector before the next step.
     a.mov_imm32(1, 0x0007_8000);
     a.str_imm(1, 0, 0);
     a.label("halt");
@@ -2544,8 +2550,8 @@ fn scb_div0_records_cfsr_hfsr() {
     a.ldr_imm(4, 0, 0); // r4 = 0x0200_0000
     a.str_imm(4, 0, 0); // clear DIVBYZERO
     a.ldr_imm(6, 0, 0); // r6 = 0
-    // HFSR: read FORCED (bit 30, where the QEMU oracle reports it), then
-    // clear it the same way.
+                        // HFSR: read FORCED (bit 30, where the QEMU oracle reports it), then
+                        // clear it the same way.
     a.mov_imm32(0, 0xE000_ED2C);
     a.ldr_imm(5, 0, 0); // r5 = 0x4000_0000
     a.str_imm(5, 0, 0); // clear FORCED
@@ -2555,5 +2561,3 @@ fn scb_div0_records_cfsr_hfsr() {
     a.vec(3, "hf_handler");
     conformance("scb_div0_records_cfsr_hfsr", &mut a, "halt", &mt);
 }
-
-

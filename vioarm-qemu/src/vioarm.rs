@@ -27,10 +27,7 @@ pub const SRAM_LEN: u32 = 0x0020_0000;
 /// Build an ARMv7-M machine over a bare memory and load `bin` at address 0.
 #[must_use]
 pub fn new_machine(bin: &[u8]) -> Machine<SystemMemory<FlatMemory>> {
-    let backing = FlatMemory::with_layout(
-        &[0x0000_0000, 0x2000_0000],
-        &[FLASH_LEN, SRAM_LEN],
-    );
+    let backing = FlatMemory::with_layout(&[0x0000_0000, 0x2000_0000], &[FLASH_LEN, SRAM_LEN]);
     let fpu_ctx = Arc::new(Mutex::new(FpuCtx::new()));
     let mem = SystemMemory::new_with_fpu(backing, fpu_ctx.clone());
     let mut m = Machine::armv7m_with_fpu(mem, fpu_ctx);

@@ -1,4 +1,4 @@
-﻿//! A tiny byte-level Thumb/Thumb-2 assembler for building conformance test
+//! A tiny byte-level Thumb/Thumb-2 assembler for building conformance test
 //! images.
 //!
 //! Every encoder in this file is the inverse of a decoder whose encoding is
@@ -22,18 +22,39 @@ enum Item {
     H2(u16),
     H4(u32),
     /// Unconditional `B.W` (always the 4-byte wide form).
-    B { target: String },
-    Bl { target: String },
+    B {
+        target: String,
+    },
+    Bl {
+        target: String,
+    },
     /// Narrow conditional branch `B<c> imm8`, Â±256 bytes.
-    Bc { cc: u8, target: String },
+    Bc {
+        cc: u8,
+        target: String,
+    },
     /// Wide conditional branch `B<c>.W imm24`, Â±1 MB.
-    BcWide { cc: u8, target: String },
+    BcWide {
+        cc: u8,
+        target: String,
+    },
     /// Narrow `CBZ`/`CBNZ`, forward only.
-    Cbz { rn: u8, nonzero: bool, target: String },
+    Cbz {
+        rn: u8,
+        nonzero: bool,
+        target: String,
+    },
     /// `LDR Rt, [PC, #imm]` against the literal at `target`.
-    LdrLit { rt: u8, target: String },
+    LdrLit {
+        rt: u8,
+        target: String,
+    },
     /// `LDRD Rt, Rt2, [PC, #imm]` against the literal pool at `target`.
-    LdrdLit { rt: u8, rt2: u8, target: String },
+    LdrdLit {
+        rt: u8,
+        rt2: u8,
+        target: String,
+    },
     /// T32 wide `LDR* Rt, [PC, #Â±imm]` against the literal at `target`; `neg`
     /// clears the `U` bit for a subtract. `access` selects the width/sign.
     MemLit {
@@ -52,7 +73,10 @@ fn size_of(item: &Item) -> u32 {
         Item::Label(_) => 0,
         Item::H2(_) => 2,
         Item::H4(_) => 4,
-        Item::B { .. } | Item::Bl { .. } | Item::BcWide { .. } | Item::LdrdLit { .. }
+        Item::B { .. }
+        | Item::Bl { .. }
+        | Item::BcWide { .. }
+        | Item::LdrdLit { .. }
         | Item::MemLit { .. } => 4,
         Item::Bc { .. } | Item::Cbz { .. } | Item::LdrLit { .. } => 2,
         Item::PadTo4 | Item::DcU32(_) => 4,
@@ -243,7 +267,11 @@ impl Asm {
         amount: u8,
         set_flags: bool,
     ) {
-        let hi = 0xEA00 | u16::from(add_family) << 8 | op << 5 | u16::from(set_flags) << 4 | u16::from(rn);
+        let hi = 0xEA00
+            | u16::from(add_family) << 8
+            | op << 5
+            | u16::from(set_flags) << 4
+            | u16::from(rn);
         let imm3 = u16::from(amount >> 2);
         let imm2 = u16::from(amount & 3);
         let lo = imm3 << 12 | u16::from(rd) << 8 | imm2 << 6 | (shift & 3) << 4 | u16::from(rm);
@@ -303,22 +331,30 @@ impl Asm {
     // ------------------------------- shifts -------------------------------
 
     pub fn lsls_imm(&mut self, rd: u8, rm: u8, amount: u8) {
-        self.raw(0x0000 | (u16::from(amount) & 0x1F) << 6 | (u16::from(rm) & 7) << 3 | u16::from(rd) & 7);
+        self.raw(
+            0x0000 | (u16::from(amount) & 0x1F) << 6 | (u16::from(rm) & 7) << 3 | u16::from(rd) & 7,
+        );
     }
 
     pub fn lsrs_imm(&mut self, rd: u8, rm: u8, amount: u8) {
-        self.raw(0x0800 | (u16::from(amount) & 0x1F) << 6 | (u16::from(rm) & 7) << 3 | u16::from(rd) & 7);
+        self.raw(
+            0x0800 | (u16::from(amount) & 0x1F) << 6 | (u16::from(rm) & 7) << 3 | u16::from(rd) & 7,
+        );
     }
 
     pub fn asrs_imm(&mut self, rd: u8, rm: u8, amount: u8) {
-        self.raw(0x1000 | (u16::from(amount) & 0x1F) << 6 | (u16::from(rm) & 7) << 3 | u16::from(rd) & 7);
+        self.raw(
+            0x1000 | (u16::from(amount) & 0x1F) << 6 | (u16::from(rm) & 7) << 3 | u16::from(rd) & 7,
+        );
     }
 
     // ---------------------------- ALU (0x4000) ----------------------------
 
     /// `ANDS`..`MVNS` from the 16-bit ALU space; `opcode` is the 4-bit field.
     fn alu(&mut self, opcode: u8, rd: u8, rm: u8) {
-        self.raw(0x4000 | (u16::from(opcode) & 0xF) << 6 | (u16::from(rm) & 7) << 3 | u16::from(rd) & 7);
+        self.raw(
+            0x4000 | (u16::from(opcode) & 0xF) << 6 | (u16::from(rm) & 7) << 3 | u16::from(rd) & 7,
+        );
     }
 
     pub fn ands(&mut self, rd: u8, rm: u8) {
@@ -528,7 +564,13 @@ impl Asm {
     /// Register-offset load/store; `kind` is the 3-bit `LsReg` selector
     /// (`STR=0, STRH=1, STRB=2, LDRSB=3, LDR=4, LDRH=5, LDRB=6, LDRSH=7`).
     pub fn ls_reg(&mut self, kind: u8, rt: u8, rn: u8, rm: u8) {
-        self.raw(0x5000 | (u16::from(kind) & 7) << 9 | (u16::from(rm) & 7) << 6 | (u16::from(rn) & 7) << 3 | u16::from(rt) & 7);
+        self.raw(
+            0x5000
+                | (u16::from(kind) & 7) << 9
+                | (u16::from(rm) & 7) << 6
+                | (u16::from(rn) & 7) << 3
+                | u16::from(rt) & 7,
+        );
     }
 
     pub fn str_sp(&mut self, rt: u8, imm: u8) {
@@ -844,7 +886,12 @@ impl Asm {
         let p = if post { 0 } else { 1 };
         let w = if post || index { 1 } else { 0 };
         // Bit 7 (`0x80`) is the `U` bit: set for `+imm`, clear for `-imm`.
-        let hi = 0xE840 | p << 8 | u16::from(!negative) << 7 | w << 5 | u16::from(load) << 4 | u16::from(rn);
+        let hi = 0xE840
+            | p << 8
+            | u16::from(!negative) << 7
+            | w << 5
+            | u16::from(load) << 4
+            | u16::from(rn);
         let lo = u16::from(rt) << 12 | u16::from(rt2) << 8 | u16::from(imm >> 2);
         self.raw32(hi as u32 | (lo as u32) << 16);
     }
@@ -1142,7 +1189,10 @@ impl Asm {
 
     fn bitfield(&mut self, base: u16, rd: u8, rn: u8, lsb: u8, field: u8) {
         let hi = base | u16::from(rn);
-        let lo = u16::from(lsb >> 2) << 12 | u16::from(rd) << 8 | u16::from(lsb & 3) << 6 | u16::from(field) & 0x1F;
+        let lo = u16::from(lsb >> 2) << 12
+            | u16::from(rd) << 8
+            | u16::from(lsb & 3) << 6
+            | u16::from(field) & 0x1F;
         self.raw32(hi as u32 | (lo as u32) << 16);
     }
 
@@ -1169,7 +1219,10 @@ impl Asm {
     /// (imm 1..=32) stores `imm - 1`, `USAT` (imm 0..=31) stores it directly.
     fn sat(&mut self, base: u16, rd: u8, rn: u8, field: u8, shift_amt: u8, sh: bool) {
         let hi = base | (u16::from(sh)) << 5 | u16::from(rn);
-        let lo = u16::from(shift_amt >> 2) << 12 | u16::from(rd) << 8 | u16::from(shift_amt & 3) << 6 | u16::from(field) & 0x1F;
+        let lo = u16::from(shift_amt >> 2) << 12
+            | u16::from(rd) << 8
+            | u16::from(shift_amt & 3) << 6
+            | u16::from(field) & 0x1F;
         self.raw32(hi as u32 | (lo as u32) << 16);
     }
 
@@ -1250,7 +1303,9 @@ impl Asm {
     /// Thumb-1 `SXTH/SXTB/UXTH/UXTB Rd, Rm`; `kind` is the two-bit
     /// signedness/size selector (`0` SXTH, `1` SXTB, `2` UXTH, `3` UXTB).
     fn narrow_extend(&mut self, kind: u8, rd: u8, rm: u8) {
-        self.raw(0xB200 | (u16::from(kind) & 3) << 6 | (u16::from(rm) & 7) << 3 | u16::from(rd) & 7);
+        self.raw(
+            0xB200 | (u16::from(kind) & 3) << 6 | (u16::from(rm) & 7) << 3 | u16::from(rd) & 7,
+        );
     }
 
     pub fn sxth(&mut self, rd: u8, rm: u8) {
@@ -1269,7 +1324,9 @@ impl Asm {
     /// Thumb-1 `REV/REV16/REVSH Rd, Rm`; `kind` is the two-bit selector
     /// (`0` REV, `1` REV16, `3` REVSH).
     fn narrow_reverse(&mut self, kind: u8, rd: u8, rm: u8) {
-        self.raw(0xBA00 | (u16::from(kind) & 3) << 6 | (u16::from(rm) & 7) << 3 | u16::from(rd) & 7);
+        self.raw(
+            0xBA00 | (u16::from(kind) & 3) << 6 | (u16::from(rm) & 7) << 3 | u16::from(rd) & 7,
+        );
     }
 
     pub fn rev(&mut self, rd: u8, rm: u8) {
@@ -1543,11 +1600,7 @@ impl Asm {
 
     /// `VMSR FPSCR, Rt` â€” write a general-purpose register into the FPSCR.
     pub fn vmsr(&mut self, rt: u8) {
-        let w = 0xEE00_0000
-            | (0b111 << 21)
-            | (1 << 16)
-            | (u32::from(rt) << 12)
-            | 0x0A10;
+        let w = 0xEE00_0000 | (0b111 << 21) | (1 << 16) | (u32::from(rt) << 12) | 0x0A10;
         self.raw32(w.rotate_left(16));
     }
 
@@ -1857,12 +1910,7 @@ impl Asm {
                         }
                         _ => encode_branch(off, 0xD000),
                     };
-                    let bytes = [
-                        hi as u8,
-                        (hi >> 8) as u8,
-                        lo as u8,
-                        (lo >> 8) as u8,
-                    ];
+                    let bytes = [hi as u8, (hi >> 8) as u8, lo as u8, (lo >> 8) as u8];
                     emit(&mut cur, &bytes);
                 }
                 Item::Bc { cc, target } => {
@@ -1872,7 +1920,9 @@ impl Asm {
                         .ok_or_else(|| format!("undefined label {target:?}"))?;
                     let off = i64::from(t) - i64::from(cur + 4);
                     if off < -256 || off > 254 || off % 2 != 0 {
-                        return Err(format!("conditional branch to {target:?} out of Â±256-byte range"));
+                        return Err(format!(
+                            "conditional branch to {target:?} out of Â±256-byte range"
+                        ));
                     }
                     let imm8 = ((off >> 1) as i16) as u8;
                     emit(
@@ -1887,7 +1937,9 @@ impl Asm {
                         .ok_or_else(|| format!("undefined label {target:?}"))?;
                     let off = i64::from(t) - i64::from(cur + 4);
                     if off < -(1 << 20) || off > (1 << 20) - 2 || off % 2 != 0 {
-                        return Err(format!("conditional wide branch to {target:?} out of Â±1 MB range"));
+                        return Err(format!(
+                            "conditional wide branch to {target:?} out of Â±1 MB range"
+                        ));
                     }
                     let u = (off as i32) as u32;
                     let s = (u >> 20) & 1;
@@ -1895,7 +1947,8 @@ impl Asm {
                     let i2 = (u >> 12) & 1;
                     let j1 = (1 - (i1 ^ s)) as u16;
                     let j2 = (1 - (i2 ^ s)) as u16;
-                    let hi = 0xF000 | (s << 10) as u16 | u16::from(*cc) << 6 | ((u >> 1) & 0x3F) as u16;
+                    let hi =
+                        0xF000 | (s << 10) as u16 | u16::from(*cc) << 6 | ((u >> 1) & 0x3F) as u16;
                     let lo = 0x8000 | j1 << 13 | j2 << 11 | ((u >> 1) & 0x7FF) as u16;
                     let bytes = [hi as u8, (hi >> 8) as u8, lo as u8, (lo >> 8) as u8];
                     emit(&mut cur, &bytes);
@@ -1916,7 +1969,8 @@ impl Asm {
                     let b = (off >> 1) as u16; // 1..=63
                     let i = (b >> 5) & 1;
                     let imm5 = b & 0x1F;
-                    let hw = 0xB100 | u16::from(*nonzero) << 11 | i << 9 | imm5 << 3 | u16::from(*rn);
+                    let hw =
+                        0xB100 | u16::from(*nonzero) << 11 | i << 9 | imm5 << 3 | u16::from(*rn);
                     emit(&mut cur, &hw.to_le_bytes());
                 }
                 Item::LdrLit { rt, target } => {
@@ -1961,9 +2015,7 @@ impl Asm {
                     let off = i64::from(t) - i64::from(base);
                     let mag = off.abs();
                     if mag > 0xFFF || off.abs() % 4 != 0 {
-                        return Err(format!(
-                            "literal to {target:?} out of range (off {off})"
-                        ));
+                        return Err(format!("literal to {target:?} out of range (off {off})"));
                     }
                     if *neg && off > 0 || !*neg && off < 0 {
                         return Err(format!("literal {target:?} on wrong side of the load"));

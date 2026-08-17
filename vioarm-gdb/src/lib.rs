@@ -71,7 +71,9 @@ const fn gdb_signal(cause: HaltCause) -> u8 {
         HaltCause::UndefinedInstruction
         | HaltCause::NonThumbTarget
         | HaltCause::NotImplemented { .. } => 4,
-        HaltCause::FetchAbort | HaltCause::BusFault { .. } | HaltCause::StackMisaligned { .. } => 11,
+        HaltCause::FetchAbort | HaltCause::BusFault { .. } | HaltCause::StackMisaligned { .. } => {
+            11
+        }
         HaltCause::UnhandledException => 6,
     }
 }
@@ -425,13 +427,7 @@ impl<'a, M: PeripheralBus> Session<'a, M> {
             return Outcome::Reply("E01".to_owned());
         };
         self.bps.insert(addr, original);
-        if self
-            .machine
-            .core
-            .mem()
-            .write_half(addr, BKPT)
-            .is_err()
-        {
+        if self.machine.core.mem().write_half(addr, BKPT).is_err() {
             self.bps.remove(&addr);
             return Outcome::Reply("E01".to_owned());
         }
@@ -442,13 +438,7 @@ impl<'a, M: PeripheralBus> Session<'a, M> {
         let Some(original) = self.bps.remove(&addr) else {
             return Outcome::Reply("OK".to_owned());
         };
-        if self
-            .machine
-            .core
-            .mem()
-            .write_half(addr, original)
-            .is_err()
-        {
+        if self.machine.core.mem().write_half(addr, original).is_err() {
             return Outcome::Reply("E01".to_owned());
         }
         Outcome::Reply("OK".to_owned())
@@ -480,9 +470,9 @@ impl<'a, M: PeripheralBus> Session<'a, M> {
         if annex != "target.xml" {
             return Outcome::Reply("E00".to_owned());
         }
-        let (offset, _len) = range
-            .split_once(',')
-            .map_or((0, 0), |(o, l)| (hex_u32(o).unwrap_or(0), hex_u32(l).unwrap_or(0)));
+        let (offset, _len) = range.split_once(',').map_or((0, 0), |(o, l)| {
+            (hex_u32(o).unwrap_or(0), hex_u32(l).unwrap_or(0))
+        });
         let bytes = TARGET_XML.as_bytes();
         let mut start = usize::try_from(offset).unwrap_or(0);
         if start > bytes.len() {
@@ -660,8 +650,8 @@ mod tests {
     use std::time::Duration;
 
     use vioarm_core::machine::Machine;
-    use vioarm_core::mem::Bus as _;
     use vioarm_core::mem::flat::FlatMemory;
+    use vioarm_core::mem::Bus as _;
 
     use super::{checksum, gdb_signal, hex_u32, mem_range, serve, HaltCause};
 
@@ -774,8 +764,8 @@ mod tests {
             assert_eq!(exch(&mut c, "m102,2"), "00be"); // bkpt #0, little-endian
             assert_eq!(exch(&mut c, "c"), "S05");
             assert_eq!(&exch(&mut c, "g")[15 * 8..15 * 8 + 8], "02010000"); // back at the bp
-            // Resume from the instruction *before* the breakpoint so the
-            // continue genuinely runs onto it.
+                                                                            // Resume from the instruction *before* the breakpoint so the
+                                                                            // continue genuinely runs onto it.
             assert_eq!(exch(&mut c, "P0f=00000100"), "OK");
             assert_eq!(exch(&mut c, "c"), "S05");
             let g = exch(&mut c, "g");

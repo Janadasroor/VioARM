@@ -20,9 +20,9 @@
 //! enabled until firmware disables it, exactly as if the peripheral never
 //! asserted its line.
 
+use crate::device::stm32::dma::DmaUnit;
 use crate::device::svd::{Behavior, Device, RegisterFile, Registers};
 use crate::device::{InterruptSource, Peripheral};
-use crate::device::stm32::dma::DmaUnit;
 use crate::error::BusError;
 use crate::mem::bus::Region;
 use std::sync::{Arc, Mutex};
@@ -117,10 +117,7 @@ impl Behavior for DmaF4Behavior {
                 0
             }
             // `SxNDTR` is writable only while the stream is disabled.
-            offset
-                if offset >= S0CR + SNDTR
-                    && (offset - (S0CR + SNDTR)) % STREAM_STRIDE == 0 =>
-            {
+            offset if offset >= S0CR + SNDTR && (offset - (S0CR + SNDTR)) % STREAM_STRIDE == 0 => {
                 let cr = offset - SNDTR;
                 if view.get(cr) & EN != 0 {
                     view.get(offset)
@@ -237,10 +234,7 @@ impl DmaF4 {
     /// # Panics
     /// Panics if `D`'s generated tables do not contain the named peripheral.
     #[must_use]
-    pub fn for_device<D: Device>(
-        name: &str,
-        mailbox: Arc<Mutex<Vec<DmaUnit>>>,
-    ) -> Self {
+    pub fn for_device<D: Device>(name: &str, mailbox: Arc<Mutex<Vec<DmaUnit>>>) -> Self {
         let def = D::peripheral(name).expect("generated tables contain the controller");
         Self {
             inner: RegisterFile::new(def, DmaF4Behavior::new(mailbox)),

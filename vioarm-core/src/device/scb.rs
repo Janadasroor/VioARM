@@ -187,12 +187,12 @@ impl MpuRegion {
     /// (or instruction fetch) is allowed in the given privilege.
     const fn ap_read(ap: u32, privileged: bool) -> bool {
         match ap {
-            0 => false, // no access
+            0 => false,      // no access
             1 => privileged, // PRIV rw / UNPRIV none
-            2 | 3 => true, // PRIV rw/UNPRIV ro, rw/rw
-            4 => false, // reserved
+            2 | 3 => true,   // PRIV rw/UNPRIV ro, rw/rw
+            4 => false,      // reserved
             5 => privileged, // PRIV ro / UNPRIV none
-            6 | 7 => true, // ro/ro, PRIV ro / UNPRIV rw
+            6 | 7 => true,   // ro/ro, PRIV ro / UNPRIV rw
             _ => false,
         }
     }
@@ -200,9 +200,9 @@ impl MpuRegion {
     /// The AP write-permission matrix: `true` when a store is allowed.
     const fn ap_write(ap: u32, privileged: bool) -> bool {
         match ap {
-            1 => privileged, // PRIV rw / UNPRIV none
-            2 => privileged, // PRIV rw / UNPRIV ro
-            3 => true, // rw/rw
+            1 => privileged,  // PRIV rw / UNPRIV none
+            2 => privileged,  // PRIV rw / UNPRIV ro
+            3 => true,        // rw/rw
             7 => !privileged, // PRIV ro / UNPRIV rw (per the matrix)
             0 | 4 | 5 | 6 | _ => false,
         }
@@ -445,13 +445,7 @@ impl Scb {
     /// privilege and exception context. Disabled by reset, so plain execution
     /// is unaffected until firmware enables it.
     #[must_use]
-    pub fn mpu_check(
-        &self,
-        addr: u32,
-        access: MpuAccess,
-        privileged: bool,
-        exception: u8,
-    ) -> bool {
+    pub fn mpu_check(&self, addr: u32, access: MpuAccess, privileged: bool, exception: u8) -> bool {
         // `MPU_CTRL.ENABLE` clear: the MPU is off, every access is allowed.
         if self.mpu.ctrl & 0x1 == 0 {
             return true;
@@ -465,10 +459,7 @@ impl Scb {
         // disabled subregion leaves that range uncovered, so lower regions
         // (and the background) still apply.
         for region in self.mpu.regions.iter().rev() {
-            if region.enabled()
-                && region.contains(addr)
-                && !region.subregion_disabled(addr)
-            {
+            if region.enabled() && region.contains(addr) && !region.subregion_disabled(addr) {
                 return region.permits(access, privileged);
             }
         }
@@ -507,13 +498,11 @@ impl Scb {
         match reg_off {
             // MPU_TYPE is read-only (falls through to the `_` no-op arm).
             0x04 => {
-                self.mpu.ctrl = (self.mpu.ctrl & !(0xFF << shift))
-                    | (u32::from(val) << shift);
+                self.mpu.ctrl = (self.mpu.ctrl & !(0xFF << shift)) | (u32::from(val) << shift);
                 self.mpu.ctrl &= 0x7;
             }
             0x08 => {
-                self.mpu.rnr = (self.mpu.rnr & !(0xFF << shift))
-                    | (u32::from(val) << shift);
+                self.mpu.rnr = (self.mpu.rnr & !(0xFF << shift)) | (u32::from(val) << shift);
                 // Eight regions: only the low three bits are meaningful.
                 self.mpu.rnr &= 0x7;
             }
@@ -522,8 +511,8 @@ impl Scb {
             // `MPU_RNR.REGION` is used. A `REGION` beyond the implemented
             // eight drops the write, matching the oracle.
             0x0C | 0x14 | 0x1C | 0x24 => {
-                self.rbar_pending = (self.rbar_pending & !(0xFF << shift))
-                    | (u32::from(val) << shift);
+                self.rbar_pending =
+                    (self.rbar_pending & !(0xFF << shift)) | (u32::from(val) << shift);
                 if byte == 3 {
                     let w = self.rbar_pending;
                     self.rbar_pending = 0;
@@ -544,8 +533,8 @@ impl Scb {
             // RASR and aliases: plain read/write storage.
             0x10 | 0x18 | 0x20 | 0x28 => {
                 let r = self.mpu_region_index();
-                self.mpu.regions[r].rasr = (self.mpu.regions[r].rasr & !(0xFF << shift))
-                    | (u32::from(val) << shift);
+                self.mpu.regions[r].rasr =
+                    (self.mpu.regions[r].rasr & !(0xFF << shift)) | (u32::from(val) << shift);
             }
             _ => {}
         }
@@ -677,8 +666,7 @@ impl Scb {
             FPCAR => {
                 let shift = 8 * offset;
                 let mut ctx = self.fpu_ctx.lock().unwrap();
-                ctx.fpcar =
-                    (ctx.fpcar & !(0xFF << shift)) | (u32::from(val) << shift) & !0x7;
+                ctx.fpcar = (ctx.fpcar & !(0xFF << shift)) | (u32::from(val) << shift) & !0x7;
             }
             FPDSCR => {
                 let shift = 8 * offset;
@@ -1095,7 +1083,7 @@ mod tests {
     fn mpu_region_grants_within_and_denies_without() {
         let mut s = Scb::new();
         write_word(&mut s, 0xE000_ED94, 0x1); // ENABLE, no PRIVDEFENA
-        // Region 0: 0x2000_0000, 1 KiB (SIZE 9), rw/rw (AP 011).
+                                              // Region 0: 0x2000_0000, 1 KiB (SIZE 9), rw/rw (AP 011).
         write_word(&mut s, 0xE000_ED9C, 0x2000_0000);
         write_word(&mut s, 0xE000_EDA0, 0x0300_0013);
         assert!(s.mpu_check(0x2000_0004, MpuAccess::Read, true, 0));
@@ -1147,8 +1135,8 @@ mod tests {
     fn mpu_bypassed_in_nmi_and_hardfault_unless_hfnmiena() {
         let mut s = Scb::new();
         write_word(&mut s, 0xE000_ED94, 0x1); // ENABLE only
-        // Unmapped address faults in Thread mode but is bypassed in NMI (2)
-        // and HardFault (3).
+                                              // Unmapped address faults in Thread mode but is bypassed in NMI (2)
+                                              // and HardFault (3).
         assert!(!s.mpu_check(0x1000_0000, MpuAccess::Read, true, 0));
         assert!(s.mpu_check(0x1000_0000, MpuAccess::Read, true, 2));
         assert!(s.mpu_check(0x1000_0000, MpuAccess::Read, true, 3));

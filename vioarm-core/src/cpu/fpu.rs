@@ -1052,21 +1052,16 @@ fn frac_div(n: u64, d: u64) -> (u64, bool) {
 
 /// QEMU's `rsqrt_tab`, a 7-bit table for the initial `1/sqrt` estimate.
 const RSQRT_TAB: [u16; 128] = [
-    0xb451, 0xb2f0, 0xb196, 0xb044, 0xaef9, 0xadb6, 0xac79, 0xab43,
-    0xaa14, 0xa8eb, 0xa7c8, 0xa6aa, 0xa592, 0xa480, 0xa373, 0xa26b,
-    0xa168, 0xa06a, 0x9f70, 0x9e7b, 0x9d8a, 0x9c9d, 0x9bb5, 0x9ad1,
-    0x99f0, 0x9913, 0x983a, 0x9765, 0x9693, 0x95c4, 0x94f8, 0x9430,
-    0x936b, 0x92a9, 0x91ea, 0x912e, 0x9075, 0x8fbe, 0x8f0a, 0x8e59,
-    0x8daa, 0x8cfe, 0x8c54, 0x8bac, 0x8b07, 0x8a64, 0x89c4, 0x8925,
-    0x8889, 0x87ee, 0x8756, 0x86c0, 0x862b, 0x8599, 0x8508, 0x8479,
-    0x83ec, 0x8361, 0x82d8, 0x8250, 0x81c9, 0x8145, 0x80c2, 0x8040,
-    0xff02, 0xfd0e, 0xfb25, 0xf947, 0xf773, 0xf5aa, 0xf3ea, 0xf234,
-    0xf087, 0xeee3, 0xed47, 0xebb3, 0xea27, 0xe8a3, 0xe727, 0xe5b2,
-    0xe443, 0xe2dc, 0xe17a, 0xe020, 0xdecb, 0xdd7d, 0xdc34, 0xdaf1,
-    0xd9b3, 0xd87b, 0xd748, 0xd61a, 0xd4f1, 0xd3cd, 0xd2ad, 0xd192,
-    0xd07b, 0xcf69, 0xce5b, 0xcd51, 0xcc4a, 0xcb48, 0xca4a, 0xc94f,
-    0xc858, 0xc764, 0xc674, 0xc587, 0xc49d, 0xc3b7, 0xc2d4, 0xc1f4,
-    0xc116, 0xc03c, 0xbf65, 0xbe90, 0xbdbe, 0xbcef, 0xbc23, 0xbb59,
+    0xb451, 0xb2f0, 0xb196, 0xb044, 0xaef9, 0xadb6, 0xac79, 0xab43, 0xaa14, 0xa8eb, 0xa7c8, 0xa6aa,
+    0xa592, 0xa480, 0xa373, 0xa26b, 0xa168, 0xa06a, 0x9f70, 0x9e7b, 0x9d8a, 0x9c9d, 0x9bb5, 0x9ad1,
+    0x99f0, 0x9913, 0x983a, 0x9765, 0x9693, 0x95c4, 0x94f8, 0x9430, 0x936b, 0x92a9, 0x91ea, 0x912e,
+    0x9075, 0x8fbe, 0x8f0a, 0x8e59, 0x8daa, 0x8cfe, 0x8c54, 0x8bac, 0x8b07, 0x8a64, 0x89c4, 0x8925,
+    0x8889, 0x87ee, 0x8756, 0x86c0, 0x862b, 0x8599, 0x8508, 0x8479, 0x83ec, 0x8361, 0x82d8, 0x8250,
+    0x81c9, 0x8145, 0x80c2, 0x8040, 0xff02, 0xfd0e, 0xfb25, 0xf947, 0xf773, 0xf5aa, 0xf3ea, 0xf234,
+    0xf087, 0xeee3, 0xed47, 0xebb3, 0xea27, 0xe8a3, 0xe727, 0xe5b2, 0xe443, 0xe2dc, 0xe17a, 0xe020,
+    0xdecb, 0xdd7d, 0xdc34, 0xdaf1, 0xd9b3, 0xd87b, 0xd748, 0xd61a, 0xd4f1, 0xd3cd, 0xd2ad, 0xd192,
+    0xd07b, 0xcf69, 0xce5b, 0xcd51, 0xcc4a, 0xcb48, 0xca4a, 0xc94f, 0xc858, 0xc764, 0xc674, 0xc587,
+    0xc49d, 0xc3b7, 0xc2d4, 0xc1f4, 0xc116, 0xc03c, 0xbf65, 0xbe90, 0xbdbe, 0xbcef, 0xbc23, 0xbb59,
     0xba91, 0xb9cc, 0xb90a, 0xb84a, 0xb78c, 0xb6d0, 0xb617, 0xb560,
 ];
 
@@ -1162,12 +1157,7 @@ fn parts_sqrt(a: &mut Parts, status: &mut FloatStatus) {
 /// QEMU's `parts64_round_to_int_normal`. Returns true if the rounding was
 /// inexact. `frac_size` is the fraction size used for the "all integral"
 /// test.
-fn parts_round_to_int_normal(
-    a: &mut Parts,
-    rmode: RoundMode,
-    scale: i32,
-    frac_size: i32,
-) -> bool {
+fn parts_round_to_int_normal(a: &mut Parts, rmode: RoundMode, scale: i32, frac_size: i32) -> bool {
     a.exp += scale.clamp(-0x10000, 0x10000);
 
     if a.exp < 0 {
@@ -1681,8 +1671,14 @@ pub fn to_int32(a: u32, status: &mut FloatStatus) -> i32 {
 /// float32 -> int32 with round-to-zero (VCVTR).
 pub fn to_int32_round_to_zero(a: u32, status: &mut FloatStatus) -> i32 {
     let mut p = unpack_canonical_bits(a, status);
-    parts_float_to_sint(&mut p, RoundMode::ToZero, 0, i32::MIN as i64, i32::MAX as i64, status)
-        as i32
+    parts_float_to_sint(
+        &mut p,
+        RoundMode::ToZero,
+        0,
+        i32::MIN as i64,
+        i32::MAX as i64,
+        status,
+    ) as i32
 }
 
 /// float32 -> uint32, using the FPSCR rounding mode.
@@ -1878,7 +1874,12 @@ mod tests {
     #[test]
     fn add_rounding_direction_dependence() {
         // 1.0 + 1.0
-        for mode in [RoundMode::NearestEven, RoundMode::Down, RoundMode::Up, RoundMode::ToZero] {
+        for mode in [
+            RoundMode::NearestEven,
+            RoundMode::Down,
+            RoundMode::Up,
+            RoundMode::ToZero,
+        ] {
             let mut s = FloatStatus::new(mode);
             assert_eq!(add(f32(1.0), f32(1.0), &mut s), f32(2.0));
         }
@@ -1942,7 +1943,10 @@ mod tests {
         assert_eq!(div(f32(0.0), f32(0.0), &mut s), 0x7fc0_0000);
         assert!(s.take_flags() & (FLAG_INVALID | FLAG_INVALID_ZDZ) != 0);
         // inf/inf = NaN invalid.
-        assert_eq!(div(f32(f32::INFINITY), f32(f32::INFINITY), &mut s), 0x7fc0_0000);
+        assert_eq!(
+            div(f32(f32::INFINITY), f32(f32::INFINITY), &mut s),
+            0x7fc0_0000
+        );
         assert!(s.take_flags() & (FLAG_INVALID | FLAG_INVALID_IDI) != 0);
     }
 
@@ -1975,7 +1979,14 @@ mod tests {
     #[test]
     fn packing_roundtrip() {
         let mut s = FloatStatus::new(RoundMode::NearestEven);
-        for raw in [0u32, 0x3f80_0000, 0xc000_0000, 0x7f80_0000, 0x0080_0000, 0x0000_0001] {
+        for raw in [
+            0u32,
+            0x3f80_0000,
+            0xc000_0000,
+            0x7f80_0000,
+            0x0080_0000,
+            0x0000_0001,
+        ] {
             let mut p = unpack_canonical_bits(raw, &mut s);
             let packed = round_pack_canonical(&mut p, &mut s);
             assert_eq!(packed, raw, "roundtrip failed for {raw:#x}");
@@ -2036,7 +2047,10 @@ mod tests {
     fn muladd_negations() {
         let mut s = FloatStatus::new(RoundMode::NearestEven);
         // VFMS: a*b - c.
-        assert_eq!(muladd_neg(f32(2.0), f32(3.0), f32(1.0), MULADD_NEGATE_C, &mut s), f32(5.0));
+        assert_eq!(
+            muladd_neg(f32(2.0), f32(3.0), f32(1.0), MULADD_NEGATE_C, &mut s),
+            f32(5.0)
+        );
         // VFNMA: -a*b + c.
         assert_eq!(
             muladd_neg(f32(2.0), f32(3.0), f32(1.0), MULADD_NEGATE_PRODUCT, &mut s),
@@ -2044,7 +2058,13 @@ mod tests {
         );
         // VFNMS: -a*b - c.
         assert_eq!(
-            muladd_neg(f32(2.0), f32(3.0), f32(1.0), MULADD_NEGATE_C | MULADD_NEGATE_PRODUCT, &mut s),
+            muladd_neg(
+                f32(2.0),
+                f32(3.0),
+                f32(1.0),
+                MULADD_NEGATE_C | MULADD_NEGATE_PRODUCT,
+                &mut s
+            ),
             f32(-7.0)
         );
     }
@@ -2079,7 +2099,10 @@ mod tests {
         assert_eq!(compare(inf, f32(1.0), &mut s), FloatRelation::Greater);
         assert_eq!(compare(f32(1.0), inf, &mut s), FloatRelation::Less);
         assert_eq!(compare(inf, inf, &mut s), FloatRelation::Equal);
-        assert_eq!(compare(f32(-f32::INFINITY), f32(f32::INFINITY), &mut s), FloatRelation::Less);
+        assert_eq!(
+            compare(f32(-f32::INFINITY), f32(f32::INFINITY), &mut s),
+            FloatRelation::Less
+        );
     }
 
     #[test]

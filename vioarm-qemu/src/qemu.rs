@@ -132,11 +132,7 @@ pub fn parse_log(text: &str) -> Vec<CpuState> {
         match xpsr {
             Some(x) if parse_ok => {
                 let vfp = parse_vfp_block(&lines, i + 5);
-                let state = CpuState {
-                    r,
-                    xpsr: x,
-                    vfp,
-                };
+                let state = CpuState { r, xpsr: x, vfp };
                 // QEMU dumps the reset state once per core (re)initialization,
                 // which can repeat identical frames for a multi-phase board
                 // reset. A real program can never produce two consecutive
@@ -197,7 +193,12 @@ fn parse_vfp_block(lines: &[&str], start: usize) -> Option<VfpState> {
 /// Blocks until that state appears or `timeout` elapses; the QEMU process is
 /// always terminated before returning.
 #[must_use]
-pub fn run_until_pc(mt: &QemuMachine, bin: &[u8], stop_pc: u32, timeout: Duration) -> Vec<CpuState> {
+pub fn run_until_pc(
+    mt: &QemuMachine,
+    bin: &[u8],
+    stop_pc: u32,
+    timeout: Duration,
+) -> Vec<CpuState> {
     let dir = std::env::temp_dir().join("vioarm-qemu");
     let _ = std::fs::create_dir_all(&dir);
     let nano = std::time::SystemTime::now()
@@ -209,7 +210,10 @@ pub fn run_until_pc(mt: &QemuMachine, bin: &[u8], stop_pc: u32, timeout: Duratio
     std::fs::write(&bin_path, bin).expect("write qemu input binary");
     let _ = std::fs::remove_file(&log_path);
 
-    let device = format!("loader,file={},addr=0,force-raw=on", bin_path.to_string_lossy());
+    let device = format!(
+        "loader,file={},addr=0,force-raw=on",
+        bin_path.to_string_lossy()
+    );
     let mut child = Command::new(&mt.exe)
         .arg("-machine")
         .arg(&mt.machine)
