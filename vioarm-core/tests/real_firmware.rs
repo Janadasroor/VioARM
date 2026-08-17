@@ -38,6 +38,7 @@ const INIT_SP: u32 = 0x2000_4000;
 const IN_ADDR: u32 = RAM;
 const SUM_ADDR: u32 = RAM + 4;
 const TAG_ADDR: u32 = RAM + 8;
+const MARKER_ADDR: u32 = RAM;
 
 /// A small freestanding firmware: read an input, sum 1..=n in a loop that
 /// stays a loop under `-O0` (and which therefore needs no libc helpers), store
@@ -502,6 +503,53 @@ fn virtual_board_io_round_trips() {
         tx.extend(device.drain_output());
     }
     assert_eq!(tx, b"Hi!\n");
+}
+
+/// Firmware that executes a Thumb-2-only `MOVW` (encoded for a Cortex-M4)
+/// followed by a marker store and a `bkpt`.
+const THUMB2_FIRMWARE: &str = r#"
+#define MARKER 0x20000000u
+
+void reset(void) {
+    __asm__ volatile("movw r0, #0x1234");
+    *(volatile unsigned *)MARKER = 0xdeadbeefu;
+    __asm__ volatile("bkpt #0");
+}
+"#;
+
+/// ARMv6-M (Cortex-M0/M0+) firmware compiled for a Cortex-M4 target must have
+/// its first Thumb-2 instruction rejected: the v6-m core treats `MOVW` as
+/// undefined and escalates straight to `HardFault`, never reaching the marker
+/// store after it. This is the real-firmware side of the decoder-subset
+/// hardening: the machine halts before `MARKER` is written.
+#[test]
+fn cortex_m0_rejects_thumb2_firmware() {
+    let (code, symbols) = match build_firmware_v7m_with_includes(THUMB2_FIRMWARE, &[]) {
+        Ok(image) => image,
+        Err(why) => {
+            eprintln!("skipping thumb2-rejection test: {why}");
+            return;
+        }
+    };
+    let entry = *symbols.get("reset").expect("no reset symbol");
+    assert!(!code.is_empty(), "compiled .text must not be empty");
+
+    let mut m = Machine::new(board::cortex_m0());
+    m.load_image(&load_flat(CODE_BASE, &code));
+    {
+        let mem = m.core.mem();
+        mem.write_word(FLASH, INIT_SP).unwrap();
+        mem.write_word(FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+    }
+    m.reset().expect("reset from vector table");
+    let err = m.run(10_000);
+    // The escalated HardFault reads its (unset) vector entry and halts.
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
+    assert_eq!(
+        m.core.mem().read_word(MARKER_ADDR).unwrap(),
+        0,
+        "the Thumb-2 MOVW must not execute on the ARMv6-M core"
+    );
 }
 
 /// Real CMSIS-style firmware against the STM32F103 device header from the

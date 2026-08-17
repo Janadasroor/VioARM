@@ -66,6 +66,19 @@ pub fn virtual_board() -> BoardMemory {
     mem
 }
 
+/// A Cortex-M0/M0+ board: the generic virtual-board memory, to be paired with
+/// the ARMv6-M core (`Machine::new`, not `Machine::armv7m`).
+///
+/// This is the explicit ARMv6-M home for the generic peripheral set. The
+/// STM32F1/F4 boards reuse the same core and are described elsewhere; here the
+/// distinction is spelled out so firmware that must never see Thumb-2 or the
+/// v7-M-only `BASEPRI`/`FAULTMASK`/distinct-`UsageFault` facilities has a
+/// named home to run against.
+#[must_use]
+pub fn cortex_m0() -> BoardMemory {
+    virtual_board()
+}
+
 /// STM32F103 (Blue Pill class) flash base — the `0x0000_0000` boot alias; the
 /// main flash region at `0x0800_0000` is modeled separately and gated by the
 /// `FLASH` controller.

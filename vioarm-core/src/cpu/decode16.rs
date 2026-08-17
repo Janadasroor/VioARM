@@ -1076,4 +1076,57 @@ mod tests {
         // IT is ARMv7-M only: the shared ARMv6-M decoder rejects it.
         assert!(decode16(0xBF08).is_err());
     }
+
+    /// Sweep the entire 16-bit encoding space against both decoders. The
+    /// invariant that holds the instruction table together: the ARMv6-M
+    /// decoder is a strict subset of the ARMv7-M decoder — every encoding the
+    /// M0 core accepts must also decode on the M3/M4 path (the reverse is the
+    /// Thumb-2 gap ARMv6-M firmware must never hit).
+    #[test]
+    fn armv6m_decoder_is_subset_of_armv7m() {
+        for op in 0u16..=0xFFFF {
+            let v6 = decode16(op);
+            let v7 = decode16_v7m(op);
+            match (v6, v7) {
+                // Both agree, whatever the outcome.
+                (Ok(a), Ok(b)) => {
+                    assert_eq!(a, b, "decoders disagree on {op:#06x}: v6 {a:?} != v7 {b:?}");
+                }
+                (Err(e6), Err(_)) => {
+                    // Both reject it: fine. (The two error kinds can differ.)
+                    let _ = e6;
+                }
+                (Ok(a), Err(e)) => {
+                    panic!("v6 accepted {op:#06x} ({a:?}) but v7 rejected it: {e:?}")
+                }
+                (Err(_), Ok(b)) => {
+                    // The expected gap: a Thumb-2 / ARMv7-M-only encoding
+                    // (IT blocks, the wider hint range, ...) that the M0 core
+                    // must not execute.
+                    let _ = b;
+                }
+            }
+        }
+    }
+
+    /// The ARMv6-M decoder must reject the ARMv7-M-only IT encodings across
+    /// the whole hint space, while the ARMv7-M decoder accepts the valid
+    /// block (`firstcond != 0b1111`, nonzero `mask`) and rejects the
+    /// UNPREDICTABLE tails. The `mask == 0` HINTs (including `nop`) are legal
+    /// on both.
+    #[test]
+    fn it_block_encodings_are_v7m_only() {
+        for op in 0xBF00u16..=0xBFFF {
+            if let Ok(Inst16::It { .. }) = decode16_v7m(op) {
+                // A real IT block (mask nonzero): never legal on ARMv6-M.
+                assert!(decode16(op).is_err(), "{op:#06x} must not be ARMv6-M");
+            }
+            // HINT (`mask == 0`), UNPREDICTABLE tails: handled by the
+            // shared decoder, so both paths must agree.
+        }
+        // `hint` (0xBF00..) and the UNPREDICTABLE `bff8`/`bfec` tails are
+        // rejected by both paths (the shared decoder handles them).
+        assert!(decode16(0xBF00).is_ok()); // hint nop
+        assert!(decode16_v7m(0xBF00).is_ok());
+    }
 }

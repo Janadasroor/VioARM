@@ -624,6 +624,12 @@ impl<B: PeripheralBus> Core<B> {
             }
             SysReg::Ipsr => u32::from(self.ipsr),
             SysReg::Epsr => XPSR_T,
+            // ARMv6-M (Cortex-M0/M0+) has no BASEPRI or FAULTMASK register:
+            // reads of their sysreg encodings are UNPREDICTABLE on silicon,
+            // and the QEMU M0 reference RAZes them.
+            SysReg::Basepri | SysReg::BasepriMax | SysReg::Faultmask if self.isa == Isa::Armv6M => {
+                0
+            }
             // Unprivileged reads of these special-purpose registers are RAZ.
             SysReg::Msp
             | SysReg::Psp
@@ -695,6 +701,10 @@ impl<B: PeripheralBus> Core<B> {
                 }
             }
             SysReg::Primask => self.primask = v & 1 != 0,
+            // ARMv6-M has no BASEPRI/FAULTMASK: writes are UNPREDICTABLE on
+            // silicon and ignored by the QEMU M0 reference.
+            SysReg::Basepri | SysReg::BasepriMax | SysReg::Faultmask if self.isa == Isa::Armv6M => {
+            }
             SysReg::Basepri => self.basepri = v as u8,
             SysReg::BasepriMax => {
                 // Raises the mask (moves toward higher priority / lower
@@ -3043,8 +3053,12 @@ impl<B: PeripheralBus> Core<B> {
     /// The stacked return address is the faulting instruction. With no SCB on
     /// the bus the architectural reset state applies (disabled), so faults
     /// fold to HardFault exactly as before.
+    ///
+    /// ARMv6-M (Cortex-M0/M0+) has no UsageFault exception at all: the fold
+    /// to HardFault is unconditional there.
     fn usage_fault(&mut self, pc: u32, ufsr_bit: u32) -> Result<Next, HaltCause> {
-        let enabled = self.mem.read_word(SHCSR_ADDR).unwrap_or(0) & SHCSR_USGFAULTENA != 0;
+        let enabled = self.isa == Isa::Armv7M
+            && self.mem.read_word(SHCSR_ADDR).unwrap_or(0) & SHCSR_USGFAULTENA != 0;
         // FAULTMASK raises the current priority to -1, below which nothing can
         // preempt, so a distinct UsageFault cannot be taken under it.
         let current = if self.faultmask {
@@ -3892,6 +3906,66 @@ mod tests {
         m0.step().unwrap();
         assert!(!m0.faultmask);
         assert!(!m0.primask);
+    }
+
+    #[test]
+    fn armv6m_has_no_basepri_or_faultmask() {
+        // The ARMv6-M sysreg encodings for BASEPRI/BASEPRI_MAX/FAULTMASK do
+        // not exist on Cortex-M0/M0+: MRS reads them as 0 and MSR is ignored,
+        // matching the QEMU M0 reference (RAZ/WI) instead of silently
+        // modeling the ARMv7-M registers.
+        let mut c = core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(0, 0x80);
+        // msr basepri, r0 -> f380 8011.
+        load_inst(&mut c, 0x2000_0000, &[0x80, 0xf3, 0x11, 0x80]);
+        c.step().unwrap();
+        assert_eq!(c.basepri, 0);
+        // mrs r0, basepri -> f3ef 8011 reads 0.
+        c.regs.write(0, 0xDEAD);
+        load_inst(&mut c, 0x2000_0004, &[0xef, 0xf3, 0x11, 0x80]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0);
+        // msr faultmask, r0 -> f380 8013 is ignored.
+        c.regs.write(0, 1);
+        load_inst(&mut c, 0x2000_0008, &[0x80, 0xf3, 0x13, 0x80]);
+        c.step().unwrap();
+        assert!(!c.faultmask);
+        // mrs faultmask, r0 -> f3ef 8013 reads 0.
+        c.regs.write(0, 0xBAD);
+        load_inst(&mut c, 0x2000_000c, &[0xef, 0xf3, 0x13, 0x80]);
+        c.step().unwrap();
+        assert_eq!(c.regs.r[0], 0);
+        // msr basepri_max, r0 -> f380 8012 is ignored too.
+        c.regs.write(0, 0x40);
+        load_inst(&mut c, 0x2000_0010, &[0x80, 0xf3, 0x12, 0x80]);
+        c.step().unwrap();
+        assert_eq!(c.basepri, 0);
+    }
+
+    #[test]
+    fn armv6m_undefined_faults_fold_to_hardfault() {
+        // An undecodable instruction on ARMv6-M folds to HardFault: there is
+        // no UsageFault exception on Cortex-M0/M0+. The SHCSR.USGFAULTENA
+        // enable bit must not produce a distinct vector-6 entry even if a
+        // (non-architectural) SCB write attempted it.
+        let mut c = Core::new(crate::mem::flat::FlatMemory::with_layout(
+            &[0x0000_0000, 0x2000_0000],
+            &[0x1000, 0x1000],
+        ));
+        c.regs.pc = 0x2000_0000;
+        c.regs.sp = 0x2000_0040;
+        load_inst(&mut c, 0x2000_0000, &[0x00, 0xde]); // udf
+                                                       // Vector table: SP=0x2000_0040, PC=0x2000_0060, HardFault=0x2000_0080.
+        load_inst(
+            &mut c,
+            0x0000_0000,
+            &[
+                0x40, 0x00, 0x00, 0x20, 0x61, 0x00, 0x00, 0x20, 0, 0, 0, 0, 0x81, 0x00, 0x00, 0x20,
+            ],
+        );
+        c.step().unwrap();
+        assert_eq!(c.ipsr, 3, "ARMv6-M must fold the fault to HardFault");
     }
 
     #[test]

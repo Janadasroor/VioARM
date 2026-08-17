@@ -48,3 +48,64 @@ fn die(msg: &str) -> ! {
     eprintln!("error: {msg}");
     std::process::exit(1);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every committed table must regenerate byte-for-byte from its SVD
+    /// source. This is the codegen-hardening invariant: the generator is
+    /// deterministic (no timestamps, no map iteration order leaking through),
+    /// and the checked-in tables stay in lockstep with the packs. A drift here
+    /// means the tables were hand-edited or `emit` gained nondeterminism.
+    ///
+    /// The leading `//!` doc header embeds the exact CLI `source`/`out` path
+    /// strings it was produced with (which legitimately differ between
+    /// machines and invocations), so comparison starts at the `use super::`
+    /// import that opens the actual table.
+    #[test]
+    fn committed_tables_regenerate_identically() {
+        let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("vioarm-svd should sit one level under the workspace root");
+        let pairs: &[(&str, &str)] = &[
+            (
+                "packs/Keil.STM32F1xx_DFP/SVD/STM32F103xx.svd",
+                "vioarm-core/src/device/svd/stm32f103.rs",
+            ),
+            (
+                "packs/Keil.STM32F1xx_DFP/SVD/STM32F107xx.svd",
+                "vioarm-core/src/device/svd/stm32f107.rs",
+            ),
+            (
+                "packs/STM32F407.svd",
+                "vioarm-core/src/device/svd/stm32f407.rs",
+            ),
+        ];
+        for (svd_rel, out_rel) in pairs {
+            let svd_path = workspace.join(svd_rel);
+            let out_path = workspace.join(out_rel);
+            let xml = fs::read_to_string(&svd_path)
+                .unwrap_or_else(|e| panic!("cannot read {}: {e}", svd_path.display()));
+            let model =
+                svd::parse(&xml).unwrap_or_else(|e| panic!("parse {}: {e}", svd_path.display()));
+            let generated = emit::emit(&model, svd_rel, out_rel);
+            let committed = fs::read_to_string(&out_path)
+                .unwrap_or_else(|e| panic!("cannot read {}: {e}", out_path.display()));
+            let generated_body = table_body(&generated);
+            let committed_body = table_body(&committed);
+            assert_eq!(
+                generated_body,
+                committed_body,
+                "{out_rel} is stale: regenerate it with `cargo run -p vioarm-svd -- {svd_rel} {out_rel}`"
+            );
+        }
+    }
+
+    /// Strip the `//!` header so the regenerated table can be compared with a
+    /// committed one regardless of the path strings the header embeds.
+    fn table_body(src: &str) -> &str {
+        let marker = "use super::{Access, Device, FieldDef, IrqDef, PeripheralDef, RegisterDef};";
+        src.split_once(marker).map_or(src, |(_, body)| body)
+    }
+}
