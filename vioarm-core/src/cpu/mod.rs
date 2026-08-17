@@ -1433,6 +1433,86 @@ impl<B: PeripheralBus> Core<B> {
                 self.exmon = None;
                 Ok(Next::Advance(pc + 4))
             }
+            I::Lda {
+                rt,
+                rn,
+                size,
+                exclusive,
+            } => {
+                // Load-acquire: the load result is observable; the acquire
+                // ordering is a no-op on the in-order single-core model.
+                let addr = self.regs.read(rn);
+                if !self.mpu_allows(addr, MpuAccess::Read) {
+                    return self.mpu_fault(addr, pc, false);
+                }
+                let v = match size {
+                    ExSize::Word => match self.mem.read_word(addr) {
+                        Ok(v) => v,
+                        Err(_) => return self.data_fault(addr, pc),
+                    },
+                    ExSize::Half => match self.mem.read_half(addr) {
+                        Ok(hw) => u32::from(hw),
+                        Err(_) => return self.data_fault(addr, pc),
+                    },
+                    ExSize::Byte => match self.mem.read(addr) {
+                        Ok(b) => u32::from(b),
+                        Err(_) => return self.data_fault(addr, pc),
+                    },
+                };
+                self.regs.write(rt, v);
+                if exclusive {
+                    self.exmon = Some(addr);
+                }
+                Ok(Next::Advance(pc + 4))
+            }
+            I::Stl {
+                rd,
+                rt,
+                rn,
+                size,
+                exclusive,
+            } => {
+                // Store-release: the store result is observable; the release
+                // ordering is a no-op on the in-order single-core model.
+                let addr = self.regs.read(rn);
+                if exclusive {
+                    // STLEX: like STREX, the local monitor is cleared whether
+                    // the store succeeds or not; it only lets a store through
+                    // while it matches. `rd` is written only for STLEX (the
+                    // plain STL encoding keeps the `0b1111` sentinel).
+                    let ok = self.exmon == Some(addr);
+                    self.exmon = None;
+                    if ok {
+                        if !self.mpu_allows(addr, MpuAccess::Write) {
+                            return self.mpu_fault(addr, pc, false);
+                        }
+                        let result = match size {
+                            ExSize::Word => self.mem.write_word(addr, self.regs.read(rt)),
+                            ExSize::Half => self.mem.write_half(addr, self.regs.read(rt) as u16),
+                            ExSize::Byte => self.mem.write(addr, self.regs.read(rt) as u8),
+                        };
+                        if result.is_err() {
+                            return self.data_fault(addr, pc);
+                        }
+                        self.regs.write(rd, 0);
+                    } else {
+                        self.regs.write(rd, 1);
+                    }
+                } else {
+                    if !self.mpu_allows(addr, MpuAccess::Write) {
+                        return self.mpu_fault(addr, pc, false);
+                    }
+                    let result = match size {
+                        ExSize::Word => self.mem.write_word(addr, self.regs.read(rt)),
+                        ExSize::Half => self.mem.write_half(addr, self.regs.read(rt) as u16),
+                        ExSize::Byte => self.mem.write(addr, self.regs.read(rt) as u8),
+                    };
+                    if result.is_err() {
+                        return self.data_fault(addr, pc);
+                    }
+                }
+                Ok(Next::Advance(pc + 4))
+            }
             I::DpReg {
                 op,
                 rd,

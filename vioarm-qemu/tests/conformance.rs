@@ -3039,6 +3039,54 @@ fn m33_baseline_additions() {
     conformance_v8m("m33_baseline_additions", &mut a, "halt", &mt);
 }
 
+/// The load-acquire / store-release family: `LDA`/`LDAB`/`LDAH`,
+/// `STL`/`STLB`/`STLH`, and the exclusive `LDAEX*`/`STLEX*` forms with
+/// `CLREX` interplay. All register targets stay in R0-R7 so the 16-bit
+/// STR/LDR verifiers (which address low registers only) work.
+#[test]
+fn m33_baseline_lda_stl() {
+    let Some(mt) = qemu_m33() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+
+    a.mov_imm32(3, 0x2000_1000);
+    a.mov_imm32(0, 0x1122_3344);
+    a.str_imm(0, 3, 0); // seed [base]
+    a.lda(1, 3); // r1 = 0x11223344
+    a.ldab(2, 3); // r2 = 0x44
+    a.ldah(4, 3); // r4 = 0x3344
+
+    // Plain store-release updates the memory the same way a store does.
+    a.mov_imm32(1, 0xAABB_CCDD);
+    a.stl(1, 3);
+    a.ldr_imm(5, 3, 0); // r5 = 0xAABBCCDD
+    a.mov_imm32(2, 0xEE);
+    a.stlb(2, 3); // low byte = 0xEE
+    a.mov_imm32(4, 0x9988);
+    a.stlh(4, 3); // low halfword = 0x9988
+    a.ldr_imm(5, 3, 0); // r5 = 0xAABB9988
+
+    // Exclusive acquire/release: LDAEX tags, STLEX succeeds, CLREX fails it.
+    a.mov_imm32(0, 0x5566_7788);
+    a.ldaex(6, 3); // r6 = 0xAABB9988, tags [base]
+    a.stlex(7, 0, 3); // success: r7 = 0, [base] = 0x55667788
+    a.ldr_imm(5, 3, 0); // r5 = 0x55667788
+    a.clrex();
+    a.stlex(7, 0, 3); // fails: r7 = 1, no store
+    a.ldr_imm(5, 3, 0); // r5 = 0x55667788 (unchanged)
+
+    // Byte/halfword exclusive forms round-trip.
+    a.ldaexb(6, 3); // tags byte
+    a.stlexb(7, 2, 3); // success: r7 = 0, low byte 0xEE
+    a.ldaexh(6, 3); // tags halfword
+    a.stlexh(7, 4, 3); // success: low halfword 0x9988
+    a.ldr_imm(5, 3, 0); // r5 = 0x55669988
+
+    a.label("halt");
+    a.b("halt");
+    conformance_v8m("m33_baseline_lda_stl", &mut a, "halt", &mt);
+}
+
 /// The full ARMv6-M 16-bit subset is baseline-valid, so the Thumb-1 ALU suite
 /// must diff identically against the M33.
 #[test]

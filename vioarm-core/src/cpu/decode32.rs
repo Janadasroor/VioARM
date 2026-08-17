@@ -192,6 +192,29 @@ pub enum Inst32 {
     },
     /// `CLREX`: clear the local exclusive monitor.
     Clrex,
+    /// `LDA{B,H}` (word `LDA`) and their exclusive `LDAEX{B,H}` forms:
+    /// load-acquire. `exclusive` selects the `LDAEX` forms, which tag the
+    /// effective address with the exclusive monitor exactly like `LDREX`;
+    /// the acquire ordering is a no-op on the in-order single-core model.
+    Lda {
+        rt: u8,
+        rn: u8,
+        size: ExSize,
+        exclusive: bool,
+    },
+    /// `STL{B,H}` (word `STL`) and their exclusive `STLEX{B,H}` forms:
+    /// store-release. For the plain forms `rd` is the `0b1111` sentinel in
+    /// the encoding and is not written; for the exclusive forms `rd` receives
+    /// 0 on success and 1 on failure, and the monitor is cleared, exactly
+    /// like `STREX`. The release ordering is a no-op on the in-order
+    /// single-core model.
+    Stl {
+        rd: u8,
+        rt: u8,
+        rn: u8,
+        size: ExSize,
+        exclusive: bool,
+    },
     /// ARMv7-M data-processing with a shifted-register operand:
     /// `Rd = Rn <op> Shift(Rm)`. `rn == 15` marks the `MOV`/`MVN` aliases,
     /// which do not read `Rn`. `amount` is the 5-bit shift amount; a `Ror`
@@ -925,11 +948,14 @@ pub fn decode32_v7m(hi: u16, lo: u16) -> Result<Inst32, DecodeError> {
 ///
 /// ARMv8-M baseline (Cortex-M23) is a subset of ARMv7-M: it adds only
 /// `sdiv`/`udiv`, `movw`/`movt`, `b.w` (T4), the `ldrex`/`strex` family with
-/// `clrex`, plus the ARMv6-M `bl`/`mrs`/`msr`/barriers. Every other ARMv7-M
-/// Thumb-2 encoding — wide data processing, `ldm`/`stm`, `ldrd`/`strd`,
-/// table branches, bitfield/saturate/DSP, `b<c>.w`, `blx` (immediate), and
-/// the VFP set — is undefined on the baseline. The v7-M decoder therefore
-/// runs first and its result is filtered to the baseline subset.
+/// `clrex`, the load-acquire/store-release family (`lda`/`stl` and their
+/// byte/halfword/exclusive forms), plus the ARMv6-M `bl`/`mrs`/`msr`/
+/// barriers. Every other ARMv7-M Thumb-2 encoding — wide data processing,
+/// `ldm`/`stm`, `ldrd`/`strd`, table branches, bitfield/saturate/DSP,
+/// `b<c>.w`, `blx` (immediate), and the VFP set — is undefined on the
+/// baseline. The v7-M decoder therefore runs first and its result is filtered
+/// to the baseline subset; the acquire/release family (ARMv8-M only) is then
+/// decoded on top, since ARMv7-M rejects it.
 ///
 /// # Errors
 ///
@@ -949,7 +975,7 @@ pub fn decode32_v8m(hi: u16, lo: u16) -> Result<Inst32, DecodeError> {
             | Inst32::MovWide { .. }
             | Inst32::Div { .. }),
         ) => Ok(inst),
-        Ok(_) | Err(_) => Err(err_for(hi)),
+        Ok(_) | Err(_) => decode_lda_stl(hi, lo).unwrap_or_else(|| Err(err_for(hi))),
     }
 }
 
@@ -1205,6 +1231,65 @@ fn decode_exclusive(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
             }
         }
         _ => None,
+    }
+}
+
+/// Decode the ARMv8-M load-acquire/store-release family. The encodings share
+/// the `1110 1000 1100/1101 Rn` first-halfword space with `STREXB/H` and
+/// `LDREXB/H`, distinguished by the second halfword's `0b1111` tag at bits
+/// [11:8] and the access selector at bits [7:4]: `0x8` byte, `0x9` halfword,
+/// `0xA` word, and the exclusive forms `0xC`/`0xD`/`0xE`. `0xE8D0` selects
+/// the loads (`LDA`/`LDAB`/`LDAH`/`LDAEX`/`LDAEXB`/`LDAEXH`, whose low nibble
+/// is fixed at `0b1111`) and `0xE8C0` the stores (`STL`/`STLB`/`STLH` and the
+/// `STLEX` forms, whose low nibble is `Rd`). The family is ARMv8-M only and
+/// never reaches the ARMv7-M decoder.
+fn decode_lda_stl(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
+    if hi & 0xFFF0 != 0xE8C0 && hi & 0xFFF0 != 0xE8D0 {
+        return None;
+    }
+    let rn = (hi & 0xF) as u8;
+    let rt = ((lo >> 12) & 0xF) as u8;
+    let field = ((lo >> 8) & 0xF) as u8;
+    let sel = ((lo >> 4) & 0xF) as u8;
+    let err = || Some(Err(err_for(hi)));
+    // Without the `0b1111` tag this second halfword is a `STRD`/`LDRD`.
+    if field != 15 {
+        return None;
+    }
+    let (size, exclusive) = match sel {
+        0x8 => (ExSize::Byte, false),
+        0x9 => (ExSize::Half, false),
+        0xA => (ExSize::Word, false),
+        0xC => (ExSize::Byte, true),
+        0xD => (ExSize::Half, true),
+        0xE => (ExSize::Word, true),
+        _ => return err(),
+    };
+    if rt == 15 || rn == 15 {
+        return err();
+    }
+    if hi & 0x10 != 0 {
+        if lo & 0xF != 0xF {
+            return err();
+        }
+        Some(Ok(Inst32::Lda {
+            rt,
+            rn,
+            size,
+            exclusive,
+        }))
+    } else {
+        let rd = (lo & 0xF) as u8;
+        if rd == 15 && exclusive {
+            return err();
+        }
+        Some(Ok(Inst32::Stl {
+            rd,
+            rt,
+            rn,
+            size,
+            exclusive,
+        }))
     }
 }
 
@@ -2957,6 +3042,78 @@ mod tests {
             );
             assert!(v7m_bytes(b).is_ok(), "control: {b:02x?} must decode on v7-M");
         }
+    }
+
+    #[test]
+    fn v8m_baseline_lda_stl() {
+        // The ARMv8-M acquire/release family decodes on the baseline...
+        assert_eq!(
+            v8m_bytes([0xd3, 0xe8, 0xaf, 0x0f]),
+            Ok(Inst32::Lda { rt: 0, rn: 3, size: ExSize::Word, exclusive: false })
+        );
+        assert_eq!(
+            v8m_bytes([0xd3, 0xe8, 0x8f, 0x0f]),
+            Ok(Inst32::Lda { rt: 0, rn: 3, size: ExSize::Byte, exclusive: false })
+        );
+        assert_eq!(
+            v8m_bytes([0xd3, 0xe8, 0x9f, 0x0f]),
+            Ok(Inst32::Lda { rt: 0, rn: 3, size: ExSize::Half, exclusive: false })
+        );
+        assert_eq!(
+            v8m_bytes([0xd3, 0xe8, 0xef, 0x0f]),
+            Ok(Inst32::Lda { rt: 0, rn: 3, size: ExSize::Word, exclusive: true })
+        );
+        assert_eq!(
+            v8m_bytes([0xd3, 0xe8, 0xcf, 0x0f]),
+            Ok(Inst32::Lda { rt: 0, rn: 3, size: ExSize::Byte, exclusive: true })
+        );
+        assert_eq!(
+            v8m_bytes([0xd3, 0xe8, 0xdf, 0x0f]),
+            Ok(Inst32::Lda { rt: 0, rn: 3, size: ExSize::Half, exclusive: true })
+        );
+        assert_eq!(
+            v8m_bytes([0xc3, 0xe8, 0xaf, 0x0f]),
+            Ok(Inst32::Stl { rd: 15, rt: 0, rn: 3, size: ExSize::Word, exclusive: false })
+        );
+        assert_eq!(
+            v8m_bytes([0xc3, 0xe8, 0x8f, 0x0f]),
+            Ok(Inst32::Stl { rd: 15, rt: 0, rn: 3, size: ExSize::Byte, exclusive: false })
+        );
+        assert_eq!(
+            v8m_bytes([0xc3, 0xe8, 0x9f, 0x0f]),
+            Ok(Inst32::Stl { rd: 15, rt: 0, rn: 3, size: ExSize::Half, exclusive: false })
+        );
+        assert_eq!(
+            v8m_bytes([0xc3, 0xe8, 0xe5, 0x0f]),
+            Ok(Inst32::Stl { rd: 5, rt: 0, rn: 3, size: ExSize::Word, exclusive: true })
+        );
+        assert_eq!(
+            v8m_bytes([0xc3, 0xe8, 0xc5, 0x0f]),
+            Ok(Inst32::Stl { rd: 5, rt: 0, rn: 3, size: ExSize::Byte, exclusive: true })
+        );
+        assert_eq!(
+            v8m_bytes([0xc3, 0xe8, 0xd5, 0x0f]),
+            Ok(Inst32::Stl { rd: 5, rt: 0, rn: 3, size: ExSize::Half, exclusive: true })
+        );
+
+        // ...while ARMv7-M (and the boundary) rejects the whole family.
+        for b in [
+            [0xd3, 0xe8, 0xaf, 0x0f], // lda r0, [r3]
+            [0xd3, 0xe8, 0xcf, 0x0f], // ldaexb r0, [r3]
+            [0xc3, 0xe8, 0xe5, 0x0f], // stlex r5, r0, [r3]
+        ] {
+            assert!(v7m_bytes(b).is_err(), "ARMv7-M must reject {b:02x?}");
+            assert!(v8m_bytes(b).is_ok(), "ARMv8-M baseline must decode {b:02x?}");
+        }
+
+        // Malformed forms: PC as Rn/Rt/Rd, a stray low nibble on the loads,
+        // and an unknown selector all reject on the baseline.
+        assert!(v8m_bytes([0xdf, 0xe8, 0xaf, 0x0f]).is_err()); // rn = 15
+        assert!(v8m_bytes([0xd3, 0xe8, 0xaf, 0x0f]).is_ok());
+        assert!(v8m_bytes([0xd3, 0xe8, 0xf0, 0x0f]).is_err()); // rt = 15
+        assert!(v8m_bytes([0xd3, 0xe8, 0xaf, 0x01]).is_err()); // stray load nibble
+        assert!(v8m_bytes([0xc3, 0xe8, 0xef, 0x0f]).is_err()); // stlex with rd = 15
+        assert!(v8m_bytes([0xd3, 0xe8, 0x6f, 0x0f]).is_err()); // unknown selector 0x6
     }
 
     #[test]
