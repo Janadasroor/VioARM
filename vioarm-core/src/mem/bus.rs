@@ -108,6 +108,45 @@ pub enum MpuAccess {
     Write,
 }
 
+/// The `PMSAv8` permission bits, mirroring QEMU's `PAGE_*` protection flags.
+pub const PROT_READ: u8 = 0x1;
+/// The `PMSAv8` permission bits, mirroring QEMU's `PAGE_*` protection flags.
+pub const PROT_WRITE: u8 = 0x2;
+/// The `PMSAv8` permission bits, mirroring QEMU's `PAGE_*` protection flags.
+pub const PROT_EXEC: u8 = 0x4;
+
+/// The `PMSAv8` MPU permission result for one address, mirroring QEMU's
+/// `pmsav8_mpu_lookup`: the raw permission bits plus the matched region.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MpuLookup {
+    /// The `PROT_READ`/`PROT_WRITE`/`PROT_EXEC` permission bits.
+    pub prot: u8,
+    /// The matched MPU region number, or `None` when the default map decided
+    /// (MPU disabled, `PRIVDEFENA` background, or a multiple-region hit).
+    pub region: Option<u8>,
+}
+
+impl MpuLookup {
+    /// The M-profile default system address map permission bits, from QEMU's
+    /// `get_phys_addr_pmsav7_default` (`ROM`/`SRAM`/`RAM`: read/write/execute;
+    /// peripheral/device/system: read/write).
+    #[must_use]
+    pub const fn background_prot(addr: u32) -> u8 {
+        match addr {
+            // ROM / SRAM / two RAM ranges.
+            0x0000_0000..=0x1FFF_FFFF
+            | 0x2000_0000..=0x3FFF_FFFF
+            | 0x6000_0000..=0x7FFF_FFFF
+            | 0x8000_0000..=0x9FFF_FFFF => PROT_READ | PROT_WRITE | PROT_EXEC,
+            // Peripheral / Device / System.
+            0x4000_0000..=0x5FFF_FFFF
+            | 0xA000_0000..=0xBFFF_FFFF
+            | 0xC000_0000..=0xDFFF_FFFF
+            | 0xE000_0000..=0xFFFF_FFFF => PROT_READ | PROT_WRITE,
+        }
+    }
+}
+
 /// An IDAU's security attribution for one address — the implementation-defined
 /// half of the ARMv8-M security attribution.
 ///
@@ -219,4 +258,19 @@ pub trait PeripheralBus: Bus {
     fn sau_hit(&mut self, _addr: u32) -> SauHit {
         SauHit::None
     }
+
+    /// The `PMSAv8` MPU permission lookup for `addr` in the `secure` register
+    /// bank and `privileged` mode (QEMU's `pmsav8_mpu_lookup`, probed with a
+    /// read), for the `TT` instruction family's permission bits. Default (no
+    /// `PMSAv8` MPU): the M-profile default map with no matched region.
+    fn mpu_lookup_v8(&mut self, addr: u32, _secure: bool, _privileged: bool) -> MpuLookup {
+        MpuLookup {
+            prot: MpuLookup::background_prot(addr),
+            region: None,
+        }
+    }
+
+    /// Mirror the core's current security state into a device that banks its
+    /// registers on it (the `v8-M` MPU). Default: nothing.
+    fn set_secure(&mut self, _secure: bool) {}
 }
