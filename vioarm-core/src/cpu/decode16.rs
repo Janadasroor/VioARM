@@ -182,6 +182,16 @@ pub enum Inst16 {
     Blx {
         rm: u8,
     },
+    /// ARMv8-M `BXNS` (`0100 0111 0 ... 100`): branch and exchange to the
+    /// security state selected by `Rm<0>`. Undefined on ARMv6-M/ARMv7-M.
+    BxNs {
+        rm: u8,
+    },
+    /// ARMv8-M `BLXNS` (`0100 0111 1 ... 100`): branch with link to the
+    /// security state selected by `Rm<0>`. Undefined on ARMv6-M/ARMv7-M.
+    BlxNs {
+        rm: u8,
+    },
     LdrLiteral {
         rt: u8,
         imm: usize,
@@ -382,11 +392,16 @@ pub fn decode16(op: u16) -> Result<Inst16, DecodeError> {
             0b01 => Ok(Inst16::SpecialCmp { rn: rd, rm }),
             0b10 => Ok(Inst16::SpecialMov { rd, rm }),
             0b11 => {
-                // BX if bit7==0, BLX if bit7==1.
-                if op & 0x80 != 0 {
-                    Ok(Inst16::Blx { rm })
-                } else {
-                    Ok(Inst16::Bx { rm })
+                // BX/BLX if bit7 == 0/1 with bits[2:0] == 000; BXNS/BLXNS
+                // (ARMv8-M security) with bits[2:0] == 100. The other low-bit
+                // values are UNPREDICTABLE and decode as undefined, matching
+                // QEMU's t16 decode table.
+                match (op & 0x80, op & 0x7) {
+                    (0, 0) => Ok(Inst16::Bx { rm }),
+                    (0x80, 0) => Ok(Inst16::Blx { rm }),
+                    (0, 4) => Ok(Inst16::BxNs { rm }),
+                    (0x80, 4) => Ok(Inst16::BlxNs { rm }),
+                    _ => Err(err()),
                 }
             }
             _ => Err(err()),

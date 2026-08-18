@@ -56,6 +56,32 @@ const EXC_RETURN_HANDLER_FP: u32 = 0xFFFF_FFE1;
 const EXC_RETURN_THREAD_MSP_FP: u32 = 0xFFFF_FFE9;
 const EXC_RETURN_THREAD_PSP_FP: u32 = 0xFFFF_FFED;
 
+/// Lowest possible ARMv8-M `EXC_RETURN` value: a value at or above
+/// `0xFF000000` with the fixed `1` pattern is an `EXC_RETURN`, below it (but
+/// at or above `FNC_RETURN_MIN_MAGIC`) a `FNC_RETURN` (QEMU
+/// `EXC_RETURN_MIN_MAGIC`/`FNC_RETURN_MIN_MAGIC`).
+const EXC_RETURN_MIN_MAGIC: u32 = 0xFF00_0000;
+/// Lowest possible ARMv8-M `FNC_RETURN` value (`0xFEFFFFFF` is the lowest
+/// Non-secure call-return magic; QEMU uses `0xFEFFFFFE`).
+const FNC_RETURN_MIN_MAGIC: u32 = 0xFEFF_FFFE;
+/// The `FNC_RETURN` value `BLXNS` loads into `LR` (and `BXNS` returns on) to
+/// mark a Non-secure function call.
+const FNC_RETURN: u32 = 0xFEFF_FFFF;
+
+/// `EXC_RETURN` field masks (ARMv8-M; also used to build the value on
+/// exception entry). `RES1` is bits[31:7], `S` the target-security bit,
+/// `DCRS` the callee-saves stacking bit, `FTYPE` the FP-frame bit, `MODE` the
+/// thread/handler bit, `SPSEL` the target stack bit, `RES0` a reserved bit
+/// and `ES` the exception-security bit.
+const EXC_RETURN_RES1: u32 = 0xFFFF_FF80;
+const EXC_RETURN_S: u32 = 0x40;
+const EXC_RETURN_DCRS: u32 = 0x20;
+const EXC_RETURN_FTYPE: u32 = 0x10;
+const EXC_RETURN_MODE: u32 = 0x08;
+const EXC_RETURN_SPSEL: u32 = 0x04;
+const EXC_RETURN_RES0: u32 = 0x02;
+const EXC_RETURN_ES: u32 = 0x01;
+
 /// xPSR `ALIGN` bit (bit 9): set on the stacked xPSR when the interrupted
 /// stack was 8-byte-aligned by an exception-entry adjustment.
 const XPSR_ALIGN: u32 = 1 << 9;
@@ -306,6 +332,7 @@ const VTOR_MASK: u32 = !0x7F;
 const UFSR_UNDEFINSTR: u32 = 0x0001_0000; // UFSR bit 0 -> combined bit 16
 const UFSR_NOCP: u32 = 0x0002_0000; // UFSR bit 1 -> combined bit 17
 const UFSR_DIVBYZERO: u32 = 0x0200_0000; // UFSR bit 9 -> combined bit 25
+const UFSR_INVPC: u32 = 0x0008_0000; // UFSR bit 3 -> combined bit 19
 const BFSR_PRECISERR: u32 = 0x0000_0100; // BFSR bit 0 -> combined bit 8
                                          // QEMU reports HFSR.FORCED at bit 30 (0x4000_0000) rather than the ARMv7-M
                                          // architectural bit 31; the differential oracle is the arbiter here.
@@ -406,6 +433,23 @@ pub struct Core<B: PeripheralBus> {
     msp_lim: u32,
     /// ARMv8-M baseline stack-limit register for the process stack (`PSPLIM`).
     psp_lim: u32,
+    /// ARMv8-M TrustZone: the other security state's banked main stack pointer.
+    /// The *current* state's SPs live in `regs.msp`/`regs.psp` (one mirroring
+    /// the active `regs.sp`); `switch_security_state` swaps the two banks, so
+    /// the active SP of whichever state is current is always reachable through
+    /// `regs`. ARMv6-M/ARMv7-M have no security extension and never touch these.
+    pub(crate) other_ss_msp: u32,
+    /// ARMv8-M TrustZone: the other security state's banked process stack
+    /// pointer (see `other_ss_msp`).
+    pub(crate) other_ss_psp: u32,
+    /// ARMv8-M TrustZone: the other security state's `CONTROL` register.
+    /// `self.control` holds the current state's `CONTROL`; MRS/MSR of the NS
+    /// encodings and the exception-return paths read and write this bank.
+    pub(crate) other_ss_control: u32,
+    /// ARMv8-M TrustZone: the other security state's `MSPLIM`.
+    pub(crate) other_ss_msp_lim: u32,
+    /// ARMv8-M TrustZone: the other security state's `PSPLIM`.
+    pub(crate) other_ss_psp_lim: u32,
     /// Whether the core is executing in the Secure security state (ARMv8-M
     /// TrustZone). ARMv8-M baseline resets Secure. ARMv6-M/ARMv7-M have no
     /// security extension and keep this false; the `TT` family does not decode
@@ -463,6 +507,11 @@ impl<B: PeripheralBus> Core<B> {
             vector_base: 0,
             msp_lim: 0,
             psp_lim: 0,
+            other_ss_msp: 0,
+            other_ss_psp: 0,
+            other_ss_control: 0,
+            other_ss_msp_lim: 0,
+            other_ss_psp_lim: 0,
             secure: isa == Isa::Armv8MBaseline,
             mem,
         }
@@ -580,6 +629,11 @@ impl<B: PeripheralBus> Core<B> {
             .map_err(|_| HaltCause::FetchAbort)?;
         if is_thumb2_v7m(h0) {
             match decode32_v8m(h0, h1) {
+                // `SG` is unconditional even inside an IT block (QEMU's
+                // `thumb_insn_is_unconditional` treats `0xE97FE97F` as
+                // unconditional): it executes and clears ITSTATE regardless of
+                // the pending condition, so it must bypass `exec_it_step`.
+                Ok(inst @ Inst32::Sg) => self.exec32(pc, inst),
                 Ok(inst) => self.exec_it_step(pc, 4, |s| s.exec32(pc, inst)),
                 Err(_) => self.hardfault_on_undefined(pc, 4),
             }
@@ -669,6 +723,13 @@ impl<B: PeripheralBus> Core<B> {
         self.sleeping = false;
         self.event = false;
         self.just_returned = false;
+        // ARMv8-M: the banked other-state SPs, CONTROL and stack limits all
+        // reset to zero (the architectural reset state).
+        self.other_ss_msp = 0;
+        self.other_ss_psp = 0;
+        self.other_ss_control = 0;
+        self.other_ss_msp_lim = 0;
+        self.other_ss_psp_lim = 0;
         Ok(())
     }
 
@@ -696,10 +757,77 @@ impl<B: PeripheralBus> Core<B> {
         self.ipsr == 0 && self.control & 0x2 != 0
     }
 
+    /// Deposit the given thread/process selection into the `SPSEL` bit of the
+    /// given security state's `CONTROL`, mirroring QEMU's
+    /// `write_v7m_control_spsel_for_secstate`. Only a change to the *current*
+    /// state's `SPSEL` can move the active stack pointer, and then only when
+    /// it is done in Thread mode (`v7m_using_psp` is false in Handler mode),
+    /// so the active/inactive SPs swap only in that case.
+    fn write_control_spsel_for_secstate(&mut self, secstate: bool, new_spsel: bool) {
+        if secstate == self.secure {
+            let old_is_psp = self.sp_is_process();
+            self.control = (self.control & !0x2) | u32::from(new_spsel) << 1;
+            let new_is_psp = self.sp_is_process();
+            if old_is_psp != new_is_psp {
+                let r = &mut self.regs;
+                if new_is_psp {
+                    r.msp = r.sp;
+                    r.sp = r.psp;
+                } else {
+                    r.psp = r.sp;
+                    r.sp = r.msp;
+                }
+            }
+        } else {
+            self.other_ss_control =
+                (self.other_ss_control & !0x2) | u32::from(new_spsel) << 1;
+        }
+    }
+
+    /// Switch the running security state to `new_secstate`, swapping the two
+    /// banked SPs (and, since the current `CONTROL` and stack-limit fields hold
+    /// the current state's values, those banks too). Mirrors QEMU's
+    /// `switch_v7m_security_state`: the current state's active and inactive SPs
+    /// are stashed into the other state's bank, then the other state's bank is
+    /// loaded with the active SP selected by the new state's `CONTROL.SPSEL`
+    /// and the (unbanked, still-current) thread/handler mode.
+    fn switch_security_state(&mut self, new_secstate: bool) {
+        if new_secstate == self.secure {
+            return;
+        }
+        let new_ss_msp = self.other_ss_msp;
+        let new_ss_psp = self.other_ss_psp;
+        // Save the current state's bank into the other-state slots.
+        if self.sp_is_process() {
+            self.other_ss_psp = self.regs.sp;
+            self.other_ss_msp = self.regs.msp;
+        } else {
+            self.other_ss_msp = self.regs.sp;
+            self.other_ss_psp = self.regs.psp;
+        }
+        self.secure = new_secstate;
+        // The single current-state CONTROL/limit fields now hold the new
+        // state's values.
+        std::mem::swap(&mut self.control, &mut self.other_ss_control);
+        std::mem::swap(&mut self.msp_lim, &mut self.other_ss_msp_lim);
+        std::mem::swap(&mut self.psp_lim, &mut self.other_ss_psp_lim);
+        // Load the new state's bank, honoring its SPSEL in thread mode.
+        if self.sp_is_process() {
+            self.regs.psp = new_ss_psp;
+            self.regs.msp = new_ss_msp;
+            self.regs.sp = new_ss_psp;
+        } else {
+            self.regs.msp = new_ss_msp;
+            self.regs.psp = new_ss_psp;
+            self.regs.sp = new_ss_msp;
+        }
+    }
+
     /// The SAU/IDAU security attribution for `addr` in the security state
     /// `targetsec` (the state the `TT` family *probes*), matching QEMU's
-    /// `v8m_security_lookup` with the SAU disabled (VioARM does not yet model
-    /// the SAU registers, so the reset state applies: no regions,
+    /// `v8m_security_lookup` with the SAU disabled (the SCB stores the SAU
+    /// registers for firmware compatibility but this lookup does not yet
+    /// apply them, so the SAU reset state governs: no regions,
     /// `SAU_CTRL.ENABLE == 0`, giving attribution case 0 where the IDAU
     /// decides). The SAU/IDAU exempt system aliases are attributed `!targetsec`
     /// and otherwise the address is Secure unless the IDAU's region says
@@ -773,6 +901,14 @@ impl<B: PeripheralBus> Core<B> {
             // The ARMv8-M stack-limit registers only exist on the baseline
             // here; their encodings RAZ on ARMv6-M/ARMv7-M like BASEPRI.
             SysReg::MspLim | SysReg::PspLim if self.isa != Isa::Armv8MBaseline => 0,
+            // `CONTROL_NS` is readable by unprivileged *Secure* code (QEMU
+            // `v7m_mrs` case 0x94); from the Non-secure state it reads 0. The
+            // S-bank `FPCA` is folded into the NS value; the baseline never
+            // sets it, so this is just the NS bank here.
+            SysReg::ControlNs if !self.secure => 0,
+            SysReg::ControlNs => {
+                self.other_ss_control | (self.control & CONTROL_FPCA)
+            }
             // Unprivileged reads of these special-purpose registers are RAZ.
             SysReg::Msp
             | SysReg::Psp
@@ -782,7 +918,36 @@ impl<B: PeripheralBus> Core<B> {
             | SysReg::Faultmask
             | SysReg::MspLim
             | SysReg::PspLim
+            | SysReg::MspNs
+            | SysReg::PspNs
+            | SysReg::MsplimNs
+            | SysReg::PsplimNs
+            | SysReg::SpNs
                 if unprivileged =>
+            {
+                0
+            }
+            // The Non-secure banked encodings exist only on ARMv8-M (the
+            // `secure` state is always false on ARMv6-M/ARMv7-M, so the next
+            // arm's `!secure` gate already RAZs them there; kept explicit for
+            // clarity).
+            SysReg::MspNs
+            | SysReg::PspNs
+            | SysReg::MsplimNs
+            | SysReg::PsplimNs
+            | SysReg::SpNs
+                if self.isa != Isa::Armv8MBaseline =>
+            {
+                0
+            }
+            // From the Non-secure state the NS encodings read as 0 (QEMU
+            // `v7m_mrs`: `if (!env->v7m.secure) return 0`).
+            SysReg::MspNs
+            | SysReg::PspNs
+            | SysReg::MsplimNs
+            | SysReg::PsplimNs
+            | SysReg::SpNs
+                if !self.secure =>
             {
                 0
             }
@@ -806,6 +971,20 @@ impl<B: PeripheralBus> Core<B> {
             SysReg::Basepri | SysReg::BasepriMax => u32::from(self.basepri),
             SysReg::Faultmask => u32::from(self.faultmask),
             SysReg::Control => self.control,
+            SysReg::MspNs => self.other_ss_msp,
+            SysReg::PspNs => self.other_ss_psp,
+            SysReg::MsplimNs => self.other_ss_msp_lim,
+            SysReg::PsplimNs => self.other_ss_psp_lim,
+            // `SP_NS` selects between the NS main and process SPs by the NS
+            // `CONTROL.SPSEL` and the current thread/handler mode (QEMU
+            // `v7m_mrs` case 0x98).
+            SysReg::SpNs => {
+                if self.ipsr == 0 && self.other_ss_control & 0x2 != 0 {
+                    self.other_ss_psp
+                } else {
+                    self.other_ss_msp
+                }
+            }
             SysReg::Other(_) => {
                 return Err(HaltCause::NotImplemented {
                     what: "mrs of reserved system register",
@@ -899,15 +1078,20 @@ impl<B: PeripheralBus> Core<B> {
                 // thread drops to unprivileged (nPRIV=1), further writes are
                 // ignored, so an unprivileged thread cannot re-privilege
                 // itself. ARMv8-M baseline has no FPU, so CONTROL.FPCA is
-                // RAZ/WI there (bit 2 masked off); ARMv7-M keeps it.
+                // RAZ/WI there (bit 2 masked off); ARMv7-M keeps it. The SPSEL
+                // write only switches the active SP when it actually changes
+                // the SP in use (`sp_is_process`); in Handler mode both sides
+                // are false, so no swap happens there (QEMU
+                // `write_v7m_control_spsel`).
                 if self.ipsr != 0 || self.control & 1 == 0 {
                     let mask = if self.isa == Isa::Armv7M { 0x7 } else { 0x3 };
                     let new = v & mask;
-                    let want_process = new & 0x2 != 0;
-                    let was_process = self.sp_is_process();
-                    if want_process != was_process {
+                    let old_is_psp = self.sp_is_process();
+                    self.control = new;
+                    let new_is_psp = self.sp_is_process();
+                    if old_is_psp != new_is_psp {
                         let r = &mut self.regs;
-                        if want_process {
+                        if new_is_psp {
                             r.msp = r.sp;
                             r.sp = r.psp;
                         } else {
@@ -915,7 +1099,42 @@ impl<B: PeripheralBus> Core<B> {
                             r.sp = r.msp;
                         }
                     }
-                    self.control = new;
+                }
+            }
+            // The ARMv8-M Non-secure banked registers. All are RAZ/WI from the
+            // Non-secure state (unreachable anyway: `secure` is false on
+            // ARMv6-M/ARMv7-M) and ignored by unprivileged Secure code, so the
+            // whole family is guarded on "privileged Secure".
+            SysReg::MspNs
+            | SysReg::PspNs
+            | SysReg::MsplimNs
+            | SysReg::PsplimNs
+            | SysReg::ControlNs
+            | SysReg::SpNs
+                if !(self.secure && (self.ipsr != 0 || self.control & 1 == 0)) =>
+            {
+            }
+            SysReg::MspNs => self.other_ss_msp = v & !3,
+            SysReg::PspNs => self.other_ss_psp = v & !3,
+            SysReg::MsplimNs => self.other_ss_msp_lim = v & !7,
+            SysReg::PsplimNs => self.other_ss_psp_lim = v & !7,
+            // `CONTROL_NS` (0x94): deposit SPSEL into the NS bank and write
+            // nPRIV (matching the M_MAIN M33 oracle; the baseline's own
+            // CONTROL keeps the same M_MAIN-like behavior for parity).
+            SysReg::ControlNs => {
+                self.other_ss_control = (self.other_ss_control & !0x3) | (v & 0x3);
+            }
+            // `SP_NS` (0x98): writes the NS SP selected by the NS
+            // `CONTROL.SPSEL` and the current mode. QEMU raises a StackFault
+            // when the value falls below the NS limit; VioARM skips that
+            // immediate check (documented divergence; unreachable in the
+            // conformance suite).
+            SysReg::SpNs => {
+                let val = v & !3;
+                if self.ipsr == 0 && self.other_ss_control & 0x2 != 0 {
+                    self.other_ss_psp = val;
+                } else {
+                    self.other_ss_msp = val;
                 }
             }
             SysReg::Xpsr | SysReg::Ipsr | SysReg::Epsr => {
@@ -1106,6 +1325,8 @@ impl<B: PeripheralBus> Core<B> {
                 self.regs.lr = (pc + 2) | 1;
                 Ok(Self::check_branch(target))
             }
+            I::BxNs { rm } => self.exec_bxns(self.regs.read(rm)),
+            I::BlxNs { rm } => self.exec_blxns(pc, self.regs.read(rm)),
             I::LdrLiteral { rt, imm } => {
                 let addr = ((pc + 4) & !3) + imm as u32;
                 if !self.mpu_allows(addr, MpuAccess::Read) {
@@ -1628,6 +1849,15 @@ impl<B: PeripheralBus> Core<B> {
                     if result.is_err() {
                         return self.data_fault(addr, pc);
                     }
+                }
+                Ok(Next::Advance(pc + 4))
+            }
+            // ARMv8-M `SG`: clear ITSTATE in the Secure state, NOP in the
+            // Non-secure state (ARMv8-M ARM; matches QEMU's trans_SG, which
+            // also bypasses the IT state).
+            I::Sg => {
+                if self.secure {
+                    self.itstate = 0;
                 }
                 Ok(Next::Advance(pc + 4))
             }
@@ -3372,12 +3602,199 @@ impl<B: PeripheralBus> Core<B> {
     ///
     /// Any taken branch leaves the current IT block, so ITSTATE is cleared
     /// (the exception-return path overwrites it from the stacked xPSR).
+    ///
+    /// On ARMv8-M the Security Extension turns a branch to a `FNC_RETURN`
+    /// (`>= 0xFEFFFFFE`) or `EXC_RETURN` (`>= 0xFF000000`) magic value into a
+    /// secure function return or exception return (QEMU's
+    /// `gen_bx_excret`/`gen_bx_excret_final_code` routing).
     fn branch(&mut self, target: u32) -> Result<Next, HaltCause> {
         self.itstate = 0;
+        if self.isa == Isa::Armv8MBaseline && target >= FNC_RETURN_MIN_MAGIC {
+            return self.return_via_magic(target);
+        }
         if self.ipsr != 0 && is_exc_return(target) {
             return self.exception_return(target);
         }
         Ok(Self::check_branch(target))
+    }
+
+    /// ARMv8-M magic-branch dispatch: `target` is at or above
+    /// `FNC_RETURN_MIN_MAGIC`. Values below `EXC_RETURN_MIN_MAGIC` are secure
+    /// function returns; the rest are exception returns (QEMU routes both to
+    /// `EXCP_EXCEPTION_EXIT` and splits them on `EXC_RETURN_MIN_MAGIC`).
+    fn return_via_magic(&mut self, target: u32) -> Result<Next, HaltCause> {
+        if target < EXC_RETURN_MIN_MAGIC {
+            return self.function_return(target);
+        }
+        if self.ipsr == 0 {
+            // Exception-return magic in Thread mode has no magic behaviour
+            // (QEMU's `do_v7m_exception_exit` returns early); the branch is a
+            // plain `BX` to the even target, which in VioARM stops as a
+            // Non-Thumb target.
+            return Ok(Self::check_branch(target));
+        }
+        self.exception_return_v8m(target)
+    }
+
+    /// ARMv8-M secure function return (`FNC_RETURN` magic reached by
+    /// `BXNS`/`BLXNS`): pop `{newpc, newpsr}` from the *Secure* stack bank
+    /// (while running Non-secure the Secure bank lives in the `other_ss_*`
+    /// fields), check the IPSR consistency, then switch to Secure and
+    /// continue at `newpc`. Mirrors QEMU's `do_v7m_function_return`; the
+    /// SFPA bits are FPU-only and skipped.
+    fn function_return(&mut self, _target: u32) -> Result<Next, HaltCause> {
+        let threadmode = self.ipsr == 0;
+        let spsel = self.other_ss_control & 0x2 != 0;
+        let frameptr = if threadmode && spsel {
+            self.other_ss_psp
+        } else {
+            self.other_ss_msp
+        };
+        let newpc = match self.read_word_halt(frameptr) {
+            Ok(v) => v,
+            Err(e) => return Err(e),
+        };
+        let newpsr = match self.read_word_halt(frameptr.wrapping_add(4)) {
+            Ok(v) => v,
+            Err(e) => return Err(e),
+        };
+        // Consistency check on the new IPSR: returning from thread with a
+        // nonzero stacked IPSR (or from the BLXNS dummy handler with a zero
+        // one) is an INVPC UsageFault (QEMU's check in
+        // `do_v7m_function_return`).
+        let newpsr_exc = (newpsr & 0xFF) as u8;
+        if !((self.ipsr == 0 && newpsr_exc == 0) || (self.ipsr == 1 && newpsr_exc != 0)) {
+            return self.usage_fault(self.regs.pc, UFSR_INVPC);
+        }
+        if threadmode && spsel {
+            self.other_ss_psp = frameptr.wrapping_add(8);
+        } else {
+            self.other_ss_msp = frameptr.wrapping_add(8);
+        }
+        self.switch_security_state(true);
+        self.ipsr = newpsr_exc;
+        self.itstate = 0;
+        Ok(Self::check_branch(newpc))
+    }
+
+    /// ARMv8-M exception return (any `EXC_RETURN` magic from a Handler-mode
+    /// branch), mirroring QEMU's `do_v7m_exception_exit` for the baseline
+    /// (no FP, no tailchaining): validate, deposit the return `SPSEL` into
+    /// the target state, switch security state, unstack the eight-word frame
+    /// from the target stack, then restore xPSR/IPSR/ITSTATE.
+    fn exception_return_v8m(&mut self, value: u32) -> Result<Next, HaltCause> {
+        let return_to_handler = value & EXC_RETURN_MODE == 0;
+        let return_to_sp_process = value & EXC_RETURN_SPSEL != 0;
+        let return_to_secure = value & EXC_RETURN_S != 0;
+        // `EXC_RETURN.RES0` is reserved: set is an INVPC UsageFault (QEMU
+        // v8M path). The `ES`/`DCRS` SecureFault check is unreachable on the
+        // baseline (an NS-targeting exception can never return to Secure, so
+        // no frame carries `S`; a hand-built value with `ES` is a SecureFault
+        // in QEMU that VioARM does not model).
+        if value & EXC_RETURN_RES0 != 0 {
+            return self.usage_fault(self.regs.pc, UFSR_INVPC);
+        }
+        // Depositing `SPSEL` for the target state cannot move the active SP
+        // while still in Handler mode, exactly as QEMU's comment there notes.
+        self.write_control_spsel_for_secstate(return_to_secure, return_to_sp_process);
+        self.switch_security_state(return_to_secure);
+        // The frame lives on the target state's stack, selected by its
+        // `CONTROL.SPSEL` in Thread mode.
+        let frameptr = if !return_to_handler && self.control & EXC_RETURN_SPSEL != 0 {
+            self.regs.psp
+        } else {
+            self.regs.msp
+        };
+        let mut frame = [0u32; 8];
+        for (i, slot) in frame.iter_mut().enumerate() {
+            let addr = frameptr.wrapping_add((i as u32) * 4);
+            *slot = match self.read_word_halt(addr) {
+                Ok(v) => v,
+                Err(e) => return Err(e),
+            };
+        }
+        let xpsr = frame[7];
+        // The stacked xPSR exception field must agree with `EXC_RETURN.MODE`
+        // (QEMU's v8M consistency check; a mismatch is an INVPC UsageFault).
+        if return_to_handler != (xpsr & 0xFF != 0) {
+            return self.usage_fault(self.regs.pc, UFSR_INVPC);
+        }
+        // Consume the frame, undoing any entry-time stack alignment.
+        let new_sp = frameptr.wrapping_add(0x20);
+        let new_sp = if xpsr & XPSR_ALIGN != 0 { new_sp | 4 } else { new_sp };
+        if !return_to_handler && self.control & EXC_RETURN_SPSEL != 0 {
+            self.regs.psp = new_sp;
+            self.regs.sp = new_sp;
+        } else {
+            self.regs.msp = new_sp;
+            self.regs.sp = new_sp;
+        }
+        self.xpsr.set(xpsr & (APSR_QFLAGS | XPSR_T));
+        self.ipsr = (xpsr & 0xFF) as u8;
+        self.itstate = ((xpsr >> 8) & 0xFC) as u8 | ((xpsr >> 25) & 0x03) as u8;
+        // SCR.SLEEPONEXIT: returning to Thread mode re-enters sleep.
+        if !return_to_handler
+            && self.mem.read_word(SCR_ADDR).unwrap_or(0) & SCR_SLEEPONEXIT != 0
+        {
+            self.sleeping = true;
+        }
+        self.just_returned = true;
+        let pc = frame[6] & !1;
+        self.regs.pc = pc;
+        Ok(Next::Advance(pc))
+    }
+
+    /// ARMv8-M `BXNS Rm`: branch to `Rm`, switching security state on the
+    /// LSB of the target (even -> Non-secure, odd -> Secure). A target that
+    /// is a `FNC_RETURN`/`EXC_RETURN` magic value performs the function or
+    /// exception return instead. Undefined from the Non-secure state or on
+    /// any pre-ARMv8-M ISA (QEMU's `trans_BXNS` gates on `v8m_secure`).
+    fn exec_bxns(&mut self, target: u32) -> Result<Next, HaltCause> {
+        if self.isa != Isa::Armv8MBaseline || !self.secure {
+            return self.hardfault_on_undefined(self.regs.pc, 2);
+        }
+        self.itstate = 0;
+        if target >= FNC_RETURN_MIN_MAGIC {
+            return self.return_via_magic(target);
+        }
+        self.switch_security_state(target & 1 != 0);
+        Ok(Next::Advance(target & !1))
+    }
+
+    /// ARMv8-M `BLXNS Rm`: link to `Rm`. An odd target (Secure) is a plain
+    /// `BLX` with `LR = next instruction`; an even target (Non-secure) is a
+    /// secure function call that pushes `{next instruction, saved IPSR}` onto
+    /// the current (Secure) stack, sets `LR = FNC_RETURN` and branches to the
+    /// Non-secure target. Mirrors QEMU's `v7m_blxns`. Undefined from the
+    /// Non-secure state or on any pre-ARMv8-M ISA.
+    fn exec_blxns(&mut self, pc: u32, target: u32) -> Result<Next, HaltCause> {
+        if self.isa != Isa::Armv8MBaseline || !self.secure {
+            return self.hardfault_on_undefined(self.regs.pc, 2);
+        }
+        self.itstate = 0;
+        let next = pc.wrapping_add(2) | 1;
+        if target & 1 != 0 {
+            // Target is Secure: an ordinary BLX; the LSB is a security
+            // selector, not a Thumb indicator.
+            self.regs.lr = next;
+            return Ok(Next::Advance(target & !1));
+        }
+        // Target is Non-secure: push a return frame (return address + the
+        // interrupted IPSR) onto the Secure stack and set `LR` to the
+        // `FNC_RETURN` magic, which `BXNS LR` (or any BX to `0xFEFFFFFF`)
+        // pops to come back here.
+        let sp = self.regs.sp.wrapping_sub(8);
+        self.write_word_halt(sp, next)?;
+        self.write_word_halt(sp.wrapping_add(4), u32::from(self.ipsr))?;
+        self.regs.sp = sp;
+        self.regs.lr = FNC_RETURN;
+        if self.ipsr != 0 {
+            // In a handler: the `FNC_RETURN` consistency check requires a
+            // nonzero stacked IPSR (QEMU sets `exception = 1`).
+            self.ipsr = 1;
+        }
+        self.switch_security_state(false);
+        Ok(Next::Advance(target & !1))
     }
 
     /// Take a UsageFault for an undecodable instruction at `pc`. With
@@ -3602,7 +4019,24 @@ impl<B: PeripheralBus> Core<B> {
                 self.vfp.fpscr = 0;
             }
         }
-        self.regs.lr = if fpu_active {
+        self.regs.lr = if self.isa == Isa::Armv8MBaseline {
+            // ARMv8-M builds `EXC_RETURN` from `RES1|DCRS|FTYPE` (the
+            // baseline has no FPU so the frame is always basic), `S`/`ES` set
+            // from the current (== target) security state, `MODE` from the
+            // current thread/handler mode, and `SPSEL` from the interrupted
+            // state's `CONTROL.SPSEL` (deposited even in Handler mode).
+            let mut lr = EXC_RETURN_RES1 | EXC_RETURN_DCRS | EXC_RETURN_FTYPE;
+            if self.secure {
+                lr |= EXC_RETURN_S | EXC_RETURN_ES;
+            }
+            if self.control & EXC_RETURN_SPSEL != 0 {
+                lr |= EXC_RETURN_SPSEL;
+            }
+            if self.ipsr == 0 {
+                lr |= EXC_RETURN_MODE;
+            }
+            lr
+        } else if fpu_active {
             if self.ipsr != 0 {
                 EXC_RETURN_HANDLER_FP
             } else if use_process {
@@ -3627,6 +4061,19 @@ impl<B: PeripheralBus> Core<B> {
         self.regs.pc = vector & !1;
         self.ipsr = ex.number();
         self.itstate = 0;
+        // ARMv8-M v8.0M: an exception targeting the Non-secure state clears
+        // the caller-saved registers (r0-r3, r12) that were pushed in the
+        // frame above, so Non-secure code cannot observe Secure values, and
+        // clears EAPSR (NZCV|Q|GE|IT). Exceptions targeting Secure (all other
+        // cases) leave the registers untouched on v8.0M (QEMU
+        // `v7m_exception_taken`).
+        if self.isa == Isa::Armv8MBaseline && !self.secure {
+            for r in [0u8, 1, 2, 3, 12] {
+                self.regs.write(r, 0);
+            }
+            self.xpsr.set(self.xpsr.get() & !(APSR_FLAGS | APSR_Q));
+            self.itstate = 0;
+        }
         // The handler starts without an FP context (the interrupted one was
         // stacked or reserved above).
         self.control &= !CONTROL_FPCA;
@@ -4501,6 +4948,269 @@ mod tests {
             c.step().unwrap();
             assert_eq!(c.ipsr, 3, "{isa:?} must UNDEF TT to HardFault");
         }
+    }
+
+    #[test]
+    fn v8m_baseline_bxns_blxns_undef_on_v6m_and_v7m() {
+        // BXNS/BLXNS are ARMv8-M-only: on ARMv6-M/ARMv7-M the encoding faults.
+        for isa in [Isa::Armv6M, Isa::Armv7M] {
+            for (bytes, name) in [(&[0x04, 0x47][..], "bxns"), (&[0x84, 0x47][..], "blxns")] {
+                let mut c = Core::new_with_isa(
+                    crate::mem::flat::FlatMemory::with_layout(
+                        &[0x0000_0000, 0x2000_0000],
+                        &[0x1000, 0x1000],
+                    ),
+                    isa,
+                );
+                c.mem().write_word(3 * 4, 0x2000_0081).unwrap(); // HardFault vector
+                c.regs.pc = 0x2000_0000;
+                c.regs.sp = 0x2000_0040;
+                c.regs.write(0, 0x2000_0000);
+                load_inst(&mut c, 0x2000_0000, bytes);
+                c.step().unwrap();
+                assert_eq!(c.ipsr, 3, "{isa:?} must UNDEF {name} to HardFault");
+            }
+        }
+    }
+
+    #[test]
+    fn v8m_baseline_bxns_blxns_undef_from_nonsecure() {
+        // From the Non-secure state both are UNDEF (QEMU's `trans_BXNS` gates
+        // on `v8m_secure`), folding to HardFault with the SHCSR disabled.
+        for (bytes, name) in [(&[0x04, 0x47][..], "bxns"), (&[0x84, 0x47][..], "blxns")] {
+            let mut c = armv8m_sys_core();
+            c.mem().write_word(3 * 4, 0x2000_0401).unwrap(); // HardFault vector
+            c.secure = false;
+            c.regs.pc = 0x2000_0000;
+            c.regs.sp = 0x2000_0040;
+            c.regs.write(0, 0x2000_0000);
+            load_inst(&mut c, 0x2000_0000, bytes);
+            c.step().unwrap();
+            assert_eq!(c.ipsr, 3, "{name} from Non-secure must UNDEF to HardFault");
+        }
+    }
+
+    #[test]
+    fn v8m_baseline_blxns_to_nonsecure_frames_secure_stack() {
+        let mut c = armv8m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.sp = 0x2000_0040;
+        c.regs.write(0, 0x2000_0010); // even target -> Non-secure function call
+        load_inst(&mut c, 0x2000_0000, &[0x84, 0x47]); // blxns r0
+        c.step().unwrap();
+        assert!(!c.secure);
+        assert_eq!(c.regs.lr, FNC_RETURN);
+        assert_eq!(c.regs.pc, 0x2000_0010);
+        // The {return address, saved IPSR} frame went to the Secure stack bank.
+        assert_eq!(c.other_ss_msp, 0x2000_0038);
+        assert_eq!(c.mem().read_word(0x2000_0038).unwrap(), 0x2000_0003);
+        assert_eq!(c.mem().read_word(0x2000_003C).unwrap(), 0);
+        // The active SP is now the (empty) Non-secure bank.
+        assert_eq!(c.regs.sp, 0);
+    }
+
+    #[test]
+    fn v8m_baseline_blxns_odd_target_is_plain_blx() {
+        let mut c = armv8m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.sp = 0x2000_0040;
+        c.regs.write(0, 0x2000_0011); // odd target -> Secure, ordinary BLX
+        load_inst(&mut c, 0x2000_0000, &[0x84, 0x47]); // blxns r0
+        c.step().unwrap();
+        assert!(c.secure);
+        assert_eq!(c.regs.lr, 0x2000_0003);
+        assert_eq!(c.regs.sp, 0x2000_0040, "no frame pushed for a Secure target");
+        assert_eq!(c.regs.pc, 0x2000_0010);
+    }
+
+    #[test]
+    fn v8m_baseline_bxns_switches_on_target_lsb() {
+        let mut c = armv8m_core();
+        c.regs.sp = 0x2000_0040;
+        c.regs.pc = 0x2000_0000;
+        c.regs.write(0, 0x2000_0011); // odd -> Secure
+        load_inst(&mut c, 0x2000_0000, &[0x04, 0x47]); // bxns r0
+        c.step().unwrap();
+        assert!(c.secure);
+        assert_eq!(c.regs.pc, 0x2000_0010);
+        c.regs.write(0, 0x2000_0020); // even -> Non-secure
+        load_inst(&mut c, 0x2000_0010, &[0x04, 0x47]); // bxns r0
+        c.step().unwrap();
+        assert!(!c.secure);
+        assert_eq!(c.other_ss_msp, 0x2000_0040, "Secure bank stashed on the switch");
+        assert_eq!(c.regs.pc, 0x2000_0020);
+    }
+
+    #[test]
+    fn v8m_baseline_fncreturn_pops_secure_bank() {
+        let mut c = armv8m_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.sp = 0x2000_0040;
+        c.regs.write(0, 0x2000_0010);
+        load_inst(&mut c, 0x2000_0000, &[0x84, 0x47]); // blxns r0 -> Non-secure
+        c.step().unwrap();
+        // The Non-secure function returns with a plain `BX` to the FNC_RETURN
+        // magic (`BXNS` is UNDEF in the Non-secure state), which VioARM's
+        // `branch()` routes to the secure function return.
+        c.regs.write(0, FNC_RETURN);
+        load_inst(&mut c, 0x2000_0010, &[0x00, 0x47]); // bx r0
+        c.step().unwrap();
+        assert!(c.secure);
+        assert_eq!(c.regs.sp, 0x2000_0040, "Secure SP restored past the frame");
+        assert_eq!(c.regs.pc, 0x2000_0002);
+        assert_eq!(c.ipsr, 0, "thread-mode return must not set IPSR");
+    }
+
+    #[test]
+    fn v8m_baseline_sg_clears_itstate_only_in_secure() {
+        // SG clears ITSTATE in the Secure state and is a NOP in the
+        // Non-secure state, and it bypasses the IT block either way.
+        let mut c = armv8m_core();
+        c.itstate = 0x34;
+        c.regs.pc = 0x2000_0000;
+        load_inst(&mut c, 0x2000_0000, &[0x7f, 0xe9, 0x7f, 0xe9]); // sg
+        c.step().unwrap();
+        assert_eq!(c.itstate, 0, "SG in Secure must clear ITSTATE");
+        assert_eq!(c.regs.pc, 0x2000_0004);
+        let mut c = armv8m_core();
+        c.secure = false;
+        c.itstate = 0x34;
+        c.regs.pc = 0x2000_0000;
+        load_inst(&mut c, 0x2000_0000, &[0x7f, 0xe9, 0x7f, 0xe9]); // sg
+        c.step().unwrap();
+        assert_eq!(c.itstate, 0x34, "SG in Non-secure is a NOP");
+    }
+
+    #[test]
+    fn v8m_baseline_switch_security_state_banks_sp() {
+        let mut c = armv8m_core();
+        c.regs.msp = 0x2000_0100;
+        c.regs.psp = 0x2000_0200;
+        c.regs.sp = 0x2000_0100; // Thread, SPSEL clear -> MSP
+        c.other_ss_msp = 0x2000_0300;
+        c.other_ss_psp = 0x2000_0400;
+        c.other_ss_control = 0x2; // NS SPSEL set -> PSP in Thread mode
+        c.switch_security_state(false);
+        assert!(!c.secure);
+        // The Secure bank is stashed, the NS bank loaded per its SPSEL.
+        assert_eq!(c.other_ss_msp, 0x2000_0100);
+        assert_eq!(c.other_ss_psp, 0x2000_0200);
+        assert_eq!(c.regs.msp, 0x2000_0300);
+        assert_eq!(c.regs.psp, 0x2000_0400);
+        assert_eq!(c.regs.sp, 0x2000_0400);
+        // CONTROL/limits swapped with the state.
+        assert_eq!(c.control, 0x2);
+        assert_eq!(c.other_ss_control, 0);
+    }
+
+    #[test]
+    fn v8m_baseline_control_spsel_deposit() {
+        // A thread-mode write of the *current* state's SPSEL swaps the active
+        // SP between MSP and PSP...
+        let mut c = armv8m_core();
+        c.regs.msp = 0x2000_0100;
+        c.regs.psp = 0x2000_0200;
+        c.regs.sp = 0x2000_0100;
+        c.write_control_spsel_for_secstate(true, true);
+        assert_eq!(c.control, 0x2);
+        assert_eq!(c.regs.sp, 0x2000_0200, "SPSEL set moves to the process stack");
+        assert_eq!(c.regs.msp, 0x2000_0100);
+        c.write_control_spsel_for_secstate(true, false);
+        assert_eq!(c.control, 0);
+        assert_eq!(c.regs.sp, 0x2000_0100, "SPSEL cleared moves back to MSP");
+        // ...but in Handler mode SPSEL never selects the process stack, so the
+        // bit changes without moving the active SP.
+        let mut c = armv8m_core();
+        c.ipsr = 3;
+        c.regs.msp = 0x2000_0100;
+        c.regs.psp = 0x2000_0200;
+        c.regs.sp = 0x2000_0100;
+        c.control = 0x2;
+        c.write_control_spsel_for_secstate(true, false);
+        assert_eq!(c.control, 0);
+        assert_eq!(c.regs.sp, 0x2000_0100, "handler-mode SPSEL must not swap");
+        // The inactive (Non-secure) state only gets the bit deposited.
+        let mut c = armv8m_core();
+        c.regs.sp = 0x2000_0100;
+        c.write_control_spsel_for_secstate(false, true);
+        assert_eq!(c.other_ss_control, 0x2);
+        assert_eq!(c.regs.sp, 0x2000_0100, "inactive-state SPSEL must not swap");
+    }
+
+    #[test]
+    fn v8m_baseline_ns_banked_sysreg_gating() {
+        // From the Non-secure state the NS-banked encodings read as 0 and
+        // writes are ignored (QEMU's `v7m_mrs`/`v7m_msr` NS guards).
+        let mut c = armv8m_core();
+        c.secure = false;
+        c.other_ss_msp = 0x2000_0300;
+        assert_eq!(c.sysreg_read(SysReg::MspNs).unwrap(), 0);
+        assert_eq!(c.sysreg_read(SysReg::ControlNs).unwrap(), 0);
+        assert_eq!(c.sysreg_read(SysReg::SpNs).unwrap(), 0);
+        c.sysreg_write(SysReg::MspNs, 0x2000_0900).unwrap();
+        c.sysreg_write(SysReg::ControlNs, 0x3).unwrap();
+        c.sysreg_write(SysReg::SpNs, 0x2000_0A00).unwrap();
+        assert_eq!(c.other_ss_msp, 0x2000_0300, "NS-bank writes ignored from NS");
+        assert_eq!(c.other_ss_control, 0);
+        // Unprivileged Secure code is also ignored for the NS bank...
+        let mut c = armv8m_core();
+        c.control = 0x1; // nPRIV
+        c.sysreg_write(SysReg::MspNs, 0x2000_0900).unwrap();
+        c.sysreg_write(SysReg::PspNs, 0x2000_0A00).unwrap();
+        c.sysreg_write(SysReg::ControlNs, 0x3).unwrap();
+        assert_eq!(c.other_ss_msp, 0);
+        assert_eq!(c.other_ss_psp, 0);
+        assert_eq!(c.other_ss_control, 0);
+        // ...but privileged Secure code writes the bank, and SP_NS follows the
+        // NS CONTROL.SPSEL.
+        let mut c = armv8m_core();
+        c.sysreg_write(SysReg::MspNs, 0x2000_0900).unwrap();
+        c.sysreg_write(SysReg::PspNs, 0x2000_0A00).unwrap();
+        c.sysreg_write(SysReg::ControlNs, 0x3).unwrap();
+        c.sysreg_write(SysReg::SpNs, 0x2000_0B00).unwrap();
+        assert_eq!(c.other_ss_msp, 0x2000_0900);
+        assert_eq!(c.other_ss_psp, 0x2000_0B00, "SPSEL set selects the NS PSP");
+        assert_eq!(c.other_ss_control, 0x3);
+    }
+
+    #[test]
+    fn v8m_baseline_exception_return_secure_thread() {
+        // EXC_RETURN to the Secure thread (0xFFFF_FFF9): unstack the eight
+        // words from the Secure MSP and restore xPSR/IPSR/PC.
+        let mut c = armv8m_core();
+        c.ipsr = 3; // running the HardFault handler
+        c.regs.msp = 0x2000_0100;
+        c.regs.sp = 0x2000_0100;
+        let frame = [0, 0, 0, 0, 0, 0xFFFF_FFF9, 0x2000_0001, 0x0100_0000];
+        for (i, w) in frame.iter().enumerate() {
+            c.mem().write_word(0x2000_0100 + (i as u32) * 4, *w).unwrap();
+        }
+        c.exception_return_v8m(EXC_RETURN_THREAD_MSP).unwrap();
+        assert!(c.secure);
+        assert_eq!(c.ipsr, 0);
+        assert_eq!(c.regs.pc, 0x2000_0000);
+        assert_eq!(c.regs.sp, 0x2000_0120, "frame consumed");
+    }
+
+    #[test]
+    fn v8m_baseline_exception_return_to_nonsecure() {
+        // EXC_RETURN to the Non-secure thread-MSP (S bit clear): the frame is
+        // popped from the NS bank and the Secure bank is preserved.
+        let mut c = armv8m_core();
+        c.ipsr = 3;
+        c.regs.msp = 0x2000_0100;
+        c.regs.sp = 0x2000_0100;
+        c.other_ss_msp = 0x2000_0500;
+        let frame = [0, 0, 0, 0, 0, 0xFFFF_FFB9, 0x2000_0001, 0x0100_0000];
+        for (i, w) in frame.iter().enumerate() {
+            c.mem().write_word(0x2000_0500 + (i as u32) * 4, *w).unwrap();
+        }
+        c.exception_return_v8m(0xFFFF_FFB9).unwrap();
+        assert!(!c.secure);
+        assert_eq!(c.ipsr, 0);
+        assert_eq!(c.regs.pc, 0x2000_0000);
+        assert_eq!(c.regs.sp, 0x2000_0520);
+        assert_eq!(c.other_ss_msp, 0x2000_0100, "Secure bank preserved");
     }
 
     #[test]

@@ -48,6 +48,22 @@ pub enum SysReg {
     /// `FAULTMASK` masks every configurable-priority exception.
     Faultmask,
     Control,
+    /// ARMv8-M TrustZone `MSP_NS` (0x88): the other security state's main
+    /// stack pointer. Reads as 0 and ignores writes from the Non-secure state;
+    /// on ARMv6-M/ARMv7-M the encoding is reserved (QEMU RAZ/WIs it).
+    MspNs,
+    /// ARMv8-M TrustZone `PSP_NS` (0x89).
+    PspNs,
+    /// ARMv8-M TrustZone `MSPLIM_NS` (0x8A).
+    MsplimNs,
+    /// ARMv8-M TrustZone `PSPLIM_NS` (0x8B).
+    PsplimNs,
+    /// ARMv8-M TrustZone `CONTROL_NS` (0x94): the other security state's
+    /// `CONTROL`.
+    ControlNs,
+    /// ARMv8-M TrustZone `SP_NS` (0x98): the other security state's active SP,
+    /// selected by its `CONTROL.SPSEL` and the current thread/handler mode.
+    SpNs,
     /// A reserved/unknown system-register id.
     Other(u8),
 }
@@ -70,6 +86,12 @@ impl From<u8> for SysReg {
             0x12 => Self::BasepriMax,
             0x13 => Self::Faultmask,
             0x14 => Self::Control,
+            0x88 => Self::MspNs,
+            0x89 => Self::PspNs,
+            0x8A => Self::MsplimNs,
+            0x8B => Self::PsplimNs,
+            0x94 => Self::ControlNs,
+            0x98 => Self::SpNs,
             other => Self::Other(other),
         }
     }
@@ -568,6 +590,10 @@ pub enum Inst32 {
         rd: u8,
         rn: u8,
     },
+    /// ARMv8-M `SG`: in the Secure state, clear the IT state; in the
+    /// Non-secure state it is a NOP. ARMv8-M only (the encoding is a
+    /// constrained `LDRD`/`STRD` form that is undefined on ARMv7-M).
+    Sg,
 }
 
 /// ARMv7-M multiply-family opcode. The long forms read their `RdHi:RdLo`
@@ -998,6 +1024,9 @@ pub fn decode32_v7m(hi: u16, lo: u16) -> Result<Inst32, DecodeError> {
 pub fn decode32_v8m(hi: u16, lo: u16) -> Result<Inst32, DecodeError> {
     if let Some(result) = decode_tt(hi, lo) {
         return result;
+    }
+    if hi == 0xE97F && lo == 0xE97F {
+        return Ok(Inst32::Sg);
     }
     match decode32_v7m(hi, lo) {
         Ok(

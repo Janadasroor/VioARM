@@ -62,6 +62,13 @@ const FPCCR: u32 = 0xE000_EF34;
 const FPCAR: u32 = 0xE000_EF38;
 const FPDSCR: u32 = 0xE000_EF3C;
 
+/// The ARMv8-M Security Attribution Unit window (`SAU_CTRL`/`SAU_TYPE`/
+/// `SAU_RNR`/`SAU_RBAR`/`SAU_RLAR`). The register values are stored for
+/// firmware compatibility — the M33 conformance tests program the SAU to make
+/// the IDAU Non-secure regions effective — but the security lookup itself is
+/// not yet SAU-aware (it stays in the SAU-disabled, IDAU-only case).
+const SAU: u32 = 0xE000_EDD0;
+
 /// The MPU register window. One 4-byte-aligned window covers `MPU_TYPE` ..=
 /// `MPU_RASR_A3`, dispatched by byte offset; the aliases `_A1`/`_A2`/`_A3`
 /// behave exactly like the base registers on ARMv7-M (they are indexed by
@@ -84,8 +91,6 @@ const PENDSVCLR: u8 = 0x08; // ICSR byte 3, bit 27: write 1 to clear.
 const AIRCR_VECTKEY: u32 = 0x05FA_0000;
 const AIRCR_PRIGROUP: u32 = 0x0000_0700;
 const AIRCR_SYSRESETREQ: u32 = 0x0000_0004;
-const AIRCR_VECTCLRACTIVE: u32 = 0x0000_0002;
-const AIRCR_VECTRESET: u32 = 0x0000_0001;
 
 // SCR: SEVONPEND (4), SLEEPONEXIT (1). The deep-sleep bits (SLEEPDEEP 2,
 // SLEEPDEEPS 3) are RAZ/WI: neither this model nor the QEMU oracle
@@ -236,7 +241,7 @@ impl Default for Mpu {
 /// access-control register, and the FP context control.
 #[derive(Debug, Clone)]
 pub struct Scb {
-    ranges: [Region; 17],
+    ranges: [Region; 18],
     pendsv: bool,
     /// `SHPR1`: configurable priorities for the fault exceptions. Only the
     /// `UsageFault` byte (bits 15:8) is modeled; MemManage/BusFault are not
@@ -273,6 +278,15 @@ pub struct Scb {
     ccr: u32,
     /// Latched by `AIRCR.SYSRESETREQ`; the machine performs the reset.
     reset_requested: bool,
+    /// `SAU_CTRL` (`ENABLE`/`ALLNS`). Stored for firmware compatibility; not
+    /// yet applied to the security attribution.
+    sau_ctrl: u32,
+    /// `SAU_RNR`: the region index for `SAU_RBAR`/`SAU_RLAR` accesses.
+    sau_rnr: u32,
+    /// `SAU_RBAR`: the 8 region bases (bits 31:8).
+    sau_rbar: [u32; 8],
+    /// `SAU_RLAR`: the 8 region limits/attributes (`LIMIT`/`NSC`/`ENABLE`).
+    sau_rlar: [u32; 8],
     /// Shared `FPCCR`/`FPCAR`/`FPDSCR` state; the core holds the same `Rc`.
     fpu_ctx: Arc<Mutex<FpuCtx>>,
 }
@@ -296,6 +310,7 @@ impl Scb {
                 Region::new(MMFAR, 4),
                 Region::new(CPACR, 4),
                 Region::new(MPU, 0x2C),
+                Region::new(SAU, 0x10),
                 Region::new(FPCCR, 4),
                 Region::new(FPCAR, 4),
                 Region::new(FPDSCR, 4),
@@ -316,6 +331,10 @@ impl Scb {
             scr: 0,
             ccr: CCR_RESET,
             reset_requested: false,
+            sau_ctrl: 0,
+            sau_rnr: 0,
+            sau_rbar: [0; 8],
+            sau_rlar: [0; 8],
             fpu_ctx: Arc::new(Mutex::new(FpuCtx::new())),
         }
     }
@@ -546,6 +565,43 @@ impl Scb {
         (self.mpu.rnr & 0x7) as usize
     }
 
+    const fn sau_region_index(&self) -> usize {
+        (self.sau_rnr & 0x7) as usize
+    }
+
+    /// Byte-write to the SAU window at `offset` (from `SAU_CTRL`). The
+    /// register values are stored for firmware compatibility; the security
+    /// lookup does not yet apply them.
+    fn sau_write(&mut self, offset: u32, val: u8) {
+        let shift = 8 * (offset & 0x3);
+        match offset & !0x3 {
+            // Only `ENABLE` and `ALLNS` are implemented.
+            0 => {
+                self.sau_ctrl = (self.sau_ctrl & !(0xFF << shift)) | (u32::from(val) << shift);
+                self.sau_ctrl &= 0x3;
+            }
+            // The write side of the shared address is `SAU_RNR`; the region
+            // index is masked to the eight regions.
+            4 => {
+                self.sau_rnr = (self.sau_rnr & !(0xFF << shift)) | (u32::from(val) << shift);
+                self.sau_rnr &= 0x7;
+            }
+            8 => {
+                let idx = self.sau_region_index();
+                self.sau_rbar[idx] =
+                    (self.sau_rbar[idx] & !(0xFF << shift)) | (u32::from(val) << shift);
+                // `RBAR[7:0]` are reserved (bases are 256-byte aligned).
+                self.sau_rbar[idx] &= !0xFF;
+            }
+            12 => {
+                let idx = self.sau_region_index();
+                self.sau_rlar[idx] =
+                    (self.sau_rlar[idx] & !(0xFF << shift)) | (u32::from(val) << shift);
+            }
+            _ => {}
+        }
+    }
+
     fn read_reg(&self, base: u32, offset: u32) -> u8 {
         let byte = offset & 0x3;
         let reg = if base == MPU {
@@ -567,6 +623,16 @@ impl Scb {
                 HFSR => self.hfsr,
                 MMFAR => self.mmfar,
                 CPACR => self.cpacr,
+                SAU => match offset & !0x3 {
+                    // `SAU_CTRL` reads back the stored `ENABLE`/`ALLNS` bits.
+                    0 => self.sau_ctrl,
+                    // `SAU_TYPE` (the read side of the `SAU_RNR` address):
+                    // eight regions on the Cortex-M33.
+                    4 => 0x0000_0008,
+                    8 => self.sau_rbar[self.sau_region_index()],
+                    12 => self.sau_rlar[self.sau_region_index()],
+                    _ => 0,
+                },
                 FPCCR => self.fpu_ctx.lock().unwrap().fpccr(),
                 FPCAR => self.fpu_ctx.lock().unwrap().fpcar,
                 FPDSCR => self.fpu_ctx.lock().unwrap().fpdscr,
@@ -654,6 +720,7 @@ impl Scb {
                 let shift = 8 * offset;
                 self.cpacr = (self.cpacr & !(0xFF << shift)) | (u32::from(val) << shift);
             }
+            SAU => self.sau_write(offset, val),
             FPCCR => {
                 // Only the ASPEN (bit 7 of byte 3) and LSPEN (bit 6 of byte 3)
                 // are software-writable; the ready bits and LSPACT are
@@ -725,6 +792,10 @@ impl Peripheral for Scb {
         self.scr = 0;
         self.ccr = CCR_RESET;
         self.reset_requested = false;
+        self.sau_ctrl = 0;
+        self.sau_rnr = 0;
+        self.sau_rbar = [0; 8];
+        self.sau_rlar = [0; 8];
         *self.fpu_ctx.lock().unwrap() = FpuCtx::new();
     }
 
@@ -1175,5 +1246,35 @@ mod tests {
         assert_eq!(read_word(&mut s, 0xE000_ED34), 0);
         assert_eq!(read_word(&mut s, 0xE000_ED28), 0);
         assert!(s.mpu_check(0x2000_0000, MpuAccess::Read, true, 0));
+    }
+
+    #[test]
+    fn sau_registers_store_and_read_back() {
+        let mut s = Scb::new();
+        // Reset: CTRL clear, TYPE reads eight regions, RBAR/RLAR read zero.
+        assert_eq!(read_word(&mut s, 0xE000_EDD0), 0);
+        assert_eq!(read_word(&mut s, 0xE000_EDD4), 0x0000_0008);
+        assert_eq!(read_word(&mut s, 0xE000_EDD8), 0);
+        assert_eq!(read_word(&mut s, 0xE000_EDDC), 0);
+        // Select region 2 and store its base/limit/attributes.
+        write_word(&mut s, 0xE000_EDD4, 2);
+        write_word(&mut s, 0xE000_EDD8, 0x8000_0000);
+        write_word(&mut s, 0xE000_EDDC, 0x8FFF_FFFD); // NS, ENABLE, no NSC
+        assert_eq!(read_word(&mut s, 0xE000_EDD8), 0x8000_0000);
+        assert_eq!(read_word(&mut s, 0xE000_EDDC), 0x8FFF_FFFD);
+        // The other regions are untouched.
+        write_word(&mut s, 0xE000_EDD4, 0);
+        assert_eq!(read_word(&mut s, 0xE000_EDD8), 0);
+        // `RBAR[7:0]` are reserved: a write of a non-aligned base is masked.
+        write_word(&mut s, 0xE000_EDD4, 3);
+        write_word(&mut s, 0xE000_EDD8, 0x2000_00FF);
+        assert_eq!(read_word(&mut s, 0xE000_EDD8), 0x2000_0000);
+        // Only `ENABLE`/`ALLNS` of `SAU_CTRL` are implemented.
+        write_word(&mut s, 0xE000_EDD0, 0xFFFF_FFFF);
+        assert_eq!(read_word(&mut s, 0xE000_EDD0), 0x0000_0003);
+        // Reset clears the whole unit (TYPE stays read-only).
+        s.reset();
+        assert_eq!(read_word(&mut s, 0xE000_EDD0), 0);
+        assert_eq!(read_word(&mut s, 0xE000_EDD8), 0);
     }
 }

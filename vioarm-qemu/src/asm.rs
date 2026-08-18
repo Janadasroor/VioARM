@@ -482,6 +482,21 @@ impl Asm {
         self.raw(0x4780 | u16::from(rm) << 3);
     }
 
+    /// ARMv8-M `BXNS Rm` (`0x4704 | Rm<<3`).
+    pub fn bxns(&mut self, rm: u8) {
+        self.raw(0x4704 | u16::from(rm) << 3);
+    }
+
+    /// ARMv8-M `BLXNS Rm` (`0x4784 | Rm<<3`).
+    pub fn blxns(&mut self, rm: u8) {
+        self.raw(0x4784 | u16::from(rm) << 3);
+    }
+
+    /// ARMv8-M `SG` (`0xE97F E97F`).
+    pub fn sg(&mut self) {
+        self.raw32(0xE97F_E97F);
+    }
+
     /// `NOP` (the 16-bit hint, `0xBF00`).
     pub fn nop(&mut self) {
         self.raw(0xBF00);

@@ -55,7 +55,15 @@ pub fn new_machine_v6m(bin: &[u8]) -> Machine<SystemMemory<FlatMemory>> {
 /// FPU on the baseline, so no FP context is shared.
 #[must_use]
 pub fn new_machine_v8m(bin: &[u8]) -> Machine<SystemMemory<FlatMemory>> {
-    let backing = FlatMemory::with_layout(&[0x1000_0000, 0x2000_0000], &[FLASH_LEN, SRAM_LEN]);
+    // The ARMSSE on mps2-an505 gates the flash and SRAM regions for
+    // Non-secure access at reset, leaving `0x8000_0000` (the system RAM, in
+    // the NS IDAU region) as the only executable Non-secure memory. The
+    // conformance suite stores NS routines there and jumps to them with
+    // `BXNS`/`BLXNS`, so this machine mirrors that region too.
+    let backing = FlatMemory::with_layout(
+        &[0x1000_0000, 0x2000_0000, 0x8000_0000],
+        &[FLASH_LEN, SRAM_LEN, SRAM_LEN],
+    );
     let mem = SystemMemory::new(backing);
     let mut m = Machine::armv8m(mem);
     m.core.set_vector_base(0x1000_0000);

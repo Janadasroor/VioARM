@@ -20,7 +20,7 @@
 //! (`it_block_branch_clears_state`).
 
 use std::time::Duration;
-use vioarm_qemu::asm::{Asm, Image, SP};
+use vioarm_qemu::asm::{Asm, Image, CODE_BASE, SP};
 use vioarm_qemu::qemu::{run_until_pc as qemu_run, QemuMachine};
 use vioarm_qemu::vioarm::run_until_pc as vio_run;
 use vioarm_qemu::vioarm::run_until_pc_v6m as vio_run_v6m;
@@ -146,7 +146,15 @@ fn conformance_m0(name: &str, a: &mut Asm, halt: &str, mt: &QemuMachine) {
 /// Cortex-M33 mainline reference. The image is laid out for flash at
 /// `0x1000_0000` so both simulators execute at identical addresses.
 fn conformance_v8m(name: &str, a: &mut Asm, halt: &str, mt: &QemuMachine) {
-    let img: Image = a.clone().finish_at(SP, 0x1000_0000).expect("assemble");
+    conformance_v8m_at(name, a, halt, SP, mt)
+}
+
+/// The ARMv8-M baseline variant of [`conformance`]: runs `a` through the
+/// ARMv8-M baseline VioARM machine (Cortex-M23 semantics, no FPU) against the
+/// Cortex-M33 mainline reference. The image is laid out for flash at
+/// `0x1000_0000` so both simulators execute at identical addresses.
+fn conformance_v8m_at(name: &str, a: &mut Asm, halt: &str, sp: u32, mt: &QemuMachine) {
+    let img: Image = a.clone().finish_at(sp, 0x1000_0000).expect("assemble");
     let stop = img
         .addr(halt)
         .unwrap_or_else(|| panic!("{name}: no label {halt:?}"));
@@ -3234,4 +3242,200 @@ fn m33_baseline_alu_thumb1() {
     a.label("halt");
     a.b("halt");
     conformance_v8m("m33_baseline_alu_thumb1", &mut a, "halt", &mt);
+}
+
+// ---------------------------------------------------------------------------
+// ARMv8-M Security Extension: SG, BXNS/BLXNS and the FNC_RETURN secure
+// function return, diffed against the M33 (mainline) oracle. The Non-secure
+// routines are stored at runtime into `0x8000_0000` — region 8 on
+// mps2-an505, a 16 MiB "system RAM" with no MPC block, and the only RAM the
+// reset SP value `0x2000_2000` does *not* cover. At reset the M33 treats
+// *every* address as Secure (`SAU_CTRL` resets with `ENABLE == 0` and
+// `ALLNS == 0`, and the ARMSSE IDAU can only upgrade a Non-secure
+// attribution to Secure), so the Secure code first programs
+// `SAU_CTRL.ALLNS = 1`: that makes the IDAU Non-secure regions effective,
+// while `0x1000_0000` (the code/vector table) stays Secure through the
+// IDAU's odd-region upgrade. Both simulators execute the same store. The
+// trace diff then exercises the whole state-switch path (banked SPs,
+// CONTROL, stack limits) through R13/R15 and the MRS/MSR register accesses.
+//
+// `BLXNS` pushes its return frame on the *Secure* stack, so the tests that
+// return from the Non-secure side run with `SP = 0x8000_0100` — inside the
+// shared RAM, clear of the runtime-stored routine. (The VioARM v8m machine
+// also maps the conventional `0x2000_0000` RAM, but the AN505 oracle has no
+// memory there, so a stack in that window would diverge.)
+// ---------------------------------------------------------------------------
+
+/// The stack for the `BLXNS`-return tests: inside the `0x8000_0000` RAM that
+/// both simulators back, above the runtime-stored Non-secure routine.
+const V8M_NS_SP: u32 = 0x8000_0100;
+
+/// Assemble a function and return the raw instruction bytes of its code (the
+/// vector table occupies the first `CODE_BASE` bytes of the image).
+fn code_bytes(a: &Asm) -> Vec<u8> {
+    let img: Image = a.clone().finish(SP).expect("assemble");
+    img.bytes[CODE_BASE as usize..].to_vec()
+}
+
+/// Emit a runtime loop storing `bytes` (zero-padded to a word multiple) as
+/// little-endian words at `addr`, using r0 as the address and r1 as the word.
+fn store_bytes(a: &mut Asm, addr: u32, bytes: &[u8]) {
+    let mut buf = bytes.to_vec();
+    while !buf.len().is_multiple_of(4) {
+        buf.push(0);
+    }
+    for (i, chunk) in buf.chunks(4).enumerate() {
+        let mut w = [0u8; 4];
+        w.copy_from_slice(chunk);
+        a.mov_imm32(1, u32::from_le_bytes(w));
+        a.mov_imm32(0, addr.wrapping_add(u32::try_from(i).expect("word") * 4));
+        a.str_imm(1, 0, 0);
+    }
+}
+
+/// Assemble the Non-secure routine: `SG` (a NOP in the Non-secure state),
+/// reads of the NS-banked registers from the Non-secure state (all RAZ) and
+/// of the current-state SPs and CONTROL, a `CONTROL` write that clears NS
+/// SPSEL and moves the active NS SP back to the main stack, then `BX LR`.
+/// The return is a plain `BX` to the `FNC_RETURN` magic: `BXNS` is UNDEF from
+/// the Non-secure state, and QEMU routes the `FNC_RETURN` magic on the `BX`
+/// path (its `gen_bx_excret`), which the `VioARM` `branch()` mirrors. With
+/// `ret == true` the routine returns; otherwise it halts at a loop whose byte
+/// offset within the routine is returned (the stop address for the
+/// direct-`BXNS` test). Returns `(bytes, stop_offset)`.
+fn ns_routine_bytes(ret: bool) -> (Vec<u8>, u32) {
+    let mut a = Asm::new();
+    a.sg();
+    a.mrs(6, 0x94); // r6 = CONTROL_NS (0 from NS)
+    a.mrs(7, 0x88); // r7 = MSP_NS (0 from NS)
+    a.mrs(8, 0x09); // r8 = PSP (the active NS SP while SPSEL is set)
+    a.mrs(9, 0x14); // r9 = CONTROL (the current-state NS CONTROL)
+    a.mrs(10, 0x08); // r10 = MSP (the inactive NS SP while SPSEL is set)
+    a.movs_imm8(2, 0);
+    a.msr(0x14, 2); // NS CONTROL = 0 -> SPSEL cleared, active SP back to MSP
+    a.mrs(8, 0x09); // r8 = PSP (now the inactive NS SP)
+    a.mrs(10, 0x08); // r10 = MSP (now the active NS SP)
+    if ret {
+        a.bx(14); // LR == 0xFEFFFFFF: FNC_RETURN
+    } else {
+        a.label("ns_halt");
+        a.b("ns_halt");
+    }
+    let img: Image = a.clone().finish(SP).expect("assemble ns routine");
+    let bytes = code_bytes(&a);
+    let stop = if ret {
+        0
+    } else {
+        img.addr("ns_halt").expect("ns halt") - CODE_BASE
+    };
+    (bytes, stop)
+}
+
+/// ARMv8-M `SG` (`0xE97FE97F`): unconditional even inside an IT block whose
+/// condition fails — it executes and clears ITSTATE, so the following `beq` is
+/// no longer in the IT block — and a 4-byte NOP outside an IT block.
+#[test]
+fn m33_baseline_sg() {
+    let Some(mt) = qemu_m33() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+
+    // SG executes (clearing ITSTATE) despite the pending EQ condition failing,
+    // so the `beq` after it is a plain conditional branch whose EQ test fails,
+    // falling through to `movs r3,#0`.
+    a.movs_imm8(2, 0xFF); // Z = 0
+    a.it(0, 1); // it eq
+    a.sg();
+    a.bc(0, "taken");
+    a.movs_imm8(3, 0);
+    a.label("taken");
+    a.sg(); // 4-byte NOP outside an IT block
+    a.nop();
+    a.nop();
+
+    a.label("halt");
+    a.b("halt");
+    conformance_v8m("m33_baseline_sg", &mut a, "halt", &mt);
+}
+
+/// `BLXNS` (Non-secure function call) and the `FNC_RETURN` secure function
+/// return. The Secure side primes the NS-banked SPs and CONTROL, reads them
+/// back through `CONTROL_NS`/`PSP_NS`/`SP_NS`, then calls into the NS routine
+/// and reads the banked state again after it returns.
+#[test]
+fn m33_baseline_blxns() {
+    let Some(mt) = qemu_m33() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+
+    // Make the IDAU Non-secure regions effective: `SAU_CTRL.ALLNS = 1`
+    // attributes every IDAU Non-secure address as Non-secure, while the odd
+    // IDAU regions (0x1000_0000, ...) stay Secure. Without this the M33
+    // treats all of memory as Secure and the NS fetch below faults.
+    a.mov_imm32(0, 0x2);
+    a.mov_imm32(1, 0xE000_EDD0);
+    a.str_imm(0, 1, 0);
+
+    let (ns_bytes, _) = ns_routine_bytes(true);
+    store_bytes(&mut a, 0x8000_0000, &ns_bytes);
+
+    // Prime the Non-secure banked registers from Secure.
+    a.mov_imm32(2, 0x2);
+    a.msr(0x94, 2); // CONTROL_NS = SPSEL -> NS process stack
+    a.mov_imm32(2, 0x2000_8000);
+    a.msr(0x89, 2); // PSP_NS = 0x2000_8000
+    a.mov_imm32(2, 0x2000_4000);
+    a.msr(0x88, 2); // MSP_NS = 0x2000_4000
+    a.mrs(3, 0x94); // r3 = CONTROL_NS = 0x2
+    a.mrs(4, 0x89); // r4 = PSP_NS = 0x2000_8000
+    a.mrs(5, 0x98); // r5 = SP_NS = 0x2000_8000 (thread mode + SPSEL)
+
+    // BLXNS to the Non-secure routine and back via FNC_RETURN.
+    a.mov_imm32(1, 0x8000_0000);
+    a.blxns(1);
+    a.mrs(3, 0x94); // CONTROL_NS: the NS code cleared its SPSEL -> 0
+    a.mrs(4, 0x88); // MSP_NS = 0x2000_4000 (saved at the state switch)
+    a.mrs(5, 0x89); // PSP_NS = 0x2000_8000
+
+    a.label("halt");
+    a.b("halt");
+    conformance_v8m_at("m33_baseline_blxns", &mut a, "halt", V8M_NS_SP, &mt);
+}
+
+/// A direct `BXNS` to an even (Non-secure) target: the state switch without a
+/// pushed return frame. The NS routine runs and halts in the Non-secure
+/// state; both simulators stop at the loop inside the runtime-stored routine.
+#[test]
+fn m33_baseline_bxns() {
+    let Some(mt) = qemu_m33() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+
+    // See `m33_baseline_blxns`: program `SAU_CTRL.ALLNS = 1` so the M33
+    // attributes the IDAU Non-secure `0x8000_0000` region as Non-secure.
+    a.mov_imm32(0, 0x2);
+    a.mov_imm32(1, 0xE000_EDD0);
+    a.str_imm(0, 1, 0);
+
+    let (ns_bytes, ns_stop) = ns_routine_bytes(false);
+    let ns_halt = 0x8000_0000 + ns_stop;
+    store_bytes(&mut a, 0x8000_0000, &ns_bytes);
+
+    a.mov_imm32(1, 0x8000_0000);
+    a.bxns(1);
+
+    let img: Image = a.clone().finish_at(SP, 0x1000_0000).expect("assemble");
+    let (vio, reached) = vio_run_v8m(&img.bytes, ns_halt);
+    assert!(
+        reached,
+        "m33_baseline_bxns: vioarm never reached NS halt @ {ns_halt:#x} (last {})",
+        snapshot_like(&vio)
+    );
+    let qemu = qemu_run_retry(&mt, &img.bytes, ns_halt);
+    assert!(
+        !qemu.is_empty() && qemu.last().expect("empty").r[15] & !1 == ns_halt,
+        "m33_baseline_bxns: qemu never reached NS halt @ {ns_halt:#x} (got {} states)",
+        qemu.len()
+    );
+    compare_traces("m33_baseline_bxns", &vio, &qemu).expect("traces agree");
 }
