@@ -1047,16 +1047,18 @@ pub fn decode32_v8m(hi: u16, lo: u16) -> Result<Inst32, DecodeError> {
 
 /// Decode the ARMv8-M `TT` instruction family. The encodings share the
 /// `1110 1000 0100 Rn` first-halfword space with the ARMv7-M `LDRD`/`STRD`
-/// pair, distinguished by the second halfword's `1111 0...` prefix; `TT` is
-/// ARMv8-M only and never reaches the ARMv7-M decoder. The architecture
-/// carries `Rn` in the first halfword and reserves the low six bits of the
-/// second; the constrained-unpredictable forms (`Rd` of 13/15, `Rn` of 15, a
-/// non-zero low halfword) are undefined.
+/// pair, distinguished by the second halfword's `1111 Rd A T 000000` form
+/// (`Rd` in bits [11:8], so any register sets bit 11; the low six bits are
+/// reserved); `TT` is ARMv8-M only and never reaches the ARMv7-M decoder.
+/// The architecture constrains the unpredictable forms (`Rd` of 13/15, `Rn`
+/// of 15, a non-zero low halfword) as undefined.
 const fn decode_tt(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
     if hi & 0xFFF0 != 0xE840 {
         return None;
     }
-    if lo & 0xF800 != 0xF000 {
+    // The second halfword carries `1111 Rd A T 000000` (`Rd` in bits [11:8],
+    // so a high register sets bit 11): only the top nibble is fixed.
+    if lo & 0xF000 != 0xF000 {
         return None;
     }
     let rn = (hi & 0xF) as u8;
@@ -3230,6 +3232,17 @@ mod tests {
         assert_eq!(
             v8m_bytes([0x40, 0xe8, 0xc0, 0xf6]),
             Ok(Inst32::Tt { variant: TtVariant::Ttat, rd: 6, rn: 0 })
+        );
+        // A high `Rd` (8..=12) sets bit 11 of the second halfword; it must
+        // still decode (the second-halfword prefix check only pins the top
+        // nibble).
+        assert_eq!(
+            v8m_bytes([0x40, 0xe8, 0x80, 0xf8]),
+            Ok(Inst32::Tt { variant: TtVariant::Tta, rd: 8, rn: 0 })
+        );
+        assert_eq!(
+            v8m_bytes([0x44, 0xe8, 0x80, 0xfc]),
+            Ok(Inst32::Tt { variant: TtVariant::Tta, rd: 12, rn: 4 })
         );
         // A non-zero `Rn` lives in the first halfword; the second halfword's
         // low bits stay reserved.
