@@ -1,4 +1,4 @@
-//! The ARMv7-M System Control Block (subset).
+﻿//! The ARMv7-M System Control Block (subset).
 //!
 //! Models the `ICSR` `PendSV` set/clear bits, the `SHPR2`/`SHPR3` configurable
 //! exception priorities (`SVCall`, `PendSV`, `SysTick`), the `VTOR` vector
@@ -42,7 +42,7 @@
 use crate::cpu::FpuCtx;
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
-use crate::mem::bus::{MpuAccess, Region, SauHit};
+use crate::mem::bus::{MpuAccess, MpuLookup, Region, SauHit};
 use std::sync::{Arc, Mutex};
 
 const ICSR: u32 = 0xE000_ED04;
@@ -236,6 +236,56 @@ impl Default for Mpu {
     }
 }
 
+/// The PMSAv8 `AP` permission matrix (QEMU's `simple_ap_to_rw_prot`): the raw
+/// read/write bits for the two-bit `AP` field in `MPU_RBAR`, in `privileged`
+/// mode.
+const fn ap_rw_prot(ap: u32, privileged: bool) -> u8 {
+    match ap {
+        0 => {
+            if privileged {
+                crate::mem::bus::PROT_READ | crate::mem::bus::PROT_WRITE
+            } else {
+                0
+            }
+        }
+        1 => crate::mem::bus::PROT_READ | crate::mem::bus::PROT_WRITE,
+        2 => {
+            if privileged {
+                crate::mem::bus::PROT_READ
+            } else {
+                0
+            }
+        }
+        _ => crate::mem::bus::PROT_READ,
+    }
+}
+
+/// The PMSAv8 (v8-M) MPU register file: the control bits and eight regions,
+/// banked per security state (index 0 = Non-secure, 1 = Secure).
+#[derive(Debug, Clone)]
+struct MpuV8 {    /// `MPU_CTRL` per security state (`ENABLE`/`HFNMIENA`/`PRIVDEFENA`).
+    ctrl: [u32; 2],
+    /// `MPU_RNR.REGION` per security state.
+    rnr: [u32; 2],
+    /// `MPU_RBAR` per security state: `XN` (bit 0) and `AP` (bits [2:1]) in
+    /// the low byte, the base in bits [31:5].
+    rbar: [[u32; 8]; 2],
+    /// `MPU_RLAR` per security state: `ENABLE` (bit 0) and the inclusive
+    /// limit in bits [31:5] (32-byte granularity).
+    rlar: [[u32; 8]; 2],
+}
+
+impl Default for MpuV8 {
+    fn default() -> Self {
+        Self {
+            ctrl: [0; 2],
+            rnr: [0; 2],
+            rbar: [[0; 8]; 2],
+            rlar: [[0; 8]; 2],
+        }
+    }
+}
+
 /// The System Control Block: interrupt control state, exception priorities,
 /// the reset/control registers (`AIRCR`/`SCR`/`CCR`), the coprocessor
 /// access-control register, and the FP context control.
@@ -263,6 +313,17 @@ pub struct Scb {
     mmfar: u32,
     /// The MPU configuration and region registers.
     mpu: Mpu,
+    /// The PMSAv8 (v8-M) MPU register file, banked per security state.
+    mpu_v8: MpuV8,
+    /// Whether the MPU window and lookups use the PMSAv8 (v8-M) model instead
+    /// of the v7-M PMSAv7 model. Disabled by default.
+    pmsav8: bool,
+    /// The core's current security state, mirrored from the core so the
+    /// banked v8-M MPU registers resolve the accessing security state.
+    secure: bool,
+    /// The in-flight `MPU_RNR` word, so the v8-M out-of-range (`>= 8`) write
+    /// gate sees the whole word before deciding.
+    mpu_rnr_pending: u32,
     /// The in-flight `MPU_RBAR` word. `RBAR` consumes its whole 32-bit value
     /// on write (`VALID`/`REGION` redirect the store and update `MPU_RNR`),
     /// so the four byte-writes of a word store are accumulated here and
@@ -327,6 +388,10 @@ impl Scb {
             hfsr: 0,
             mmfar: 0,
             mpu: Mpu::default(),
+            mpu_v8: MpuV8::default(),
+            pmsav8: false,
+            secure: true,
+            mpu_rnr_pending: 0,
             rbar_pending: 0,
             aircr: 0,
             scr: 0,
@@ -344,6 +409,18 @@ impl Scb {
     /// `Rc`; adopting it here makes firmware writes and core logic agree.
     pub fn set_fpu_ctx(&mut self, fpu_ctx: Arc<Mutex<FpuCtx>>) {
         self.fpu_ctx = fpu_ctx;
+    }
+
+    /// Switch the MPU window and lookups to the PMSAv8 (v8-M) model, banked
+    /// per security state. The default is the v7-M PMSAv7 model.
+    pub fn set_pmsav8(&mut self) {
+        self.pmsav8 = true;
+    }
+
+    /// Mirror the core's current security state, so the banked v8-M MPU
+    /// registers resolve the accessing security state.
+    pub fn set_secure(&mut self, secure: bool) {
+        self.secure = secure;
     }
 
     /// Whether the `PendSV` line is latched pending.
@@ -466,6 +543,9 @@ impl Scb {
     /// is unaffected until firmware enables it.
     #[must_use]
     pub fn mpu_check(&self, addr: u32, access: MpuAccess, privileged: bool, exception: u8) -> bool {
+        if self.pmsav8 {
+            return self.mpu_check_v8(addr, access, privileged, exception);
+        }
         // `MPU_CTRL.ENABLE` clear: the MPU is off, every access is allowed.
         if self.mpu.ctrl & 0x1 == 0 {
             return true;
@@ -488,9 +568,110 @@ impl Scb {
         self.mpu.ctrl & 0x4 != 0 && privileged
     }
 
+    /// The `PMSAv8` (v8-M) permission gate. `MPU_CTRL.ENABLE` clear bypasses the
+    /// MPU entirely; without `HFNMIENA` the NMI/HardFault handlers bypass it
+    /// too. Otherwise the [`Self::mpu_lookup_v8`] result for the current
+    /// security state decides, so a no-hit/background fault denies everything.
+    /// When the MPU is disabled the lookup reports the default map, whose
+    /// execute-never ranges still reject fetches.
+    #[must_use]
+    fn mpu_check_v8(&self, addr: u32, access: MpuAccess, privileged: bool, exception: u8) -> bool {
+        let ctrl = self.mpu_v8.ctrl[usize::from(self.secure)];
+        if ctrl & 0x2 == 0 && (exception == 2 || exception == 3) {
+            return true;
+        }
+        let want = match access {
+            MpuAccess::Fetch => crate::mem::bus::PROT_EXEC,
+            MpuAccess::Read => crate::mem::bus::PROT_READ,
+            MpuAccess::Write => crate::mem::bus::PROT_WRITE,
+        };
+        self.mpu_lookup_v8(addr, self.secure, privileged).prot & want != 0
+    }
+
+    /// The `PMSAv8` region lookup for `addr` (QEMU's `pmsav8_mpu_lookup` region
+    /// search, in the `secure` MPU bank and `privileged` mode): the permission
+    /// bits and matched region. An enabled region hit carries its `AP`/`XN`
+    /// permissions; the default map applies when the MPU is disabled or
+    /// `PRIVDEFENA` grants the privileged background. A multiple-region hit
+    /// and a no-hit-without-background both report no permission and no region
+    /// (QEMU's permission/background fault).
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation)]
+    pub fn mpu_lookup_v8(&self, addr: u32, secure: bool, privileged: bool) -> MpuLookup {
+        let sec = usize::from(secure);
+        let ctrl = self.mpu_v8.ctrl[sec];
+        let mut matched = None;
+        let mut hit = false;
+        if ctrl & 0x1 == 0 {
+            // MPU disabled: the default map decides.
+            hit = true;
+        } else if addr & 0xFFF0_0000 == 0xE000_0000 {
+            // The PPB (`0xE000_0000`..`0xE00F_FFFF`) bypasses the MPU.
+            hit = true;
+        } else {
+            // `PRIVDEFENA` grants privileged access to the default map.
+            if privileged && ctrl & 0x4 != 0 {
+                hit = true;
+            }
+            for n in (0..8).rev() {
+                let rlar = self.mpu_v8.rlar[sec][n];
+                if rlar & 1 == 0 {
+                    continue;
+                }
+                let base = self.mpu_v8.rbar[sec][n] & !0x1F;
+                let limit = rlar | 0x1F;
+                if addr < base || addr > limit {
+                    continue;
+                }
+                if matched.is_some() {
+                    // Two or more enabled regions overlap: the lookup fails
+                    // (unlike PMSAv7 there is no highest-numbered winner).
+                    return MpuLookup {
+                        prot: 0,
+                        region: None,
+                    };
+                }
+                matched = Some(n);
+                hit = true;
+            }
+        }
+        if !hit {
+            // No region and no background: a background fault, so nothing is
+            // permitted and no region is valid.
+            return MpuLookup {
+                prot: 0,
+                region: None,
+            };
+        }
+        matched.map_or_else(
+            || MpuLookup {
+                prot: MpuLookup::background_prot(addr),
+                region: None,
+            },
+            |n| {
+                let rbar = self.mpu_v8.rbar[sec][n];
+                let ap = (rbar >> 1) & 0x3;
+                let mut prot = ap_rw_prot(ap, privileged);
+                // `XN` (RBAR bit 0) forbids fetches, and the system space
+                // (`0xE000_0000`..) is always execute-never; otherwise an
+                // accessible region carries execute (QEMU's `prot |= PAGE_EXEC`).
+                if prot != 0 && (rbar & 1 == 0 && addr < 0xE000_0000) {
+                    prot |= crate::mem::bus::PROT_EXEC;
+                }
+                MpuLookup {
+                    prot,
+                    region: Some(n as u8),
+                }
+            },
+        )
+    }
+
     /// Read the MPU register word at byte offset `reg_off` (0, 4, 8, ..) from
     /// the `0xE000_ED90` window base.
     const fn mpu_read(&self, reg_off: u32) -> u32 {
+        if self.pmsav8 {
+            return self.mpu_v8_read(reg_off);
+        }
         match reg_off {
             0x00 => 0x0000_0800, // MPU_TYPE: 8 unified regions
             0x04 => self.mpu.ctrl,
@@ -514,6 +695,10 @@ impl Scb {
     /// Write one byte of the MPU register at window offset `reg_off` (the
     /// register word start) and `byte` (0..3 within that word).
     fn mpu_write(&mut self, reg_off: u32, byte: u32, val: u8) {
+        if self.pmsav8 {
+            self.mpu_v8_write(reg_off, byte, val);
+            return;
+        }
         let shift = 8 * byte;
         match reg_off {
             // MPU_TYPE is read-only (falls through to the `_` no-op arm).
@@ -564,6 +749,88 @@ impl Scb {
     /// accesses.
     const fn mpu_region_index(&self) -> usize {
         (self.mpu.rnr & 0x7) as usize
+    }
+
+    /// The `PMSAv8` MPU register read at word offset `reg_off` (0, 4, 8, ..),
+    /// banked per security state. The `RBAR`/`RLAR` aliases `A1`..`A3` (at
+    /// every 8-byte offset) override the low two bits of `MPU_RNR.REGION`,
+    /// and there is no `VALID`/`REGION` field in `RBAR` (unlike `PMSAv7`).
+    const fn mpu_v8_read(&self, reg_off: u32) -> u32 {
+        match reg_off {
+            0x00 => 0x0000_0800, // MPU_TYPE: 8 unified regions
+            0x04 => self.mpu_v8.ctrl[self.secure as usize],
+            0x08 => self.mpu_v8.rnr[self.secure as usize],
+            0x0C | 0x14 | 0x1C | 0x24 => {
+                let r = self.mpu_v8_region_index(reg_off, 0x0C);
+                if r >= 8 {
+                    0
+                } else {
+                    self.mpu_v8.rbar[self.secure as usize][r]
+                }
+            }
+            0x10 | 0x18 | 0x20 | 0x28 => {
+                let r = self.mpu_v8_region_index(reg_off, 0x10);
+                if r >= 8 {
+                    0
+                } else {
+                    self.mpu_v8.rlar[self.secure as usize][r]
+                }
+            }
+            _ => 0,
+        }
+    }
+
+    /// Write one byte of a `PMSAv8` MPU register at word offset `reg_off` and
+    /// byte `byte`, banked per security state. `MPU_RNR` ignores a
+    /// full-word value of at least 8 (an out-of-range region); `RBAR`/`RLAR`
+    /// store their raw values, with the 32-byte alignment applied only at
+    /// lookup time.
+    fn mpu_v8_write(&mut self, reg_off: u32, byte: u32, val: u8) {
+        let shift = 8 * byte;
+        let sec = usize::from(self.secure);
+        match reg_off {
+            0x04 => {
+                self.mpu_v8.ctrl[sec] =
+                    (self.mpu_v8.ctrl[sec] & !(0xFF << shift)) | (u32::from(val) << shift);
+                self.mpu_v8.ctrl[sec] &= 0x7;
+            }
+            0x08 => {
+                self.mpu_rnr_pending =
+                    (self.mpu_rnr_pending & !(0xFF << shift)) | (u32::from(val) << shift);
+                if byte == 3 {
+                    let w = self.mpu_rnr_pending;
+                    self.mpu_rnr_pending = 0;
+                    if w < 8 {
+                        self.mpu_v8.rnr[sec] = w;
+                    }
+                }
+            }
+            0x0C | 0x14 | 0x1C | 0x24 => {
+                let r = self.mpu_v8_region_index(reg_off, 0x0C);
+                if r < 8 {
+                    self.mpu_v8.rbar[sec][r] =
+                        (self.mpu_v8.rbar[sec][r] & !(0xFF << shift)) | (u32::from(val) << shift);
+                }
+            }
+            0x10 | 0x18 | 0x20 | 0x28 => {
+                let r = self.mpu_v8_region_index(reg_off, 0x10);
+                if r < 8 {
+                    self.mpu_v8.rlar[sec][r] =
+                        (self.mpu_v8.rlar[sec][r] & !(0xFF << shift)) | (u32::from(val) << shift);
+                }
+            }
+            _ => {}
+        }
+    }
+
+/// The v8-M region index for `reg_off`: the base registers use the full
+    /// `MPU_RNR.REGION`; the `RBAR`/`RLAR` aliases `A1`..`A3` override the low
+    /// two bits of the region number.
+    const fn mpu_v8_region_index(&self, reg_off: u32, base: u32) -> usize {
+        let rnr = self.mpu_v8.rnr[self.secure as usize];
+        let alias = (reg_off - base) / 8;
+        let region = if alias == 0 { rnr } else { (rnr & !0x3) | alias };
+        region as usize
     }
 
     const fn sau_region_index(&self) -> usize {
@@ -819,6 +1086,9 @@ impl Peripheral for Scb {
         self.hfsr = 0;
         self.mmfar = 0;
         self.mpu = Mpu::default();
+        self.mpu_v8 = MpuV8::default();
+        self.secure = true;
+        self.mpu_rnr_pending = 0;
         self.rbar_pending = 0;
         self.aircr = 0;
         self.scr = 0;
@@ -855,7 +1125,7 @@ mod tests {
     use super::Scb;
     use crate::cpu::FpuCtx;
     use crate::device::Peripheral;
-    use crate::mem::bus::{MpuAccess, SauHit};
+    use crate::mem::bus::{MpuAccess, MpuLookup, SauHit};
     use std::sync::{Arc, Mutex};
 
     #[allow(clippy::cast_possible_truncation)]
@@ -1349,5 +1619,251 @@ mod tests {
         write_word(&mut s, 0xE000_EDDC, 0x0000_0000);
         write_word(&mut s, 0xE000_EDE0, 0x0000_0001);
         assert_eq!(s.sau_hit(0x0000_0000), SauHit::Multiple);
+    }
+
+    #[test]
+    fn mpu_v8_type_reports_eight_regions_and_registers_store_raw() {
+        let mut s = Scb::new();
+        s.set_pmsav8();
+        // TYPE is read-only and reports eight unified regions.
+        write_word(&mut s, 0xE000_ED90, 0xFFFF_FFFF);
+        assert_eq!(read_word(&mut s, 0xE000_ED90), 0x0000_0800);
+        // CTRL stores only the three implemented bits.
+        write_word(&mut s, 0xE000_ED94, 0xFFFF_FFFF);
+        assert_eq!(read_word(&mut s, 0xE000_ED94), 0x7);
+        // RBAR/RLAR store the raw word (the 32-byte alignment is applied only
+        // at lookup time), unlike the v7-M window's `REGION`/`VALID` field.
+        write_word(&mut s, 0xE000_ED9C, 0x2000_0000 | 0x1F | 0x7);
+        assert_eq!(read_word(&mut s, 0xE000_ED9C), 0x2000_0000 | 0x1F | 0x7);
+        write_word(&mut s, 0xE000_EDA0, 0x2000_001F | 0x1);
+        assert_eq!(read_word(&mut s, 0xE000_EDA0), 0x2000_001F | 0x1);
+        // RNR stores the region number.
+        write_word(&mut s, 0xE000_ED98, 0x3);
+        assert_eq!(read_word(&mut s, 0xE000_ED98), 0x3);
+        // Reset clears the unit (TYPE stays read-only) and returns to the
+        // secure bank.
+        s.reset();
+        assert_eq!(read_word(&mut s, 0xE000_ED94), 0);
+        assert_eq!(read_word(&mut s, 0xE000_ED9C), 0);
+        assert_eq!(read_word(&mut s, 0xE000_EDA0), 0);
+    }
+
+    #[test]
+    fn mpu_v8_rnr_ignores_out_of_range_regions() {
+        let mut s = Scb::new();
+        s.set_pmsav8();
+        // A full-word value of 8 or more is ignored, like QEMU.
+        write_word(&mut s, 0xE000_ED98, 8);
+        assert_eq!(read_word(&mut s, 0xE000_ED98), 0);
+        write_word(&mut s, 0xE000_ED98, 7);
+        assert_eq!(read_word(&mut s, 0xE000_ED98), 7);
+        write_word(&mut s, 0xE000_ED98, 8);
+        assert_eq!(read_word(&mut s, 0xE000_ED98), 7, "stays at the last valid");
+    }
+
+    #[test]
+    fn mpu_v8_aliases_override_the_rnr_low_bits() {
+        let mut s = Scb::new();
+        s.set_pmsav8();
+        // RNR = 0: the base registers index region 0, the aliases index
+        // 1/2/3.
+        write_word(&mut s, 0xE000_ED98, 0);
+        write_word(&mut s, 0xE000_ED9C, 0x2000_0000); // base -> region 0
+        write_word(&mut s, 0xE000_EDA4, 0x2000_0020); // A1  -> region 1
+        write_word(&mut s, 0xE000_EDAC, 0x2000_0040); // A2  -> region 2
+        write_word(&mut s, 0xE000_EDB4, 0x2000_0060); // A3  -> region 3
+        write_word(&mut s, 0xE000_EDA0, 0x2000_001F | 1); // RLAR base -> region 0
+        write_word(&mut s, 0xE000_EDA8, 0x2000_003F | 1); // RLAR A1  -> region 1
+        write_word(&mut s, 0xE000_EDB0, 0x2000_005F | 1); // RLAR A2  -> region 2
+        write_word(&mut s, 0xE000_EDB8, 0x2000_007F | 1); // RLAR A3  -> region 3
+        // Read each back through its alias.
+        write_word(&mut s, 0xE000_ED98, 0);
+        assert_eq!(read_word(&mut s, 0xE000_ED9C), 0x2000_0000);
+        assert_eq!(read_word(&mut s, 0xE000_EDA0), 0x2000_001F | 1);
+        write_word(&mut s, 0xE000_ED98, 1);
+        assert_eq!(read_word(&mut s, 0xE000_EDA4), 0x2000_0020);
+        assert_eq!(read_word(&mut s, 0xE000_EDA8), 0x2000_003F | 1);
+        write_word(&mut s, 0xE000_ED98, 3);
+        assert_eq!(read_word(&mut s, 0xE000_EDB4), 0x2000_0060);
+        assert_eq!(read_word(&mut s, 0xE000_EDB8), 0x2000_007F | 1);
+        // The base registers use the full RNR region number (not masked), so
+        // RNR = 3 reaches region 3 through the base registers too.
+        write_word(&mut s, 0xE000_ED98, 3);
+        write_word(&mut s, 0xE000_ED9C, 0x3000_0000); // base -> region 3
+        assert_eq!(read_word(&mut s, 0xE000_ED9C), 0x3000_0000);
+        // With RNR = 2 the aliases hit the low two bits of the group: A1
+        // indexes region 1, leaving region 3 untouched.
+        write_word(&mut s, 0xE000_ED98, 2);
+        write_word(&mut s, 0xE000_EDA4, 0x4000_0000); // A1 -> region 1
+        assert_eq!(read_word(&mut s, 0xE000_EDB4), 0x3000_0000, "region 3 stays");
+        write_word(&mut s, 0xE000_ED98, 1);
+        assert_eq!(read_word(&mut s, 0xE000_EDA4), 0x4000_0000);
+    }
+
+    #[test]
+    fn mpu_v8_registers_are_banked_per_security_state() {
+        let mut s = Scb::new();
+        s.set_pmsav8();
+        // Boot secure: CTRL and RBAR land in the secure bank.
+        write_word(&mut s, 0xE000_ED94, 0x1);
+        write_word(&mut s, 0xE000_ED9C, 0x2000_0000);
+        assert_eq!(read_word(&mut s, 0xE000_ED94), 0x1);
+        // Non-secure: a fresh bank reads back zeros.
+        s.set_secure(false);
+        assert_eq!(read_word(&mut s, 0xE000_ED94), 0);
+        assert_eq!(read_word(&mut s, 0xE000_ED9C), 0);
+        write_word(&mut s, 0xE000_ED94, 0x5); // PRIVDEFENA
+        write_word(&mut s, 0xE000_ED9C, 0x8000_0000);
+        assert_eq!(read_word(&mut s, 0xE000_ED94), 0x5);
+        // Back in secure: the secure values are untouched.
+        s.set_secure(true);
+        assert_eq!(read_word(&mut s, 0xE000_ED94), 0x1);
+        assert_eq!(read_word(&mut s, 0xE000_ED9C), 0x2000_0000);
+    }
+
+    #[test]
+    fn mpu_v8_disabled_uses_the_default_map() {
+        let mut s = Scb::new();
+        s.set_pmsav8();
+        // Disabled: every lookup reports the background map, no region.
+        assert_eq!(
+            s.mpu_lookup_v8(0x2000_0000, true, true),
+            MpuLookup {
+                prot: crate::mem::bus::PROT_READ
+                    | crate::mem::bus::PROT_WRITE
+                    | crate::mem::bus::PROT_EXEC,
+                region: None,
+            }
+        );
+        assert!(s.mpu_check(0x2000_0000, MpuAccess::Read, true, 0));
+        assert!(s.mpu_check(0x2000_0000, MpuAccess::Write, true, 0));
+        assert!(s.mpu_check(0x2000_0000, MpuAccess::Fetch, true, 0));
+        // The peripheral range is read/write only.
+        assert_eq!(
+            s.mpu_lookup_v8(0x4000_0000, true, false).prot,
+            crate::mem::bus::PROT_READ | crate::mem::bus::PROT_WRITE,
+        );
+        assert!(!s.mpu_check(0x4000_0000, MpuAccess::Fetch, true, 0));
+    }
+
+    #[test]
+    fn mpu_v8_region_ap_grants_and_denies() {
+        let mut s = Scb::new();
+        s.set_pmsav8();
+        write_word(&mut s, 0xE000_ED94, 0x1); // ENABLE
+        // Region 0: 0x2000_0000..0x2000_001F, AP=1 (read/write), no XN.
+        write_word(&mut s, 0xE000_ED9C, 0x2000_0000 | 0x2);
+        write_word(&mut s, 0xE000_EDA0, 0x2000_001F | 1);
+        let lk = s.mpu_lookup_v8(0x2000_0000, true, true);
+        assert_eq!(lk.region, Some(0));
+        assert_eq!(lk.prot, 0x7);
+        assert!(s.mpu_check(0x2000_0000, MpuAccess::Read, true, 0));
+        assert!(s.mpu_check(0x2000_0000, MpuAccess::Write, true, 0));
+        assert!(s.mpu_check(0x2000_0000, MpuAccess::Fetch, true, 0));
+        assert_eq!(
+            s.mpu_lookup_v8(0x2000_0020, true, true).prot,
+            0,
+            "past the limit: no region, no background"
+        );
+        assert!(!s.mpu_check(0x2000_0020, MpuAccess::Read, true, 0));
+        // AP=0: read/write for privileged, nothing for unprivileged.
+        write_word(&mut s, 0xE000_ED9C, 0x2000_0000 | 0x0);
+        assert_eq!(s.mpu_lookup_v8(0x2000_0000, true, true).prot, 0x7);
+        assert_eq!(s.mpu_lookup_v8(0x2000_0000, true, false).prot, 0x0);
+        assert!(s.mpu_check(0x2000_0000, MpuAccess::Read, true, 0));
+        assert!(s.mpu_check(0x2000_0000, MpuAccess::Write, true, 0));
+        // AP=2: read-only for privileged, nothing for unprivileged.
+        write_word(&mut s, 0xE000_ED9C, 0x2000_0000 | (0x2 << 1));
+        assert_eq!(s.mpu_lookup_v8(0x2000_0000, true, true).prot, 0x5);
+        assert_eq!(s.mpu_lookup_v8(0x2000_0000, true, false).prot, 0x0);
+        // AP=3: read-only for everyone.
+        write_word(&mut s, 0xE000_ED9C, 0x2000_0000 | (0x3 << 1));
+        assert_eq!(s.mpu_lookup_v8(0x2000_0000, true, false).prot, 0x5);
+        assert!(!s.mpu_check(0x2000_0000, MpuAccess::Write, true, 0));
+    }
+
+    #[test]
+    fn mpu_v8_xn_and_system_space_remove_execute() {
+        let mut s = Scb::new();
+        s.set_pmsav8();
+        write_word(&mut s, 0xE000_ED94, 0x1); // ENABLE
+        // Region 1: 0x2000_0000..0x2000_001F, AP=1, XN set.
+        write_word(&mut s, 0xE000_EDA4, 0x2000_0000 | 0x2 | 0x1);
+        write_word(&mut s, 0xE000_EDA8, 0x2000_001F | 1);
+        let lk = s.mpu_lookup_v8(0x2000_0000, true, true);
+        assert_eq!(lk.region, Some(1));
+        assert_eq!(lk.prot, 0x3, "XN clears only the execute bit");
+        assert!(!s.mpu_check(0x2000_0000, MpuAccess::Fetch, true, 0));
+        assert!(s.mpu_check(0x2000_0000, MpuAccess::Read, true, 0));
+        // A region in the system space is always execute-never, even with XN
+        // clear: 0xE010_0000 (outside the PPB bypass window).
+        write_word(&mut s, 0xE000_ED9C, 0xE010_0000 | 0x2);
+        write_word(&mut s, 0xE000_EDA0, 0xE010_001F | 1);
+        assert_eq!(
+            s.mpu_lookup_v8(0xE010_0000, true, true).prot,
+            crate::mem::bus::PROT_READ | crate::mem::bus::PROT_WRITE,
+        );
+        assert!(!s.mpu_check(0xE010_0000, MpuAccess::Fetch, true, 0));
+    }
+
+    #[test]
+    fn mpu_v8_ppb_bypasses_and_multiple_hits_fail() {
+        let mut s = Scb::new();
+        s.set_pmsav8();
+        write_word(&mut s, 0xE000_ED94, 0x1); // ENABLE
+        // The PPB (0xE000_0000..0xE00F_FFFF) bypasses the MPU even when a
+        // region covers it: the lookup reports the background map.
+        write_word(&mut s, 0xE000_ED9C, 0xE000_0000 | 0x2);
+        write_word(&mut s, 0xE000_EDA0, 0xE00F_FFFF | 1);
+        assert_eq!(
+            s.mpu_lookup_v8(0xE000_ED90, true, true),
+            MpuLookup {
+                prot: crate::mem::bus::PROT_READ | crate::mem::bus::PROT_WRITE,
+                region: None,
+            }
+        );
+        assert!(s.mpu_check(0xE000_ED90, MpuAccess::Read, true, 0));
+        // Two enabled regions covering the same address fail the lookup.
+        write_word(&mut s, 0xE000_ED9C, 0x2000_0000 | 0x2); // region 0
+        write_word(&mut s, 0xE000_EDA0, 0x2000_001F | 1);
+        write_word(&mut s, 0xE000_EDB4, 0x2000_0000 | 0x2); // region 3 (RNR & !3 = 0)
+        write_word(&mut s, 0xE000_EDB8, 0x2000_001F | 1);
+        assert_eq!(
+            s.mpu_lookup_v8(0x2000_0000, true, true),
+            MpuLookup { prot: 0, region: None },
+        );
+        assert!(!s.mpu_check(0x2000_0000, MpuAccess::Read, true, 0));
+    }
+
+    #[test]
+    fn mpu_v8_privefena_background_and_bypass() {
+        let mut s = Scb::new();
+        s.set_pmsav8();
+        write_word(&mut s, 0xE000_ED94, 0x5); // ENABLE | PRIVDEFENA
+        // No region covers 0x3000_0000: privileged gets the background map,
+        // unprivileged gets nothing.
+        assert_eq!(
+            s.mpu_lookup_v8(0x3000_0000, true, true),
+            MpuLookup {
+                prot: crate::mem::bus::PROT_READ
+                    | crate::mem::bus::PROT_WRITE
+                    | crate::mem::bus::PROT_EXEC,
+                region: None,
+            }
+        );
+        assert_eq!(s.mpu_lookup_v8(0x3000_0000, true, false).prot, 0);
+        assert!(s.mpu_check(0x3000_0000, MpuAccess::Fetch, true, 0));
+        assert!(!s.mpu_check(0x3000_0000, MpuAccess::Fetch, false, 0));
+        // No PRIVDEFENA and no match: even privileged fails.
+        write_word(&mut s, 0xE000_ED94, 0x1);
+        assert_eq!(s.mpu_lookup_v8(0x3000_0000, true, true).prot, 0);
+        assert!(!s.mpu_check(0x3000_0000, MpuAccess::Read, true, 0));
+        // Without HFNMIENA the NMI (2) and HardFault (3) handlers bypass the
+        // MPU; with it set, they do not.
+        assert!(s.mpu_check(0x3000_0000, MpuAccess::Read, true, 2));
+        assert!(s.mpu_check(0x3000_0000, MpuAccess::Read, true, 3));
+        assert!(!s.mpu_check(0x3000_0000, MpuAccess::Read, true, 0));
+        write_word(&mut s, 0xE000_ED94, 0x3); // ENABLE | HFNMIENA
+        assert!(!s.mpu_check(0x3000_0000, MpuAccess::Read, true, 2));
     }
 }
