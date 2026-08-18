@@ -127,6 +127,25 @@ pub struct IdauAttribution {
     pub exempt: bool,
 }
 
+/// The SAU's region match for one address — the architecturally-defined half
+/// of the ARMv8-M security attribution, consulted when `SAU_CTRL.ENABLE == 1`
+/// (the `TT` family's security lookup, mirroring QEMU's `v8m_security_lookup`
+/// region loop).
+///
+/// The core folds `SAU_CTRL.ALLNS` and the IDAU upgrade around the result.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SauHit {
+    /// No enabled SAU region covers the address (the result is then the
+    /// default, which the QEMU oracle leaves Secure).
+    None,
+    /// Exactly one enabled region covers the address; `index` is its region
+    /// number and `nsc` whether `SAU_RLAR.NSC` marks it Non-secure-callable.
+    Region { index: u8, nsc: bool },
+    /// Two or more enabled regions overlap the address: the result collapses
+    /// to Secure with no valid region number.
+    Multiple,
+}
+
 /// A `Bus` whose machine can also advance time and deliver interrupts.
 ///
 /// Plain memory implements the default no-ops; a `SystemMemory` with an NVIC
@@ -193,5 +212,11 @@ pub trait PeripheralBus: Bus {
     /// security lookup. Default: no IDAU.
     fn idau_attribution(&mut self, _addr: u32) -> Option<IdauAttribution> {
         None
+    }
+
+    /// The SAU's region match for `addr` (see [`SauHit`]), consulted for the
+    /// `TT` security lookup when `SAU_CTRL.ENABLE == 1`. Default: no SAU.
+    fn sau_hit(&mut self, _addr: u32) -> SauHit {
+        SauHit::None
     }
 }

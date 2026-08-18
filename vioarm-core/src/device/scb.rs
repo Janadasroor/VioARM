@@ -42,7 +42,7 @@
 use crate::cpu::FpuCtx;
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
-use crate::mem::bus::{MpuAccess, Region};
+use crate::mem::bus::{MpuAccess, Region, SauHit};
 use std::sync::{Arc, Mutex};
 
 const ICSR: u32 = 0xE000_ED04;
@@ -63,10 +63,10 @@ const FPCAR: u32 = 0xE000_EF38;
 const FPDSCR: u32 = 0xE000_EF3C;
 
 /// The ARMv8-M Security Attribution Unit window (`SAU_CTRL`/`SAU_TYPE`/
-/// `SAU_RNR`/`SAU_RBAR`/`SAU_RLAR`). The register values are stored for
-/// firmware compatibility — the M33 conformance tests program the SAU to make
-/// the IDAU Non-secure regions effective — but the security lookup itself is
-/// not yet SAU-aware (it stays in the SAU-disabled, IDAU-only case).
+/// `SAU_RNR`/`SAU_RBAR`/`SAU_RLAR`) with the architectural offsets: the M33
+/// conformance tests program the SAU to make the IDAU Non-secure regions
+/// effective, and the core's `TT`-family lookup applies the programmed
+/// regions through [`Scb::sau_hit`].
 const SAU: u32 = 0xE000_EDD0;
 
 /// The MPU register window. One 4-byte-aligned window covers `MPU_TYPE` ..=
@@ -278,8 +278,9 @@ pub struct Scb {
     ccr: u32,
     /// Latched by `AIRCR.SYSRESETREQ`; the machine performs the reset.
     reset_requested: bool,
-    /// `SAU_CTRL` (`ENABLE`/`ALLNS`). Stored for firmware compatibility; not
-    /// yet applied to the security attribution.
+    /// `SAU_CTRL` (`ENABLE`/`ALLNS`). Stored here and applied to the `TT`
+    /// family's security attribution through [`Scb::sau_hit`] and the
+    /// `ALLNS`/`ENABLE` bits read by the core.
     sau_ctrl: u32,
     /// `SAU_RNR`: the region index for `SAU_RBAR`/`SAU_RLAR` accesses.
     sau_rnr: u32,
@@ -310,7 +311,7 @@ impl Scb {
                 Region::new(MMFAR, 4),
                 Region::new(CPACR, 4),
                 Region::new(MPU, 0x2C),
-                Region::new(SAU, 0x10),
+                Region::new(SAU, 0x18),
                 Region::new(FPCCR, 4),
                 Region::new(FPCAR, 4),
                 Region::new(FPDSCR, 4),
@@ -569,9 +570,40 @@ impl Scb {
         (self.sau_rnr & 0x7) as usize
     }
 
-    /// Byte-write to the SAU window at `offset` (from `SAU_CTRL`). The
-    /// register values are stored for firmware compatibility; the security
-    /// lookup does not yet apply them.
+    /// The SAU region lookup for `addr` (QEMU's `v8m_security_lookup` region
+    /// loop, consulted when `SAU_CTRL.ENABLE == 1`): the enabled region
+    /// covering `addr`, or `Multiple` when two or more enabled regions
+    /// overlap (which collapses to Secure with no valid region number).
+    /// [`SauHit::None`] when the SAU is disabled or nothing covers `addr`.
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation)]
+    pub fn sau_hit(&self, addr: u32) -> SauHit {
+        if self.sau_ctrl & 1 == 0 {
+            return SauHit::None;
+        }
+        let mut hit = SauHit::None;
+        for (r, rlar) in self.sau_rlar.iter().enumerate() {
+            if rlar & 1 == 0 {
+                continue;
+            }
+            let base = self.sau_rbar[r] & !0x1F;
+            let limit = rlar | 0x1F;
+            if base <= addr && limit >= addr {
+                if hit != SauHit::None {
+                    return SauHit::Multiple;
+                }
+                hit = SauHit::Region {
+                    index: r as u8,
+                    nsc: rlar & 2 != 0,
+                };
+            }
+        }
+        hit
+    }
+
+    /// Byte-write to the SAU window at `offset` (from `SAU_CTRL`), using the
+    /// architectural layout: `SAU_CTRL`/`SAU_TYPE`/`SAU_RNR`/`SAU_RBAR`/
+    /// `SAU_RLAR` at offsets `0`/`4`/`8`/`12`/`16`.
     fn sau_write(&mut self, offset: u32, val: u8) {
         let shift = 8 * (offset & 0x3);
         match offset & !0x3 {
@@ -580,20 +612,20 @@ impl Scb {
                 self.sau_ctrl = (self.sau_ctrl & !(0xFF << shift)) | (u32::from(val) << shift);
                 self.sau_ctrl &= 0x3;
             }
-            // The write side of the shared address is `SAU_RNR`; the region
-            // index is masked to the eight regions.
-            4 => {
+            // `SAU_RNR`: the region index, masked to the eight regions.
+            // (`SAU_TYPE` at offset 4 is read-only.)
+            8 => {
                 self.sau_rnr = (self.sau_rnr & !(0xFF << shift)) | (u32::from(val) << shift);
                 self.sau_rnr &= 0x7;
             }
-            8 => {
+            12 => {
                 let idx = self.sau_region_index();
                 self.sau_rbar[idx] =
                     (self.sau_rbar[idx] & !(0xFF << shift)) | (u32::from(val) << shift);
                 // `RBAR[7:0]` are reserved (bases are 256-byte aligned).
                 self.sau_rbar[idx] &= !0xFF;
             }
-            12 => {
+            16 => {
                 let idx = self.sau_region_index();
                 self.sau_rlar[idx] =
                     (self.sau_rlar[idx] & !(0xFF << shift)) | (u32::from(val) << shift);
@@ -626,11 +658,11 @@ impl Scb {
                 SAU => match offset & !0x3 {
                     // `SAU_CTRL` reads back the stored `ENABLE`/`ALLNS` bits.
                     0 => self.sau_ctrl,
-                    // `SAU_TYPE` (the read side of the `SAU_RNR` address):
-                    // eight regions on the Cortex-M33.
+                    // `SAU_TYPE`: eight regions on the Cortex-M33.
                     4 => 0x0000_0008,
-                    8 => self.sau_rbar[self.sau_region_index()],
-                    12 => self.sau_rlar[self.sau_region_index()],
+                    8 => self.sau_rnr,
+                    12 => self.sau_rbar[self.sau_region_index()],
+                    16 => self.sau_rlar[self.sau_region_index()],
                     _ => 0,
                 },
                 FPCCR => self.fpu_ctx.lock().unwrap().fpccr(),
@@ -823,7 +855,7 @@ mod tests {
     use super::Scb;
     use crate::cpu::FpuCtx;
     use crate::device::Peripheral;
-    use crate::mem::bus::MpuAccess;
+    use crate::mem::bus::{MpuAccess, SauHit};
     use std::sync::{Arc, Mutex};
 
     #[allow(clippy::cast_possible_truncation)]
@@ -1251,30 +1283,71 @@ mod tests {
     #[test]
     fn sau_registers_store_and_read_back() {
         let mut s = Scb::new();
-        // Reset: CTRL clear, TYPE reads eight regions, RBAR/RLAR read zero.
+        // Reset: CTRL clear, TYPE reads eight regions, RNR/RBAR/RLAR read zero.
         assert_eq!(read_word(&mut s, 0xE000_EDD0), 0);
         assert_eq!(read_word(&mut s, 0xE000_EDD4), 0x0000_0008);
         assert_eq!(read_word(&mut s, 0xE000_EDD8), 0);
         assert_eq!(read_word(&mut s, 0xE000_EDDC), 0);
+        assert_eq!(read_word(&mut s, 0xE000_EDE0), 0);
         // Select region 2 and store its base/limit/attributes.
-        write_word(&mut s, 0xE000_EDD4, 2);
-        write_word(&mut s, 0xE000_EDD8, 0x8000_0000);
-        write_word(&mut s, 0xE000_EDDC, 0x8FFF_FFFD); // NS, ENABLE, no NSC
-        assert_eq!(read_word(&mut s, 0xE000_EDD8), 0x8000_0000);
-        assert_eq!(read_word(&mut s, 0xE000_EDDC), 0x8FFF_FFFD);
+        write_word(&mut s, 0xE000_EDD8, 2);
+        write_word(&mut s, 0xE000_EDDC, 0x8000_0000);
+        write_word(&mut s, 0xE000_EDE0, 0x8FFF_FFFD); // NS, ENABLE, no NSC
+        assert_eq!(read_word(&mut s, 0xE000_EDD8), 2);
+        assert_eq!(read_word(&mut s, 0xE000_EDDC), 0x8000_0000);
+        assert_eq!(read_word(&mut s, 0xE000_EDE0), 0x8FFF_FFFD);
         // The other regions are untouched.
-        write_word(&mut s, 0xE000_EDD4, 0);
-        assert_eq!(read_word(&mut s, 0xE000_EDD8), 0);
+        write_word(&mut s, 0xE000_EDD8, 0);
+        assert_eq!(read_word(&mut s, 0xE000_EDDC), 0);
         // `RBAR[7:0]` are reserved: a write of a non-aligned base is masked.
-        write_word(&mut s, 0xE000_EDD4, 3);
-        write_word(&mut s, 0xE000_EDD8, 0x2000_00FF);
-        assert_eq!(read_word(&mut s, 0xE000_EDD8), 0x2000_0000);
+        write_word(&mut s, 0xE000_EDD8, 3);
+        write_word(&mut s, 0xE000_EDDC, 0x2000_00FF);
+        assert_eq!(read_word(&mut s, 0xE000_EDDC), 0x2000_0000);
         // Only `ENABLE`/`ALLNS` of `SAU_CTRL` are implemented.
         write_word(&mut s, 0xE000_EDD0, 0xFFFF_FFFF);
         assert_eq!(read_word(&mut s, 0xE000_EDD0), 0x0000_0003);
         // Reset clears the whole unit (TYPE stays read-only).
         s.reset();
         assert_eq!(read_word(&mut s, 0xE000_EDD0), 0);
-        assert_eq!(read_word(&mut s, 0xE000_EDD8), 0);
+        assert_eq!(read_word(&mut s, 0xE000_EDDC), 0);
+    }
+
+    #[test]
+    fn sau_hit_matches_enabled_regions() {
+        let mut s = Scb::new();
+        // Disabled: never matches.
+        assert_eq!(s.sau_hit(0x8000_0000), SauHit::None);
+        // Region 0: NS region covering 0x0000_0000..0x0000_001F.
+        write_word(&mut s, 0xE000_EDD8, 0);
+        write_word(&mut s, 0xE000_EDDC, 0x0000_0000);
+        write_word(&mut s, 0xE000_EDE0, 0x0000_0001); // NS, ENABLE
+        // Region 1: NSC region covering 0x1000_0000..0x1000_001F.
+        write_word(&mut s, 0xE000_EDD8, 1);
+        write_word(&mut s, 0xE000_EDDC, 0x1000_0000);
+        write_word(&mut s, 0xE000_EDE0, 0x1000_0003); // NSC, ENABLE
+        // Region 2: NS region covering 0x8000_0000..0x8000_001F.
+        write_word(&mut s, 0xE000_EDD8, 2);
+        write_word(&mut s, 0xE000_EDDC, 0x8000_0000);
+        write_word(&mut s, 0xE000_EDE0, 0x8000_0001); // NS, ENABLE
+        // Region 3: a disabled region (ignored).
+        write_word(&mut s, 0xE000_EDD8, 3);
+        write_word(&mut s, 0xE000_EDDC, 0x0000_0000);
+        write_word(&mut s, 0xE000_EDE0, 0xFFFF_FF00); // ENABLE clear
+
+        // Still `SAU_CTRL.ENABLE == 0`: no matches.
+        assert_eq!(s.sau_hit(0x8000_0000), SauHit::None);
+        write_word(&mut s, 0xE000_EDD0, 0x1); // ENABLE
+
+        assert_eq!(s.sau_hit(0x8000_0000), SauHit::Region { index: 2, nsc: false });
+        assert_eq!(s.sau_hit(0x8000_001F), SauHit::Region { index: 2, nsc: false });
+        assert_eq!(s.sau_hit(0x8000_0020), SauHit::None, "just past the limit");
+        assert_eq!(s.sau_hit(0x1000_0000), SauHit::Region { index: 1, nsc: true });
+        assert_eq!(s.sau_hit(0x0000_0000), SauHit::Region { index: 0, nsc: false });
+        assert_eq!(s.sau_hit(0x2000_0000), SauHit::None, "outside every region");
+        // A second enabled region overlapping region 0 collapses to Multiple.
+        write_word(&mut s, 0xE000_EDD8, 4);
+        write_word(&mut s, 0xE000_EDDC, 0x0000_0000);
+        write_word(&mut s, 0xE000_EDE0, 0x0000_0001);
+        assert_eq!(s.sau_hit(0x0000_0000), SauHit::Multiple);
     }
 }

@@ -15,7 +15,7 @@ use crate::device::stm32::eth::{EthMailbox, EthMemOp};
 use crate::device::stm32::flash::{FlashErase, FlashGate};
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
-use crate::mem::bus::{Bus, IdauAttribution, MpuAccess, PeripheralBus, Region};
+use crate::mem::bus::{Bus, IdauAttribution, MpuAccess, PeripheralBus, Region, SauHit};
 use std::sync::{Arc, Mutex};
 
 /// A `Bus` over flat backing memory plus a set of MMIO devices and the NVIC.
@@ -602,6 +602,10 @@ impl<M: Bus> PeripheralBus for SystemMemory<M> {
             nsc: false,
             exempt,
         })
+    }
+
+    fn sau_hit(&mut self, addr: u32) -> SauHit {
+        self.scb.sau_hit(addr)
     }
 }
 
