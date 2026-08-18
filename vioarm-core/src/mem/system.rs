@@ -15,7 +15,7 @@ use crate::device::stm32::eth::{EthMailbox, EthMemOp};
 use crate::device::stm32::flash::{FlashErase, FlashGate};
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
-use crate::mem::bus::{Bus, IdauAttribution, MpuAccess, PeripheralBus, Region, SauHit};
+use crate::mem::bus::{Bus, IdauAttribution, MpuAccess, MpuLookup, PeripheralBus, Region, SauHit};
 use std::sync::{Arc, Mutex};
 
 /// A `Bus` over flat backing memory plus a set of MMIO devices and the NVIC.
@@ -94,6 +94,12 @@ impl<M: Bus> SystemMemory<M> {
         let mut mem = Self::new(backing);
         mem.scb.set_fpu_ctx(fpu_ctx);
         mem
+    }
+
+    /// Switch the SCB's MPU to the `PMSAv8` (v8-M) model, banked per security
+    /// state. The machine builder calls this for an `ARMv8-M` core.
+    pub fn enable_pmsav8(&mut self) {
+        self.scb.set_pmsav8();
     }
 
     /// Attach a device. Its windows immediately take priority over the
@@ -606,6 +612,14 @@ impl<M: Bus> PeripheralBus for SystemMemory<M> {
 
     fn sau_hit(&mut self, addr: u32) -> SauHit {
         self.scb.sau_hit(addr)
+    }
+
+    fn mpu_lookup_v8(&mut self, addr: u32, secure: bool, privileged: bool) -> MpuLookup {
+        self.scb.mpu_lookup_v8(addr, secure, privileged)
+    }
+
+    fn set_secure(&mut self, secure: bool) {
+        self.scb.set_secure(secure);
     }
 }
 
