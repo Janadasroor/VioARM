@@ -11,7 +11,7 @@ pub mod fpu;
 pub mod registers;
 
 use crate::error::{Exception, HaltCause};
-use crate::mem::{MpuAccess, PeripheralBus};
+use crate::mem::{MpuAccess, PeripheralBus, SauHit};
 use decode16::{
     decode16, decode16_v7m, AluOp, ExtendKind, Hint, Inst16, LsImm, LsReg, ReverseKind, Shift,
     ShiftImm,
@@ -358,6 +358,10 @@ const NVIC_IPR: u32 = 0xE000_E400;
 /// the unconditional FPU of the previous model.
 const CPACR_ADDR: u32 = 0xE000_ED88;
 const CPACR_FULL: u32 = 0x00F0_0000;
+
+/// `SAU_CTRL` (bits 0 `ENABLE`, 1 `ALLNS`), read through the bus from the SCB.
+/// With no SCB the fallback is the architectural reset state (disabled).
+const SAU_CTRL_ADDR: u32 = 0xE000_EDD0;
 
 /// The SAU/IDAU security attribution for one address, as reported to the
 /// `TT` instruction family. The field layout mirrors QEMU's
@@ -825,13 +829,14 @@ impl<B: PeripheralBus> Core<B> {
 
     /// The SAU/IDAU security attribution for `addr` in the security state
     /// `targetsec` (the state the `TT` family *probes*), matching QEMU's
-    /// `v8m_security_lookup` with the SAU disabled (the SCB stores the SAU
-    /// registers for firmware compatibility but this lookup does not yet
-    /// apply them, so the SAU reset state governs: no regions,
-    /// `SAU_CTRL.ENABLE == 0`, giving attribution case 0 where the IDAU
-    /// decides). The SAU/IDAU exempt system aliases are attributed `!targetsec`
-    /// and otherwise the address is Secure unless the IDAU's region says
-    /// Non-secure-callable.
+    /// `v8m_security_lookup`. The SAU registers live in the SCB and are read
+    /// through the bus: with no SCB (or the reset state) `SAU_CTRL` is
+    /// `ENABLE == 0, ALLNS == 0`, attribution case 0 where the IDAU decides
+    /// (and cannot downgrade, so everything defaults Secure). The SAU/IDAU
+    /// exempt system aliases are attributed `!targetsec`; an `ENABLE == 1`
+    /// region match sets the region/validity fields and the NS/NSC attribute;
+    /// and the IDAU can only strengthen a Non-secure attribution to Secure,
+    /// never downgrade to Non-secure.
     fn security_attribution(&mut self, addr: u32, targetsec: bool) -> SAttrs {
         let idau = self.mem.idau_attribution(addr);
         let mut s = SAttrs {
@@ -859,9 +864,39 @@ impl<B: PeripheralBus> Core<B> {
         if let Some(idau) = idau {
             s.irvalid = true;
             s.iregion = idau.region;
-            // The IDAU can only strengthen a Non-secure attribution to Secure
-            // (through the NS/NSC attribute), never downgrade to Non-secure.
-            if !idau.ns && (s.ns || s.nsc) {
+        }
+        // `SAU_CTRL`, read through the bus (0 with no SCB on the bus: the
+        // architectural reset state).
+        let sau_ctrl = self.mem.read_word(SAU_CTRL_ADDR).unwrap_or(0) & 0x3;
+        match sau_ctrl {
+            // `SAU.ENABLE == 0, SAU.ALLNS == 0`: the IDAU decides (default
+            // Secure; the override below can only upgrade).
+            0 => {}
+            // `SAU.ENABLE == 0, SAU.ALLNS == 1`: everything defaults
+            // Non-secure, subject to the IDAU upgrade below.
+            2 => s.ns = true,
+            // `SAU.ENABLE == 1`: the enabled regions decide. Matching QEMU,
+            // a no-hit address stays Secure (the ARM's default-NS is not what
+            // the oracle does) and a multi-hit collapses to Secure with no
+            // valid region number.
+            _ => match self.mem.sau_hit(addr) {
+                SauHit::None | SauHit::Multiple => {}
+                SauHit::Region { index, nsc } => {
+                    if nsc {
+                        s.nsc = true;
+                    } else {
+                        s.ns = true;
+                    }
+                    s.srvalid = true;
+                    s.sregion = index;
+                }
+            },
+        }
+        // The IDAU overrides the SAU with higher security (QEMU's final
+        // block): an IDAU-Secure region upgrades an NS/NSC attribution, but
+        // never downgrades.
+        if let Some(idau) = idau {
+            if !idau.ns && (s.ns || (!idau.nsc && s.nsc)) {
                 s.ns = false;
                 s.nsc = idau.nsc;
             }
@@ -5211,6 +5246,50 @@ mod tests {
         assert_eq!(c.regs.pc, 0x2000_0000);
         assert_eq!(c.regs.sp, 0x2000_0520);
         assert_eq!(c.other_ss_msp, 0x2000_0100, "Secure bank preserved");
+    }
+
+    #[test]
+    fn v8m_baseline_sau_attribution() {
+        // The `TT` security attribution consults the SAU registers in the SCB
+        // (read through the bus), mirroring QEMU's `v8m_security_lookup`.
+        let mut c = armv8m_sys_core();
+        // Reset (SAU disabled, ALLNS clear): the IDAU decides, and since it
+        // cannot downgrade, everything is Secure.
+        assert!(!c.security_attribution(0x8000_0000, true).ns);
+        // `ALLNS = 1`: everything defaults Non-secure, but the IDAU-Secure
+        // regions (1, 3, ...) are upgraded back to Secure.
+        c.mem().write_word(0xE000_EDD0, 0x2).unwrap();
+        assert!(c.security_attribution(0x8000_0000, true).ns);
+        assert!(!c.security_attribution(0x1000_0000, true).ns);
+        // `ENABLE = 1` with region 0 = 0x8000_0000..0x1F (NS) and region 1 =
+        // 0x0000_0000..0x1F (NSC).
+        c.mem().write_word(0xE000_EDD0, 0x0).unwrap();
+        c.mem().write_word(0xE000_EDD8, 0x0).unwrap(); // RNR = 0
+        c.mem().write_word(0xE000_EDDC, 0x8000_0000).unwrap(); // RBAR
+        c.mem().write_word(0xE000_EDE0, 0x8000_0001).unwrap(); // RLAR NS, ENABLE
+        c.mem().write_word(0xE000_EDD8, 0x1).unwrap(); // RNR = 1
+        c.mem().write_word(0xE000_EDDC, 0x0000_0000).unwrap(); // RBAR
+        c.mem().write_word(0xE000_EDE0, 0x0000_0003).unwrap(); // RLAR NSC, ENABLE
+        c.mem().write_word(0xE000_EDD0, 0x1).unwrap(); // ENABLE
+        // Region 0 hit: Non-secure with SRVALID, SREGION = 0.
+        let s = c.security_attribution(0x8000_0000, true);
+        assert!(s.ns && !s.nsc && s.srvalid && s.sregion == 0);
+        // Just past region 0, IDAU-NS region 8 with no SAU hit: matching QEMU,
+        // the address stays Secure (not the architectural default-NS).
+        let s = c.security_attribution(0x8000_0020, true);
+        assert!(!s.ns && !s.srvalid);
+        // NSC region 1: Secure-attributed, NSC with SRVALID, SREGION = 1.
+        let s = c.security_attribution(0x0000_0000, true);
+        assert!(!s.ns && s.nsc && s.srvalid && s.sregion == 1);
+        // IDAU-Secure region 1 with no SAU hit: Secure, IRVALID/IREGION = 1.
+        let s = c.security_attribution(0x1000_0000, true);
+        assert!(!s.ns && !s.srvalid && s.irvalid && s.iregion == 1);
+        // The probe of the Non-secure state sees the same attribution (only
+        // the exempt aliases flip with `targetsec`).
+        let s = c.security_attribution(0x8000_0000, false);
+        assert!(s.ns && s.srvalid && s.sregion == 0);
+        let s = c.security_attribution(0xE000_0000, false);
+        assert!(s.ns && !s.irvalid, "exempt alias is Non-secure probing NS");
     }
 
     #[test]
