@@ -3191,6 +3191,72 @@ fn m33_baseline_tt() {
     conformance_v8m("m33_baseline_tt", &mut a, "halt", &mt);
 }
 
+/// TT with the SAU programmed, diffed against the M33: two regions (region 0
+/// = `0x8000_0000`..`0x8000_001F` Non-secure, region 1 = `0x0000_0000`..
+/// `0x0000_001F` Non-secure-callable), `SAU_CTRL.ENABLE = 1`. The probes
+/// cover a region hit, a no-hit (which QEMU leaves Secure — not the ARM
+/// default-NS), an NSC region, an IDAU-Secure no-hit, the exempt aliases
+/// through `TTA`, and the `ALLNS = 1` mode where every non-IDAU-Secure
+/// address defaults Non-secure.
+#[test]
+fn m33_baseline_sau_tt() {
+    let Some(mt) = qemu_m33() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+
+    // Region 0: 0x8000_0000..0x8000_001F, Non-secure.
+    a.mov_imm32(0, 0xE000_EDD8); // SAU_RNR
+    a.movs_imm8(1, 0);
+    a.str_imm(1, 0, 0);
+    a.mov_imm32(0, 0xE000_EDDC); // SAU_RBAR
+    a.mov_imm32(1, 0x8000_0000);
+    a.str_imm(1, 0, 0);
+    a.mov_imm32(0, 0xE000_EDE0); // SAU_RLAR
+    a.mov_imm32(1, 0x8000_0001); // NS, ENABLE
+    a.str_imm(1, 0, 0);
+    // Region 1: 0x0000_0000..0x0000_001F, Non-secure-callable.
+    a.mov_imm32(0, 0xE000_EDD8); // SAU_RNR
+    a.movs_imm8(1, 1);
+    a.str_imm(1, 0, 0);
+    a.mov_imm32(0, 0xE000_EDDC); // SAU_RBAR
+    a.movs_imm8(1, 0);
+    a.str_imm(1, 0, 0);
+    a.mov_imm32(0, 0xE000_EDE0); // SAU_RLAR
+    a.mov_imm32(1, 0x0000_0003); // NSC, ENABLE
+    a.str_imm(1, 0, 0);
+    // Enable the SAU.
+    a.mov_imm32(0, 0xE000_EDD0); // SAU_CTRL
+    a.movs_imm8(1, 1); // ENABLE
+    a.str_imm(1, 0, 0);
+
+    // TT probes (results land in r4..r11).
+    a.mov_imm32(0, 0x8000_0000);
+    a.tt(4, 0); // NS region hit
+    a.mov_imm32(0, 0x8000_0020);
+    a.tt(5, 0); // no hit: QEMU keeps it Secure
+    a.mov_imm32(0, 0x0000_0000);
+    a.tt(6, 0); // NSC region hit (Secure, SRVALID, SREGION=1)
+    a.mov_imm32(0, 0x1000_0000);
+    a.tt(7, 0); // IDAU-Secure no hit
+    a.mov_imm32(0, 0xE000_0000);
+    a.tta(8, 0); // exempt alias, probing Non-secure
+    a.mov_imm32(0, 0x8000_0000);
+    a.tta(9, 0); // NS region hit, probing Non-secure
+
+    // ALLNS mode: non-IDAU-Secure addresses default Non-secure.
+    a.mov_imm32(0, 0xE000_EDD0); // SAU_CTRL
+    a.movs_imm8(1, 2); // ALLNS
+    a.str_imm(1, 0, 0);
+    a.mov_imm32(0, 0x8000_0020);
+    a.tt(10, 0); // no region, no IDAU upgrade -> Non-secure
+    a.mov_imm32(0, 0x1000_0000);
+    a.tt(11, 0); // IDAU-Secure upgrade -> Secure
+
+    a.label("halt");
+    a.b("halt");
+    conformance_v8m("m33_baseline_sau_tt", &mut a, "halt", &mt);
+}
+
 /// The full ARMv6-M 16-bit subset is baseline-valid, so the Thumb-1 ALU suite
 /// must diff identically against the M33.
 #[test]
