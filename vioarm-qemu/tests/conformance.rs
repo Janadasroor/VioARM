@@ -3257,6 +3257,83 @@ fn m33_baseline_sau_tt() {
     conformance_v8m("m33_baseline_sau_tt", &mut a, "halt", &mt);
 }
 
+/// TT with the PMSAv8 MPU programmed in the Secure bank, diffed against the
+/// M33: regions 0/1 cover the flash/SRAM with AP=1 (read/write/execute),
+/// region 2 is read-only (AP=3), region 3 is privileged read-only (AP=2),
+/// then `MPU_CTRL.ENABLE = 1`. The probes cover a hit's `r`/`rw`/`mrvalid`/
+/// `mregion`, the unprivileged (`TTTT`) user column of the `AP` matrix, and a
+/// no-hit without `PRIVDEFENA` (a background fault).
+#[test]
+fn m33_baseline_mpu_tt() {
+    let Some(mt) = qemu_m33() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+
+    // Region 0: 0x1000_0000..0x1000_FFFF (flash), AP=1, no XN.
+    a.mov_imm32(0, 0xE000_ED9C); // MPU_RBAR
+    a.mov_imm32(1, 0x1000_0002); // base, AP=1
+    a.str_imm(1, 0, 0);
+    a.mov_imm32(0, 0xE000_EDA0); // MPU_RLAR
+    a.mov_imm32(1, 0x1000_FFFF); // limit, ENABLE
+    a.str_imm(1, 0, 0);
+    // Region 1: 0x2000_0000..0x2000_FFFF (SRAM), AP=1.
+    a.mov_imm32(0, 0xE000_ED98); // MPU_RNR
+    a.movs_imm8(1, 1);
+    a.str_imm(1, 0, 0);
+    a.mov_imm32(0, 0xE000_ED9C); // MPU_RBAR
+    a.mov_imm32(1, 0x2000_0002);
+    a.str_imm(1, 0, 0);
+    a.mov_imm32(0, 0xE000_EDA0); // MPU_RLAR
+    a.mov_imm32(1, 0x2000_FFFF);
+    a.str_imm(1, 0, 0);
+    // Region 2: 0x8000_0000..0x8000_001F, AP=3 (read-only for everyone).
+    a.mov_imm32(0, 0xE000_ED98); // MPU_RNR
+    a.movs_imm8(1, 2);
+    a.str_imm(1, 0, 0);
+    a.mov_imm32(0, 0xE000_ED9C); // MPU_RBAR
+    a.mov_imm32(1, 0x8000_0006); // base, AP=3
+    a.str_imm(1, 0, 0);
+    a.mov_imm32(0, 0xE000_EDA0); // MPU_RLAR
+    a.mov_imm32(1, 0x8000_001F);
+    a.str_imm(1, 0, 0);
+    // Region 3: 0x3000_0000..0x3000_001F, AP=2 (privileged read-only).
+    a.mov_imm32(0, 0xE000_ED98); // MPU_RNR
+    a.movs_imm8(1, 3);
+    a.str_imm(1, 0, 0);
+    a.mov_imm32(0, 0xE000_ED9C); // MPU_RBAR
+    a.mov_imm32(1, 0x3000_0004); // base, AP=2
+    a.str_imm(1, 0, 0);
+    a.mov_imm32(0, 0xE000_EDA0); // MPU_RLAR
+    a.mov_imm32(1, 0x3000_001F);
+    a.str_imm(1, 0, 0);
+    // Enable the MPU.
+    a.mov_imm32(0, 0xE000_ED94); // MPU_CTRL
+    a.movs_imm8(1, 1); // ENABLE
+    a.str_imm(1, 0, 0);
+
+    // TT probes (results land in r4..r11).
+    a.mov_imm32(0, 0x1000_0000);
+    a.tt(4, 0); // region 0 hit: R/W, MRVALID, MREGION=0
+    a.mov_imm32(0, 0x2000_0000);
+    a.tt(5, 0); // region 1 hit: MREGION=1
+    a.mov_imm32(0, 0x8000_0000);
+    a.tt(6, 0); // region 2: read-only, MREGION=2
+    a.mov_imm32(0, 0x8000_0000);
+    a.tttt(7, 0); // AP=3: still read-only unprivileged
+    a.mov_imm32(0, 0x3000_0000);
+    a.tt(8, 0); // region 3 privileged: read-only, MREGION=3
+    a.mov_imm32(0, 0x3000_0000);
+    a.tttt(9, 0); // region 3 unprivileged: AP=2 user column -> no permission
+    a.mov_imm32(0, 0x4000_0000);
+    a.tt(10, 0); // no region, no PRIVDEFENA: background fault
+    a.mov_imm32(0, 0x2000_0020);
+    a.tttt(11, 0); // region 1 unprivileged: AP=1 still R/W, MREGION=1
+
+    a.label("halt");
+    a.b("halt");
+    conformance_v8m("m33_baseline_mpu_tt", &mut a, "halt", &mt);
+}
+
 /// The full ARMv6-M 16-bit subset is baseline-valid, so the Thumb-1 ALU suite
 /// must diff identically against the M33.
 #[test]
