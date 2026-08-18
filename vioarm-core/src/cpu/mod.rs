@@ -1,4 +1,4 @@
-//! The ARMv6-M CPU core: fetch, decode, execute, and the (typed) halt states.
+﻿//! The ARMv6-M CPU core: fetch, decode, execute, and the (typed) halt states.
 //!
 //! The executor is the *only* place that interprets semantics. It is written
 //! against `Bus`, so swapping the memory behind the CPU does not change
@@ -33,7 +33,7 @@ use registers::{Registers, Xpsr, APSR_FLAGS, APSR_GE, APSR_Q, APSR_QFLAGS, XPSR_
 /// ARMv8-M mainline, whose Cortex-M33 is the conformance oracle): it adds
 /// IT blocks, the `b.w` T4 branch, `sdiv`/`udiv`, `movw`/`movt`, the
 /// exclusive `ldrex`/`strex` family and `clrex`, unprivileged state
-/// (`CONTROL.nPRIV`), and the TrustZone security extension — but no BASEPRI,
+/// (`CONTROL.nPRIV`), and the TrustZone security extension â€” but no BASEPRI,
 /// FAULTMASK, or UsageFault, and none of the ARMv7-M Thumb-2 data-processing,
 /// load/store, bitfield, or DSP encodings. The decoder and executor select
 /// behavior on this field so a single core type serves all.
@@ -427,9 +427,9 @@ pub struct Core<B: PeripheralBus> {
     /// device holds the same `Rc` so firmware writes through the bus and the
     /// core's exception/FP logic agree on one value.
     pub fpu_ctx: std::sync::Arc<std::sync::Mutex<FpuCtx>>,
-    /// Base address of the reset vector table. Boots on 0x0000_0000-located
+    /// Base address of the reset vector table. Boots on 0x1000_0000-located
     /// flash by default; machines that place flash elsewhere (ARMv8-M boards
-    /// at `0x1000_0000`) set this before resetting so the vector table is read
+    /// at `0x0000_0000`) set this before resetting so the vector table is read
     /// from the right region.
     vector_base: u32,
     /// ARMv8-M baseline stack-limit register for the main stack (`MSPLIM`).
@@ -810,6 +810,7 @@ impl<B: PeripheralBus> Core<B> {
             self.other_ss_psp = self.regs.psp;
         }
         self.secure = new_secstate;
+        self.mem.set_secure(new_secstate);
         // The single current-state CONTROL/limit fields now hold the new
         // state's values.
         std::mem::swap(&mut self.control, &mut self.other_ss_control);
@@ -1086,7 +1087,7 @@ impl<B: PeripheralBus> Core<B> {
             SysReg::Faultmask => self.faultmask = v & 1 != 0,
             SysReg::Control if self.isa == Isa::Armv6M => {
                 // ARMv6-M (Cortex-M0/M0+): CONTROL.nPRIV and CONTROL.FPCA are
-                // RAZ/WI — there is no unprivileged state and no FPU — so only
+                // RAZ/WI â€” there is no unprivileged state and no FPU â€” so only
                 // SPSEL is writable, and only in Thread mode (Handler mode
                 // always uses MSP). Matches QEMU, which gates nPRIV on
                 // ARM_FEATURE_M_MAIN and SPSEL on thread mode.
@@ -1912,13 +1913,33 @@ impl<B: PeripheralBus> Core<B> {
                 // a privileged thread is EL 1, unprivileged thread EL 0.
                 let current_el = u8::from(self.ipsr != 0 || self.control & 1 == 0);
                 let targetsec = self.secure != alt;
-                // PMSAv8 MPU lookup for the target security/privilege state.
-                // VioARM models the MPU as disabled, so the background default
-                // map grants read/write and no region matches.
-                let (r, rw) = if current_el != 0 || alt {
-                    (true, true)
+                // MPU region info is only reported for a privileged current
+                // state or when probing the opposite security state. The
+                // PMSAv8 lookup then runs in the target security state's MPU
+                // bank and target privilege (`TTTT`/`TTAT` force
+                // unprivileged, otherwise the target state's `CONTROL.nPRIV`;
+                // the target privilege feeds the `AP` matrix's user column).
+                let (r, rw, mrvalid, mregion) = if current_el != 0 || alt {
+                    let forceunpriv = matches!(variant, V::Tttt | V::Ttat);
+                    let targetpriv = if forceunpriv {
+                        false
+                    } else {
+                        let nprive = if targetsec == self.secure {
+                            self.control
+                        } else {
+                            self.other_ss_control
+                        };
+                        self.ipsr != 0 || nprive & 1 == 0
+                    };
+                    let lk = self.mem.mpu_lookup_v8(addr, targetsec, targetpriv);
+                    (
+                        lk.prot & crate::mem::bus::PROT_READ != 0,
+                        lk.prot & crate::mem::bus::PROT_WRITE != 0,
+                        lk.region.is_some(),
+                        lk.region.unwrap_or(0),
+                    )
                 } else {
-                    (false, false)
+                    (false, false, false, 0)
                 };
                 let s = if self.secure {
                     self.security_attribution(addr, targetsec)
@@ -1947,8 +1968,9 @@ impl<B: PeripheralBus> Core<B> {
                     | (u32::from(rw) << 19)
                     | (u32::from(r) << 18)
                     | (u32::from(s.srvalid) << 17)
-                    | (u32::from(false) << 16)
-                    | (u32::from(s.sregion) << 8);
+                    | (u32::from(mrvalid) << 16)
+                    | (u32::from(s.sregion) << 8)
+                    | u32::from(mregion);
                 self.regs.write(rd, value);
                 Ok(Next::Advance(pc + 4))
             }
@@ -4135,7 +4157,7 @@ impl<B: PeripheralBus> Core<B> {
     /// `EXC_RETURN` value loaded into the PC. Returns the branch to the
     /// restored program counter. An extended return (`EXC_RETURN.FType == 0`,
     /// used when the interrupted context owned the FP context) also unstacks
-    /// `S0`-`S15` and FPSCR â€” unless the frame was left lazily stacked
+    /// `S0`-`S15` and FPSCR Ã¢â‚¬â€ unless the frame was left lazily stacked
     /// (`FPCCR.LSPACT`), in which case the FPU still holds valid state and the
     /// reservation is simply abandoned.
     fn exception_return(&mut self, value: u32) -> Result<Next, HaltCause> {
@@ -4292,7 +4314,7 @@ const fn is_exc_return(v: u32) -> bool {
     )
 }
 
-/// A fully-resolved load/store (word/half/byte Ã— load/store, plus
+/// A fully-resolved load/store (word/half/byte Ãƒâ€” load/store, plus
 /// sign-extending loads).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LsAccess {
@@ -4629,7 +4651,9 @@ mod tests {
             &[0x0000_0000, 0x2000_0000],
             &[0x1000, 0x1000],
         );
-        Core::armv8m(crate::mem::system::SystemMemory::new(backing))
+        let mut mem = crate::mem::system::SystemMemory::new(backing);
+        mem.enable_pmsav8();
+        Core::armv8m(mem)
     }
 
     /// A Cortex-M4-style core with a shared FP context-control state, plus
@@ -4920,6 +4944,46 @@ mod tests {
         c.step().unwrap();
         assert_eq!(c.regs.read(6), 0x003C_0000);
         assert_eq!(c.ipsr, 0, "TT must not fault");
+    }
+
+    #[test]
+    fn v8m_baseline_tt_reports_mpu_permissions() {
+        // `TT`'s `r`/`rw` bits and the `mrvalid`/`mregion` field come from the
+        // PMSAv8 MPU lookup in the target security/privilege state (QEMU's
+        // `pmsav8_mpu_lookup`), not a hardcoded read/write.
+        let mut c = armv8m_sys_core();
+        c.mem().write_word(3 * 4, 0x2000_0401).unwrap(); // HardFault vector
+        c.regs.pc = 0x2000_0000;
+        c.regs.sp = 0x2000_0040;
+        // Region 0: 0x2000_0000..0x2000_001F, AP=1 (read/write), no XN.
+        c.mem().write_word(0xE000_ED9C, 0x2000_0000 | 0x2).unwrap();
+        c.mem().write_word(0xE000_EDA0, 0x2000_001F | 0x1).unwrap();
+        c.mem().write_word(0xE000_ED94, 0x1).unwrap(); // MPU ENABLE
+        // A region hit reports R/W plus MRVALID=1, MREGION=0 (the IDAU adds
+        // IREGION/IRVALID/S like the baseline test).
+        c.regs.write(0, 0x2000_0000);
+        load_inst(&mut c, 0x2000_0000, &[0x40, 0xe8, 0x00, 0xf4]); // tt r4, r0
+        c.step().unwrap();
+        assert_eq!(c.regs.read(4), 0x02CD_0000);
+        // Just past the region with no `PRIVDEFENA`: a background fault
+        // reports no permission and no region.
+        c.regs.write(0, 0x2000_0020);
+        load_inst(&mut c, 0x2000_0004, &[0x40, 0xe8, 0x00, 0xf4]); // tt r4, r0
+        c.step().unwrap();
+        assert_eq!(c.regs.read(4), 0x02C0_0000);
+        // AP=3 (read-only for everyone): W clears, R and the region stay.
+        c.mem().write_word(0xE000_ED9C, 0x2000_0000 | 0x6).unwrap();
+        c.regs.write(0, 0x2000_0000);
+        load_inst(&mut c, 0x2000_0008, &[0x40, 0xe8, 0x00, 0xf4]); // tt r4, r0
+        c.step().unwrap();
+        assert_eq!(c.regs.read(4), 0x02C5_0000);
+        assert_eq!(c.ipsr, 0, "TT must not fault");
+        // The same region gates real data accesses: a store to the read-only
+        // region raises an MPU fault and escalates to HardFault.
+        c.regs.write(0, 0x2000_0000);
+        load_inst(&mut c, 0x2000_000c, &[0x00, 0x60]); // str r0, [r0]
+        c.step().unwrap();
+        assert_eq!(c.ipsr, 3, "MPU-denied store must escalate to HardFault");
     }
 
     #[test]
