@@ -62,6 +62,22 @@ const FPCCR: u32 = 0xE000_EF34;
 const FPCAR: u32 = 0xE000_EF38;
 const FPDSCR: u32 = 0xE000_EF3C;
 
+/// `S_VTOR` (`0xE002_ED08`): the ARMv8-M Secure vector table offset register,
+/// Secure-only alias of `VTOR`. Firmware relocates the Secure table here when
+/// the reset value (address 0) is not loadable; a Non-secure access is
+/// RAZ/WI.
+const S_VTOR: u32 = 0xE002_ED08;
+
+/// `SFSR` (`0xE002_ED28`): the ARMv8-M `SecureFault` status register. Only the
+/// `INVER` (invalid exception return) bit is modelable on the baseline;
+/// write-1-to-clear, Non-secure access RAZ/WI.
+const SFSR: u32 = 0xE002_ED28;
+
+/// `SFSR.INVER` (bit 2, QEMU `R_V7M_SFSR_INVER_MASK`): a Non-secure
+/// exception return failed the `ES`/`DCRS` validity check, so a `SecureFault`
+/// was taken instead.
+const SFSR_INVER: u32 = 0x0000_0004;
+
 /// The ARMv8-M Security Attribution Unit window (`SAU_CTRL`/`SAU_TYPE`/
 /// `SAU_RNR`/`SAU_RBAR`/`SAU_RLAR`) with the architectural offsets: the M33
 /// conformance tests program the SAU to make the IDAU Non-secure regions
@@ -91,6 +107,10 @@ const PENDSVCLR: u8 = 0x08; // ICSR byte 3, bit 27: write 1 to clear.
 const AIRCR_VECTKEY: u32 = 0x05FA_0000;
 const AIRCR_PRIGROUP: u32 = 0x0000_0700;
 const AIRCR_SYSRESETREQ: u32 = 0x0000_0004;
+// AIRCR.BFHFNMINS (bit 1, v8-M): escalated faults target Non-secure
+// HardFault instead of Secure. Readable from either state; written only with
+// the `VECTKEY`.
+const AIRCR_BFHFNMINS: u32 = 0x0000_0002;
 
 // SCR: SEVONPEND (4), SLEEPONEXIT (1). The deep-sleep bits (SLEEPDEEP 2,
 // SLEEPDEEPS 3) are RAZ/WI: neither this model nor the QEMU oracle
@@ -291,7 +311,7 @@ impl Default for MpuV8 {
 /// access-control register, and the FP context control.
 #[derive(Debug, Clone)]
 pub struct Scb {
-    ranges: [Region; 18],
+    ranges: [Region; 20],
     pendsv: bool,
     /// `SHPR1`: configurable priorities for the fault exceptions. Only the
     /// `UsageFault` byte (bits 15:8) is modeled; MemManage/BusFault are not
@@ -302,6 +322,13 @@ pub struct Scb {
     cpacr: u32,
     /// `VTOR`: the vector table base, masked to the 128-byte alignment.
     vtor: u32,
+    /// `S_VTOR` (v8-M): the Secure vector table base, masked to the 128-byte
+    /// alignment. Resets to zero, so the Secure table lives at address 0
+    /// until firmware relocates it.
+    s_vtor: u32,
+    /// `SFSR` (v8-M): the `SecureFault` status register; only `INVER` is
+    /// set, write-1-to-clear.
+    sfsr: u32,
     /// `SHCSR`: fault enables and pend bits; the `*ACT` bits read zero.
     shcsr: u32,
     /// `CFSR`: the combined fault status (MMFSR/BFSR/UFSR), write-1-to-clear.
@@ -376,6 +403,8 @@ impl Scb {
                 Region::new(FPCCR, 4),
                 Region::new(FPCAR, 4),
                 Region::new(FPDSCR, 4),
+                Region::new(S_VTOR, 4),
+                Region::new(SFSR, 4),
             ],
             pendsv: false,
             shpr1: 0,
@@ -383,6 +412,8 @@ impl Scb {
             shpr3: 0,
             cpacr: 0,
             vtor: 0,
+            s_vtor: 0,
+            sfsr: 0,
             shcsr: 0,
             cfsr: 0,
             hfsr: 0,
@@ -481,6 +512,26 @@ impl Scb {
         self.vtor
     }
 
+    /// The vector table base for the `secure` bank: `S_VTOR` when this is a
+    /// v8-M machine (`PMSAv8`) and the request is for Secure state, else the
+    /// plain `VTOR` (the only table on pre-v8-M).
+    #[must_use]
+    pub const fn vector_table_base(&self, secure: bool) -> u32 {
+        if self.pmsav8 && secure {
+            self.s_vtor
+        } else {
+            self.vtor
+        }
+    }
+
+    /// Whether `AIRCR.BFHFNMINS` is set (v8-M): escalated faults target
+    /// `Non-secure HardFault` instead of `Secure`. Only a store carrying the
+    /// `VECTKEY` is honored.
+    #[must_use]
+    pub const fn bfhfnmins(&self) -> bool {
+        self.aircr & 0xFFFF_0000 == AIRCR_VECTKEY && self.aircr & AIRCR_BFHFNMINS != 0
+    }
+
     /// Whether `SHCSR.SVCALLPENDED` is set: an SVC is pending and should be
     /// taken by the interrupt controller.
     #[must_use]
@@ -521,6 +572,13 @@ impl Scb {
     pub fn record_fault(&mut self, cfsr_bits: u32, hfsr_bits: u32) {
         self.cfsr |= cfsr_bits & CFSR_MASK;
         self.hfsr |= hfsr_bits & HFSR_MASK;
+    }
+
+    /// Record a `SecureFault` `INVER` cause. The core calls this when a
+    /// Non-secure exception return fails the `ES`/`DCRS` validity check and
+    /// a `SecureFault` is taken instead.
+    pub fn record_secure_fault(&mut self) {
+        self.sfsr |= SFSR_INVER;
     }
 
     /// Record an MPU access violation at `addr` (an instruction fetch when
@@ -910,8 +968,9 @@ impl Scb {
                 ICSR => u32::from(self.pendsv) << 28,
                 VTOR => self.vtor,
                 // The read reports VECTKEYSTAT; the stored key bytes are never
-                // echoed back.
-                AIRCR => 0xFA05_0000 | (u32::from(self.prig()) << 8),
+                // echoed back. `BFHFNMINS` (bit 1) is R/O from Non-secure
+                // state and stored from Secure writes, so it always echoes.
+                AIRCR => 0xFA05_0000 | (u32::from(self.prig()) << 8) | (u32::from(self.bfhfnmins()) << 1),
                 SCR => self.scr,
                 CCR => self.ccr,
                 SHPR1 => self.shpr1,
@@ -922,6 +981,22 @@ impl Scb {
                 HFSR => self.hfsr,
                 MMFAR => self.mmfar,
                 CPACR => self.cpacr,
+                // `S_VTOR`/`SFSR` live in the Secure system window: reads from
+                // Non-secure state are RAZ.
+                S_VTOR => {
+                    if self.secure {
+                        self.s_vtor
+                    } else {
+                        0
+                    }
+                }
+                SFSR => {
+                    if self.secure {
+                        self.sfsr
+                    } else {
+                        0
+                    }
+                }
                 SAU => match offset & !0x3 {
                     // `SAU_CTRL` reads back the stored `ENABLE`/`ALLNS` bits.
                     0 => self.sau_ctrl,
@@ -961,6 +1036,20 @@ impl Scb {
                 let shift = 8 * offset;
                 self.vtor = (self.vtor & !(0xFF << shift)) | (u32::from(val) << shift);
                 self.vtor &= !0x7F;
+            }
+            S_VTOR => {
+                // Secure-only alias: a Non-secure write is WI.
+                if self.secure {
+                    let shift = 8 * offset;
+                    self.s_vtor = (self.s_vtor & !(0xFF << shift)) | (u32::from(val) << shift);
+                    self.s_vtor &= !0x7F;
+                }
+            }
+            SFSR => {
+                // Write-1-to-clear, Secure-only (Non-secure writes are WI).
+                if self.secure {
+                    self.sfsr &= !(u32::from(val) << (8 * offset));
+                }
             }
             AIRCR => {
                 // Only a store whose bits 31:16 carry `VECTKEY` (0x05FA) is
@@ -1081,6 +1170,8 @@ impl Peripheral for Scb {
         self.shpr3 = 0;
         self.cpacr = 0;
         self.vtor = 0;
+        self.s_vtor = 0;
+        self.sfsr = 0;
         self.shcsr = 0;
         self.cfsr = 0;
         self.hfsr = 0;
@@ -1357,6 +1448,76 @@ mod tests {
         assert_eq!(s.vtor(), 0x2000_0080);
         s.reset();
         assert_eq!(read_word(&mut s, 0xE000_ED08), 0);
+    }
+
+    #[test]
+    fn svtor_sfsr_are_secure_gated_windows() {
+        let mut s = Scb::new();
+        // Reset: both read zero.
+        assert_eq!(read_word(&mut s, 0xE002_ED08), 0);
+        assert_eq!(read_word(&mut s, 0xE002_ED28), 0);
+        // Secure access (reset state): S_VTOR stores 128-byte aligned.
+        write_word(&mut s, 0xE002_ED08, 0x1000_00F3);
+        assert_eq!(read_word(&mut s, 0xE002_ED08), 0x1000_0080);
+        // SFSR is write-1-to-clear like the other fault-status registers: a
+        // firmware write can only clear, never set.
+        write_word(&mut s, 0xE002_ED28, 0xFFFF_FFFF);
+        assert_eq!(read_word(&mut s, 0xE002_ED28), 0);
+        // The core records the INVER cause; it reads back until cleared.
+        s.record_secure_fault();
+        assert_eq!(read_word(&mut s, 0xE002_ED28), 0x0000_0004);
+        write_word(&mut s, 0xE002_ED28, 0x0000_0004);
+        assert_eq!(read_word(&mut s, 0xE002_ED28), 0);
+        // Non-secure access is RAZ/WI: writes are ignored, reads read zero.
+        s.record_secure_fault();
+        s.set_secure(false);
+        write_word(&mut s, 0xE002_ED08, 0x2000_0000);
+        write_word(&mut s, 0xE002_ED28, 0xFFFF_FFFF);
+        assert_eq!(read_word(&mut s, 0xE002_ED08), 0, "S_VTOR reads zero from NS");
+        assert_eq!(read_word(&mut s, 0xE002_ED28), 0, "SFSR reads zero from NS");
+        // The stored values are preserved through the Non-secure accesses.
+        s.set_secure(true);
+        assert_eq!(read_word(&mut s, 0xE002_ED08), 0x1000_0080);
+        assert_eq!(read_word(&mut s, 0xE002_ED28), 0x0000_0004);
+        s.reset();
+        assert_eq!(read_word(&mut s, 0xE002_ED08), 0);
+        assert_eq!(read_word(&mut s, 0xE002_ED28), 0);
+    }
+
+    #[test]
+    fn vector_table_base_selects_the_banked_vtor() {
+        let mut s = Scb::new();
+        write_word(&mut s, 0xE000_ED08, 0x2000_0000);
+        write_word(&mut s, 0xE002_ED08, 0x1000_0000);
+        // Pre-v8-M (PMSAv8 off): there is only one table, so the Secure bank
+        // answers VTOR like the Non-secure one.
+        assert_eq!(s.vector_table_base(false), 0x2000_0000);
+        assert_eq!(s.vector_table_base(true), 0x2000_0000);
+        // v8-M: the Secure bank uses S_VTOR.
+        s.set_pmsav8();
+        assert_eq!(s.vector_table_base(false), 0x2000_0000);
+        assert_eq!(s.vector_table_base(true), 0x1000_0000);
+    }
+
+    #[test]
+    fn aircr_bfhfnmins_is_vectkey_gated_and_echoed() {
+        let mut s = Scb::new();
+        assert!(!s.bfhfnmins());
+        assert_eq!(read_word(&mut s, 0xE000_ED0C), 0xFA05_0000);
+        // A store without the VECTKEY does not set BFHFNMINS.
+        write_word(&mut s, 0xE000_ED0C, 0x0000_0002);
+        assert!(!s.bfhfnmins());
+        assert_eq!(read_word(&mut s, 0xE000_ED0C), 0xFA05_0000);
+        // With the VECTKEY the bit is honored and echoes in the read.
+        write_word(&mut s, 0xE000_ED0C, 0x05FA_0002);
+        assert!(s.bfhfnmins());
+        assert_eq!(read_word(&mut s, 0xE000_ED0C), 0xFA05_0002);
+        // Clearing it again (VECTKEY carried) drops it from the read.
+        write_word(&mut s, 0xE000_ED0C, 0x05FA_0000);
+        assert!(!s.bfhfnmins());
+        assert_eq!(read_word(&mut s, 0xE000_ED0C), 0xFA05_0000);
+        s.reset();
+        assert!(!s.bfhfnmins());
     }
 
     #[test]

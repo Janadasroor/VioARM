@@ -7,6 +7,10 @@
 
 use crate::error::BusError;
 
+/// `VTOR` (the vector table offset register): the default vector-table base
+/// address consulted when no `SCB` overrides the answer.
+const VTOR_ADDR: u32 = 0xE000_ED08;
+
 /// A region of the address space that a `Bus` can service.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Region {
@@ -225,6 +229,11 @@ pub trait PeripheralBus: Bus {
     /// firmware can read the cause back. Default: no recording (plain memory).
     fn record_fault(&mut self, _cfsr_bits: u32, _hfsr_bits: u32) {}
 
+    /// Record a `SecureFault` `INVER` cause (v8-M): a Non-secure exception
+    /// return failed the `ES`/`DCRS` validity check. Default: no recording
+    /// (plain memory, no `SecureFault`).
+    fn record_secure_fault(&mut self) {}
+
     /// Whether the memory-protection unit (if any) permits the core's `access`
     /// to `addr` in the given privilege and exception context. `privileged` is
     /// whether the core is executing privileged; `exception` is the current
@@ -273,4 +282,12 @@ pub trait PeripheralBus: Bus {
     /// Mirror the core's current security state into a device that banks its
     /// registers on it (the `v8-M` MPU). Default: nothing.
     fn set_secure(&mut self, _secure: bool) {}
+
+    /// The vector-table base for the given security state, from which the core
+    /// reads exception `n`'s entry on exception entry. Default: the `VTOR`
+    /// register (address 0 when no `SCB` is on the bus). A v8-M `SCB` answers
+    /// with the banked `S_VTOR` when `secure` is set.
+    fn vector_table_base(&mut self, _secure: bool) -> u32 {
+        self.read_word(VTOR_ADDR).unwrap_or(0) & !0x7F
+    }
 }

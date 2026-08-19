@@ -585,6 +585,10 @@ impl<M: Bus> PeripheralBus for SystemMemory<M> {
         self.scb.record_fault(cfsr_bits, hfsr_bits);
     }
 
+    fn record_secure_fault(&mut self) {
+        self.scb.record_secure_fault();
+    }
+
     fn mpu_check(&mut self, addr: u32, access: MpuAccess, privileged: bool, exception: u8) -> bool {
         self.scb.mpu_check(addr, access, privileged, exception)
     }
@@ -620,6 +624,10 @@ impl<M: Bus> PeripheralBus for SystemMemory<M> {
 
     fn set_secure(&mut self, secure: bool) {
         self.scb.set_secure(secure);
+    }
+
+    fn vector_table_base(&mut self, secure: bool) -> u32 {
+        self.scb.vector_table_base(secure)
     }
 }
 

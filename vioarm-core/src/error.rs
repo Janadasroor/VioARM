@@ -65,6 +65,12 @@ pub enum Exception {
     /// disabled (or when it cannot preempt the running context) a `UsageFault`
     /// escalates to `HardFault` with `HFSR.FORCED`.
     UsageFault,
+    /// Exception number 7: the `SecureFault`, taken on an exception-return to
+    /// Non-secure state carrying the `ES` bit set or with the `DCRS` bit clear.
+    /// It is the v8-M baseline counterpart of `HardFault` for Secure state and
+    /// always targets Secure state; its handler comes from the Secure vector
+    /// table (`S_VTOR`).
+    SecureFault,
     /// Exception number 11: the supervisor call, taken by executing `svc`.
     /// Its vector is read from the same table as the other exceptions.
     SvCall,
@@ -85,6 +91,7 @@ impl Exception {
         match self {
             Self::HardFault => 3,
             Self::UsageFault => 6,
+            Self::SecureFault => 7,
             Self::SvCall => 11,
             Self::PendSV => 14,
             Self::SysTick => 15,
