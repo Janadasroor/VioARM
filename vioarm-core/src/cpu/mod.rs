@@ -318,10 +318,10 @@ const CCR_STKALIGN: u32 = 0x0000_0200;
 const CCR_DIV0_TRP: u32 = 0x0000_0010;
 const CCR_RESET: u32 = 0x0000_0200;
 
-/// `VTOR`: the vector table base (bits [31:7]) the exception-entry logic
-/// consults. Zero is the fallback when no `SCB` is on the bus.
-const VTOR_ADDR: u32 = 0xE000_ED08;
-const VTOR_MASK: u32 = !0x7F;
+/// `AIRCR` (`0xE000_ED0C`): read through the memory window so the
+/// exception-escalation logic can see `BFHFNMINS` (bit 1) without a direct
+/// SCB handle.
+const AIRCR_ADDR: u32 = 0xE000_ED0C;
 
 /// `CFSR`/`HFSR` fault-status bits the exception paths record on the
 /// escalation paths that fold a fault into HardFault (see
@@ -1448,7 +1448,8 @@ impl<B: PeripheralBus> Core<B> {
                         self.regs.pc = pc.wrapping_add(2);
                         return Err(HaltCause::UnhandledException);
                     }
-                    self.take_exception(Exception::HardFault, pc + 2)?;
+                    let targets_secure = self.hardfault_target_secure();
+                    self.take_exception_target(Exception::HardFault, pc + 2, targets_secure)?;
                     return Ok(Next::Advance(self.regs.pc));
                 }
                 self.take_exception(Exception::SvCall, pc + 2)?;
@@ -3743,17 +3744,33 @@ impl<B: PeripheralBus> Core<B> {
         let return_to_handler = value & EXC_RETURN_MODE == 0;
         let return_to_sp_process = value & EXC_RETURN_SPSEL != 0;
         let return_to_secure = value & EXC_RETURN_S != 0;
-        // `EXC_RETURN.RES0` is reserved: set is an INVPC UsageFault (QEMU
-        // v8M path). The `ES`/`DCRS` SecureFault check is unreachable on the
-        // baseline (an NS-targeting exception can never return to Secure, so
-        // no frame carries `S`; a hand-built value with `ES` is a SecureFault
-        // in QEMU that VioARM does not model).
-        if value & EXC_RETURN_RES0 != 0 {
+        // The `ES`/`DCRS` validity check (QEMU's R_SMFL): returning to
+        // Non-secure state with `ES` set, or without `DCRS`, is a SecureFault
+        // (stacking/integrity failure on the frame the return was about to
+        // unstack). The ES bit is then treated as 0 for everything else
+        // (R_HXSR). This precedes the `RES0` check: a return that violates
+        // both takes the SecureFault, not the UsageFault.
+        let mut exc_secure = value & EXC_RETURN_ES;
+        let sfault = !self.secure
+            && (value & EXC_RETURN_ES != 0 || value & EXC_RETURN_DCRS == 0);
+        if sfault {
+            exc_secure = 0;
+        }
+        if !sfault && value & EXC_RETURN_RES0 != 0 {
             return self.usage_fault(self.regs.pc, UFSR_INVPC);
         }
-        // Depositing `SPSEL` for the target state cannot move the active SP
-        // while still in Handler mode, exactly as QEMU's comment there notes.
-        self.write_control_spsel_for_secstate(return_to_secure, return_to_sp_process);
+        // Depositing `SPSEL` for the exception being deactivated (selected by
+        // `ES`, not by the return target `S` — QEMU writes the bank
+        // `control[exc_secure]`) cannot move the active SP while still in
+        // Handler mode.
+        self.write_control_spsel_for_secstate(exc_secure != 0, return_to_sp_process);
+        if sfault {
+            // The aborted return cannot be completed: take a SecureFault
+            // directly, tailchaining off the frame the failed return was
+            // going to pop (no unstack/stack cycle).
+            self.mem.record_secure_fault();
+            return self.take_exception_tailchain(Exception::SecureFault, value);
+        }
         self.switch_security_state(return_to_secure);
         // The frame lives on the target state's stack, selected by its
         // `CONTROL.SPSEL` in Thread mode.
@@ -3865,6 +3882,22 @@ impl<B: PeripheralBus> Core<B> {
         self.usage_fault(pc, UFSR_UNDEFINSTR)
     }
 
+/// Whether an escalated HardFault targets `Secure` state, mirroring QEMU's
+    /// `exc_targets_secure` on the derived-exception escalation path: Secure
+    /// when the fault already targeted Secure, or when `AIRCR.BFHFNMINS` is
+    /// clear - the reset state, which disables `Non-secure HardFault` entirely
+    /// so every escalated fault lands in the Secure bank. On pre-v8-M the
+    /// single `HardFault` is never the Secure version.
+    fn hardfault_target_secure(&mut self) -> bool {
+        self.isa == Isa::Armv8MBaseline && (self.secure || !self.bfhfnmins())
+    }
+
+    /// `AIRCR.BFHFNMINS`, read through the memory window (the core has no
+    /// direct SCB handle; the SCB echoes the bit in the `AIRCR` read).
+    fn bfhfnmins(&mut self) -> bool {
+        self.mem.read_word(AIRCR_ADDR).unwrap_or(0) & 0x2 != 0
+    }
+
     /// Take a UsageFault (recorded as `ufsr_bit` in `CFSR`): a distinct
     /// exception when `SHCSR.USGFAULTENA` is set and its priority outranks the
     /// running context, otherwise escalated to HardFault with `HFSR.FORCED`.
@@ -3889,7 +3922,8 @@ impl<B: PeripheralBus> Core<B> {
             self.take_exception(Exception::UsageFault, pc)?;
         } else {
             self.mem.record_fault(ufsr_bit, HFSR_FORCED);
-            self.take_exception(Exception::HardFault, pc)?;
+            let targets_secure = self.hardfault_target_secure();
+            self.take_exception_target(Exception::HardFault, pc, targets_secure)?;
         }
         Ok(Next::Advance(self.regs.pc))
     }
@@ -3900,7 +3934,9 @@ impl<B: PeripheralBus> Core<B> {
     fn current_priority(&mut self) -> u8 {
         match self.ipsr {
             0 => u8::MAX,
-            3 => 0,
+            // SecureFault (v8-M) has a fixed priority above any configurable
+            // exception; encoded like HardFault at the top of the range.
+            3 | 7 => 0,
             6 | 11 | 14 | 15 => self.priority_byte(self.ipsr),
             n => self
                 .mem
@@ -3930,7 +3966,8 @@ impl<B: PeripheralBus> Core<B> {
     fn data_fault(&mut self, addr: u32, pc: u32) -> Result<Next, HaltCause> {
         let _ = addr;
         self.mem.record_fault(BFSR_PRECISERR, HFSR_FORCED);
-        self.take_exception(Exception::HardFault, pc)?;
+        let targets_secure = self.hardfault_target_secure();
+        self.take_exception_target(Exception::HardFault, pc, targets_secure)?;
         Ok(Next::Advance(self.regs.pc))
     }
 
@@ -3948,7 +3985,8 @@ impl<B: PeripheralBus> Core<B> {
     /// faulting address is latched in `MMFAR`. Continues into the handler.
     fn mpu_fault(&mut self, addr: u32, pc: u32, fetch: bool) -> Result<Next, HaltCause> {
         self.mem.mpu_fault(addr, fetch);
-        self.take_exception(Exception::HardFault, pc)?;
+        let targets_secure = self.hardfault_target_secure();
+        self.take_exception_target(Exception::HardFault, pc, targets_secure)?;
         Ok(Next::Advance(self.regs.pc))
     }
 
@@ -3973,20 +4011,39 @@ impl<B: PeripheralBus> Core<B> {
     /// modelled here.)
     fn stack_fault(&mut self, pc: u32) -> Result<Next, HaltCause> {
         self.mem.record_fault(0, HFSR_FORCED);
-        self.take_exception(Exception::HardFault, pc)?;
+        let targets_secure = self.hardfault_target_secure();
+        self.take_exception_target(Exception::HardFault, pc, targets_secure)?;
         Ok(Next::Advance(self.regs.pc))
     }
 
     /// Enter Handler mode for `ex`, pushing the eight-word frame onto the
     /// interrupted context's stack and switching to the main stack pointer.
-    /// `return_pc` is where execution resumes on exception return.
+    /// `return_pc` is where execution resumes on exception return. The
+    /// exception targets the security state it was raised in.
     fn take_exception(&mut self, ex: Exception, return_pc: u32) -> Result<(), HaltCause> {
+        self.take_exception_target(ex, return_pc, self.secure)
+    }
+
+    /// Like [`take_exception`](Self::take_exception), but the exception
+    /// targets the given security state, which may differ from the running
+    /// one on the v8-M baseline (a Non-secure fault escalating to Secure
+    /// `HardFault`). The frame is still pushed onto the interrupted context's
+    /// stack; the handler then runs in `targets_secure`.
+    #[allow(clippy::too_many_lines)]
+    fn take_exception_target(
+        &mut self,
+        ex: Exception,
+        return_pc: u32,
+        targets_secure: bool,
+    ) -> Result<(), HaltCause> {
         // A fault taken while a fault handler is already active is a double
         // fault, which locks the core up. HardFault (priority -1) may however
         // always preempt a non-fault handler (SVC, PendSV, SysTick, an IRQ:
         // all priority >= 0), stacking a second frame and returning through
         // it. The interrupt controller only offers exceptions that outrank
-        // the currently running one.
+        // the currently running one. On the v8-M baseline the two HardFaults
+        // are banked, so a Secure HardFault preempts a Non-secure one (and
+        // vice versa) unless it targets the bank that is already active.
         //
         // FAULTMASK raises the current priority to -1, so with it set even
         // HardFault (priority -1) cannot activate: an escalated fault then
@@ -3994,7 +4051,8 @@ impl<B: PeripheralBus> Core<B> {
         // (current priority -1)"). PRIMASK only raises it to 0, so HardFault
         // still preempts under PRIMASK.
         if ex == Exception::HardFault
-            && (self.ipsr == Exception::HardFault.number() || self.faultmask)
+            && (self.faultmask
+                || (self.ipsr == Exception::HardFault.number() && targets_secure == self.secure))
         {
             return Err(HaltCause::UnhandledException);
         }
@@ -4004,14 +4062,13 @@ impl<B: PeripheralBus> Core<B> {
         self.exmon = None;
         self.sleeping = false;
         self.event = true;
-        // The vector table lives at `VTOR` (128-byte aligned), defaulting to
-        // address zero when no `SCB` is on the bus. Exception `n`'s entry is
-        // the `n`-th word of that table.
-        let vtor = self.mem.read_word(VTOR_ADDR).unwrap_or(0) & VTOR_MASK;
+        // The vector table lives at the (banked) `VTOR` for the exception's
+        // target security state, defaulting to address zero when no `SCB` is
+        // on the bus. Exception `n`'s entry is the `n`-th word of that table.
+        let vtor = self.mem.vector_table_base(targets_secure);
         let vector_addr = vtor.wrapping_add(u32::from(ex.number()) * 4);
-        let vector = match self.read_word_halt(vector_addr) {
-            Ok(v) => v,
-            Err(_) => return Err(HaltCause::UnhandledException),
+        let Ok(vector) = self.read_word_halt(vector_addr) else {
+            return Err(HaltCause::UnhandledException);
         };
         if vector & 1 == 0 {
             return Err(HaltCause::NonThumbTarget);
@@ -4050,8 +4107,10 @@ impl<B: PeripheralBus> Core<B> {
             }
         }
         let frame = sp.wrapping_sub(framesize);
-        for (i, r) in [0u8, 1, 2, 3, 12].into_iter().enumerate() {
-            self.write_word_halt(frame.wrapping_add((i as u32) * 4), self.regs.read(r))?;
+        let mut off = 0u32;
+        for r in [0u8, 1, 2, 3, 12] {
+            self.write_word_halt(frame.wrapping_add(off), self.regs.read(r))?;
+            off = off.wrapping_add(4);
         }
         self.write_word_halt(frame.wrapping_add(20), self.regs.lr)?;
         // The frame PC is a plain address; the interrupted Thumb state lives
@@ -4078,15 +4137,27 @@ impl<B: PeripheralBus> Core<B> {
         }
         self.regs.lr = if self.isa == Isa::Armv8MBaseline {
             // ARMv8-M builds `EXC_RETURN` from `RES1|DCRS|FTYPE` (the
-            // baseline has no FPU so the frame is always basic), `S`/`ES` set
-            // from the current (== target) security state, `MODE` from the
-            // current thread/handler mode, and `SPSEL` from the interrupted
-            // state's `CONTROL.SPSEL` (deposited even in Handler mode).
+            // baseline has no FPU so the frame is always basic), `S` set from
+            // the interrupted (background) state, `ES` from the target state,
+            // `MODE` from the current thread/handler mode, and `SPSEL` from
+            // the *target* state's `CONTROL.SPSEL` (QEMU
+            // `v7m_exception_taken`). When target and background differ (a
+            // Secure-targeting exception taken from Non-secure code) the
+            // value carries `ES` without `S`, and the eventual return is a
+            // plain return to Non-secure.
             let mut lr = EXC_RETURN_RES1 | EXC_RETURN_DCRS | EXC_RETURN_FTYPE;
             if self.secure {
-                lr |= EXC_RETURN_S | EXC_RETURN_ES;
+                lr |= EXC_RETURN_S;
             }
-            if self.control & EXC_RETURN_SPSEL != 0 {
+            if targets_secure {
+                lr |= EXC_RETURN_ES;
+            }
+            let target_control = if targets_secure == self.secure {
+                self.control
+            } else {
+                self.other_ss_control
+            };
+            if target_control & EXC_RETURN_SPSEL != 0 {
                 lr |= EXC_RETURN_SPSEL;
             }
             if self.ipsr == 0 {
@@ -4115,6 +4186,14 @@ impl<B: PeripheralBus> Core<B> {
             self.regs.msp = frame;
             self.regs.sp = frame;
         }
+        // A v8-M exception targeting the other security state switches the
+        // handler into it: the frame stays on the interrupted state's stack
+        // (now the inactive bank) and the handler runs with the target
+        // state's bank, mirroring QEMU's `switch_v7m_security_state` in
+        // `v7m_exception_taken`.
+        if self.isa == Isa::Armv8MBaseline && targets_secure != self.secure {
+            self.switch_security_state(targets_secure);
+        }
         self.regs.pc = vector & !1;
         self.ipsr = ex.number();
         self.itstate = 0;
@@ -4124,7 +4203,7 @@ impl<B: PeripheralBus> Core<B> {
         // clears EAPSR (NZCV|Q|GE|IT). Exceptions targeting Secure (all other
         // cases) leave the registers untouched on v8.0M (QEMU
         // `v7m_exception_taken`).
-        if self.isa == Isa::Armv8MBaseline && !self.secure {
+        if self.isa == Isa::Armv8MBaseline && !targets_secure {
             for r in [0u8, 1, 2, 3, 12] {
                 self.regs.write(r, 0);
             }
@@ -4137,6 +4216,65 @@ impl<B: PeripheralBus> Core<B> {
         Ok(())
     }
 
+    /// ARMv8-M tailchain: take `ex` in Handler mode without pushing a frame,
+    /// chaining off the stack frame the failed exception return (`value`) was
+    /// about to unstack. Mirrors QEMU's `v7m_exception_taken` with
+    /// `dotailchain = true`; the `SecureFault` that results from a failed
+    /// return always targets Secure state. The new `EXC_RETURN` keeps the
+    /// aborted return's `S`/`MODE` (the interrupted context) and `DCRS`,
+    /// sets `ES` for the Secure target, and takes `SPSEL` from the Secure
+    /// `CONTROL` bank; `DCRS` is cleared when chaining off an exception that
+    /// targeted Non-secure (QEMU's callee-saves bookkeeping, preserved even
+    /// though the baseline does not stack the callee-saves registers).
+    fn take_exception_tailchain(&mut self, ex: Exception, value: u32) -> Result<Next, HaltCause> {
+        let targets_secure = true;
+        let vtor = self.mem.vector_table_base(targets_secure);
+        let vector_addr = vtor.wrapping_add(u32::from(ex.number()) * 4);
+        let Ok(vector) = self.read_word_halt(vector_addr) else {
+            return Err(HaltCause::UnhandledException);
+        };
+        if vector & 1 == 0 {
+            return Err(HaltCause::NonThumbTarget);
+        }
+        let mut lr = value & (EXC_RETURN_S | EXC_RETURN_MODE | EXC_RETURN_DCRS);
+        // `RES1` carries the all-ones prefix; the baseline always pushes a
+        // basic frame, so `FTYPE` is set.
+        lr |= EXC_RETURN_RES1 | EXC_RETURN_FTYPE;
+        // `ES` follows the target; `SPSEL` the target bank's `CONTROL`.
+        lr &= !EXC_RETURN_ES;
+        if targets_secure {
+            lr |= EXC_RETURN_ES;
+        }
+        lr &= !EXC_RETURN_SPSEL;
+        let target_control = if targets_secure == self.secure {
+            self.control
+        } else {
+            self.other_ss_control
+        };
+        if target_control & EXC_RETURN_SPSEL != 0 {
+            lr |= EXC_RETURN_SPSEL;
+        }
+        // Tailchaining off an exception that targeted Non-secure (`ES`
+        // clear), from a Secure background, clears `DCRS`: the callee-saves
+        // block belongs to the frame this handler will unstack on return.
+        if lr & EXC_RETURN_S != 0 && (value & EXC_RETURN_ES) == 0 {
+            lr &= !EXC_RETURN_DCRS;
+        }
+        // Exception entry wakes the core and clears the exclusive monitor.
+        self.exmon = None;
+        self.sleeping = false;
+        self.event = true;
+        self.switch_security_state(targets_secure);
+        // QEMU writes `SPSEL = 0` and clears FPCA/IT for the handler.
+        self.control &= !EXC_RETURN_SPSEL;
+        self.control &= !CONTROL_FPCA;
+        self.itstate = 0;
+        self.regs.lr = lr;
+        self.regs.pc = vector & !1;
+        self.ipsr = ex.number();
+        Ok(Next::Advance(self.regs.pc))
+    }
+
     /// Enter Handler mode for exception number `n`, as decided by the
     /// machine's interrupt controller. The return address is the instruction
     /// the core is currently pointing at (the next one to execute on return).
@@ -4144,6 +4282,7 @@ impl<B: PeripheralBus> Core<B> {
         let ex = match n {
             3 => Exception::HardFault,
             6 => Exception::UsageFault,
+            7 => Exception::SecureFault,
             11 => Exception::SvCall,
             14 => Exception::PendSV,
             15 => Exception::SysTick,
@@ -5310,6 +5449,129 @@ mod tests {
         assert_eq!(c.regs.pc, 0x2000_0000);
         assert_eq!(c.regs.sp, 0x2000_0520);
         assert_eq!(c.other_ss_msp, 0x2000_0100, "Secure bank preserved");
+    }
+
+    /// An ARMv8-M baseline core over a `SystemMemory` with a loadable vector
+    /// region at `0x1000_0000` (where the banked `S_VTOR` table lives) plus
+    /// SRAM.
+    fn armv8m_sys_core_tables(
+    ) -> Core<crate::mem::system::SystemMemory<crate::mem::flat::FlatMemory>> {
+        let backing = crate::mem::flat::FlatMemory::with_layout(
+            &[0x1000_0000, 0x2000_0000],
+            &[0x1000, 0x1000],
+        );
+        let mut mem = crate::mem::system::SystemMemory::new(backing);
+        mem.enable_pmsav8();
+        Core::armv8m(mem)
+    }
+
+/// A core positioned in the `Non-secure HardFault` handler, with `S_VTOR`
+    /// relocated to `0x1000_0000` (the `SecureFault` vector set at its entry 7)
+    /// and the `Secure MSP` at `0x2000_0900` - the setup for the `SecureFault`
+    /// exception-return tests.
+    fn ns_hardfault_core() -> Core<crate::mem::system::SystemMemory<crate::mem::flat::FlatMemory>> {
+        let mut c = armv8m_sys_core_tables();
+        c.mem().write_word(0xE002_ED08, 0x1000_0000).unwrap(); // S_VTOR
+        c.mem().write_word(0x1000_0000 + 7 * 4, 0x2000_0401).unwrap(); // SecureFault vector
+        c.regs.msp = 0x2000_0900; // the Secure bank's MSP
+        c.regs.sp = 0x2000_0900;
+        c.switch_security_state(false);
+        c.regs.msp = 0x2000_0100;
+        c.regs.sp = 0x2000_0100;
+        c.ipsr = 3; // Non-secure HardFault handler running
+        c
+    }
+
+    #[test]
+    fn v8m_baseline_secure_fault_targets_secure_bank() {
+        // A fault raised in Secure state escalates to the *Secure* HardFault:
+        // the handler comes from S_VTOR and the EXC_RETURN carries S|ES.
+        let mut c = armv8m_sys_core_tables();
+        c.mem().write_word(0xE002_ED08, 0x1000_0000).unwrap(); // S_VTOR
+        c.mem().write_word(0x1000_0000 + 3 * 4, 0x2000_0401).unwrap(); // Secure HF vector
+        c.regs.pc = 0x2000_0000;
+        c.regs.sp = 0x2000_0100;
+        load_inst(&mut c, 0x2000_0000, &[0x09, 0xea, 0x0a, 0x08]); // and.w (baseline undef)
+        c.step().unwrap();
+        assert_eq!(c.ipsr, 3);
+        assert!(c.secure);
+        assert_eq!(c.regs.lr, 0xFFFF_FFF9, "Secure thread-MSP EXC_RETURN");
+        assert_eq!(c.regs.pc, 0x2000_0400, "handler from the Secure table");
+    }
+
+    #[test]
+    fn v8m_baseline_ns_fault_escalates_to_secure_hardfault() {
+        // `BFHFNMINS` resets clear: a Non-secure fault still escalates to the
+        // *Secure* HardFault. The EXC_RETURN carries ES without S (returning
+        // to Non-secure), the handler runs in Secure state, and the Secure
+        // target leaves the caller-saved registers untouched (v8.0M).
+        let mut c = armv8m_sys_core_tables();
+        c.mem().write_word(0xE002_ED08, 0x1000_0000).unwrap(); // S_VTOR
+        c.mem().write_word(0x1000_0000 + 3 * 4, 0x2000_0401).unwrap(); // Secure HF vector
+        c.switch_security_state(false); // Non-secure background
+        c.regs.pc = 0x2000_0000;
+        c.regs.sp = 0x2000_0100;
+        c.regs.write(0, 0xDEAD_BEEF);
+        load_inst(&mut c, 0x2000_0000, &[0x09, 0xea, 0x0a, 0x08]); // and.w (baseline undef)
+        c.step().unwrap();
+        assert_eq!(c.ipsr, 3);
+        assert!(c.secure, "Secure HardFault handler runs Secure");
+        assert_eq!(c.regs.lr, 0xFFFF_FFB9, "ES set, S clear: returns to NS thread");
+        assert_eq!(c.regs.pc, 0x2000_0400, "handler from the Secure table");
+        assert_eq!(c.regs.read(0), 0xDEAD_BEEF, "Secure target keeps r0");
+    }
+
+    #[test]
+    fn v8m_baseline_ns_fault_targets_ns_hardfault_with_bfhfnmins() {
+        // `AIRCR.BFHFNMINS` routes escalated faults to the Non-secure
+        // HardFault: the handler comes from VTOR, stays Non-secure, and the
+        // caller-saved registers are cleared for the Non-secure handler.
+        let mut c = armv8m_sys_core_tables();
+        c.mem().write_word(0xE000_ED08, 0x1000_0000).unwrap(); // NS VTOR
+        c.mem().write_word(0xE000_ED0C, 0x05FA_0002).unwrap(); // BFHFNMINS
+        c.mem().write_word(0x1000_0000 + 3 * 4, 0x2000_0401).unwrap(); // HF vector
+        c.switch_security_state(false); // Non-secure background
+        c.regs.pc = 0x2000_0000;
+        c.regs.sp = 0x2000_0100;
+        c.regs.write(0, 0xDEAD_BEEF);
+        load_inst(&mut c, 0x2000_0000, &[0x09, 0xea, 0x0a, 0x08]); // and.w (baseline undef)
+        c.step().unwrap();
+        assert_eq!(c.ipsr, 3);
+        assert!(!c.secure, "Non-secure HardFault handler stays Non-secure");
+        assert_eq!(c.regs.lr, 0xFFFF_FFB8, "S and ES clear: NS thread MSP");
+        assert_eq!(c.regs.pc, 0x2000_0400, "handler from the Non-secure table");
+        assert_eq!(c.regs.read(0), 0, "caller-saved regs cleared for NS handler");
+    }
+
+    #[test]
+    fn v8m_baseline_failed_ns_return_takes_secure_fault() {
+        // An EXC_RETURN carrying ES back into Non-secure state fails the
+        // validity check: a SecureFault (vector 7) tailchains off the aborted
+        // frame, records `SFSR.INVER`, and runs in Secure state.
+        let mut c = ns_hardfault_core();
+        c.exception_return_v8m(0xFFFF_FFB9).unwrap();
+        assert!(c.secure, "SecureFault handler runs Secure");
+        assert_eq!(c.ipsr, 7);
+        assert_eq!(c.regs.pc, 0x2000_0400, "handler from the Secure table");
+        assert_eq!(c.regs.lr, 0xFFFF_FFB9, "returns through the same frame");
+        assert_eq!(c.regs.sp, 0x2000_0900, "no new frame pushed, Secure MSP");
+        assert_eq!(
+            c.mem().read_word(0xE002_ED28).unwrap(),
+            0x4,
+            "SFSR.INVER recorded"
+        );
+    }
+
+    #[test]
+    fn v8m_baseline_securefault_dcrs_zero_invalidates_return() {
+        // EXC_RETURN with DCRS clear (no callee-saves block in the frame) is
+        // equally invalid for a Non-secure return.
+        let mut c = ns_hardfault_core();
+        c.exception_return_v8m(0xFFFF_FF98).unwrap();
+        assert!(c.secure);
+        assert_eq!(c.ipsr, 7);
+        assert_eq!(c.regs.pc, 0x2000_0400);
+        assert_eq!(c.mem().read_word(0xE002_ED28).unwrap(), 0x4);
     }
 
     #[test]
