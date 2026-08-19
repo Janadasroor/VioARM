@@ -3582,3 +3582,40 @@ fn m33_baseline_bxns() {
     );
     compare_traces("m33_baseline_bxns", &vio, &qemu).expect("traces agree");
 }
+
+/// A Secure-state `udf` escalates to the Secure HardFault. `AIRCR.BFHFNMINS`
+/// resets clear, so every escalated fault targets the Secure bank, whose vector
+/// table `S_VTOR` the program re-homes at the flash base (the image's own
+/// table, with the HardFault entry at `0x1000_000C`). The handler runs in
+/// Handler mode with the Secure-thread `EXC_RETURN` (`0xFFFF_FFF9`) in `LR`
+/// and the pushed frame's PC pointing back at the `udf`, and halts.
+#[test]
+fn m33_baseline_secure_undef_hardfault() {
+    let Some(mt) = qemu_m33() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+
+    // The core resets into Secure state, so the `S_VTOR` write is a Secure
+    // access; `BFHFNMINS` stays clear (reset) so escalated faults target
+    // Secure and are taken from the `S_VTOR` table.
+    a.mov_imm32(0, 0x1000_0000);
+    a.mov_imm32(1, 0xE002_ED08);
+    a.str_imm(0, 1, 0);
+
+    a.raw(0xDE00); // udf #0: UsageFault; USGFAULTENA reset clear -> HardFault
+
+    a.label("h_hardfault");
+    a.b("halt");
+
+    a.label("halt");
+    a.b("halt");
+    a.vec(3, "h_hardfault");
+
+    conformance_v8m_at(
+        "m33_baseline_secure_undef_hardfault",
+        &mut a,
+        "halt",
+        SP,
+        &mt,
+    );
+}
