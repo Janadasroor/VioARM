@@ -617,6 +617,11 @@ impl Scb {
         if self.mpu.ctrl & 0x1 == 0 {
             return true;
         }
+        // The private peripheral bus (`0xE000_0000`..`0xE00F_FFFF`) bypasses
+        // the MPU and always uses the default map (QEMU's `m_is_ppb_region`).
+        if addr & 0xFFF0_0000 == 0xE000_0000 {
+            return true;
+        }
         // Without `HFNMIENA` the MPU is bypassed inside NMI (2) and HardFault
         // (3), so their handlers always run.
         if self.mpu.ctrl & 0x2 == 0 && (exception == 2 || exception == 3) {
@@ -1708,6 +1713,26 @@ mod tests {
         // Both MMFSR bits clear write-1-to-clear through the CFSR window.
         s.write(0xE000_ED28, 0x83).unwrap();
         assert_eq!(read_word(&mut s, 0xE000_ED28), 0);
+    }
+
+    #[test]
+    fn v7m_mpu_bypasses_ppb() {
+        // With the MPU enabled and no region covering `0xE000_0000`..,
+        // private-peripheral-bus accesses must still go through: the MPU never
+        // applies to them (QEMU's `m_is_ppb_region` -> default map), so a
+        // fault handler can always read `CFSR`/`HFSR`/`MMFAR`.
+        let mut s = Scb::new();
+        write_word(&mut s, 0xE000_ED9C, 0x2000_0000); // RBAR: region 0
+        write_word(&mut s, 0xE000_EDA0, 0x0300_0015); // RASR: 2 KiB rw/rw
+        write_word(&mut s, 0xE000_ED94, 0x1); // MPU_CTRL: ENABLE
+        assert!(
+            s.mpu_check(0xE000_ED28, MpuAccess::Read, true, 0),
+            "PPB read bypasses the MPU"
+        );
+        assert!(
+            !s.mpu_check(0x2000_1000, MpuAccess::Read, true, 0),
+            "a normal unmapped access is still denied"
+        );
     }
 
     #[test]
