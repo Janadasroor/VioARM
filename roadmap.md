@@ -294,7 +294,8 @@ exception entries with the `SFSR.INVIS` integrity-signature check on return,
      *superset* oracle (`m33_baseline_*` suite: sysreg, additions,
 lda_stl, splim, tt/sau_tt/mpu_tt, alu_thumb1, sg, blxns/bxns,
       secure_undef_hardfault, secure_udf_return_restores_r0r3,
-      secure_irq_returns_nonsecure), plus the v6-m
+      secure_irq_returns_nonsecure, nonsecure_udf_returns_through_secure_handler),
+      plus the v6-m
       suite against `cortex-m0`.
    - Unit tests pinning the *boundary*: `v8m_baseline_rejects_v7m_only` proves
      the full Thumb-2 DSP/bitfield/saturate/VFP zones, wide data-processing,
