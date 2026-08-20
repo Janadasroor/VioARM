@@ -3791,3 +3791,103 @@ fn m33_baseline_secure_irq_returns_nonsecure() {
         &mt,
     );
 }
+
+/// The Non-secure routine executed via a `BXNS` jump: an `udf`. With
+/// `AIRCR.BFHFNMINS` reset clear, the escalated `HardFault` targets the
+/// **Secure** state (`S_VTOR`), so the entry is Non-secure back-ground to
+/// Secure handler — the no-callee-block counterpart of
+/// [`m33_baseline_secure_irq_returns_nonsecure`]. The Secure handler patches
+/// the stacked PC past the 16-bit `udf` and returns; the thread then loops at
+/// the returned offset within the routine. Returns `(bytes, after_offset)`.
+fn ns_udef_bytes() -> (Vec<u8>, u32) {
+    let mut a = Asm::new();
+    a.raw(0xDE00); // udf #0: UsageFault; USGFAULTENA reset clear -> HardFault
+    a.label("after");
+    a.b("after"); // the patched return resumes here (udf + 2)
+    let img: Image = a.clone().finish(SP).expect("assemble ns routine");
+    let bytes = code_bytes(&a);
+    let stop = img.addr("after").expect("after") - CODE_BASE;
+    (bytes, stop)
+}
+
+/// A Non-secure `udf` with `BFHFNMINS` clear escalates to the **Secure**
+/// `HardFault`: a Non-secure-to-Secure v8-M entry, diffed against the M33. The
+/// frame is pushed on the Non-secure stack and the handler runs in Secure
+/// state with the `S`-clear/`ES`-set `EXC_RETURN` (`0xFFFF_FFB9`); it patches
+/// the stacked PC past the `udf`, clobbers the caller-saved registers, and
+/// returns through that `EXC_RETURN`, so the trace diff after the return is
+/// the direct check of the whole Non-secure exception-return path.
+///
+/// The Non-secure routine runs in the shared system RAM at `0x8000_0000`, and
+/// the Secure handler finds its frame base by reading `MSP_NS` (the only way
+/// to locate the frame the interrupt state change left in the other bank).
+#[test]
+fn m33_baseline_nonsecure_udf_returns_through_secure_handler() {
+    let Some(mt) = qemu_m33() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+
+    // Make the IDAU Non-secure regions effective, as in the `BXNS` tests.
+    a.mov_imm32(0, 0x2);
+    a.mov_imm32(1, 0xE000_EDD0); // SAU_CTRL
+    a.str_imm(0, 1, 0); // ALLNS
+
+    // Re-home the Secure vector table at the flash base.
+    a.mov_imm32(0, 0x1000_0000);
+    a.mov_imm32(1, 0xE002_ED08); // S_VTOR
+    a.str_imm(0, 1, 0);
+
+    // A known Non-secure main stack, so the fault frame base is deterministic.
+    a.mov_imm32(2, 0x8000_0800);
+    a.msr(0x88, 2); // MSP_NS = 0x8000_0800
+
+    // Store the Non-secure `udf` routine and jump to it.
+    let (ns_bytes, ns_after) = ns_udef_bytes();
+    let stop = 0x8000_0000 + ns_after;
+    store_bytes(&mut a, 0x8000_0000, &ns_bytes);
+    a.mov_imm32(1, 0x8000_0000);
+    a.bxns(1);
+
+    // Never returned here (the fault pushed straight into the handler).
+    a.label("never");
+    a.b("never");
+
+    // Secure HardFault handler: the frame lives on the Non-secure stack, so
+    // resolve the base through `MSP_NS`, skip the `udf`, clobber the
+    // caller-saved registers (which the return must bring back from the frame),
+    // and return via the `S`-clear/`ES`-set `EXC_RETURN`.
+    a.label("h_hardfault");
+    a.mrs(4, 0x88); // r4 = MSP_NS = frame base
+    a.ldr_imm(5, 4, 24); // r5 = stacked PC (the `udf`)
+    a.adds_imm8(5, 2); // skip the 16-bit `udf`
+    a.str_imm(5, 4, 24); // patch the resume PC back into the frame
+    a.mov_imm32(0, 0xAAAA_AAAA);
+    a.mov_imm32(1, 0xBBBB_BBBB);
+    a.mov_imm32(2, 0xCCCC_CCCC);
+    a.mov_imm32(3, 0xDDDD_DDDD);
+    a.mov_imm32(12, 0xEEEE_EEEE);
+    a.bx(14); // return to the Non-secure thread via EXC_RETURN (0xFFFF_FFB9)
+    a.vec(3, "h_hardfault");
+
+    let img: Image = a.clone().finish_at(SP, 0x1000_0000).expect("assemble");
+    let (vio, reached) = vio_run_v8m(&img.bytes, stop);
+    assert!(
+        reached,
+        "m33_baseline_nonsecure_udf_returns_through_secure_handler: \
+         vioarm never reached NS halt @ {stop:#x} (last {})",
+        snapshot_like(&vio)
+    );
+    let qemu = qemu_run_retry(&mt, &img.bytes, stop);
+    assert!(
+        !qemu.is_empty() && qemu.last().expect("empty").r[15] & !1 == stop,
+        "m33_baseline_nonsecure_udf_returns_through_secure_handler: \
+         qemu never reached NS halt @ {stop:#x} (got {} states)",
+        qemu.len()
+    );
+    compare_traces(
+        "m33_baseline_nonsecure_udf_returns_through_secure_handler",
+        &vio,
+        &qemu,
+    )
+    .expect("traces agree");
+}
