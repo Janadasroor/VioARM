@@ -82,6 +82,17 @@ const EXC_RETURN_SPSEL: u32 = 0x04;
 const EXC_RETURN_RES0: u32 = 0x02;
 const EXC_RETURN_ES: u32 = 0x01;
 
+/// The integrity signature written as the first word of the ARMv8-M
+/// callee-saves stack block (`0xFEFA125A` with bit 0 set because the baseline
+/// always stacks a basic frame, so `EXC_RETURN.FTYPE` is set; QEMU
+/// `v7m_integrity_sig`). Its value is checked on the Secure return that pops
+/// the block; a mismatch is `SFSR.INVIS`.
+const CALLEE_SAVES_SIG: u32 = 0xFEFA_125B;
+
+/// The ARMv8-M callee-saves stack block, in bytes: the integrity signature
+/// word, a reserved word, and `r4`-`r11` (QEMU `v7m_push_callee_stack`).
+const CALLEE_SAVES_BYTES: u32 = 0x28;
+
 /// xPSR `ALIGN` bit (bit 9): set on the stacked xPSR when the interrupted
 /// stack was 8-byte-aligned by an exception-entry adjustment.
 const XPSR_ALIGN: u32 = 1 << 9;
@@ -334,6 +345,10 @@ const UFSR_NOCP: u32 = 0x0002_0000; // UFSR bit 1 -> combined bit 17
 const UFSR_DIVBYZERO: u32 = 0x0200_0000; // UFSR bit 9 -> combined bit 25
 const UFSR_INVPC: u32 = 0x0008_0000; // UFSR bit 3 -> combined bit 19
 const BFSR_PRECISERR: u32 = 0x0000_0100; // BFSR bit 0 -> combined bit 8
+// `SFSR` (v8-M `SecureFault`) causes the core records on the exception-return
+// failure paths, written through `PeripheralBus::record_secure_fault`.
+const SFSR_INVIS: u32 = 0x0000_0002; // callee-saves integrity signature mismatch
+const SFSR_INVER: u32 = 0x0000_0004; // invalid Non-secure exception return (ES/DCRS)
                                          // QEMU reports HFSR.FORCED at bit 30 (0x4000_0000) rather than the ARMv7-M
                                          // architectural bit 31; the differential oracle is the arbiter here.
 const HFSR_FORCED: u32 = 0x4000_0000;
@@ -3768,17 +3783,37 @@ impl<B: PeripheralBus> Core<B> {
             // The aborted return cannot be completed: take a SecureFault
             // directly, tailchaining off the frame the failed return was
             // going to pop (no unstack/stack cycle).
-            self.mem.record_secure_fault();
+            self.mem.record_secure_fault(SFSR_INVER);
             return self.take_exception_tailchain(Exception::SecureFault, value);
         }
         self.switch_security_state(return_to_secure);
         // The frame lives on the target state's stack, selected by its
         // `CONTROL.SPSEL` in Thread mode.
-        let frameptr = if !return_to_handler && self.control & EXC_RETURN_SPSEL != 0 {
+        let mut frameptr = if !return_to_handler && self.control & EXC_RETURN_SPSEL != 0 {
             self.regs.psp
         } else {
             self.regs.msp
         };
+        // A return to Secure whose frame carries the callee-saves block
+        // (`ES` clear: the popped exception targeted Non-secure from a Secure
+        // background; or `DCRS` clear: the block was left by the tailchain
+        // that cleared it) pops the block first. The integrity signature must
+        // match; a mismatch is `SFSR.INVIS` and the `SecureFault` tailchains
+        // off the frame (QEMU `do_v7m_exception_exit`).
+        if return_to_secure && (value & EXC_RETURN_ES == 0 || value & EXC_RETURN_DCRS == 0) {
+            let sig = self.read_word_halt(frameptr)?;
+            if sig != CALLEE_SAVES_SIG {
+                self.mem.record_secure_fault(SFSR_INVIS);
+                return self.take_exception_tailchain(Exception::SecureFault, value);
+            }
+            let mut coff = 8u32;
+            for r in 4u8..=11 {
+                let v = self.read_word_halt(frameptr.wrapping_add(coff))?;
+                self.regs.write(r, v);
+                coff = coff.wrapping_add(4);
+            }
+            frameptr = frameptr.wrapping_add(CALLEE_SAVES_BYTES);
+        }
         let mut frame = [0u32; 8];
         for (i, slot) in frame.iter_mut().enumerate() {
             let addr = frameptr.wrapping_add((i as u32) * 4);
@@ -3793,6 +3828,13 @@ impl<B: PeripheralBus> Core<B> {
         if return_to_handler != (xpsr & 0xFF != 0) {
             return self.usage_fault(self.regs.pc, UFSR_INVPC);
         }
+        // Restore the caller-saved registers and LR from the basic frame.
+        self.regs.write(0, frame[0]);
+        self.regs.write(1, frame[1]);
+        self.regs.write(2, frame[2]);
+        self.regs.write(3, frame[3]);
+        self.regs.write(12, frame[4]);
+        self.regs.lr = frame[5];
         // Consume the frame, undoing any entry-time stack alignment.
         let new_sp = frameptr.wrapping_add(0x20);
         let new_sp = if xpsr & XPSR_ALIGN != 0 { new_sp | 4 } else { new_sp };
@@ -4088,6 +4130,7 @@ impl<B: PeripheralBus> Core<B> {
         // The frame is pushed onto the stack the interrupted context was
         // using; the handler then runs on the main stack pointer.
         let use_process = self.sp_is_process();
+        let background_secure = self.secure;
         let mut sp = self.regs.sp;
         let mut sxpsr = self.xpsr.get() & (APSR_QFLAGS | XPSR_T) | u32::from(self.ipsr);
         // ITSTATE occupies xPSR bits [15:10] (IT[7:2]) and [26:25] (IT[1:0]).
@@ -4135,6 +4178,26 @@ impl<B: PeripheralBus> Core<B> {
                 self.vfp.fpscr = 0;
             }
         }
+        // ARMv8-M: an exception taken from a Secure background into the
+        // Non-secure state stacks the callee-saves block (integrity signature
+        // + r4..r11) below the basic frame, because the Non-secure handler
+        // runs from a different register bank. `EXC_RETURN.DCRS` stays set
+        // and the Secure return pops the block (QEMU `v7m_push_callee_stack`
+        // in `v7m_exception_taken`). Entries that stay in Secure, and
+        // Non-secure backgrounds, push no callee-saves block.
+        let callee_block = self.isa == Isa::Armv8MBaseline && background_secure && !targets_secure;
+        let frame = if callee_block {
+            let cbase = frame.wrapping_sub(CALLEE_SAVES_BYTES);
+            self.write_word_halt(cbase, CALLEE_SAVES_SIG)?;
+            let mut coff = 8u32;
+            for r in 4u8..=11 {
+                self.write_word_halt(cbase.wrapping_add(coff), self.regs.read(r))?;
+                coff = coff.wrapping_add(4);
+            }
+            cbase
+        } else {
+            frame
+        };
         self.regs.lr = if self.isa == Isa::Armv8MBaseline {
             // ARMv8-M builds `EXC_RETURN` from `RES1|DCRS|FTYPE` (the
             // baseline has no FPU so the frame is always basic), `S` set from
@@ -4197,15 +4260,18 @@ impl<B: PeripheralBus> Core<B> {
         self.regs.pc = vector & !1;
         self.ipsr = ex.number();
         self.itstate = 0;
-        // ARMv8-M v8.0M: an exception targeting the Non-secure state clears
-        // the caller-saved registers (r0-r3, r12) that were pushed in the
-        // frame above, so Non-secure code cannot observe Secure values, and
-        // clears EAPSR (NZCV|Q|GE|IT). Exceptions targeting Secure (all other
-        // cases) leave the registers untouched on v8.0M (QEMU
-        // `v7m_exception_taken`).
+        // ARMv8-M v8.0M: an exception targeting the Non-secure state clears the
+        // caller-saved registers (r0-r3, r12) that were pushed in the frame
+        // above, and - when the interrupted context was Secure - the
+        // callee-saves registers r4-r11 too (they were stacked in the block
+        // pushed above), so Non-secure code cannot observe Secure values;
+        // EAPSR (NZCV|Q|GE|IT) is cleared. Exceptions targeting Secure leave
+        // the registers untouched on v8.0M (QEMU `v7m_exception_taken`).
         if self.isa == Isa::Armv8MBaseline && !targets_secure {
-            for r in [0u8, 1, 2, 3, 12] {
-                self.regs.write(r, 0);
+            for r in 0u8..=12 {
+                if !(4..=11).contains(&r) || background_secure {
+                    self.regs.write(r, 0);
+                }
             }
             self.xpsr.set(self.xpsr.get() & !(APSR_FLAGS | APSR_Q));
             self.itstate = 0;
@@ -4224,8 +4290,8 @@ impl<B: PeripheralBus> Core<B> {
     /// aborted return's `S`/`MODE` (the interrupted context) and `DCRS`,
     /// sets `ES` for the Secure target, and takes `SPSEL` from the Secure
     /// `CONTROL` bank; `DCRS` is cleared when chaining off an exception that
-    /// targeted Non-secure (QEMU's callee-saves bookkeeping, preserved even
-    /// though the baseline does not stack the callee-saves registers).
+    /// targeted Non-secure, because that entry stacked the callee-saves block
+    /// which this Secure handler's eventual return will pop.
     fn take_exception_tailchain(&mut self, ex: Exception, value: u32) -> Result<Next, HaltCause> {
         let targets_secure = true;
         let vtor = self.mem.vector_table_base(targets_secure);
@@ -5572,6 +5638,159 @@ mod tests {
         assert_eq!(c.ipsr, 7);
         assert_eq!(c.regs.pc, 0x2000_0400);
         assert_eq!(c.mem().read_word(0xE002_ED28).unwrap(), 0x4);
+    }
+
+    /// A core in Secure thread mode with banked `S_VTOR`/`VTOR` tables at
+    /// `0x1000_0000` and the `HardFault` and `SecureFault` vectors set,
+    /// positioned for an exception-return test.
+    fn secure_thread_v8m_core() -> Core<crate::mem::system::SystemMemory<crate::mem::flat::FlatMemory>>
+    {
+        let mut c = armv8m_sys_core_tables();
+        c.mem().write_word(0xE002_ED08, 0x1000_0000).unwrap(); // S_VTOR
+        c.mem().write_word(0xE000_ED08, 0x1000_0000).unwrap(); // NS VTOR
+        c.mem().write_word(0x1000_0000 + 3 * 4, 0x2000_0401).unwrap(); // HF vector
+        c.mem().write_word(0x1000_0000 + 7 * 4, 0x2000_0401).unwrap(); // SecureFault vector
+        c.regs.pc = 0x2000_0000;
+        c.regs.sp = 0x2000_0100;
+        c.regs.msp = 0x2000_0100;
+        for r in 0u8..=12 {
+            c.regs.write(r, 0x4000_0000 + u32::from(r) * 0x1000);
+        }
+        c
+    }
+
+    #[test]
+    fn v8m_baseline_secure_to_ns_entry_stacks_callee_saves() {
+        // An exception targeting Non-secure taken from a Secure background
+        // stacks the callee-saves block (integrity signature + r4..r11) below
+        // the basic frame, `EXC_RETURN` keeps `DCRS` set, and the Non-secure
+        // handler starts with r0-r12 cleared (QEMU `v7m_push_callee_stack`).
+        let mut c = secure_thread_v8m_core();
+        c.take_exception_target(Exception::HardFault, 0x2000_0000, false)
+            .unwrap();
+        assert!(!c.secure, "handler switched to Non-secure");
+        assert_eq!(c.ipsr, 3);
+        assert_eq!(c.regs.lr, 0xFFFF_FFF8, "S|DCRS|FTYPE|MODE, ES clear");
+        let fb = c.other_ss_msp;
+        assert_eq!(fb, 0x2000_00B8, "frame base below the callee block");
+        assert_eq!(
+            c.mem().read_word(fb).unwrap(),
+            CALLEE_SAVES_SIG,
+            "integrity signature"
+        );
+        assert_eq!(c.mem().read_word(fb + 0x04).unwrap(), 0, "reserved word");
+        for r in 4u8..=11 {
+            let stacked = c.mem().read_word(fb + 8 + u32::from(r - 4) * 4).unwrap();
+            assert_eq!(stacked, 0x4000_0000 + u32::from(r) * 0x1000, "stacked r{r}");
+        }
+        for r in 0u8..=12 {
+            assert_eq!(c.regs.read(r), 0, "r{r} cleared for the NS handler");
+        }
+        // The basic frame still holds the original caller-saved values.
+        assert_eq!(
+            c.mem().read_word(fb + 0x28).unwrap(),
+            0x4000_0000,
+            "r0 stacked before clearing"
+        );
+    }
+
+    #[test]
+    fn v8m_baseline_secure_to_ns_return_restores_callee_saves() {
+        // Returning to Secure from the Non-secure handler pops the callee-saves
+        // block and restores r4-r11 along with the basic frame (QEMU
+        // `do_v7m_exception_exit`).
+        let mut c = secure_thread_v8m_core();
+        c.take_exception_target(Exception::HardFault, 0x2000_0000, false)
+            .unwrap();
+        c.exception_return_v8m(0xFFFF_FFF8).unwrap();
+        assert!(c.secure, "returned to Secure");
+        assert_eq!(c.ipsr, 0);
+        assert_eq!(c.regs.pc, 0x2000_0000);
+        for r in 0u8..=12 {
+            assert_eq!(
+                c.regs.read(r),
+                0x4000_0000 + u32::from(r) * 0x1000,
+                "r{r} restored"
+            );
+        }
+        assert_eq!(c.regs.sp, 0x2000_0100, "both blocks consumed");
+    }
+
+    #[test]
+    fn v8m_baseline_secure_to_ns_bad_signature_takes_invis_fault() {
+        // A corrupted callee-saves signature on the Secure return fails the
+        // integrity check: a `SecureFault` tailchains off the frame and
+        // records `SFSR.INVIS`. `EXC_RETURN.DCRS` is cleared so the eventual
+        // return pops the block.
+        let mut c = secure_thread_v8m_core();
+        c.take_exception_target(Exception::HardFault, 0x2000_0000, false)
+            .unwrap();
+        let fb = c.other_ss_msp;
+        c.mem().write_word(fb, 0xDEAD_BEEF).unwrap(); // corrupt the signature
+        c.exception_return_v8m(0xFFFF_FFF8).unwrap();
+        assert!(c.secure, "SecureFault handler runs Secure");
+        assert_eq!(c.ipsr, 7);
+        assert_eq!(c.regs.pc, 0x2000_0400, "handler from the Secure table");
+        assert_eq!(c.regs.lr, 0xFFFF_FFD9, "tailchained, DCRS cleared");
+        assert_eq!(
+            c.mem().read_word(0xE002_ED28).unwrap(),
+            0x2,
+            "SFSR.INVIS recorded"
+        );
+    }
+
+    #[test]
+    fn v8m_baseline_ns_to_ns_entry_has_no_callee_block() {
+        // A Non-secure background targeting Non-secure pushes only the basic
+        // frame: no callee-saves block, and r4-r11 survive (only the
+        // caller-saved registers are cleared for the Non-secure handler).
+        let mut c = armv8m_sys_core_tables();
+        c.mem().write_word(0xE000_ED08, 0x1000_0000).unwrap(); // NS VTOR
+        c.mem().write_word(0x1000_0000 + 3 * 4, 0x2000_0401).unwrap();
+        c.switch_security_state(false); // Non-secure background
+        c.regs.pc = 0x2000_0000;
+        c.regs.sp = 0x2000_0100;
+        c.regs.msp = 0x2000_0100;
+        for r in 0u8..=12 {
+            c.regs.write(r, 0x4000_0000 + u32::from(r) * 0x1000);
+        }
+        c.take_exception_target(Exception::HardFault, 0x2000_0000, false)
+            .unwrap();
+        assert!(!c.secure);
+        assert_eq!(c.regs.lr, 0xFFFF_FFB8, "S and ES clear");
+        assert_eq!(c.regs.sp, 0x2000_00E0, "basic frame only, no callee block");
+        for r in 0u8..=3 {
+            assert_eq!(c.regs.read(r), 0, "r{r} cleared for NS handler");
+        }
+        assert_eq!(c.regs.read(12), 0, "r12 cleared for NS handler");
+        for r in 4u8..=11 {
+            assert_eq!(
+                c.regs.read(r),
+                0x4000_0000 + u32::from(r) * 0x1000,
+                "r{r} kept (background was Non-secure)"
+            );
+        }
+    }
+
+    #[test]
+    fn v8m_baseline_secure_to_secure_entry_has_no_callee_block() {
+        // A Secure background targeting Secure pushes only the basic frame
+        // (the interrupt state change the callee-saves block exists for never
+        // happens), and r4-r11 are preserved.
+        let mut c = secure_thread_v8m_core();
+        c.take_exception_target(Exception::HardFault, 0x2000_0000, true)
+            .unwrap();
+        assert!(c.secure);
+        assert_eq!(c.ipsr, 3);
+        assert_eq!(c.regs.lr, 0xFFFF_FFF9, "S|ES|DCRS|FTYPE|MODE");
+        assert_eq!(c.regs.sp, 0x2000_00E0, "basic frame only, no callee block");
+        for r in 4u8..=11 {
+            assert_eq!(
+                c.regs.read(r),
+                0x4000_0000 + u32::from(r) * 0x1000,
+                "r{r} kept for the Secure handler"
+            );
+        }
     }
 
     #[test]
