@@ -68,15 +68,23 @@ const FPDSCR: u32 = 0xE000_EF3C;
 /// RAZ/WI.
 const S_VTOR: u32 = 0xE002_ED08;
 
-/// `SFSR` (`0xE002_ED28`): the ARMv8-M `SecureFault` status register. Only the
-/// `INVER` (invalid exception return) bit is modelable on the baseline;
-/// write-1-to-clear, Non-secure access RAZ/WI.
+/// `SFSR` (`0xE002_ED28`): the ARMv8-M `SecureFault` status register. The
+/// `INVIS` and `INVER` bits are modelable on the baseline; write-1-to-clear,
+/// Non-secure access RAZ/WI.
 const SFSR: u32 = 0xE002_ED28;
+
+/// `SFSR.INVIS` (bit 1, QEMU `R_V7M_SFSR_INVIS_MASK`): the callee-saves
+/// integrity signature in the stacked exception frame did not match on a
+/// Secure exception return, so the `SecureFault` was taken instead.
+const SFSR_INVIS: u32 = 0x0000_0002;
 
 /// `SFSR.INVER` (bit 2, QEMU `R_V7M_SFSR_INVER_MASK`): a Non-secure
 /// exception return failed the `ES`/`DCRS` validity check, so a `SecureFault`
 /// was taken instead.
 const SFSR_INVER: u32 = 0x0000_0004;
+
+/// The `SFSR` bits this model can record (`INVIS` and `INVER`).
+const SFSR_MASK: u32 = SFSR_INVIS | SFSR_INVER;
 
 /// The ARMv8-M Security Attribution Unit window (`SAU_CTRL`/`SAU_TYPE`/
 /// `SAU_RNR`/`SAU_RBAR`/`SAU_RLAR`) with the architectural offsets: the M33
@@ -326,8 +334,8 @@ pub struct Scb {
     /// alignment. Resets to zero, so the Secure table lives at address 0
     /// until firmware relocates it.
     s_vtor: u32,
-    /// `SFSR` (v8-M): the `SecureFault` status register; only `INVER` is
-    /// set, write-1-to-clear.
+    /// `SFSR` (v8-M): the `SecureFault` status register; the `INVIS` and
+    /// `INVER` bits are modelable on the baseline, write-1-to-clear.
     sfsr: u32,
     /// `SHCSR`: fault enables and pend bits; the `*ACT` bits read zero.
     shcsr: u32,
@@ -574,11 +582,12 @@ impl Scb {
         self.hfsr |= hfsr_bits & HFSR_MASK;
     }
 
-    /// Record a `SecureFault` `INVER` cause. The core calls this when a
-    /// Non-secure exception return fails the `ES`/`DCRS` validity check and
-    /// a `SecureFault` is taken instead.
-    pub fn record_secure_fault(&mut self) {
-        self.sfsr |= SFSR_INVER;
+    /// Record a `SecureFault` cause into `SFSR` (`INVIS` and/or `INVER`). The
+    /// core calls this when a v8-M exception return fails its integrity
+    /// signature check (`INVIS`) or its `ES`/`DCRS` validity check (`INVER`)
+    /// and a `SecureFault` is taken instead.
+    pub fn record_secure_fault(&mut self, bits: u32) {
+        self.sfsr |= bits & SFSR_MASK;
     }
 
     /// Record an MPU access violation at `addr` (an instruction fetch when
@@ -1464,12 +1473,19 @@ mod tests {
         write_word(&mut s, 0xE002_ED28, 0xFFFF_FFFF);
         assert_eq!(read_word(&mut s, 0xE002_ED28), 0);
         // The core records the INVER cause; it reads back until cleared.
-        s.record_secure_fault();
+        s.record_secure_fault(0x0000_0004);
         assert_eq!(read_word(&mut s, 0xE002_ED28), 0x0000_0004);
         write_word(&mut s, 0xE002_ED28, 0x0000_0004);
         assert_eq!(read_word(&mut s, 0xE002_ED28), 0);
+        // The INVIS cause (callee-saves signature mismatch) is also latched,
+        // and the two bits combine.
+        s.record_secure_fault(0x0000_0002);
+        s.record_secure_fault(0x0000_0004);
+        assert_eq!(read_word(&mut s, 0xE002_ED28), 0x0000_0006);
+        write_word(&mut s, 0xE002_ED28, 0x0000_0006);
+        assert_eq!(read_word(&mut s, 0xE002_ED28), 0);
         // Non-secure access is RAZ/WI: writes are ignored, reads read zero.
-        s.record_secure_fault();
+        s.record_secure_fault(0x0000_0004);
         s.set_secure(false);
         write_word(&mut s, 0xE002_ED08, 0x2000_0000);
         write_word(&mut s, 0xE002_ED28, 0xFFFF_FFFF);

@@ -229,10 +229,10 @@ pub trait PeripheralBus: Bus {
     /// firmware can read the cause back. Default: no recording (plain memory).
     fn record_fault(&mut self, _cfsr_bits: u32, _hfsr_bits: u32) {}
 
-    /// Record a `SecureFault` `INVER` cause (v8-M): a Non-secure exception
-    /// return failed the `ES`/`DCRS` validity check. Default: no recording
-    /// (plain memory, no `SecureFault`).
-    fn record_secure_fault(&mut self) {}
+    /// Record a `SecureFault` `SFSR` cause (`INVIS`/`INVER`, v8-M): a Secure
+    /// exception return failed its integrity signature or `ES`/`DCRS`
+    /// validity check. Default: no recording (plain memory, no `SecureFault`).
+    fn record_secure_fault(&mut self, _bits: u32) {}
 
     /// Whether the memory-protection unit (if any) permits the core's `access`
     /// to `addr` in the given privilege and exception context. `privileged` is
