@@ -626,6 +626,10 @@ impl<M: Bus> PeripheralBus for SystemMemory<M> {
         self.scb.set_secure(secure);
     }
 
+    fn nvic_irq_targets_secure(&mut self, line: u32) -> bool {
+        self.nvic.targets_secure(line)
+    }
+
     fn vector_table_base(&mut self, secure: bool) -> u32 {
         self.scb.vector_table_base(secure)
     }

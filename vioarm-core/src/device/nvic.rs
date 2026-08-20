@@ -14,6 +14,10 @@ const ISER: u32 = 0xE000_E100;
 const ICER: u32 = 0xE000_E180;
 const ISPR: u32 = 0xE000_E200;
 const ICPR: u32 = 0xE000_E280;
+/// `NVIC_ITNS<n>` (v8-M): the per-line security target. A set bit makes the
+/// line target Non-secure; a cleared bit targets Secure. Resets all-set (every
+/// external interrupt targets Non-secure, the ARMSSE default).
+const ITNS: u32 = 0xE000_E380;
 const IPR: u32 = 0xE000_E400;
 
 /// Three 32-bit words cover lines 0..95 (the range the F1/F4 lines need).
@@ -25,18 +29,21 @@ const ISER_END: u32 = ISER + BANK_LEN;
 const ICER_END: u32 = ICER + BANK_LEN;
 const ISPR_END: u32 = ISPR + BANK_LEN;
 const ICPR_END: u32 = ICPR + BANK_LEN;
+const ITNS_END: u32 = ITNS + BANK_LEN;
 const IPR_END: u32 = IPR + IPR_LEN;
 
 /// The NVIC register file: enabled and latched-pending masks for lines 0..95,
-/// plus one configurable 8-bit priority byte per line.
+/// the per-line security target (`ITNS`, set = Non-secure, v8-M), plus one
+/// configurable 8-bit priority byte per line.
 ///
 /// Lower priority value means higher priority, exactly as the architecture
 /// defines it.
 #[derive(Debug, Clone)]
 pub struct Nvic {
-    ranges: [Region; 5],
+    ranges: [Region; 6],
     enabled: u128,
     pending: u128,
+    itns: u128,
     priority: [u8; 96],
 }
 
@@ -49,10 +56,15 @@ impl Nvic {
                 Region::new(ICER, BANK_LEN),
                 Region::new(ISPR, BANK_LEN),
                 Region::new(ICPR, BANK_LEN),
+                Region::new(ITNS, BANK_LEN),
                 Region::new(IPR, IPR_LEN),
             ],
             enabled: 0,
             pending: 0,
+            // Reset: all external interrupts target the Non-secure state (the
+            // ARMSSE default), so firmware must clear an `ITNS` bit to claim a
+            // line for the Secure state.
+            itns: !0,
             priority: [0; 96],
         }
     }
@@ -68,6 +80,13 @@ impl Nvic {
     #[must_use]
     pub const fn priority(&self, line: u32) -> u8 {
         self.priority[line as usize]
+    }
+
+    /// Whether external interrupt `line` targets the Secure state: `ITNS`
+    /// clear. A set `ITNS` bit (the reset value) targets Non-secure.
+    #[must_use]
+    pub const fn targets_secure(&self, line: u32) -> bool {
+        self.itns & (1u128 << line) == 0
     }
 
     /// Latch `lines` as pending (device asserts, or software `ISPR`).
@@ -112,6 +131,8 @@ impl Peripheral for Nvic {
             Ok(pick(self.pending, ISPR))
         } else if (ICPR..ICPR_END).contains(&addr) {
             Ok(pick(self.pending, ICPR))
+        } else if (ITNS..ITNS_END).contains(&addr) {
+            Ok(pick(self.itns, ITNS))
         } else if (IPR..IPR_END).contains(&addr) {
             Ok(self.priority[(addr - IPR) as usize])
         } else {
@@ -128,6 +149,13 @@ impl Peripheral for Nvic {
             ICER..ICER_END => self.enabled &= !(u128::from(val) << shift(ICER)),
             ISPR..ISPR_END => self.pending |= u128::from(val) << shift(ISPR),
             ICPR..ICPR_END => self.pending &= !(u128::from(val) << shift(ICPR)),
+            // `ITNS`: direct per-bit assignment (QEMU's `nvic_writel`), each
+            // written bit sets or clears one line's target.
+            ITNS..ITNS_END => {
+                let shift = shift(ITNS);
+                self.itns =
+                    (self.itns & !(0xFFu128 << shift)) | (u128::from(val) << shift);
+            }
             // IPR: one priority byte per line, low nibble significant on M3/M4.
             IPR..IPR_END => self.priority[(addr - IPR) as usize] = val,
             _ => return Err(BusError::Reserved),
@@ -138,6 +166,7 @@ impl Peripheral for Nvic {
     fn reset(&mut self) {
         self.enabled = 0;
         self.pending = 0;
+        self.itns = !0;
         self.priority.fill(0);
     }
 
@@ -208,5 +237,20 @@ mod tests {
     fn out_of_window_is_reserved() {
         let mut n = Nvic::new();
         assert!(matches!(n.read(0xE000_E500), Err(BusError::Reserved)));
+    }
+
+    #[test]
+    fn itns_resets_all_nonsecure_and_reads_back() {
+        let mut n = Nvic::new();
+        assert!(!n.targets_secure(0), "reset ITNS targets Non-secure");
+        assert!(!n.targets_secure(95));
+        // Claim line 0 for the Secure state: clear its ITNS bit.
+        write_word(&mut n, 0xE000_E380, 0xFFFF_FFFE);
+        assert!(n.targets_secure(0));
+        assert!(!n.targets_secure(1));
+        assert_eq!(read_word(&mut n, 0xE000_E380), 0xFFFF_FFFE);
+        // Setting the bit back routes it to Non-secure again.
+        write_word(&mut n, 0xE000_E380, 0xFFFF_FFFF);
+        assert!(!n.targets_secure(0));
     }
 }

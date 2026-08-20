@@ -283,6 +283,14 @@ pub trait PeripheralBus: Bus {
     /// registers on it (the `v8-M` MPU). Default: nothing.
     fn set_secure(&mut self, _secure: bool) {}
 
+    /// The security state the external interrupt `line` targets (v8-M `ITNS`):
+    /// true when the line is configured Secure, false (the reset default) when
+    /// it targets Non-secure. A bus with no NVIC has no lines and always
+    /// reports Secure.
+    fn nvic_irq_targets_secure(&mut self, _line: u32) -> bool {
+        true
+    }
+
     /// The vector-table base for the given security state, from which the core
     /// reads exception `n`'s entry on exception entry. Default: the `VTOR`
     /// register (address 0 when no `SCB` is on the bus). A v8-M `SCB` answers

@@ -4355,7 +4355,19 @@ impl<B: PeripheralBus> Core<B> {
             16..=111 => Exception::Irq(n - 16),
             _ => return Err(HaltCause::UnhandledException),
         };
-        self.take_exception(ex, self.regs.pc)
+        // An external interrupt targets the security state its `ITNS` line
+        // selects (reset: Non-secure, the ARMSSE default), so on the v8-M
+        // baseline one taken from a Secure background is a Secure-to-Non-secure
+        // entry: it stacks the callee-saves block and switches the handler into
+        // the Non-secure state (QEMU `v7m_exception_taken`). The single-bank
+        // system exceptions and every pre-v8-M machine target the current
+        // state.
+        let targets_secure = if n >= 16 && self.isa == Isa::Armv8MBaseline {
+            self.mem.nvic_irq_targets_secure(u32::from(n - 16))
+        } else {
+            self.secure
+        };
+        self.take_exception_target(ex, self.regs.pc, targets_secure)
     }
 
     /// Unstack the exception frame and leave Handler mode, as directed by an
@@ -5791,6 +5803,84 @@ mod tests {
                 "r{r} kept for the Secure handler"
             );
         }
+    }
+
+    #[test]
+    fn v8m_baseline_irq_from_secure_targets_nonsecure() {
+        // A software-pended external interrupt taken from a Secure thread: the
+        // ARMSSE-default `ITNS` routes every line to the Non-secure state, so
+        // `enter_exception` delivers it through `take_exception_target` as a
+        // Secure-to-Non-secure entry: the callee-saves block is stacked on the
+        // Secure MSP, the handler runs Non-secure with r0-r12 cleared, and its
+        // return pops the block and restores r4-r11 along with the basic frame.
+        let mut c = secure_thread_v8m_core();
+        c.mem().write_word(0x1000_0000 + 16 * 4, 0x2000_0501).unwrap(); // IRQ0 vector
+        c.enter_exception(16).unwrap();
+        assert!(!c.secure, "default ITNS routes the IRQ to Non-secure");
+        assert_eq!(c.ipsr, 16);
+        assert_eq!(c.regs.lr, 0xFFFF_FFF8, "S|DCRS|FTYPE|MODE, ES clear");
+        let fb = c.other_ss_msp;
+        assert_eq!(
+            c.mem().read_word(fb).unwrap(),
+            CALLEE_SAVES_SIG,
+            "callee-saves block on the Secure stack"
+        );
+        for r in 0u8..=12 {
+            assert_eq!(c.regs.read(r), 0, "r{r} cleared for the NS handler");
+        }
+        c.exception_return_v8m(0xFFFF_FFF8).unwrap();
+        assert!(c.secure, "returned to Secure");
+        assert_eq!(c.ipsr, 0);
+        for r in 0u8..=12 {
+            assert_eq!(
+                c.regs.read(r),
+                0x4000_0000 + u32::from(r) * 0x1000,
+                "r{r} restored from the blocks"
+            );
+        }
+        assert_eq!(c.regs.sp, 0x2000_0100, "both blocks consumed");
+    }
+
+    #[test]
+    fn v8m_baseline_irq_secure_line_stays_secure() {
+        // Clearing an `ITNS` line claims the interrupt for the Secure state:
+        // the same IRQ is then a Secure-to-Secure entry with only the basic
+        // frame, no callee-saves block, and r4-r11 preserved.
+        let mut c = secure_thread_v8m_core();
+        c.mem().write_word(0xE000_E380, 0xFFFF_FFFE).unwrap(); // ITNS0: line 0 Secure
+        c.mem().write_word(0x1000_0000 + 16 * 4, 0x2000_0501).unwrap(); // IRQ0 vector
+        c.enter_exception(16).unwrap();
+        assert!(c.secure, "secure-targeted line stays Secure");
+        assert_eq!(c.ipsr, 16);
+        assert_eq!(c.regs.lr, 0xFFFF_FFF9, "S|ES|DCRS|FTYPE|MODE");
+        assert_eq!(c.regs.sp, 0x2000_00E0, "basic frame only, no callee block");
+        for r in 0u8..=12 {
+            assert_eq!(
+                c.regs.read(r),
+                0x4000_0000 + u32::from(r) * 0x1000,
+                "r{r} kept for the Secure handler"
+            );
+        }
+    }
+
+    #[test]
+    fn armv7m_irq_has_no_security_switch() {
+        // A pre-v8-M core has a single security state: `enter_exception` never
+        // routes an IRQ across the (nonexistent) TrustZone boundary, regardless
+        // of the bus's `ITNS`.
+        let mut c = armv7m_sys_core();
+        c.regs.pc = 0x2000_0000;
+        c.regs.sp = 0x2000_0100;
+        c.regs.msp = 0x2000_0100;
+        c.mem().write_word(0x40, 0x2000_0601).unwrap(); // IRQ0 vector (VTOR = 0)
+        c.enter_exception(16).unwrap();
+        assert!(!c.secure, "v7-M has no secure state to leave");
+        assert_eq!(c.ipsr, 16);
+        assert_eq!(c.regs.lr, EXC_RETURN_THREAD_MSP);
+        for r in 4u8..=11 {
+            assert_eq!(c.regs.read(r), 0, "r{r} stays zero in the single state");
+        }
+        assert_eq!(c.regs.sp, 0x2000_00E0, "basic frame only");
     }
 
     #[test]
