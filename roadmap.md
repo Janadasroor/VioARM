@@ -283,13 +283,18 @@ projects, RTOSes, and bare-metal drivers.
    Non-secure HardFault escalation gated by `AIRCR.BFHFNMINS`, `SecureFault`
    exception 7 with the `ES`/`DCRS` exception-return validity check and
    `SFSR.INVER`, the callee-saves (`DCRS`) block stacked on Secure-to-Non-secure
-   exception entries with the `SFSR.INVIS` integrity-signature check on return,
-   banked `S_VTOR`/`VTOR` vector tables, and the `S`/`ES`/`SPSEL`
-   `EXC_RETURN` construction). Verified two ways:
+exception entries with the `SFSR.INVIS` integrity-signature check on return,
+    the `ITNS`-targeted delivery of external interrupts (the ARMSSE default
+    routes every line to the Non-secure state, so an IRQ taken from a Secure
+    background is a Secure-to-Non-secure entry that switches the handler into
+    Non-secure with `r0-r12` cleared),
+    banked `S_VTOR`/`VTOR` vector tables, and the `S`/`ES`/`SPSEL`
+    `EXC_RETURN` construction). Verified two ways:
    - Differential conformance against QEMU `cortex-m33` (`mps2-an505`) as a
      *superset* oracle (`m33_baseline_*` suite: sysreg, additions,
 lda_stl, splim, tt/sau_tt/mpu_tt, alu_thumb1, sg, blxns/bxns,
-      secure_undef_hardfault, secure_udf_return_restores_r0r3), plus the v6-m
+      secure_undef_hardfault, secure_udf_return_restores_r0r3,
+      secure_irq_returns_nonsecure), plus the v6-m
       suite against `cortex-m0`.
    - Unit tests pinning the *boundary*: `v8m_baseline_rejects_v7m_only` proves
      the full Thumb-2 DSP/bitfield/saturate/VFP zones, wide data-processing,
