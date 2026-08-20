@@ -3619,3 +3619,55 @@ fn m33_baseline_secure_undef_hardfault() {
         &mt,
     );
 }
+
+/// A Secure-thread `udf` escalates to the Secure `HardFault` (Secure to Secure
+/// entry). The
+/// handler clobbers `r0-r3`/`r12`, fixes the stacked PC past the 16-bit `udf`,
+/// and returns via `bx lr`. Both simulators must restore `r0-r3`/`r12` from
+/// the pushed basic frame on the v8-M exception return, so the trace diff after
+/// the return is a direct check of the return-path restore.
+#[test]
+fn m33_baseline_secure_udf_return_restores_r0r3() {
+    let Some(mt) = qemu_m33() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+
+    // Re-home the Secure vector table at the flash base, as in
+    // `m33_baseline_secure_undef_hardfault`.
+    a.mov_imm32(0, 0x1000_0000);
+    a.mov_imm32(1, 0xE002_ED08);
+    a.str_imm(0, 1, 0);
+
+    // Prime the registers the exception return must restore.
+    a.mov_imm32(0, 0x1111_1111);
+    a.mov_imm32(1, 0x2222_2222);
+    a.mov_imm32(2, 0x3333_3333);
+    a.mov_imm32(3, 0x4444_4444);
+    a.mov_imm32(12, 0xCCCC_CCCC);
+    a.raw(0xDE00); // udf #0: UsageFault; USGFAULTENA reset clear -> HardFault
+    a.b("halt"); // the return resumes here (udf + 2)
+
+    a.label("h_hardfault");
+    a.mov_reg(4, 13); // r4 = frame base (the handler's SP)
+    a.ldr_imm(5, 4, 24); // r5 = stacked PC (points at the `udf`)
+    a.adds_imm8(5, 2); // skip the 16-bit `udf`
+    a.str_imm(5, 4, 24); // write the resume PC back into the frame
+    a.movs_imm8(0, 0xEE); // clobber what the return must restore
+    a.movs_imm8(1, 0xEE);
+    a.movs_imm8(2, 0xEE);
+    a.movs_imm8(3, 0xEE);
+    a.mov_imm32(12, 0xEEEE_EEEE);
+    a.bx(14); // return to Secure thread via EXC_RETURN (0xFFFF_FFF9)
+
+    a.label("halt");
+    a.b("halt");
+    a.vec(3, "h_hardfault");
+
+    conformance_v8m_at(
+        "m33_baseline_secure_udf_return_restores_r0r3",
+        &mut a,
+        "halt",
+        SP,
+        &mt,
+    );
+}
