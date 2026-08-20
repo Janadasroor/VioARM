@@ -3671,3 +3671,123 @@ fn m33_baseline_secure_udf_return_restores_r0r3() {
         &mt,
     );
 }
+
+/// The Non-secure setup routine executed via a `BLXNS` round-trip before the
+/// interrupt is armed: it writes the Non-secure `VTOR` (`0xE000_ED08`) from the
+/// Non-secure state — the only way to address the NS bank, a Secure write hits
+/// the Secure `VTOR` on the M33 — then returns through the `FNC_RETURN` magic
+/// the `BLXNS` left in `LR`.
+fn ns_vtor_setup_bytes() -> Vec<u8> {
+    let mut a = Asm::new();
+    a.mov_imm32(0, 0x8000_0000); // the NS vector table base
+    a.mov_imm32(1, 0xE000_ED08); // VTOR
+    a.str_imm(0, 1, 0);
+    a.bx(14); // LR == 0xFEFFFFFF: FNC_RETURN
+    code_bytes(&a)
+}
+
+/// The Non-secure `IRQ0` handler: clobbers every general register so the diff
+/// can only pass if the Secure exception return restores both the caller-saved
+/// registers (from the basic frame) and the callee-saved `r4-r11` (from the
+/// `DCRS` integrity block) on the Secure stack, then returns via the
+/// `EXC_RETURN` in `LR`.
+fn ns_irq_handler_bytes() -> Vec<u8> {
+    let mut a = Asm::new();
+    for r in 0u8..=12 {
+        a.mov_imm32(r, 0xEE);
+    }
+    a.bx(14);
+    code_bytes(&a)
+}
+
+/// A Secure-thread external interrupt whose ARMSSE-default `ITNS` targets the
+/// Non-secure state is a Secure-to-Non-secure v8-M exception entry, diffed
+/// against the M33: both simulators must stack the callee-saves block
+/// (integrity signature + `r4-r11`) on the Secure stack and run the handler in
+/// Non-secure state with `r0-r12` cleared; the handler clobbers every register
+/// and returns through `EXC_RETURN`, and the diff after the return is the
+/// direct check that the whole `DCRS` block and the basic frame are restored.
+///
+/// The Non-secure vector table and handler live in the shared system RAM at
+/// `0x8000_0000` (the only Non-secure-executable memory on the AN505 oracle),
+/// and the Non-secure `VTOR` is pointed there by a `BLXNS` round-trip before
+/// the interrupt is software-pended.
+#[test]
+fn m33_baseline_secure_irq_returns_nonsecure() {
+    let Some(mt) = qemu_m33() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+
+    // Make the IDAU Non-secure regions effective, as in the `BXNS` tests.
+    a.mov_imm32(0, 0x2);
+    a.mov_imm32(1, 0xE000_EDD0); // SAU_CTRL
+    a.str_imm(0, 1, 0); // ALLNS
+
+    // Give the Non-secure bank a known main stack in shared RAM.
+    a.mov_imm32(2, 0x8000_0800);
+    a.msr(0x88, 2); // MSP_NS = 0x8000_0800
+
+    // Store the Non-secure vector table and routines at `0x8000_0000`: with
+    // the NS `VTOR` at `0x8000_0000`, `IRQ0`'s entry is word 16 (`0x8000_0040`).
+    store_bytes(&mut a, 0x8000_0040, &(0x8000_0140u32 | 1).to_le_bytes());
+    store_bytes(&mut a, 0x8000_0200, &ns_vtor_setup_bytes());
+    store_bytes(&mut a, 0x8000_0140, &ns_irq_handler_bytes());
+
+    // Point the Non-secure `VTOR` at the stored table, from the Non-secure
+    // state, and return.
+    a.mov_imm32(1, 0x8000_0200);
+    a.blxns(1);
+
+    // Re-home the Secure vector table at the flash base, as in the other
+    // baseline tests.
+    a.mov_imm32(0, 0x1000_0000);
+    a.mov_imm32(1, 0xE002_ED08); // S_VTOR
+    a.str_imm(0, 1, 0);
+
+    // Prime the registers the exception return must restore.
+    a.mov_imm32(0, 0x1111_1111);
+    a.mov_imm32(1, 0x2222_2222);
+    a.mov_imm32(2, 0x3333_3333);
+    a.mov_imm32(3, 0x4444_4444);
+    a.mov_imm32(12, 0xCCCC_CCCC);
+    a.mov_imm32(4, 0x4000_4004);
+    a.mov_imm32(5, 0x4000_4005);
+    a.mov_imm32(6, 0x4000_4006);
+    a.mov_imm32(7, 0x4000_4007);
+    a.mov_imm32(8, 0x4000_4008);
+    a.mov_imm32(9, 0x4000_4009);
+    a.mov_imm32(10, 0x4000_400A);
+    a.mov_imm32(11, 0x4000_400B);
+
+    // Enable and software-pend IRQ0. The ARMSSE-default `ITNS` targets every
+    // external interrupt Non-secure, so taking it from this Secure thread is a
+    // Secure-to-Non-secure entry: both simulators stack the callee-saves block
+    // on the Secure stack and run the handler Non-secure with `r0-r12` cleared.
+    a.mov_imm32(1, 0xE000_E100); // ISER0
+    a.movs_imm8(0, 1);
+    a.str_imm(0, 1, 0);
+    a.mov_imm32(1, 0xE000_E200); // ISPR0
+    a.movs_imm8(0, 1);
+    a.str_imm(0, 1, 0);
+
+    // The Non-secure handler ran and returned; execution resumes here (the
+    // instruction after the pend) in the Secure state with `r0-r3`/`r12` and
+    // `r4-r11` restored from the two stack blocks -- the trace diff onwards is
+    // the direct check of the return-path restore.
+    a.b("halt");
+
+    a.label("h_hardfault");
+    a.b("halt");
+
+    a.label("halt");
+    a.b("halt");
+    a.vec(3, "h_hardfault");
+
+    conformance_v8m_at(
+        "m33_baseline_secure_irq_returns_nonsecure",
+        &mut a,
+        "halt",
+        SP,
+        &mt,
+    );
+}
