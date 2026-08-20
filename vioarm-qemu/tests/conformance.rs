@@ -3891,3 +3891,97 @@ fn m33_baseline_nonsecure_udf_returns_through_secure_handler() {
     )
     .expect("traces agree");
 }
+
+// ---------------------------------------------------------------------------
+// PMSAv7 (ARMv7-M, Cortex-M3) MPU *fault* behavior. The register model is
+// already locked by the conformance suite; this diff pins the recorded fault
+// status too: a data access outside every enabled region (no `PRIVDEFENA`) is
+// a `DACCVIOL` with `MMARVALID` and the address in `MMFAR`, escalated to
+// HardFault with `HFSR.FORCED`. The handler captures `MMFSR`/`HFSR`/`MMFAR`
+// into the trace so the per-instruction diff checks VioARM's fault recording
+// against the M3 oracle. The SP and code stay inside the mapped region so the
+// error-stacking itself does not fault (which would diverge from the oracle's
+// `STKERR` synthesis).
+// ---------------------------------------------------------------------------
+
+/// A denied data access under the PMSAv7 MPU: region 1 covers the flash base
+/// (where this image runs), region 0 covers `0x2000_0000` for 2 KiB with
+/// read/write access, and `MPU_CTRL.ENABLE` is set without `PRIVDEFENA`, so a
+/// load from outside both regions is a background `DACCVIOL`. Both simulators
+/// must escalate it to HardFault with identical `MMFSR`/`HFSR`/`MMFAR`
+/// contents and resume through the handler's patched frame. The SP runs inside
+/// region 0 so the error-stacking itself never faults (or it would diverge
+/// through the oracle's `STKERR` synthesis, which VioARM does not model).
+const MPU_SP: u32 = 0x2000_0600;
+
+#[test]
+fn mpu_data_violation_escalates_to_hardfault() {
+    let Some(mt) = qemu() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+    a.vec(3, "hf"); // HardFault vector
+
+    // Region 1: the flash base, 1 MiB, rw/rw (this image runs there).
+    a.mov_imm32(0, 0xE000_ED98); // MPU_RNR
+    a.movs_imm8(1, 1);
+    a.str_imm(1, 0, 0);
+    a.mov_imm32(0, 0xE000_ED9C); // MPU_RBAR
+    a.mov_imm32(1, 0x0000_0000);
+    a.str_imm(1, 0, 0);
+    a.mov_imm32(0, 0xE000_EDA0); // MPU_RASR
+    a.mov_imm32(1, 0x0300_0027); // EN, SIZE=1 MiB, AP=rw/rw
+    a.str_imm(1, 0, 0);
+    // Region 0: 0x2000_0000..=0x2000_07FF, rw/rw (the SP lives here).
+    a.mov_imm32(0, 0xE000_ED98); // MPU_RNR
+    a.movs_imm8(1, 0);
+    a.str_imm(1, 0, 0);
+    a.mov_imm32(0, 0xE000_ED9C); // MPU_RBAR
+    a.mov_imm32(1, 0x2000_0000);
+    a.str_imm(1, 0, 0);
+    a.mov_imm32(0, 0xE000_EDA0); // MPU_RASR
+    a.mov_imm32(1, 0x0300_0015); // EN, SIZE=2 KiB, AP=rw/rw
+    a.str_imm(1, 0, 0);
+    a.mov_imm32(0, 0xE000_ED94); // MPU_CTRL
+    a.movs_imm8(1, 1);
+    a.str_imm(1, 0, 0); // ENABLE (no PRIVDEFENA)
+
+    // The denied load: 0x2000_2000 is in RAM but outside region 0.
+    a.mov_imm32(1, 0x2000_2000);
+    a.ldr_imm(0, 1, 0); // -> DACCVIOL, escalated to HardFault
+
+    a.label("halt");
+    a.b("halt");
+
+    a.label("hf");
+    // Capture the fault status into the trace (the PPB bypasses the MPU, so
+    // these status-register reads are always permitted).
+    a.mov_imm32(4, 0xE000_ED20); // CFSR
+    a.ldr_imm(5, 4, 8); // r5 = MMFSR
+    a.ldr_imm(6, 4, 12); // r6 = HFSR
+    a.ldr_imm(7, 4, 20); // r7 = MMFAR
+    // Patch the stacked PC past the faulting load and return.
+    a.mov_reg(1, 13); // frame base
+    a.ldr_imm(2, 1, 24); // stacked PC (the faulting `ldr`)
+    a.adds_imm8(2, 2); // skip it
+    a.str_imm(2, 1, 24);
+    a.bx(14);
+
+    let img: Image = a.clone().finish_at(MPU_SP, 0x0000_0000).expect("assemble");
+    let stop = img.addr("halt").expect("halt");
+    let (vio, reached) = vio_run(&img.bytes, stop);
+    assert!(
+        reached,
+        "mpu_data_violation_escalates_to_hardfault: vioarm never reached halt \
+         @ {stop:#x} (last {})",
+        snapshot_like(&vio)
+    );
+    let qemu = qemu_run_retry(&mt, &img.bytes, stop);
+    assert!(
+        !qemu.is_empty() && qemu.last().expect("empty").r[15] & !1 == stop,
+        "mpu_data_violation_escalates_to_hardfault: qemu never reached halt \
+         @ {stop:#x} (got {} states)",
+        qemu.len()
+    );
+    compare_traces("mpu_data_violation_escalates_to_hardfault", &vio, &qemu)
+        .expect("traces agree");
+}
