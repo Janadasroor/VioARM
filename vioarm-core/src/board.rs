@@ -17,6 +17,7 @@ use crate::device::stm32::adc::Adc;
 use crate::device::stm32::afio::Afio;
 use crate::device::stm32::can::Can;
 use crate::device::stm32::crc::Crc;
+use crate::device::stm32::dac::Dac;
 use crate::device::stm32::dma::{DmaF1, DmaRequests};
 use crate::device::stm32::dma_f4::DmaF4;
 use crate::device::stm32::eth::{Eth, EthMailbox};
@@ -118,6 +119,7 @@ pub fn stm32f103() -> BoardMemory {
     mem.attach(Box::new(FlashF1::new(gate)));
     mem.attach(Box::new(Rcc::new()));
     mem.attach(Box::new(Crc::new_for::<crate::device::svd::stm32f103::Stm32f103>()));
+    mem.attach(Box::new(Dac::new_for::<crate::device::svd::stm32f103::Stm32f103>()));
     mem.attach(Box::new(StmGpio::at(stm32::GPIOA, "gpioa")));
     mem.attach(Box::new(StmGpio::at(stm32::GPIOB, "gpiob")));
     mem.attach(Box::new(StmGpio::at(stm32::GPIOC, "gpioc")));
@@ -188,6 +190,7 @@ pub fn stm32f107() -> BoardMemory {
     mem.attach(Box::new(FlashF1::for_device::<Stm32f107>(gate)));
     mem.attach(Box::new(Rcc::for_device::<Stm32f107>()));
     mem.attach(Box::new(Crc::new_for::<Stm32f107>()));
+    mem.attach(Box::new(Dac::new_for::<Stm32f107>()));
     mem.attach(Box::new(StmGpio::at_in::<Stm32f107>(0x4001_0800, "gpioa")));
     mem.attach(Box::new(StmGpio::at_in::<Stm32f107>(0x4001_0C00, "gpiob")));
     mem.attach(Box::new(StmGpio::at_in::<Stm32f107>(0x4001_1000, "gpioc")));
@@ -297,6 +300,7 @@ pub fn stm32f407() -> BoardMemory {
     mem.attach(Box::new(FlashF4::for_device::<Stm32f407>(gate)));
     mem.attach(Box::new(Rcc::for_device::<Stm32f407>()));
     mem.attach(Box::new(Crc::new_for::<Stm32f407>()));
+    mem.attach(Box::new(Dac::new_for::<Stm32f407>()));
     mem.attach(Box::new(GpioF4::at_in::<Stm32f407>(0x4002_0000, "gpioa")));
     mem.attach(Box::new(GpioF4::at_in::<Stm32f407>(0x4002_0400, "gpiob")));
     mem.attach(Box::new(GpioF4::at_in::<Stm32f407>(0x4002_0800, "gpioc")));

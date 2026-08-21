@@ -14,6 +14,7 @@ pub mod adc;
 pub mod afio;
 pub mod can;
 pub mod crc;
+pub mod dac;
 pub mod dma;
 pub mod dma_f4;
 pub mod eth;

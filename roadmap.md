@@ -243,7 +243,10 @@ projects, RTOSes, and bare-metal drivers.
     calculation unit (`CRC` at `0x4002_3000`) with `DR`/`IDR`/`CR` and
     polynomial `0x04C1_1DB7` (init `0xFFFF_FFFF`, `CR.RESET` reloads; locked in
     with unit tests `crc_resets_to_all_ones_and_computes`/`idr_is_plain_storage`
-    and mounted on the F103/F107/F407 boards).
+    and mounted on the F103/F107/F407 boards). **DAC done:** the STM32 DAC
+    (`DAC` at `0x4000_7400`) with `CR`/`SWTRIGR`/`DHR12R1`/`DOR1` latch (SVD
+    register file, `dac_registers_round_trip_and_do_not_fault`; mounted on
+    F103/F107/F407 so firmware touching the DAC no longer `HardFault`s).
 8. **ARMv6-M (Cortex-M0/M0+)** and instruction-table/SVD codegen hardening.
    **Done.** The ARMv6-M exception model is now distinct from ARMv7-M: `MRS`/
    `MSR` of `BASEPRI`/`BASEPRI_MAX`/`FAULTMASK` read zero and ignore writes
