@@ -37,6 +37,7 @@ use crate::device::stm32::timer::Timer;
 use crate::device::stm32::usart::Usart;
 use crate::device::stm32::usb::Usb;
 use crate::device::stm32::watchdog::{Iwdg, Wwdg};
+use crate::device::dwt::Dwt;
 use crate::device::systick::SysTick;
 use crate::device::uart::UartTx;
 use crate::mem::bus::Region;
@@ -69,6 +70,7 @@ pub fn virtual_board() -> BoardMemory {
     mem.attach(Box::new(Gpio::at(GPIO_BASE)));
     mem.attach(Box::new(UartTx::at(UART_BASE)));
     mem.attach(Box::new(SysTick::new()));
+    mem.attach(Box::new(Dwt::new()));
     mem
 }
 
@@ -164,6 +166,7 @@ pub fn stm32f103() -> BoardMemory {
     mem.set_watchdog_reset(watchdog.clone());
     mem.attach(Box::new(Iwdg::new(watchdog.clone())));
     mem.attach(Box::new(Wwdg::new(watchdog)));
+    mem.attach(Box::new(Dwt::new()));
     mem.attach(Box::new(SysTick::new()));
     mem
 }
@@ -271,6 +274,7 @@ pub fn stm32f107() -> BoardMemory {
     mem.set_watchdog_reset(watchdog.clone());
     mem.attach(Box::new(Iwdg::for_device::<Stm32f107>(watchdog.clone())));
     mem.attach(Box::new(Wwdg::for_device::<Stm32f107>(watchdog)));
+    mem.attach(Box::new(Dwt::new()));
     mem.attach(Box::new(SysTick::new()));
     mem
 }
@@ -363,6 +367,7 @@ pub fn stm32f407() -> BoardMemory {
     mem.set_watchdog_reset(watchdog.clone());
     mem.attach(Box::new(Iwdg::for_device::<Stm32f407>(watchdog.clone())));
     mem.attach(Box::new(Wwdg::for_device::<Stm32f407>(watchdog)));
+    mem.attach(Box::new(Dwt::new()));
     mem.attach(Box::new(SysTick::new()));
     mem
 }
