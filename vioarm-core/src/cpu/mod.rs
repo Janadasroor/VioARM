@@ -138,6 +138,11 @@ pub mod fpscr {
     pub const DN: u32 = 1 << 25;
     /// The condition flags, bits [31:28], written by VFP comparisons.
     pub const NZCV: u32 = 0xF << 28;
+    /// Floating-point trap enable bits, bits [12:8] and [15] (IOE/DZE/OFE/
+    /// UFE/IXE/IDE) — supported only in VFPv2/VFPv3U/VFPv4U, RAZ/WI on the
+    /// Cortex-M4's FPv4-SP (and thus on the `FPSCR` VMSR/VMRS window and on
+    /// the `FPDSCR` reset value).
+    pub const TRAP_ENABLE: u32 = (1 << 8) | (1 << 9) | (1 << 10) | (1 << 11) | (1 << 12) | (1 << 15);
 }
 
 /// True if the raw float32 bits denote a NaN (exponent all ones, fraction
@@ -244,8 +249,9 @@ impl VfpState {
 /// enables lazy stacking of `S0`-`S15`/FPSCR on exception entry (the frame is
 /// only reserved and written on the first FP instruction the handler runs);
 /// `LSPACT` marks an outstanding lazy frame whose address is `FPCAR`.
-/// `FPDSCR` supplies the control bits (`DN`, `FZ`, `RMode`, and the trap
-/// enables) that a freshly-created FP context's FPSCR is loaded from.
+/// `FPDSCR` supplies the control bits (`AHP`/`DN`/`FZ`/`RMode`; trap
+/// enables are RAZ/WI on FPv4-SP) that a freshly-created FP context's FPSCR is
+/// loaded from.
 ///
 /// The state is shared between the core (which consumes it during exception
 /// entry/return and FP execution) and the `SCB` device (which exposes it to
@@ -265,8 +271,8 @@ pub struct FpuCtx {
     pub lspact: bool,
     /// The address of the outstanding lazy FP frame (bits [31:3]).
     pub fpcar: u32,
-    /// FPDSCR: the FPSCR control bits (DN/FZ/RMode/trap enables) loaded into a
-    /// new FP context on its first FP instruction.
+    /// FPDSCR: the FPSCR control bits (AHP/DN/FZ/RMode; trap enables RAZ/WI on
+    /// FPv4-SP) loaded into a new FP context on its first FP instruction.
     pub fpdscr: u32,
 }
 

@@ -1195,7 +1195,14 @@ impl Scb {
             FPDSCR => {
                 let shift = 8 * offset;
                 let mut ctx = self.fpu_ctx.lock().unwrap();
-                ctx.fpdscr = (ctx.fpdscr & !(0xFF << shift)) | (u32::from(val) << shift);
+                let raw = (ctx.fpdscr & !(0xFF << shift)) | (u32::from(val) << shift);
+                // FPDSCR trap-enable bits (FPSCR bits [12:8] and [15]) are RAZ/WI
+                // on the Cortex-M4's FPv4-SP (VFPv3/VFPv4, not U); only AHP/DN/FZ/
+                // RMode are writable. Match the QEMU oracle and keep FPSCR's VMSR
+                // trap-bit RAZ/WI consistent with the reset value copied on lazy
+                // stacking (`fpscr = fpdscr`).
+                const FPDSCR_WRITABLE: u32 = (1 << 26) | (1 << 25) | (1 << 24) | (3 << 22);
+                ctx.fpdscr = raw & FPDSCR_WRITABLE;
             }
             _ => {}
         }
@@ -1427,6 +1434,21 @@ mod tests {
         assert_eq!(read_word(&mut s, 0xE000_EF3C), 0x00C0_0000);
         s.reset();
         assert_eq!(read_word(&mut s, 0xE000_EF3C), 0);
+    }
+
+    #[test]
+    fn fpdscr_trap_bits_are_raz_wi() {
+        let mut s = Scb::new();
+        // FPSCR trap enables (bits 12:8 and 15) are RAZ/WI on FPv4-SP.
+        write_word(&mut s, 0xE000_EF3C, 0x0000_1F00 | 0x0000_8000);
+        assert_eq!(read_word(&mut s, 0xE000_EF3C), 0, "trap bits RAZ/WI");
+        write_word(&mut s, 0xE000_EF3C, 0x00C0_0000 | 0x0000_1F00 | 0x0000_8000);
+        assert_eq!(read_word(&mut s, 0xE000_EF3C), 0x00C0_0000, "RMODE kept, traps dropped");
+        // AHP/DN/FZ are writable; DN+FZ round-trips.
+        write_word(&mut s, 0xE000_EF3C, 0x0300_0000);
+        assert_eq!(read_word(&mut s, 0xE000_EF3C), 0x0300_0000);
+        write_word(&mut s, 0xE000_EF3C, 0x0400_0000);
+        assert_eq!(read_word(&mut s, 0xE000_EF3C), 0x0400_0000, "AHP");
     }
 
     #[test]
