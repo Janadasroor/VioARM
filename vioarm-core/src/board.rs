@@ -498,3 +498,128 @@ pub fn stm32f072() -> BoardMemory {
     mem.attach(Box::new(SysTick::new()));
     mem
 }
+
+/// STM32F303xE (F3, Cortex-M4) flash size in bytes (512 KiB).
+pub const STM32_F303XE_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32F303xE RAM size in bytes (64 KiB).
+pub const STM32_F303XE_RAM_LEN: u32 = 0x0001_0000;
+
+/// An STM32F303xE board: the F3 line with `Stm32f303xe` tables.
+#[must_use]
+pub fn stm32f303xe() -> BoardMemory {
+    use crate::device::svd::stm32f303xe::Stm32f303xe;
+    let backing = FlatMemory::with_layout(
+        &[FLASH, STM32_MAIN_FLASH, RAM],
+        &[STM32_F303XE_FLASH_LEN, STM32_F303XE_FLASH_LEN, STM32_F303XE_RAM_LEN],
+    );
+    let gate = Arc::new(Mutex::new(FlashGate::new(
+        Region::new(STM32_MAIN_FLASH, STM32_F303XE_FLASH_LEN),
+        2048,
+    )));
+    let mut mem = SystemMemory::new(backing);
+    mem.set_flash_gate(gate.clone());
+    // F3 flash is F1-gated at 0x40022000
+    if <Stm32f303xe as crate::device::svd::Device>::peripheral("FLASH").is_some() {
+        mem.attach(Box::new(FlashF1::for_device::<Stm32f303xe>(gate)));
+    }
+    mem.attach(Box::new(Rcc::for_device::<Stm32f303xe>()));
+    if <Stm32f303xe as crate::device::svd::Device>::peripheral("PWR").is_some() {
+        mem.attach(Box::new(Pwr::new_for::<Stm32f303xe>()));
+    }
+    if <Stm32f303xe as crate::device::svd::Device>::peripheral("CRC").is_some() {
+        mem.attach(Box::new(Crc::new_for::<Stm32f303xe>()));
+    }
+    if <Stm32f303xe as crate::device::svd::Device>::peripheral("DAC1").is_some() {
+        mem.attach(Box::new(Dac::new_for::<Stm32f303xe>()));
+    } else if <Stm32f303xe as crate::device::svd::Device>::peripheral("DAC").is_some() {
+        mem.attach(Box::new(Dac::new_for::<Stm32f303xe>()));
+    }
+    // F3 GPIO is F4-style (MODER)
+    for (base, name) in [
+        (0x4800_0000u32, "gpioa"),
+        (0x4800_0400, "gpiob"),
+        (0x4800_0800, "gpioc"),
+        (0x4800_0c00, "gpiod"),
+        (0x4800_1000, "gpioe"),
+        (0x4800_1400, "gpiof"),
+    ] {
+        if <Stm32f303xe as crate::device::svd::Device>::by_base(base).is_some() {
+            mem.attach(Box::new(GpioF4::at_in::<Stm32f303xe>(base, name)));
+        }
+    }
+    // USART family
+    for ctor in [
+        Usart::for_device::<Stm32f303xe> as fn() -> Usart,
+        Usart::usart2_for::<Stm32f303xe>,
+        Usart::usart3_for::<Stm32f303xe>,
+    ] {
+        let base = ctor().ranges()[0].base;
+        if <Stm32f303xe as crate::device::svd::Device>::by_base(base).is_some() {
+            mem.attach(Box::new(ctor()));
+        }
+    }
+    // TIM family (F3 has TIM1/2/3/4/6/7/15/16/17)
+    for ctor in [
+        Timer::tim1_for::<Stm32f303xe>,
+        Timer::tim2_for::<Stm32f303xe>,
+        Timer::tim3_for::<Stm32f303xe>,
+        Timer::tim6_for::<Stm32f303xe>,
+        Timer::tim7_for::<Stm32f303xe>,
+    ] {
+        let base = ctor().ranges()[0].base;
+        if <Stm32f303xe as crate::device::svd::Device>::by_base(base).is_some() {
+            mem.attach(Box::new(ctor()));
+        }
+    }
+    if <Stm32f303xe as crate::device::svd::Device>::peripheral("EXTI").is_some() {
+        mem.attach(Box::new(Exti::for_device::<Stm32f303xe>()));
+    }
+    if <Stm32f303xe as crate::device::svd::Device>::peripheral("SYSCFG").is_some() {
+        mem.attach(Box::new(Syscfg::for_device::<Stm32f303xe>()));
+    }
+    // F3 ADC is the new ADC (ISR/CR), not the old CR2/SR; skip old Adc behavior
+    // if <Stm32f303xe as crate::device::svd::Device>::peripheral("ADC1").is_some() {
+    //     mem.attach(Box::new(Adc::adc1_for::<Stm32f303xe>()));
+    // }
+    if <Stm32f303xe as crate::device::svd::Device>::peripheral("SPI1").is_some() {
+        mem.attach(Box::new(Spi::spi1_for::<Stm32f303xe>()));
+    }
+    if <Stm32f303xe as crate::device::svd::Device>::peripheral("SPI2").is_some() {
+        mem.attach(Box::new(Spi::spi2_for::<Stm32f303xe>()));
+    }
+    if <Stm32f303xe as crate::device::svd::Device>::peripheral("I2C1").is_some() {
+        mem.attach(Box::new(I2c::for_device::<Stm32f303xe>()));
+    }
+    if <Stm32f303xe as crate::device::svd::Device>::peripheral("I2C2").is_some() {
+        mem.attach(Box::new(I2c::i2c2_for::<Stm32f303xe>()));
+    }
+    // F3 CAN is "CAN" at 0x40006400, old Can behavior expects "CAN1"; skip for now
+    // if <Stm32f303xe as crate::device::svd::Device>::peripheral("CAN").is_some() {
+    //     mem.attach(Box::new(Can::can1_for::<Stm32f303xe>()));
+    // }
+    // F3 USB is "USB" at 0x40005C00, not OTG; skip old Usb behavior
+    // if <Stm32f303xe as crate::device::svd::Device>::peripheral("USB").is_some() {
+    //     mem.attach(Box::new(Usb::otg_fs_for::<Stm32f303xe>()));
+    // }
+    // DMA1/DMA2 – F3 has DMA1 (7 ch) and DMA2 (5 ch) like F1
+    if <Stm32f303xe as crate::device::svd::Device>::peripheral("DMA1").is_some() {
+        let dma_requests = Arc::new(Mutex::new(DmaRequests::new()));
+        let dma = Arc::new(Mutex::new(Vec::new()));
+        mem.set_dma_mailbox(dma.clone());
+        mem.attach(Box::new(DmaF1::dma_for::<Stm32f303xe>("DMA1", dma.clone(), dma_requests.clone())));
+        if <Stm32f303xe as crate::device::svd::Device>::peripheral("DMA2").is_some() {
+            mem.attach(Box::new(DmaF1::dma_for::<Stm32f303xe>("DMA2", dma, dma_requests)));
+        }
+    }
+    let watchdog = Arc::new(Mutex::new(false));
+    mem.set_watchdog_reset(watchdog.clone());
+    if <Stm32f303xe as crate::device::svd::Device>::peripheral("IWDG").is_some() {
+        mem.attach(Box::new(Iwdg::for_device::<Stm32f303xe>(watchdog.clone())));
+    }
+    if <Stm32f303xe as crate::device::svd::Device>::peripheral("WWDG").is_some() {
+        mem.attach(Box::new(Wwdg::for_device::<Stm32f303xe>(watchdog)));
+    }
+    mem.attach(Box::new(Dwt::new()));
+    mem.attach(Box::new(SysTick::new()));
+    mem
+}
