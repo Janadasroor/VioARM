@@ -204,7 +204,9 @@ pub fn stm32f107() -> BoardMemory {
     mem.attach(Box::new(Dac::new_for::<Stm32f107>()));
     mem.attach(Box::new(Rtc::new_for::<Stm32f107>()));
     mem.attach(Box::new(Bkp::new_for::<Stm32f107>()));
-    mem.attach(Box::new(Sdio::new_for::<Stm32f107>()));
+    if <Stm32f107 as crate::device::svd::Device>::peripheral("SDIO").is_some() {
+        mem.attach(Box::new(Sdio::new_for::<Stm32f107>()));
+    }
     mem.attach(Box::new(StmGpio::at_in::<Stm32f107>(0x4001_0800, "gpioa")));
     mem.attach(Box::new(StmGpio::at_in::<Stm32f107>(0x4001_0C00, "gpiob")));
     mem.attach(Box::new(StmGpio::at_in::<Stm32f107>(0x4001_1000, "gpioc")));
