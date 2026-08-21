@@ -1517,7 +1517,7 @@ impl<B: PeripheralBus> Core<B> {
                 if rd == 15 {
                     return self.branch(pc.wrapping_add(4).wrapping_add(b));
                 }
-                self.regs.write(rd, self.regs.read(rd) + b);
+                self.regs.write(rd, self.regs.read(rd).wrapping_add(b));
                 Ok(Next::Advance(pc + 2))
             }
             I::SpecialCmp { rn, rm } => {

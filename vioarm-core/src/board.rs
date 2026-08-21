@@ -20,6 +20,7 @@ use crate::device::stm32::bkp::Bkp;
 use crate::device::stm32::crc::Crc;
 use crate::device::stm32::dac::Dac;
 use crate::device::stm32::dma::{DmaF1, DmaRequests};
+use crate::device::stm32::fmc::{Fmc, Qspi};
 use crate::device::stm32::pwr::Pwr;
 use crate::device::stm32::rtc::Rtc;
 use crate::device::stm32::sdio::Sdio;
@@ -783,7 +784,7 @@ pub const STM32_H743_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
 pub fn stm32h743() -> BoardMemory {
     use crate::device::svd::stm32h743::Stm32h743;
-    // H7 memory: ITCM alias at 0x00000000, DTCM 128K at 0x20000000, AXI SRAM 512K at 0x24000000, SRAM1/2
+    // H7 memory: ITCM alias at 0x00000000, DTCM 128K at 0x20000000, AXI SRAM 512K at 0x24000000, SRAM1/2, ext SDRAM/QSPI
     const DTCM_BASE: u32 = 0x2000_0000;
     const DTCM_LEN: u32 = 0x0002_0000;
     const AXI_BASE: u32 = 0x2400_0000;
@@ -792,9 +793,13 @@ pub fn stm32h743() -> BoardMemory {
     const SRAM1_LEN: u32 = 0x0002_0000;
     const SRAM2_BASE: u32 = 0x3002_0000;
     const SRAM2_LEN: u32 = 0x0002_0000;
+    const FMC_SDRAM_BASE: u32 = 0xC000_0000;
+    const FMC_SDRAM_LEN: u32 = 0x0080_0000;
+    const QSPI_BASE: u32 = 0x9000_0000;
+    const QSPI_LEN: u32 = 0x0100_0000;
     let backing = FlatMemory::with_layout(
-        &[FLASH, STM32_MAIN_FLASH, DTCM_BASE, AXI_BASE, SRAM1_BASE, SRAM2_BASE],
-        &[STM32_H743_FLASH_LEN, STM32_H743_FLASH_LEN, DTCM_LEN, AXI_LEN, SRAM1_LEN, SRAM2_LEN],
+        &[FLASH, STM32_MAIN_FLASH, DTCM_BASE, AXI_BASE, SRAM1_BASE, SRAM2_BASE, FMC_SDRAM_BASE, QSPI_BASE],
+        &[STM32_H743_FLASH_LEN, STM32_H743_FLASH_LEN, DTCM_LEN, AXI_LEN, SRAM1_LEN, SRAM2_LEN, FMC_SDRAM_LEN, QSPI_LEN],
     );
     let gate = Arc::new(Mutex::new(FlashGate::new(
         Region::new(STM32_MAIN_FLASH, STM32_H743_FLASH_LEN),
@@ -919,6 +924,16 @@ pub fn stm32h743() -> BoardMemory {
     }
     if <Stm32h743 as crate::device::svd::Device>::peripheral("DMA2").is_some() {
         mem.attach(Box::new(DmaF4::dma2_for::<Stm32h743>(dma)));
+    }
+    // FMC / QUADSPI control windows (do not fault on config writes)
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("FMC").is_some() {
+        mem.attach(Box::new(Fmc::new_for::<Stm32h743>()));
+    }
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("QUADSPI").is_some()
+        || <Stm32h743 as crate::device::svd::Device>::peripheral("QSPI").is_some()
+        || <Stm32h743 as crate::device::svd::Device>::peripheral("OCTOSPI1").is_some()
+    {
+        mem.attach(Box::new(Qspi::new_for::<Stm32h743>()));
     }
     // EXTI/SYSCFG if present
     if <Stm32h743 as crate::device::svd::Device>::peripheral("EXTI").is_some() {
