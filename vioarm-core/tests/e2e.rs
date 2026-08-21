@@ -1780,3 +1780,27 @@ fn otg_fs_dispatches_its_isr() {
     }
     panic!("the OTG_FS ISR did not return to the spin loop");
 }
+
+#[test]
+fn cyccnt_incudes_flash_wait_states() {
+    use vioarm_core::board;
+    // Four Thumb nops (movs r0,#0) at ENTRY, flash wait states via FLASH_ACR.
+    const FLASH_ACR: u32 = 0x4002_2000;
+    let mut m = Machine::armv7m(board::stm32f103());
+    // Set 2 wait states.
+    m.core.mem().write_word(FLASH_ACR, 2).unwrap();
+    m.load_image(&vioarm_core::loader::load_flat(
+        ENTRY,
+        &[0x00, 0x20, 0x00, 0x20, 0x00, 0x20, 0x00, 0x20, 0xFE, 0xE7],
+    ));
+    for _ in 0..4 {
+        m.step().unwrap();
+    }
+    assert_eq!(m.core.cycles, 4);
+    assert_eq!(m.core.cyccnt, 4 * (1 + 2));
+    // Back to 0 WS: cyccnt catches up by 1 per insn.
+    m.core.mem().write_word(FLASH_ACR, 0).unwrap();
+    m.step().unwrap();
+    assert_eq!(m.core.cycles, 5);
+    assert_eq!(m.core.cyccnt, 12 + 1);
+}
