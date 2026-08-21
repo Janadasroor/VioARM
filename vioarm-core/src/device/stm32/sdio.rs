@@ -30,9 +30,23 @@ const STA_TXDAVL: u32 = 1 << 20;
 const DCTRL_DTEN: u32 = 1 << 0;
 const DCTRL_DTDIR: u32 = 1 << 1;
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct SdioBehavior {
     fifo: std::collections::VecDeque<u8>,
+    next_is_acmd: bool,
+    rca: u32,
+    ocr: u32,
+}
+
+impl Default for SdioBehavior {
+    fn default() -> Self {
+        Self {
+            fifo: std::collections::VecDeque::new(),
+            next_is_acmd: false,
+            rca: 0x4567_0000,
+            ocr: 0x80FF_8000, // ready, 3.3V
+        }
+    }
 }
 
 impl Behavior for SdioBehavior {
@@ -51,10 +65,55 @@ impl Behavior for SdioBehavior {
                 if word & (1 << 10) != 0 {
                     let idx = word & 0x3F;
                     let waitresp = (word >> 6) & 0x3;
+                    let ce_atacmd = (word >> 14) & 1 != 0;
                     view.set(RESPCMD, idx);
-                    // Dummy response for any CMD with response.
+                    // Card FSM stub: CMD0/2/3/7/8/55/41 with RCA/OCR.
+                    let mut resp1 = 0x0000_0123u32;
+                    let is_acmd = self.next_is_acmd || ce_atacmd;
+                    self.next_is_acmd = false;
+                    match idx {
+                        0 => {
+                            // GO_IDLE_STATE
+                            self.rca = 0;
+                            resp1 = 0;
+                        }
+                        2 => {
+                            // ALL_SEND_CID — 136-bit, use RESP1..4
+                            view.set(0x14, 0x1234_5678);
+                            view.set(0x18, 0x9ABC_DEF0);
+                            view.set(0x1C, 0x1357_9BDF);
+                            view.set(0x20, 0x2468_ACF0);
+                            resp1 = 0x1234_5678;
+                        }
+                        3 => {
+                            // SEND_RELATIVE_ADDR — RCA
+                            resp1 = self.rca;
+                            view.set(RESP1, resp1);
+                        }
+                        7 => {
+                            // SELECT_CARD — RCA in ARG
+                            let arg = view.get(0x08);
+                            if arg == self.rca {
+                                resp1 = 0x0000_0700;
+                            }
+                        }
+                        8 => {
+                            // SEND_IF_COND — echo pattern
+                            resp1 = 0x0000_01AA;
+                        }
+                        55 => {
+                            // APP_CMD — next is ACMD
+                            self.next_is_acmd = true;
+                            resp1 = 0x0000_0120;
+                        }
+                        41 if is_acmd => {
+                            // SD_APP_OP_COND — OCR ready
+                            resp1 = self.ocr;
+                        }
+                        _ => {}
+                    }
                     if waitresp != 0 {
-                        view.set(RESP1, 0x0000_0123);
+                        view.set(RESP1, resp1);
                     }
                     let mut sta = view.get(STA) | STA_CMDSENT;
                     if waitresp != 0 {
@@ -249,5 +308,22 @@ mod tests {
         assert_ne!(read_word(&mut s, base + 0x34) & (1 << 8), 0, "DATAEND set");
         assert_ne!(read_word(&mut s, base + 0x34) & (1 << 10), 0, "DBCKEND set");
         assert_ne!(s.pending(), 0);
+    }
+
+    #[test]
+    fn sdio_card_init_sequence() {
+        let base = Stm32f103::peripheral("SDIO").unwrap().base;
+        let mut s = Sdio::new_for::<Stm32f103>();
+        // CMD0
+        write_word(&mut s, base + 0x0C, 0x0000_0400);
+        assert_eq!(read_word(&mut s, base + 0x10) & 0x3F, 0);
+        // CMD8
+        write_word(&mut s, base + 0x0C, 0x0000_0448);
+        assert_eq!(read_word(&mut s, base + 0x14), 0x0000_01AA);
+        // CMD55 -> ACMD41
+        write_word(&mut s, base + 0x0C, 0x0000_0477); // 55 + WAITRESP + CPSMEN
+        assert_eq!(read_word(&mut s, base + 0x10) & 0x3F, 55);
+        write_word(&mut s, base + 0x0C, 0x0000_4469); // 41 + CE_ATACMD (bit14) + WAITRESP + CPSMEN
+        assert_ne!(read_word(&mut s, base + 0x14) & 0x8000_0000, 0, "OCR ready");
     }
 }

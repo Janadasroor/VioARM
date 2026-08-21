@@ -255,11 +255,11 @@ projects, RTOSes, and bare-metal drivers.
     remains `DR1..10` latches, `RTC` on all lines, `BKP` only on F1/F107).
     **SDIO done:** the SD-card host (`SDIO` at `0x4001_8000` on F1 / `0x4001_2C00`
     on F4) with `POWER`/`CLKCR`/`ARG`/`CMD`/`RESP`/`STA`/`ICR`/`MASK`/`DLEN`/
-    `DCTRL` CMD+data-accurate (`CPSMEN` latches `RESPCMD`/`RESP1`,
-    `STA.CMDSENT`/`CMDREND`/`DATAEND`/`DBCKEND` + `MASK` → IRQ 49,
-    `sdio_cmd_sets_sta_and_irq`/`sdio_data_block_completes`; mounted on
-    F103/F107/F407 so `SD_Init` HAL no longer `HardFault`s — FIFO/card FSM
-    remain stubbed). **PWR done:** the STM32 PWR (`PWR` at `0x4000_7000`) with
+    `DCTRL`/`FIFO` CMD+data+card-accurate (`CPSMEN` latches `RESPCMD`/`RESP1`,
+    `STA.CMDSENT`/`CMDREND`/`DATAEND`/`DBCKEND` + `MASK` → IRQ 49, `FIFO`
+    `RXDAVL` queue, card `CMD0/2/3/7/8/55/41` `OCR`/`RCA`/`CID`, `sdio_card_init…`;
+    mounted on F103/F107/F407 so `SD_Init` HAL completes — `CSD`/`card image`
+    remain stubbed as `0xFF` blocks). **PWR done:** the STM32 PWR (`PWR` at `0x4000_7000`) with
     `CR`/`CSR` (`DBP`/`PVDE`/`WUF`) latch (`pwr_registers_do_not_fault`;
     mounted on F103/F107/F407, `DBP` gates backup domain on silicon but `RTC`/
     `BKP` latches ignore it as HAL always sets `DBP` first).
