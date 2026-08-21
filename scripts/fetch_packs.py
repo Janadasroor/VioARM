@@ -29,6 +29,18 @@ PACKS: dict[str, dict[str, str]] = {
         "version": "2.4.1",
         "url": "https://www.keil.com/pack/",
     },
+    "STM32F0": {
+        "vendor": "Keil",
+        "name": "STM32F0xx_DFP",
+        "version": "2.1.0",
+        "url": "https://www.keil.com/pack/",
+    },
+    "STM32F3": {
+        "vendor": "Keil",
+        "name": "STM32F3xx_DFP",
+        "version": "2.1.0",
+        "url": "https://www.keil.com/pack/",
+    },
 }
 
 
@@ -58,6 +70,15 @@ def fetch(name: str) -> Path:
     with zipfile.ZipFile(dest) as zf:
         zf.extractall(extract_dir)
     print(f"done: {extract_dir}")
+    # Normalize SVD location: F0/F3 packs use CMSIS/SVD, F1 uses SVD
+    cmsis_svd = extract_dir / "CMSIS" / "SVD"
+    top_svd = extract_dir / "SVD"
+    if not top_svd.exists() and cmsis_svd.exists():
+        try:
+            top_svd.symlink_to(cmsis_svd, target_is_directory=True)
+        except Exception:
+            shutil.copytree(cmsis_svd, top_svd)
+        print(f"linked {cmsis_svd} -> {top_svd}")
     return dest
 
 
