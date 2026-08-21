@@ -4258,3 +4258,39 @@ void reset(void) {
     assert_eq!(m.core.mem().read_word(RAM+4).unwrap(), 1, "QSPI");
 }
 
+#[test]
+fn stm32h743_fdcan() {
+    const FW: &str = r#"
+#define FDCAN1_BASE 0x4000A000u
+#define FDCAN1_CCCR 0x4000A018u
+#define FDCAN1_HPMS 0x4000A094u
+#define OUT 0x20000000u
+void reset(void) {
+    // Access FDCAN1 regs should not fault (stub)
+    *(volatile unsigned *)FDCAN1_CCCR = 0x1u;
+    unsigned cccr = *(volatile unsigned *)FDCAN1_CCCR;
+    (void)*(volatile unsigned *)FDCAN1_HPMS;
+    *(volatile unsigned *)OUT = (cccr & 0x1u) ? 1u : 0u;
+    *(volatile unsigned *)(OUT+4) = 1u;
+    __asm__ volatile("bkpt #0");
+}
+"#;
+    let (code, symbols) = match build_firmware_h7_with_includes(FW, &[]) {
+        Ok(v) => v,
+        Err(why) => { eprintln!("skipping H743 fdcan: {why}"); return; }
+    };
+    let entry = *symbols.get("reset").unwrap();
+    let mut m = Machine::armv7em(board::stm32h743());
+    m.load_image(&load_flat(CODE_BASE, &code));
+    {
+        let mem = m.core.mem();
+        mem.write_word(board::FLASH, INIT_SP).unwrap();
+        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+    }
+    m.reset().unwrap();
+    let err = m.run(50_000);
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
+    assert_eq!(m.core.mem().read_word(RAM).unwrap(), 1, "FDCAN CCCR");
+    assert_eq!(m.core.mem().read_word(RAM+4).unwrap(), 1, "FDCAN HPMS");
+}
+
