@@ -392,7 +392,9 @@ pub fn stm32f072() -> BoardMemory {
     )));
     let mut mem = SystemMemory::new(backing);
     mem.set_flash_gate(gate.clone());
-    mem.attach(Box::new(FlashF1::for_device::<Stm32f072>(gate)));
+    if <Stm32f072 as crate::device::svd::Device>::peripheral("FLASH").is_some() {
+        mem.attach(Box::new(FlashF1::for_device::<Stm32f072>(gate)));
+    }
     mem.attach(Box::new(Rcc::for_device::<Stm32f072>()));
     if <Stm32f072 as crate::device::svd::Device>::peripheral("PWR").is_some() {
         mem.attach(Box::new(Pwr::new_for::<Stm32f072>()));
@@ -403,7 +405,14 @@ pub fn stm32f072() -> BoardMemory {
     if <Stm32f072 as crate::device::svd::Device>::peripheral("DAC").is_some() {
         mem.attach(Box::new(Dac::new_for::<Stm32f072>()));
     }
-    if <Stm32f072 as crate::device::svd::Device>::peripheral("RTC").is_some() {
+    // F0 RTC is the new RTC (TR/DR/CR), not the old PRL/CNT/ALR; skip old behavior
+    if <Stm32f072 as crate::device::svd::Device>::peripheral("RTC").is_some()
+        && <Stm32f072 as crate::device::svd::Device>::peripheral("RTC")
+            .unwrap()
+            .registers
+            .iter()
+            .any(|r| r.name == "PRLH")
+    {
         mem.attach(Box::new(Rtc::new_for::<Stm32f072>()));
     }
     for (base, name) in [
@@ -472,7 +481,7 @@ pub fn stm32f072() -> BoardMemory {
         let dma = Arc::new(Mutex::new(Vec::new()));
         mem.set_dma_mailbox(dma.clone());
         mem.attach(Box::new(DmaF1::dma_for::<Stm32f072>(
-            "DMA1",
+            "DMA",
             dma,
             dma_requests,
         )));
