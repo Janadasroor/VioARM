@@ -293,7 +293,7 @@ impl<M: Bus> SystemMemory<M> {
             // HardFault is priority -1: encoded as the highest possible
             // (lowest numeric) priority, so nothing preempts it.
             3 => 0,
-            4 | 6 => self.scb.priority(ipsr),
+            4 | 5 | 6 => self.scb.priority(ipsr),
             11 | 14 | 15 => self.scb.priority(ipsr),
             n => self.nvic.priority(u32::from(n - 16)),
         }
@@ -336,13 +336,18 @@ impl<M: Bus> SystemMemory<M> {
             let (g, s) = self.split_priority(p);
             Self::consider(&mut best, 11, g, s, p);
         }
-        // A software-pended UsageFault / MemManage fault is taken only while
-        // the exception is enabled; disabled, the pend stays latched (it
+        // A software-pended UsageFault / MemManage / BusFault is taken only
+        // while the exception is enabled; disabled, the pend stays latched (it
         // escalates only when a fault is raised synchronously).
         if self.scb.memfault_pending() && self.scb.memfault_enabled() {
             let p = self.scb.priority(4);
             let (g, s) = self.split_priority(p);
             Self::consider(&mut best, 4, g, s, p);
+        }
+        if self.scb.busfault_pending() && self.scb.busfault_enabled() {
+            let p = self.scb.priority(5);
+            let (g, s) = self.split_priority(p);
+            Self::consider(&mut best, 5, g, s, p);
         }
         if self.scb.usage_fault_pending() && self.scb.usage_fault_enabled() {
             let p = self.scb.priority(6);
@@ -382,6 +387,7 @@ impl<M: Bus> SystemMemory<M> {
     fn consume_exception(&mut self, n: u8) {
         match n {
             4 => self.scb.acknowledge_memfault(),
+            5 => self.scb.acknowledge_busfault(),
             6 => self.scb.acknowledge_usage_fault(),
             11 => self.scb.acknowledge_svcall(),
             14 => self.scb.acknowledge(1),
@@ -1108,11 +1114,11 @@ mod tests {
         sys.write_word(0xE000_E200, 1 << 7).unwrap();
         sys.write_word(0xE000_E100, 1 << 7).unwrap();
         sys.write(0xE000_E407, 0xC0).unwrap();
-        sys.write(0xE000_ED19, 0x40).unwrap(); // SHPR1 UsageFault prio 0x40
+        sys.write(0xE000_ED1A, 0x40).unwrap(); // SHPR1 UsageFault prio 0x40
         sys.write_word(0xE000_ED24, 0x0004_1000).unwrap();
         assert_eq!(sys.next_exception(false, false, 0, 23), Some(6));
         // At the same priority the running handler blocks the pend.
-        sys.write(0xE000_ED19, 0xC0).unwrap();
+        sys.write(0xE000_ED1A, 0xC0).unwrap();
         sys.write_word(0xE000_ED24, 0x0004_1000).unwrap();
         assert_eq!(sys.next_exception(false, false, 0, 23), None);
     }

@@ -353,15 +353,17 @@ const SFSR_INVER: u32 = 0x0000_0004; // invalid Non-secure exception return (ES/
                                          // architectural bit 31; the differential oracle is the arbiter here.
 const HFSR_FORCED: u32 = 0x4000_0000;
 
-/// `SHCSR.USGFAULTENA` (bit 18) / `SHCSR.MEMFAULTENA` (bit 16): distinct
-/// `UsageFault` / `MemManage` exceptions, enabled by firmware through the SCB
-/// window.
+/// `SHCSR` fault enable bits: distinct `MemManage` (bit 16), `BusFault`
+/// (bit 17) and `UsageFault` (bit 18) exceptions, enabled by firmware through
+/// the SCB window.
 const SHCSR_ADDR: u32 = 0xE000_ED24;
 const SHCSR_MEMFAULTENA: u32 = 0x0001_0000;
+const SHCSR_BUSFAULTENA: u32 = 0x0002_0000;
 const SHCSR_USGFAULTENA: u32 = 0x0004_0000;
 
-/// `SHPR1` (bits 15:8) holds the configurable `UsageFault` priority byte;
-/// `SHPR2`/`SHPR3` hold the SVCall/PendSV/SysTick bytes.
+/// `SHPR1` holds the configurable fault priorities: `MemManage` byte 0,
+/// `BusFault` byte 1, `UsageFault` byte 2; `SHPR2`/`SHPR3` hold the
+/// SVCall/PendSV/SysTick bytes.
 const SHPR1_ADDR: u32 = 0xE000_ED18;
 const SHPR2_ADDR: u32 = 0xE000_ED1C;
 const SHPR3_ADDR: u32 = 0xE000_ED20;
@@ -4008,7 +4010,7 @@ impl<B: PeripheralBus> Core<B> {
             // SecureFault (v8-M) has a fixed priority above any configurable
             // exception; encoded like HardFault at the top of the range.
             3 | 7 => 0,
-            4 | 6 | 11 | 14 | 15 => self.priority_byte(self.ipsr),
+            4 | 5 | 6 | 11 | 14 | 15 => self.priority_byte(self.ipsr),
             n => self
                 .mem
                 .read(NVIC_IPR.wrapping_add(u32::from(n - 16)))
@@ -4016,12 +4018,13 @@ impl<B: PeripheralBus> Core<B> {
         }
     }
 
-    /// The configurable priority byte for system exception `n` (`4`, `6`, `11`,
-    /// `14`, `15`), lower meaning higher priority.
+    /// The configurable priority byte for system exception `n` (`4`, `5`,
+    /// `6`, `11`, `14`, `15`), lower meaning higher priority.
     fn priority_byte(&mut self, n: u8) -> u8 {
         let (addr, shift) = match n {
             4 => (SHPR1_ADDR, 0),
-            6 => (SHPR1_ADDR, 8),
+            5 => (SHPR1_ADDR, 8),
+            6 => (SHPR1_ADDR, 16),
             11 => (SHPR2_ADDR, 24),
             14 => (SHPR3_ADDR, 16),
             15 => (SHPR3_ADDR, 24),
@@ -4030,16 +4033,30 @@ impl<B: PeripheralBus> Core<B> {
         ((self.mem.read_word(addr).unwrap_or(0) >> shift) & 0xFF) as u8
     }
 
-    /// Escalate a faulting data access at `addr` (from instruction at `pc`)
-    /// to a HardFault, per ARMv6-M (no separate bus-fault exception exists).
-    /// The stacked return address is the faulting instruction so the handler
-    /// can fix the cause and retry it. Records a BusFault `PRECISERR` and the
-    /// `FORCED` escalation bit. Continues into the handler.
+    /// Take a `BusFault` for a precise bus error at `addr` (from the
+    /// instruction at `pc`). With `SHCSR.BUSFAULTENA` set and a `BusFault`
+    /// that outranks the running context, a distinct `BusFault` (vector 5) is
+    /// taken; otherwise the fault escalates to `HardFault` with `HFSR.FORCED`.
+    /// The stacked return address is the faulting instruction.
+    ///
+    /// ARMv6-M (Cortex-M0/M0+) has no `BusFault` exception at all: the fold to
+    /// `HardFault` is unconditional there.
     fn data_fault(&mut self, addr: u32, pc: u32) -> Result<Next, HaltCause> {
-        let _ = addr;
-        self.mem.record_fault(BFSR_PRECISERR, HFSR_FORCED);
-        let targets_secure = self.hardfault_target_secure();
-        self.take_exception_target(Exception::HardFault, pc, targets_secure)?;
+        let enabled = self.isa == Isa::Armv7M
+            && self.mem.read_word(SHCSR_ADDR).unwrap_or(0) & SHCSR_BUSFAULTENA != 0;
+        let current = if self.faultmask {
+            0
+        } else {
+            self.current_priority()
+        };
+        if enabled && self.priority_byte(5) < current {
+            self.mem.record_fault(BFSR_PRECISERR, 0);
+            self.take_exception(Exception::BusFault, pc)?;
+        } else {
+            self.mem.record_fault(BFSR_PRECISERR, HFSR_FORCED);
+            let targets_secure = self.hardfault_target_secure();
+            self.take_exception_target(Exception::HardFault, pc, targets_secure)?;
+        }
         Ok(Next::Advance(self.regs.pc))
     }
 
@@ -8721,6 +8738,45 @@ mod tests {
         c.regs.pc = CODE;
         load_inst(&mut c, CODE, &[0x08, 0x68]); // ldr r0, [r1]
         load_inst(&mut c, HF_HANDLER, &[0x70, 0x47]); // bx lr
+        assert!(matches!(
+            c.step(),
+            Err(crate::error::HaltCause::UnhandledException)
+        ));
+    }
+
+    #[test]
+    fn busfault_taken_as_distinct_when_enabled() {
+        const CODE: u32 = 0x2000_0100;
+        const BF_HANDLER: u32 = 0x2000_0600;
+        const SP: u32 = 0x2000_0C00;
+        let mut c = armv7m_sys_core();
+        c.mem().write_word(5 * 4, BF_HANDLER | 1).unwrap();
+        c.mem().write_word(0xE000_ED24, 0x0002_0000).unwrap(); // BUSFAULTENA
+        c.regs.sp = SP;
+        c.regs.msp = SP;
+        c.regs.write(1, 0x9000_0000);
+        c.regs.pc = CODE;
+        load_inst(&mut c, CODE, &[0x08, 0x68]); // ldr r0, [r1] -> reserved bus fault
+        load_inst(&mut c, BF_HANDLER, &[0x70, 0x47]); // bx lr
+        c.step().unwrap();
+        assert_eq!(c.ipsr, 5, "bus fault with BUSFAULTENA must take BusFault");
+        assert_eq!(c.regs.pc, BF_HANDLER);
+        assert_eq!(c.mem().read_word(0xE000_ED28).unwrap() & 0xFF00, 0x0100); // BFSR PRECISERR
+        assert_eq!(c.mem().read_word(0xE000_ED2C).unwrap(), 0); // no FORCED
+    }
+
+    #[test]
+    fn busfault_with_blocked_busfault_locks_up() {
+        const CODE: u32 = 0x2000_0100;
+        const SP: u32 = 0x2000_0C00;
+        let mut c = armv7m_sys_core();
+        c.mem().write_word(0xE000_ED24, 0x0002_0000).unwrap(); // BUSFAULTENA
+        c.faultmask = true;
+        c.regs.sp = SP;
+        c.regs.msp = SP;
+        c.regs.write(1, 0x9000_0000);
+        c.regs.pc = CODE;
+        load_inst(&mut c, CODE, &[0x08, 0x68]); // ldr r0, [r1]
         assert!(matches!(
             c.step(),
             Err(crate::error::HaltCause::UnhandledException)

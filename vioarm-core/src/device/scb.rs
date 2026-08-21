@@ -138,8 +138,10 @@ const CCR_RESET: u32 = 0x0000_0200;
 // Thread mode.
 const SHCSR_WRITABLE: u32 = 0x0007_F000;
 const SHCSR_SVCALLPENDED: u32 = 0x0000_8000;
+const SHCSR_BUSFAULTPENDED: u32 = 0x0000_4000;
 const SHCSR_MEMFAULTPENDED: u32 = 0x0000_2000;
 const SHCSR_USGFAULTPENDED: u32 = 0x0000_1000;
+const SHCSR_BUSFAULTENA: u32 = 0x0002_0000;
 const SHCSR_MEMFAULTENA: u32 = 0x0001_0000;
 const SHCSR_USGFAULTENA: u32 = 0x0004_0000;
 
@@ -323,11 +325,8 @@ impl Default for MpuV8 {
 pub struct Scb {
     ranges: [Region; 20],
     pendsv: bool,
-    /// `SHPR1`: configurable priorities for the fault exceptions.
-    /// `MemManage` at byte 0 and `UsageFault` at byte 1 are modeled (the
-    /// hardware places `UsageFault` at byte 2; this simulator keeps it at byte 1
-    /// for continuity with the existing `SHPR1` test that writes `0xE000_ED19`);
-    /// `BusFault` is not a distinct exception.
+/// `SHPR1`: configurable priorities for the fault exceptions
+    /// (`MemManage` byte 0, `BusFault` byte 1, `UsageFault` byte 2).
     shpr1: u32,
     shpr2: u32,
     shpr3: u32,
@@ -472,14 +471,15 @@ impl Scb {
         self.pendsv
     }
 
-    /// The configurable priority byte for system exception `n` (`4`, `6`, `11`,
-    /// `14`, `15`), lower meaning higher priority. Unrelated numbers read
-    /// zero.
+    /// The configurable priority byte for system exception `n` (`4`, `5`,
+    /// `6`, `11`, `14`, `15`), lower meaning higher priority. Unrelated
+    /// numbers read zero.
     #[must_use]
     pub const fn priority(&self, n: u8) -> u8 {
         match n {
             4 => (self.shpr1 & 0xFF) as u8,
-            6 => ((self.shpr1 >> 8) & 0xFF) as u8,
+            5 => ((self.shpr1 >> 8) & 0xFF) as u8,
+            6 => ((self.shpr1 >> 16) & 0xFF) as u8,
             11 => ((self.shpr2 >> 24) & 0xFF) as u8,
             14 => ((self.shpr3 >> 16) & 0xFF) as u8,
             15 => ((self.shpr3 >> 24) & 0xFF) as u8,
@@ -575,6 +575,25 @@ impl Scb {
     /// `MemManage` fault is taken.
     pub fn acknowledge_memfault(&mut self) {
         self.shcsr &= !SHCSR_MEMFAULTPENDED;
+    }
+
+    /// Whether `SHCSR.BUSFAULTENA` is set: `BusFault` is taken as a distinct
+    /// exception rather than escalated to `HardFault`.
+    #[must_use]
+    pub const fn busfault_enabled(&self) -> bool {
+        self.shcsr & SHCSR_BUSFAULTENA != 0
+    }
+
+    /// Whether `SHCSR.BUSFAULTPENDED` is set: a `BusFault` is pended.
+    #[must_use]
+    pub const fn busfault_pending(&self) -> bool {
+        self.shcsr & SHCSR_BUSFAULTPENDED != 0
+    }
+
+    /// Clear `SHCSR.BUSFAULTPENDED`, as the interrupt controller does when a
+    /// `BusFault` is taken.
+    pub fn acknowledge_busfault(&mut self) {
+        self.shcsr &= !SHCSR_BUSFAULTPENDED;
     }
 
     /// Whether `SHCSR.USGFAULTENA` is set: `UsageFault` is taken as a distinct
@@ -1325,15 +1344,17 @@ mod tests {
     #[test]
     fn shpr1_stores_usage_fault_priority() {
         let mut s = Scb::new();
-        // SHPR1 byte 1 -> UsageFault (bits 15:8).
-        s.write(0xE000_ED19, 0x60).unwrap();
+        // SHPR1 byte 2 -> UsageFault (bits 23:16); byte 0 -> MemManage.
+        s.write(0xE000_ED1A, 0x60).unwrap();
         assert_eq!(s.priority(6), 0x60);
-        assert_eq!(read_word(&mut s, 0xE000_ED18), 0x0000_6000);
-        // The MemManage/BusFault bytes (SHPR1 bytes 3 and 2) are unmodeled
-        // and expose no priority.
+        assert_eq!(read_word(&mut s, 0xE000_ED18), 0x0060_0000);
+        s.write(0xE000_ED18, 0x50).unwrap();
+        assert_eq!(s.priority(4), 0x50);
+        assert_eq!(read_word(&mut s, 0xE000_ED18), 0x0060_0050);
         s.reset();
         assert_eq!(read_word(&mut s, 0xE000_ED18), 0);
         assert_eq!(s.priority(6), 0);
+        assert_eq!(s.priority(4), 0);
     }
 
     #[test]

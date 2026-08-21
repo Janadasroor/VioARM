@@ -64,6 +64,10 @@ pub enum Exception {
     /// cannot preempt the running context) it escalates to `HardFault` with
     /// `HFSR.FORCED`.
     MemManage,
+    /// Exception number 5: the `BusFault`, taken for precise bus errors when
+    /// `SHCSR.BUSFAULTENA` is set. When disabled (or when it cannot preempt)
+    /// it escalates to `HardFault` with `HFSR.FORCED`.
+    BusFault,
     /// Exception number 6: the `UsageFault`, taken for undefined instructions,
     /// divide-by-zero with `CCR.DIV_0_TRP`, coprocessor access violations
     /// (`NOCP`), and alignment faults, when `SHCSR.USGFAULTENA` is set. When
@@ -96,6 +100,7 @@ impl Exception {
         match self {
             Self::HardFault => 3,
             Self::MemManage => 4,
+            Self::BusFault => 5,
             Self::UsageFault => 6,
             Self::SecureFault => 7,
             Self::SvCall => 11,
