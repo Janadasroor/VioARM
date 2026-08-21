@@ -239,7 +239,11 @@ projects, RTOSes, and bare-metal drivers.
     with no `MACRWUFFR`). Locked in with unit tests, an SVD-layout conformance
     test, a machine e2e dispatch through the `ETH` line, and CMSIS firmware
     (`STM32F10X_CL`) that drives the descriptor rings directly and
-    receive-echoes a frame under interrupts.
+    receive-echoes a frame under interrupts. **CRC done:** the STM32 CRC
+    calculation unit (`CRC` at `0x4002_3000`) with `DR`/`IDR`/`CR` and
+    polynomial `0x04C1_1DB7` (init `0xFFFF_FFFF`, `CR.RESET` reloads; locked in
+    with unit tests `crc_resets_to_all_ones_and_computes`/`idr_is_plain_storage`
+    and mounted on the F103/F107/F407 boards).
 8. **ARMv6-M (Cortex-M0/M0+)** and instruction-table/SVD codegen hardening.
    **Done.** The ARMv6-M exception model is now distinct from ARMv7-M: `MRS`/
    `MSR` of `BASEPRI`/`BASEPRI_MAX`/`FAULTMASK` read zero and ignore writes
