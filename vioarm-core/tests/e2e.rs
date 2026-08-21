@@ -1031,7 +1031,7 @@ fn iwdg_underflow_requests_a_full_reset() {
     sys.set_watchdog_reset(latch.clone());
     sys.attach(Box::new(Iwdg::new(latch)));
     let mut m = Machine::new(sys);
-    m.load_image(&load_flat(ENTRY, &[0xFE, 0xE7])); // b . (spin)
+    m.load_image(&load_flat(ENTRY, &[0xFE, 0xE7])); // b . (spin, 3c taken branch)
     {
         let mem = m.core.mem();
         mem.write_word(FLASH, 0x2000_0000).unwrap(); // SP
@@ -1045,8 +1045,8 @@ fn iwdg_underflow_requests_a_full_reset() {
         mem.write_word(0x4000_3000, 0xCCCC).unwrap(); // start
     }
     // The counter runs 0x10..=0x01 over 16 cycles; the 17th underflows and
-    // latches a reset request.
-    for _ in 0..16 {
+    // latches a reset request. `b .` is 3c (taken branch).
+    for _ in 0..5 {
         m.step().unwrap();
         assert!(!m.core.mem().reset_requested());
     }
@@ -1078,7 +1078,7 @@ fn wwdg_underflow_requests_a_full_reset() {
     sys.set_watchdog_reset(latch.clone());
     sys.attach(Box::new(Wwdg::new(latch)));
     let mut m = Machine::new(sys);
-    m.load_image(&load_flat(ENTRY, &[0xFE, 0xE7])); // b . (spin)
+    m.load_image(&load_flat(ENTRY, &[0xFE, 0xE7])); // b . (spin, 3c taken branch)
     {
         let mem = m.core.mem();
         mem.write_word(FLASH, 0x2000_0000).unwrap(); // SP
@@ -1090,8 +1090,8 @@ fn wwdg_underflow_requests_a_full_reset() {
         mem.write_word(0x4000_2C00, 0x0080 | 0x007F).unwrap(); // WDGA | T = 0x7F
     }
     // The 7-bit counter runs 0x7F..=0x40 over 63 cycles; the 64th underflows
-    // past the window and latches a reset request.
-    for _ in 0..63 {
+    // past the window and latches a reset request. `b .` is 3c.
+    for _ in 0..21 {
         m.step().unwrap();
         assert!(!m.core.mem().reset_requested());
     }
