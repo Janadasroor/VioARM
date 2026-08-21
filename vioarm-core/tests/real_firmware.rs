@@ -4179,3 +4179,43 @@ fn stm32h743_adc() {
     assert_eq!(v, 0x0ABC, "H743 ADC got {v:#x}");
 }
 
+#[test]
+fn stm32h743_full_soc_gap_fill() {
+    const FW: &str = r#"
+#define DAC_CR   0x40007400u
+#define DAC_DHR12R1 0x40007408u
+#define DAC_DOR1 0x4000742Cu
+#define DAC_SWTRIGR 0x40007404u
+#define OUT 0x20000000u
+void reset(void) {
+    *(volatile unsigned *)DAC_CR = 0x1u;
+    *(volatile unsigned *)DAC_DHR12R1 = 0x0ABu;
+    unsigned dor = *(volatile unsigned *)DAC_DOR1;
+    *(volatile unsigned *)DAC_CR = 0x5u;
+    *(volatile unsigned *)DAC_DHR12R1 = 0x0CDu;
+    *(volatile unsigned *)DAC_SWTRIGR = 1u;
+    unsigned dor2 = *(volatile unsigned *)DAC_DOR1;
+    *(volatile unsigned *)OUT = (dor == 0xABu) ? 1u : 0u;
+    *(volatile unsigned *)(OUT+4) = (dor2 == 0xCDu) ? 1u : 0u;
+    __asm__ volatile("bkpt #0");
+}
+"#;
+    let (code, symbols) = match build_firmware_h7_with_includes(FW, &[]) {
+        Ok(v) => v,
+        Err(why) => { eprintln!("skipping H743 DAC gap: {why}"); return; }
+    };
+    let entry = *symbols.get("reset").unwrap();
+    let mut m = Machine::armv7em(board::stm32h743());
+    m.load_image(&load_flat(CODE_BASE, &code));
+    {
+        let mem = m.core.mem();
+        mem.write_word(board::FLASH, INIT_SP).unwrap();
+        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+    }
+    m.reset().unwrap();
+    let err = m.run(50_000);
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
+    assert_eq!(m.core.mem().read_word(RAM).unwrap(), 1, "H743 DAC immediate DOR");
+    assert_eq!(m.core.mem().read_word(RAM+4).unwrap(), 1, "H743 DAC SWTRIG DOR");
+}
+
