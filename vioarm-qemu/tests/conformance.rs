@@ -4068,3 +4068,78 @@ fn mpu_data_violation_taken_as_memmanage() {
     compare_traces("mpu_data_violation_taken_as_memmanage", &vio, &qemu)
         .expect("traces agree");
 }
+
+/// A burst that straddles an MPU region boundary: `STMIA r0!, {r1-r4}`
+/// from `0x2000_07FC` (the last word inside region 0) writes four words
+/// `0x07FC/0x0800/0x0804/0x0808`; the second word is already outside the
+/// region and must fault with `MMFAR` equal to that word, not the base.
+/// Both simulators check every word of a burst, not just the first address.
+#[test]
+fn mpu_burst_straddles_region() {
+    let Some(mt) = qemu() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+    a.vec(3, "hf");
+
+    // Region 1: flash base, 1 MiB, rw/rw (this image runs there).
+    a.mov_imm32(0, 0xE000_ED98);
+    a.movs_imm8(1, 1);
+    a.str_imm(1, 0, 0);
+    a.mov_imm32(0, 0xE000_ED9C);
+    a.mov_imm32(1, 0x0000_0000);
+    a.str_imm(1, 0, 0);
+    a.mov_imm32(0, 0xE000_EDA0);
+    a.mov_imm32(1, 0x0300_0027);
+    a.str_imm(1, 0, 0);
+    // Region 0: 0x2000_0000..=0x2000_07FF, rw/rw (the SP lives here).
+    a.mov_imm32(0, 0xE000_ED98);
+    a.movs_imm8(1, 0);
+    a.str_imm(1, 0, 0);
+    a.mov_imm32(0, 0xE000_ED9C);
+    a.mov_imm32(1, 0x2000_0000);
+    a.str_imm(1, 0, 0);
+    a.mov_imm32(0, 0xE000_EDA0);
+    a.mov_imm32(1, 0x0300_0015);
+    a.str_imm(1, 0, 0);
+    a.mov_imm32(0, 0xE000_ED94);
+    a.movs_imm8(1, 1);
+    a.str_imm(1, 0, 0); // ENABLE
+
+    // Four-word burst straddling the boundary: 0x07FC (in), 0x0800 (out).
+    a.mov_imm32(0, 0x2000_07FC);
+    a.mov_imm32(1, 0x1111_1111);
+    a.mov_imm32(2, 0x2222_2222);
+    a.mov_imm32(3, 0x3333_3333);
+    a.mov_imm32(4, 0x4444_4444);
+    a.stmia(0, 0b0001_1110); // stmia r0!, {r1-r4}
+
+    a.label("halt");
+    a.b("halt");
+
+    a.label("hf");
+    a.mov_imm32(4, 0xE000_ED20);
+    a.ldr_imm(5, 4, 8); // MMFSR
+    a.ldr_imm(6, 4, 12); // HFSR
+    a.ldr_imm(7, 4, 20); // MMFAR (must be 0x2000_0800, the first faulting word)
+    a.mov_reg(1, 13);
+    a.ldr_imm(2, 1, 24);
+    a.adds_imm8(2, 2);
+    a.str_imm(2, 1, 24);
+    a.bx(14);
+
+    let img: Image = a.clone().finish_at(MPU_SP, 0x0000_0000).expect("assemble");
+    let stop = img.addr("halt").expect("halt");
+    let (vio, reached) = vio_run(&img.bytes, stop);
+    assert!(
+        reached,
+        "mpu_burst_straddles_region: vioarm never reached halt @ {stop:#x} (last {})",
+        snapshot_like(&vio)
+    );
+    let qemu = qemu_run_retry(&mt, &img.bytes, stop);
+    assert!(
+        !qemu.is_empty() && qemu.last().expect("empty").r[15] & !1 == stop,
+        "mpu_burst_straddles_region: qemu never reached halt @ {stop:#x} (got {} states)",
+        qemu.len()
+    );
+    compare_traces("mpu_burst_straddles_region", &vio, &qemu).expect("traces agree");
+}
