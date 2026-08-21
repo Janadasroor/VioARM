@@ -118,20 +118,22 @@ pub fn stm32f103() -> BoardMemory {
         Region::new(STM32_MAIN_FLASH, STM32_F103_FLASH_LEN),
         1024,
     )));
+    let dma_requests = Arc::new(Mutex::new(DmaRequests::new()));
     let mut mem = SystemMemory::new(backing);
     mem.set_flash_gate(gate.clone());
     mem.attach(Box::new(FlashF1::new(gate)));
     mem.attach(Box::new(Rcc::new()));
     mem.attach(Box::new(Pwr::new_for::<crate::device::svd::stm32f103::Stm32f103>()));
     mem.attach(Box::new(Crc::new_for::<crate::device::svd::stm32f103::Stm32f103>()));
-    mem.attach(Box::new(Dac::new_for::<crate::device::svd::stm32f103::Stm32f103>()));
+    mem.attach(Box::new(Dac::new_with_dma::<
+        crate::device::svd::stm32f103::Stm32f103,
+    >(dma_requests.clone())));
     mem.attach(Box::new(Rtc::new_for::<crate::device::svd::stm32f103::Stm32f103>()));
     mem.attach(Box::new(Bkp::new_for::<crate::device::svd::stm32f103::Stm32f103>()));
     mem.attach(Box::new(Sdio::new_for::<crate::device::svd::stm32f103::Stm32f103>()));
     mem.attach(Box::new(StmGpio::at(stm32::GPIOA, "gpioa")));
     mem.attach(Box::new(StmGpio::at(stm32::GPIOB, "gpiob")));
     mem.attach(Box::new(StmGpio::at(stm32::GPIOC, "gpioc")));
-    let dma_requests = Arc::new(Mutex::new(DmaRequests::new()));
     mem.attach(Box::new(Usart::with_dma(dma_requests.clone())));
     mem.attach(Box::new(Usart::usart2_for_device_with_dma::<Stm32f103>(
         dma_requests.clone(),

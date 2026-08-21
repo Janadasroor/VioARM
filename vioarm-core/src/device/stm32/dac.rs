@@ -4,10 +4,12 @@
 //! reflect the last converted value. When `TENx==0` a `DHR` write loads `DORx`
 //! if `ENx`; when `TENx==1` and `TSELx==0` (software) `SWTRIGR` latches.
 
+use crate::device::stm32::dma::DmaRequests;
 use crate::device::svd::{Behavior, Device, RegisterFile, Registers};
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
 use crate::mem::bus::Region;
+use std::sync::{Arc, Mutex};
 
 const CR: u16 = 0x00;
 const SWTRIGR: u16 = 0x04;
@@ -26,12 +28,22 @@ const DOR2: u16 = 0x30;
 const CR_EN1: u32 = 1 << 0;
 const CR_TEN1: u32 = 1 << 2;
 const CR_TSEL1_SHIFT: u32 = 3;
+const CR_DMAEN1: u32 = 1 << 12;
 const CR_EN2: u32 = 1 << 16;
 const CR_TEN2: u32 = 1 << 18;
 const CR_TSEL2_SHIFT: u32 = 19;
+const CR_DMAEN2: u32 = 1 << 28;
 
-#[derive(Debug, Default)]
-struct DacBehavior;
+#[derive(Debug)]
+struct DacBehavior {
+    requests: Option<Arc<Mutex<DmaRequests>>>,
+}
+
+impl Default for DacBehavior {
+    fn default() -> Self {
+        Self { requests: None }
+    }
+}
 
 impl DacBehavior {
     fn transfer_ch1(view: &mut Registers<&mut [u32]>, val12: u32) {
@@ -39,8 +51,8 @@ impl DacBehavior {
         if cr & CR_EN1 == 0 {
             return;
         }
-        if cr & CR_TEN1 != 0 {
-            // Triggered mode — wait for SWTRIGR (TSEL==0) or HW trigger.
+        // In DMAEN triggered mode the DMA write still latches.
+        if cr & CR_TEN1 != 0 && cr & CR_DMAEN1 == 0 {
             return;
         }
         view.set(DOR1, val12 & 0xFFF);
@@ -50,10 +62,16 @@ impl DacBehavior {
         if cr & CR_EN2 == 0 {
             return;
         }
-        if cr & CR_TEN2 != 0 {
+        if cr & CR_TEN2 != 0 && cr & CR_DMAEN2 == 0 {
             return;
         }
         view.set(DOR2, val12 & 0xFFF);
+    }
+    fn assert_dma(&self, ch: u8) {
+        if let Some(req) = &self.requests {
+            // DAC1 -> DMA1 Ch3, DAC2 -> DMA1 Ch4, memory→periph.
+            req.lock().unwrap().request(0, ch, true);
+        }
     }
 }
 
@@ -73,16 +91,23 @@ impl Behavior for DacBehavior {
                 if word & (1 << 0) != 0 {
                     let cr = view.get(CR);
                     if cr & CR_EN1 != 0 && cr & CR_TEN1 != 0 && ((cr >> CR_TSEL1_SHIFT) & 0x7) == 0 {
-                        // Latch last DHR value (12R1) to DOR1.
-                        let v = view.get(DHR12R1) & 0xFFF;
-                        view.set(DOR1, v);
+                        if cr & CR_DMAEN1 != 0 {
+                            self.assert_dma(3);
+                        } else {
+                            let v = view.get(DHR12R1) & 0xFFF;
+                            view.set(DOR1, v);
+                        }
                     }
                 }
                 if word & (1 << 1) != 0 {
                     let cr = view.get(CR);
                     if cr & CR_EN2 != 0 && cr & CR_TEN2 != 0 && ((cr >> CR_TSEL2_SHIFT) & 0x7) == 0 {
-                        let v = view.get(DHR12R2) & 0xFFF;
-                        view.set(DOR2, v);
+                        if cr & CR_DMAEN2 != 0 {
+                            self.assert_dma(4);
+                        } else {
+                            let v = view.get(DHR12R2) & 0xFFF;
+                            view.set(DOR2, v);
+                        }
                     }
                 }
                 // SWTRIGR is W1, self-clears.
@@ -155,7 +180,20 @@ impl Dac {
     pub fn new_for<D: Device>() -> Self {
         let def = D::peripheral("DAC").expect("generated tables contain DAC");
         Self {
-            inner: RegisterFile::new(def, DacBehavior),
+            inner: RegisterFile::new(def, DacBehavior::default()),
+        }
+    }
+
+    #[must_use]
+    pub fn new_with_dma<D: Device>(requests: Arc<Mutex<DmaRequests>>) -> Self {
+        let def = D::peripheral("DAC").expect("generated tables contain DAC");
+        Self {
+            inner: RegisterFile::new(
+                def,
+                DacBehavior {
+                    requests: Some(requests),
+                },
+            ),
         }
     }
 }

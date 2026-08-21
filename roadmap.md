@@ -243,11 +243,13 @@ projects, RTOSes, and bare-metal drivers.
     calculation unit (`CRC` at `0x4002_3000`) with `DR`/`IDR`/`CR` and
     polynomial `0x04C1_1DB7` (init `0xFFFF_FFFF`, `CR.RESET` reloads; locked in
     with unit tests `crc_resets_to_all_ones_and_computes`/`idr_is_plain_storage`
-    and mounted on the F103/F107/F407 boards). **DAC done:** the STM32 DAC
+    and mounted on the F103/F107/F407 boards).     **DAC done:** the STM32 DAC
     (`DAC` at `0x4000_7400`) with `CR` (`EN`/`TEN`/`TSEL`/`DMAEN`), `SWTRIGR`
     software trigger, `DHR12R1/L1/8R1`→`DOR1` and dual `DHR12RD` (immediate when
-    `TEN==0`, latched on `SWTRIGR` when `TEN==1`/`TSEL==0`; `dac_immediate_…`/
-    `dac_triggered_…`; mounted on F103/F107/F407).
+    `TEN==0`/`DMAEN==0`, latched on `SWTRIGR` when `TEN==1`/`TSEL==0`,
+    `DMAEN` asserts `DMA1 Ch3/4` `to_periph` request on `SWTRIGR` for `F103`;
+    `dac_immediate_…`/`dac_triggered_…`; mounted on F103/F107/F407, `F103` `DAC`
+    wired to `DMA1`).
     **RTC/BKP done:** the backup domain (`RTC` at `0x4000_2800`, `BKP` at
     `0x4000_6C00` on F1) — `RTC` now accurate prescaler/counter/alarm
     (`PRL`→`DIV`→`CNT` 32-bit, `SECF`/`ALRF`/`OWF`, `CRH` enables, `CNF`/`RTOFF`
