@@ -2943,3 +2943,56 @@ void reset(void) {
     assert_eq!(m.core.mem().read_word(RAM + 20).unwrap(), 1, "SDIO CMD8 RESP");
     assert_eq!(m.core.mem().read_word(RAM + 24).unwrap(), 1, "SDIO ACMD41 OCR ready");
 }
+
+#[test]
+fn stm32f072_full_soc_gap_fill() {
+    const FW: &str = r#"
+#define PWR_CR   0x40007000u
+#define CRC_DR   0x40023000u
+#define CRC_CR   0x40023008u
+#define DAC_CR   0x40007400u
+#define DAC_DHR12R1 0x40007408u
+#define DAC_DOR1 0x4000742Cu
+#define DAC_SWTRIGR 0x40007404u
+#define OUT 0x20000000u
+
+void reset(void) {
+    *(volatile unsigned *)PWR_CR |= (1u<<8);
+    *(volatile unsigned *)CRC_CR = 1u;
+    *(volatile unsigned *)CRC_DR = 0x12345678u;
+    unsigned crc = *(volatile unsigned *)CRC_DR;
+    *(volatile unsigned *)DAC_CR = 0x1u;
+    *(volatile unsigned *)DAC_DHR12R1 = 0x0ABu;
+    unsigned dor = *(volatile unsigned *)DAC_DOR1;
+    *(volatile unsigned *)DAC_CR = 0x5u;
+    *(volatile unsigned *)DAC_DHR12R1 = 0x0CDu;
+    *(volatile unsigned *)DAC_SWTRIGR = 1u;
+    unsigned dor2 = *(volatile unsigned *)DAC_DOR1;
+    *(volatile unsigned *)OUT = (crc != 0xFFFFFFFFu && crc != 0x12345678u) ? 1u : 0u;
+    *(volatile unsigned *)(OUT+4) = (dor == 0xABu) ? 1u : 0u;
+    *(volatile unsigned *)(OUT+8) = (dor2 == 0xCDu) ? 1u : 0u;
+    __asm__ volatile("bkpt #0");
+}
+"#;
+    let (code, symbols) = match build_firmware(FW) {
+        Ok(image) => image,
+        Err(why) => {
+            eprintln!("skipping F072 Soc test: {why}");
+            return;
+        }
+    };
+    let entry = *symbols.get("reset").expect("no reset symbol");
+    let mut m = Machine::new(board::stm32f072());
+    m.load_image(&load_flat(CODE_BASE, &code));
+    {
+        let mem = m.core.mem();
+        mem.write_word(board::FLASH, INIT_SP).unwrap();
+        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+    }
+    m.reset().expect("reset");
+    let err = m.run(50_000);
+    assert_eq!(err, Err(HaltCause::NonThumbTarget), "F072 firmware did not halt, got {err:?}");
+    assert_eq!(m.core.mem().read_word(RAM).unwrap(), 1, "CRC computed");
+    assert_eq!(m.core.mem().read_word(RAM + 4).unwrap(), 1, "DAC immediate DOR");
+    assert_eq!(m.core.mem().read_word(RAM + 8).unwrap(), 1, "DAC SWTRIG DOR");
+}
