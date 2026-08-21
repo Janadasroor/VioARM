@@ -3180,3 +3180,39 @@ void reset(void) {
     assert_eq!(m.core.mem().read_word(RAM+4).unwrap(), 1, "DAC1");
     assert_eq!(m.core.mem().read_word(RAM+8).unwrap(), 1, "DAC2");
 }
+
+const STM32F303_GPIO_FIRMWARE: &str = r#"
+#define RCC_AHBENR  0x40021014u
+#define GPIOA_MODER 0x48000000u
+#define GPIOA_ODR   0x48000014u
+#define GPIOA_BSRR  0x48000018u
+#define OUT 0x20000000u
+
+void reset(void) {
+    *(volatile unsigned *)RCC_AHBENR |= (1u<<17);
+    *(volatile unsigned *)GPIOA_MODER = (*(volatile unsigned *)GPIOA_MODER & ~(3u<<0)) | (1u<<0);
+    *(volatile unsigned *)GPIOA_BSRR = (1u<<0);
+    *(volatile unsigned *)OUT = (*(volatile unsigned *)GPIOA_ODR & 1u) ? 1u : 0u;
+    __asm__ volatile("bkpt #0");
+}
+"#;
+
+#[test]
+fn stm32f303xe_firmware_toggles_gpio() {
+    let (code, symbols) = match build_firmware_v7m_with_includes(STM32F303_GPIO_FIRMWARE, &[]) {
+        Ok(v) => v,
+        Err(why) => { eprintln!("skipping F303 gpio: {why}"); return; }
+    };
+    let entry = *symbols.get("reset").unwrap();
+    let mut m = Machine::armv7m(board::stm32f303xe());
+    m.load_image(&load_flat(CODE_BASE, &code));
+    {
+        let mem = m.core.mem();
+        mem.write_word(board::FLASH, INIT_SP).unwrap();
+        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+    }
+    m.reset().unwrap();
+    let err = m.run(50_000);
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
+    assert_eq!(m.core.mem().read_word(RAM).unwrap(), 1);
+}
