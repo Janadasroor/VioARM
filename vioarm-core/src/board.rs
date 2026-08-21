@@ -773,3 +773,43 @@ pub fn stm32g474xx() -> BoardMemory {
     mem.attach(Box::new(SysTick::new()));
     mem
 }
+
+/// STM32H743 (H7, Cortex-M7) flash size in bytes (2 MiB).
+pub const STM32_H743_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32H743 RAM size in bytes (512 KiB AXI + 128 KiB DTCM).
+pub const STM32_H743_RAM_LEN: u32 = 0x0008_0000;
+
+/// An STM32H743 board: the H7 line with `Stm32h743` tables.
+#[must_use]
+pub fn stm32h743() -> BoardMemory {
+    use crate::device::svd::stm32h743::Stm32h743;
+    let backing = FlatMemory::with_layout(
+        &[FLASH, STM32_MAIN_FLASH, RAM],
+        &[STM32_H743_FLASH_LEN, STM32_H743_FLASH_LEN, STM32_H743_RAM_LEN],
+    );
+    let gate = Arc::new(Mutex::new(FlashGate::new(
+        Region::new(STM32_MAIN_FLASH, STM32_H743_FLASH_LEN),
+        32 * 1024,
+    )));
+    let mut mem = SystemMemory::new(backing);
+    mem.set_flash_gate(gate.clone());
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("FLASH").is_some() {
+        mem.attach(Box::new(FlashF1::for_device::<Stm32h743>(gate)));
+    }
+    mem.attach(Box::new(Rcc::for_device::<Stm32h743>()));
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("PWR").is_some() {
+        mem.attach(Box::new(Pwr::new_for::<Stm32h743>()));
+    }
+    for (base, name) in [
+        (0x5802_0000u32, "gpioa"),
+        (0x5802_0400, "gpiob"),
+        (0x5802_0800, "gpioc"),
+    ] {
+        if <Stm32h743 as crate::device::svd::Device>::by_base(base).is_some() {
+            mem.attach(Box::new(GpioF4::at_in::<Stm32h743>(base, name)));
+        }
+    }
+    mem.attach(Box::new(Dwt::new()));
+    mem.attach(Box::new(SysTick::new()));
+    mem
+}
