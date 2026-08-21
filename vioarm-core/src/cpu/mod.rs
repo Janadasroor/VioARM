@@ -633,7 +633,20 @@ impl<B: PeripheralBus> Core<B> {
                     | Inst32::Lda { .. }
                     | Inst32::Stl { .. } => 2,
                     Inst32::LdmStm { regs, .. } => 1 + regs.count_ones() as u64,
-                    Inst32::Div { .. } => 4, // 2-12, use 4
+                    Inst32::Div { signed, rm, .. } => {
+                        let d = self.regs.r[rm as usize];
+                        if d == 0 {
+                            2
+                        } else {
+                            let abs = if signed {
+                                (d as i32).unsigned_abs()
+                            } else {
+                                d
+                            };
+                            let lz = abs.leading_zeros() as u64;
+                            2 + ((32 - lz) * 10 + 31) / 32
+                        }
+                    }
                     Inst32::TblBranch { .. } => 3,
                     _ => 1,
                 };
