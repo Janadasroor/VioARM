@@ -583,8 +583,27 @@ impl<B: PeripheralBus> Core<B> {
             Next::Stop(cause) => return Err(cause),
         }
         self.cycles += 1;
-        self.cyccnt += 1;
+        let ws = if pc < 0x2000_0000 {
+            self.flash_ws()
+        } else {
+            0
+        };
+        self.cyccnt += 1 + ws;
         Ok(())
+    }
+
+    fn flash_ws(&mut self) -> u64 {
+        let ws_f1 = self
+            .mem
+            .read_word(0x4002_2000)
+            .map(|v| (v & 0x7) as u64)
+            .unwrap_or(0);
+        let ws_f4 = self
+            .mem
+            .read_word(0x4002_3C00)
+            .map(|v| (v & 0xF) as u64)
+            .unwrap_or(0);
+        ws_f1.max(ws_f4)
     }
 
     /// Fetch and execute a single 16-bit-centric ARMv6-M instruction.
