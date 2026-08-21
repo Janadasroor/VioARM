@@ -332,7 +332,10 @@ lda_stl, splim, tt/sau_tt/mpu_tt, alu_thumb1, sg, blxns/bxns,
   recording — without/with `FORCED` — and the fault priority/frame against the
   M3), and the private peripheral bus (`0xE000_0000`..) bypasses the MPU
   exactly as QEMU's `m_is_ppb_region` does.
-- FPDSCR trap-enable bits are unmodeled.
+- `FPDSCR`/`FPSCR` trap-enable bits (`IOE`/`DZE`/`OFE`/`UFE`/`IXE`/`IDE`)
+  are RAZ/WI on FPv4-SP (VFPv3/VFPv4, not U) — writes ignored, reads zero —
+  matching the QEMU Cortex-M4 oracle; `FPDSCR` exposes only `AHP`/`DN`/`FZ`/
+  `RMode` to the `FPSCR` reset value copied on lazy stacking (`fpdscr_trap_bits_are_raz_wi`).
 - `HFSR.FORCED` is reported at bit 30 and the `SHCSR` active-status (`*ACT`)
   bits read zero, both to match the QEMU oracle rather than the ARMv7-M bit
   31 / live-active-state encoding.
