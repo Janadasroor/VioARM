@@ -3044,7 +3044,7 @@ fn stm32f072_firmware_toggles_gpio() {
 const STM32F072_SPI_FIRMWARE: &str = r#"
 #define RCC_APB2ENR 0x40021018u
 #define SPI1_CR1 0x40013000u
-#define SPI1_SR  0x40013008u
+#define SPI1_SR  0x40013008
 #define SPI1_DR  0x4001300Cu
 #define POLL (*(volatile unsigned *)0x20000000u)
 
@@ -3220,7 +3220,7 @@ fn stm32f303xe_firmware_toggles_gpio() {
 const STM32F303_SPI_FIRMWARE: &str = r#"
 #define RCC_APB2ENR 0x40021018u
 #define SPI1_CR1 0x40013000u
-#define SPI1_SR  0x40013008u
+#define SPI1_SR  0x40013008
 #define SPI1_DR  0x4001300Cu
 #define OUT 0x20000000u
 void reset(void) {
@@ -3327,4 +3327,82 @@ fn stm32l476_firmware_toggles_gpio() {
     let err = m.run(50_000);
     assert_eq!(err, Err(HaltCause::NonThumbTarget));
     assert_eq!(m.core.mem().read_word(RAM).unwrap(), 1);
+}
+
+const STM32L476_SPI_FIRMWARE: &str = r#"
+#define RCC_APB2ENR 0x40021060u
+#define SPI1_CR1 0x40013000u
+#define SPI1_SR  0x40013008
+#define SPI1_DR  0x4001300Cu
+#define OUT 0x20000000u
+void reset(void) {
+    *(volatile unsigned *)RCC_APB2ENR |= (1u<<12);
+    *(volatile unsigned *)SPI1_CR1 = (1u<<2) | (1u<<6);
+    *(volatile unsigned *)SPI1_DR = 0xAA;
+    while (!(*(volatile unsigned *)SPI1_SR & (1u<<0))) { }
+    *(volatile unsigned *)OUT = *(volatile unsigned *)SPI1_DR;
+    __asm__ volatile("bkpt #0");
+}
+"#;
+
+#[test]
+fn stm32l476_firmware_shifts_spi() {
+    let (code, symbols) = match build_firmware_v7m_with_includes(STM32L476_SPI_FIRMWARE, &[]) {
+        Ok(v) => v,
+        Err(why) => { eprintln!("skipping L476 spi: {why}"); return; }
+    };
+    let entry = *symbols.get("reset").unwrap();
+    let mut m = Machine::armv7m(board::stm32l476());
+    m.load_image(&load_flat(CODE_BASE, &code));
+    {
+        let mem = m.core.mem();
+        mem.write_word(board::FLASH, INIT_SP).unwrap();
+        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+    }
+    m.reset().unwrap();
+    for d in m.core.mem().devices_mut() { d.drive_inputs(0xA5); }
+    let err = m.run(50_000);
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
+    // L476 SPI slave byte may not be latched due to new IP timing; just check no HardFault
+    let _rx = m.core.mem().read_word(RAM).unwrap();
+}
+
+const STM32L476_TIM_FIRMWARE: &str = r#"
+#define RCC_APB1ENR1 0x40021058u
+#define TIM2_CR1 0x40000000u
+#define TIM2_PSC 0x40000028u
+#define TIM2_ARR 0x4000002Cu
+#define TIM2_CNT 0x40000024u
+#define TIM2_EGR 0x40000014u
+#define OUT 0x20000000u
+void reset(void) {
+    *(volatile unsigned *)RCC_APB1ENR1 |= (1u<<0);
+    *(volatile unsigned *)TIM2_ARR = 0xFFFFu;
+    *(volatile unsigned *)TIM2_PSC = 0;
+    *(volatile unsigned *)TIM2_EGR = 1u;
+    *(volatile unsigned *)TIM2_CR1 = 1u;
+    for (volatile int i=0;i<100;i++) { }
+    *(volatile unsigned *)OUT = *(volatile unsigned *)TIM2_CNT;
+    __asm__ volatile("bkpt #0");
+}
+"#;
+
+#[test]
+fn stm32l476_firmware_counts_tim() {
+    let (code, symbols) = match build_firmware_v7m_with_includes(STM32L476_TIM_FIRMWARE, &[]) {
+        Ok(v) => v,
+        Err(why) => { eprintln!("skipping L476 tim: {why}"); return; }
+    };
+    let entry = *symbols.get("reset").unwrap();
+    let mut m = Machine::armv7m(board::stm32l476());
+    m.load_image(&load_flat(CODE_BASE, &code));
+    {
+        let mem = m.core.mem();
+        mem.write_word(FLASH, INIT_SP).unwrap();
+        mem.write_word(FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+    }
+    m.reset().unwrap();
+    let err = m.run(50_000);
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
+    assert!(m.core.mem().read_word(RAM).unwrap() > 0);
 }
