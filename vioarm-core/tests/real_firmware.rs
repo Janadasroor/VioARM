@@ -3130,3 +3130,53 @@ fn stm32f072_firmware_counts_tim() {
     let Some(cnt) = run_f072_tim() else { return; };
     assert!(cnt > 0, "TIM2 never counted: {cnt}");
 }
+
+#[test]
+fn stm32f303xe_full_soc_gap_fill() {
+    const FW: &str = r#"
+#define PWR_CR   0x40007000u
+#define CRC_DR   0x40023000u
+#define CRC_CR   0x40023008u
+#define DAC_CR   0x40007400u
+#define DAC_DHR12R1 0x40007408u
+#define DAC_DOR1 0x4000742Cu
+#define DAC_SWTRIGR 0x40007404u
+#define OUT 0x20000000u
+
+void reset(void) {
+    *(volatile unsigned *)PWR_CR |= (1u<<8);
+    *(volatile unsigned *)CRC_CR = 1u;
+    *(volatile unsigned *)CRC_DR = 0x12345678u;
+    unsigned crc = *(volatile unsigned *)CRC_DR;
+    *(volatile unsigned *)DAC_CR = 0x1u;
+    *(volatile unsigned *)DAC_DHR12R1 = 0x0ABu;
+    unsigned dor = *(volatile unsigned *)DAC_DOR1;
+    *(volatile unsigned *)DAC_CR = 0x5u;
+    *(volatile unsigned *)DAC_DHR12R1 = 0x0CDu;
+    *(volatile unsigned *)DAC_SWTRIGR = 1u;
+    unsigned dor2 = *(volatile unsigned *)DAC_DOR1;
+    *(volatile unsigned *)OUT = (crc != 0xFFFFFFFFu && crc != 0x12345678u) ? 1u : 0u;
+    *(volatile unsigned *)(OUT+4) = (dor == 0xABu) ? 1u : 0u;
+    *(volatile unsigned *)(OUT+8) = (dor2 == 0xCDu) ? 1u : 0u;
+    __asm__ volatile("bkpt #0");
+}
+"#;
+    let (code, symbols) = match build_firmware_v7m_with_includes(FW, &[]) {
+        Ok(v) => v,
+        Err(why) => { eprintln!("skipping F303 gap-fill: {why}"); return; }
+    };
+    let entry = *symbols.get("reset").unwrap();
+    let mut m = Machine::armv7m(board::stm32f303xe());
+    m.load_image(&load_flat(CODE_BASE, &code));
+    {
+        let mem = m.core.mem();
+        mem.write_word(board::FLASH, INIT_SP).unwrap();
+        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+    }
+    m.reset().unwrap();
+    let err = m.run(50_000);
+    assert_eq!(err, Err(HaltCause::NonThumbTarget), "F303 gap-fill did not halt {err:?}");
+    assert_eq!(m.core.mem().read_word(RAM).unwrap(), 1, "CRC");
+    assert_eq!(m.core.mem().read_word(RAM+4).unwrap(), 1, "DAC1");
+    assert_eq!(m.core.mem().read_word(RAM+8).unwrap(), 1, "DAC2");
+}
