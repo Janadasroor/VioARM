@@ -356,8 +356,12 @@ lda_stl, splim, tt/sau_tt/mpu_tt, alu_thumb1, sg, blxns/bxns,
   USART2 ch7/ch6, USART3 ch2/ch3, UART4 ch5/ch6, UART5 ch7/ch4 on `DMA1`).
   DMA arbitration, burst/fifo behavior, and the timer/ADC/SPI request lines
   are not modeled; each channel raises its own NVIC line.
-- Double-precision arithmetic is not implemented (D registers alias S pairs
-  for moves and loads only).
+- Double-precision data-processing is UNDEFINED on FPv4-SP (Cortex-M4F) —
+  only the `D↔S` alias moves/loads (`VMOV D↔R`, `VLDR/VSTR D`, `VLDM/VSTM D`)
+  via `read_d`/`write_d` are valid; `sz=11` (`Vfp3`/`Vfp2` double) correctly
+  decode-fails to `UNDEFINSTR`/`HardFault`, matching the QEMU Cortex-M4
+  oracle (`decode_vfp_dp:2468`). A double-arithmetic FPU would be a new ISA
+  (FPv5-D16 / Cortex-M7).
 - The QEMU reference cannot execute taken IT-block branches; those paths are
   covered by core unit tests instead.
 
