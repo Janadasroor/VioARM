@@ -703,3 +703,73 @@ pub fn stm32l476() -> BoardMemory {
     mem.attach(Box::new(SysTick::new()));
     mem
 }
+
+/// STM32G474 (G4, Cortex-M4) flash size in bytes (512 KiB).
+pub const STM32_G474_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32G474 RAM size in bytes (128 KiB).
+pub const STM32_G474_RAM_LEN: u32 = 0x0002_0000;
+
+/// An STM32G474 board: the G4 line with `Stm32g474` tables.
+#[must_use]
+pub fn stm32g474xx() -> BoardMemory {
+    use crate::device::svd::stm32g474xx::Stm32g474;
+    let backing = FlatMemory::with_layout(
+        &[FLASH, STM32_MAIN_FLASH, RAM],
+        &[STM32_G474_FLASH_LEN, STM32_G474_FLASH_LEN, STM32_G474_RAM_LEN],
+    );
+    let gate = Arc::new(Mutex::new(FlashGate::new(
+        Region::new(STM32_MAIN_FLASH, STM32_G474_FLASH_LEN),
+        2048,
+    )));
+    let mut mem = SystemMemory::new(backing);
+    mem.set_flash_gate(gate.clone());
+    if <Stm32g474 as crate::device::svd::Device>::peripheral("FLASH").is_some() {
+        mem.attach(Box::new(FlashF1::for_device::<Stm32g474>(gate)));
+    }
+    mem.attach(Box::new(Rcc::for_device::<Stm32g474>()));
+    if <Stm32g474 as crate::device::svd::Device>::peripheral("PWR").is_some() {
+        mem.attach(Box::new(Pwr::new_for::<Stm32g474>()));
+    }
+    if <Stm32g474 as crate::device::svd::Device>::peripheral("CRC").is_some() {
+        mem.attach(Box::new(Crc::new_for::<Stm32g474>()));
+    }
+    for (base, name) in [
+        (0x4800_0000u32, "gpioa"),
+        (0x4800_0400, "gpiob"),
+        (0x4800_0800, "gpioc"),
+    ] {
+        if <Stm32g474 as crate::device::svd::Device>::by_base(base).is_some() {
+            mem.attach(Box::new(GpioF4::at_in::<Stm32g474>(base, name)));
+        }
+    }
+    for ctor in [
+        Usart::for_device::<Stm32g474> as fn() -> Usart,
+        Usart::usart2_for::<Stm32g474>,
+        Usart::usart3_for::<Stm32g474>,
+    ] {
+        let base = ctor().ranges()[0].base;
+        if <Stm32g474 as crate::device::svd::Device>::by_base(base).is_some() {
+            mem.attach(Box::new(ctor()));
+        }
+    }
+    for ctor in [
+        Timer::tim2_for::<Stm32g474>,
+        Timer::tim6_for::<Stm32g474>,
+    ] {
+        let base = ctor().ranges()[0].base;
+        if <Stm32g474 as crate::device::svd::Device>::by_base(base).is_some() {
+            mem.attach(Box::new(ctor()));
+        }
+    }
+    let watchdog = Arc::new(Mutex::new(false));
+    mem.set_watchdog_reset(watchdog.clone());
+    if <Stm32g474 as crate::device::svd::Device>::peripheral("IWDG").is_some() {
+        mem.attach(Box::new(Iwdg::for_device::<Stm32g474>(watchdog.clone())));
+    }
+    if <Stm32g474 as crate::device::svd::Device>::peripheral("WWDG").is_some() {
+        mem.attach(Box::new(Wwdg::for_device::<Stm32g474>(watchdog)));
+    }
+    mem.attach(Box::new(Dwt::new()));
+    mem.attach(Box::new(SysTick::new()));
+    mem
+}
