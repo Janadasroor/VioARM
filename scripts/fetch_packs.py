@@ -47,6 +47,12 @@ PACKS: dict[str, dict[str, str]] = {
         "version": "2.6.0",
         "url": "https://www.keil.com/pack/",
     },
+    "STM32G4": {
+        "vendor": "Keil",
+        "name": "STM32G4xx_DFP",
+        "version": "1.5.0",
+        "url": "https://www.keil.com/pack/",
+    },
 }
 
 
