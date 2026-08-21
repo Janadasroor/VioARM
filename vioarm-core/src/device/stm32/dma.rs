@@ -16,10 +16,12 @@
 //! mailbox shared with [`SystemMemory`], which drains it after every device
 //! tick. Completion is optimistic for memory-to-memory: the whole transfer
 //! lands in the cycle the engine sees the channel enabled. In both modes
-//! `CNDTR` counts down, `EN` self-clears at zero, and `TCIF` latches. The
-//! controller raises one NVIC line per channel (`DMA1` lines 11..=17, `DMA2`
-//! lines 56..=60), so `pending()` reports a per-channel bitmask; the line is
-//! asserted when that channel's `TCIE` and `TCIF` are both set.
+//! `CNDTR` counts down, `EN` self-clears at zero, and `TCIF` latches. Enabled
+//! channels arbitrate by `CCR.PL` (higher first, then lower channel number,
+//! `pl_priority_arbitrates_higher_first`). The controller raises one NVIC line
+//! per channel (`DMA1` lines 11..=17, `DMA2` lines 56..=60), so `pending()`
+//! reports a per-channel bitmask; the line is asserted when that channel's
+//! `TCIE` and `TCIF` are both set.
 
 use crate::device::svd::stm32f103;
 use crate::device::svd::{Behavior, Device, RegisterFile, Registers};
@@ -210,7 +212,23 @@ impl Behavior for DmaBehavior {
     // `cpar`/`cmar` mirror the CPAR/CMAR register names.
     #[allow(clippy::similar_names)]
     fn tick(&mut self, view: &mut Registers<&mut [u32]>, _delta: u64) {
-        for ch in 0..self.channels {
+        // Arbitration: higher `PL` first, then lower channel number.
+        let mut order: Vec<(u32, u8)> = (0..self.channels)
+            .filter_map(|ch| {
+                let base = CH_STRIDE * u16::from(ch);
+                let ccr = view.get(CCR_CH + base);
+                if ccr & EN == 0 {
+                    return None;
+                }
+                if view.get(CNDTR_CH + base) & NDT_MASK == 0 {
+                    return None;
+                }
+                let pl = (ccr >> 12) & 0x3;
+                Some((pl, ch))
+            })
+            .collect();
+        order.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        for (_, ch) in order {
             let base = CH_STRIDE * u16::from(ch);
             let ccr = view.get(CCR_CH + base);
             if ccr & EN == 0 {
@@ -663,5 +681,25 @@ mod tests {
         let mut d = DmaF1::dma1(m, requests());
         assert!(matches!(d.read(BASE + 0x90), Err(BusError::Reserved)));
         assert!(matches!(d.write(BASE - 1, 0), Err(BusError::Reserved)));
+    }
+
+    #[test]
+    fn pl_priority_arbitrates_higher_first() {
+        let m = mailbox();
+        let mut d = DmaF1::dma1(m.clone(), requests());
+        // Channel 1 (PL 0) and channel 2 (PL 3) both M2M, 1 unit each.
+        write_word(&mut d, BASE + CPAR1, 0x1000);
+        write_word(&mut d, BASE + CMAR1, 0x2000);
+        write_word(&mut d, BASE + CNDTR1, 1);
+        write_word(&mut d, BASE + CCR1, EN | MEM2MEM); // PL 0
+        let ch2 = 1u32;
+        write_word(&mut d, BASE + 0x14 + CPAR1, 0x3000);
+        write_word(&mut d, BASE + 0x14 + CMAR1, 0x4000);
+        write_word(&mut d, BASE + 0x14 + CNDTR1, 1);
+        write_word(&mut d, BASE + 0x14 + CCR1, EN | MEM2MEM | (3 << 12)); // PL 3
+        d.tick(1);
+        // Higher PL (ch2) queued first.
+        assert_eq!(*m.lock().unwrap(), vec![(0x3000, 0x4000, 1), (0x1000, 0x2000, 1)]);
+        assert_eq!(ch2, 1);
     }
 }

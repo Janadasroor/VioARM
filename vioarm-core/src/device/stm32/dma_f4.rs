@@ -11,12 +11,14 @@
 //! the units into a mailbox [`SystemMemory`] drains after every device tick.
 //! Completion is optimistic, matching the F1 memory-to-memory model: the whole
 //! transfer lands in the cycle the engine sees the stream enabled. `NDTR`
-//! counts down, `EN` self-clears at zero, and `TCIF` latches. The controller
-//! raises one NVIC line per stream — `DMA1` puts streams 0..=6 on IRQ 11..=17
-//! but stream 7 on IRQ 47, and `DMA2` scatters streams 5..=7 at IRQ 68..=70 —
-//! so `pending()` reports a per-stream bitmask and each line is routed by its
-//! table-mapped IRQ. Peripheral-request modes are thus complete without a wired
-//! request source, which firmware observes as an immediate transfer.
+//! counts down, `EN` self-clears at zero, and `TCIF` latches. Enabled streams
+//! arbitrate by `SxCR.PL` (higher first, then lower stream number,
+//! `pl_priority_arbitrates_higher_first`). The controller raises one NVIC line
+//! per stream — `DMA1` puts streams 0..=6 on IRQ 11..=17 but stream 7 on IRQ
+//! 47, and `DMA2` scatters streams 5..=7 at IRQ 68..=70 — so `pending()`
+//! reports a per-stream bitmask and each line is routed by its table-mapped
+//! IRQ. Peripheral-request modes are thus complete without a wired request
+//! source, which firmware observes as an immediate transfer.
 
 use crate::device::stm32::dma::DmaUnit;
 use crate::device::svd::{Behavior, Device, RegisterFile, Registers};
@@ -128,7 +130,23 @@ impl Behavior for DmaF4Behavior {
     }
 
     fn tick(&mut self, view: &mut Registers<&mut [u32]>, _delta: u64) {
-        for stream in 0..STREAMS {
+        // Arbitration: higher `PL` first, then lower stream number.
+        let mut order: Vec<(u32, u8)> = (0..STREAMS)
+            .filter_map(|stream| {
+                let cr = S0CR + STREAM_STRIDE * u16::from(stream);
+                let cr_word = view.get(cr);
+                if cr_word & EN == 0 {
+                    return None;
+                }
+                if view.get(cr + SNDTR) & NDTR_MASK == 0 {
+                    return None;
+                }
+                let pl = (cr_word >> 16) & 0x3;
+                Some((pl, stream))
+            })
+            .collect();
+        order.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        for (_, stream) in order {
             let s = u32::from(stream);
             let cr = S0CR + STREAM_STRIDE * u16::from(stream);
             let cr_word = view.get(cr);
@@ -483,5 +501,22 @@ mod tests {
         let mut d = DmaF4::dma1_for::<Stm32f407>(m);
         assert!(matches!(d.read(D1 + 0x400), Err(BusError::Reserved)));
         assert!(matches!(d.write(D1 - 1, 0), Err(BusError::Reserved)));
+    }
+
+    #[test]
+    fn pl_priority_arbitrates_higher_first() {
+        let m = mailbox();
+        let mut d = DmaF4::dma1_for::<Stm32f407>(m.clone());
+        // Stream 0 PL 0 and stream 1 PL 3, both M2M.
+        write_word(&mut d, D1 + s_par(0), 0x1000);
+        write_word(&mut d, D1 + s_m0ar(0), 0x2000);
+        write_word(&mut d, D1 + s_ndtr(0), 1);
+        write_word(&mut d, D1 + s_cr(0), EN | (2 << 6)); // PL 0
+        write_word(&mut d, D1 + s_par(1), 0x3000);
+        write_word(&mut d, D1 + s_m0ar(1), 0x4000);
+        write_word(&mut d, D1 + s_ndtr(1), 1);
+        write_word(&mut d, D1 + s_cr(1), EN | (3 << 16) | (2 << 6)); // PL 3
+        d.tick(1);
+        assert_eq!(*m.lock().unwrap(), vec![(0x3000, 0x4000, 1), (0x1000, 0x2000, 1)]);
     }
 }

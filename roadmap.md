@@ -344,13 +344,16 @@ lda_stl, splim, tt/sau_tt/mpu_tt, alu_thumb1, sg, blxns/bxns,
   at `0x0800_0000` is a separate gated store; the boot-time alias at
   `0x0000_0000` is ungated. On the F407 the main flash and its boot-time
   alias share the gated store.
-- The F4 DMA controllers transfer any `DIR` optimistically in the enable
-  cycle (`00` peripheral→memory `PAR`→`M0AR`, `01` memory→peripheral `M0AR`→
-  `PAR`, `10` memory-to-memory) with `PSIZE`/`MSIZE` widths and `PINC`/`MINC`
-  stepping (`peripheral_request_dirs_complete_optimistically`); the transfer
+- The F1/F4 DMA controllers arbitrate by `PL` (higher `PL` first, then
+  channel/stream number, `pl_priority_arbitrates_higher_first`) and transfer
+  any `DIR` optimistically in the enable cycle (`00` peripheral→memory
+  `PAR`→`M0AR`, `01` memory→peripheral `M0AR`→`PAR`, `10` memory-to-memory)
+  with `PSIZE`/`MSIZE` widths and `PINC`/`MINC` stepping
+  (`peripheral_request_dirs_complete_optimistically` for F4); the transfer
   completes without a wired request source (firmware observes immediate
-  completion, not per-request timing). DMA arbitration, burst/FIFO behavior,
-  and per-peripheral request-line timing are not modeled.
+  completion, not per-request timing). DMA burst/FIFO behavior and
+  per-peripheral request-line timing are not modeled (F1 per-request is
+  `1` unit per tick, F4 is whole-`NDTR` optimistic).
 - The F1 DMA controllers transfer memory-to-memory (optimistically, in the
   cycle the channel is enabled) or one unit per peripheral-request assertion;
   the USART/UART family is the only request source so far (USART1 ch4/ch5,
