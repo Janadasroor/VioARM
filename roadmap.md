@@ -116,7 +116,7 @@ Tooling:
 
 ### In progress
 
-- None. The ARMv8-M baseline (item 9 below) is complete.
+- **Cycle-accurate timing (item 6 hardening).** Instruction-accurate `1c/insn` is implemented (`WFI`/`WFE` sleep, `SEV` latch). Hardening to Cortex-M3/M4 TRM `CPI` – per-opcode `DWT_CYCCNT` (data-processing `1c`, `LDR`/`STR` `2c`, `LDM`/`STM` `n+1`, taken branch `3-4c` with pipeline flush, `MUL`/`DIV` variable) plus `FLASH_ACR` wait-state stalls – is next. `qemu` is not a timing oracle; hardening via unit tests against the TRM table.
 
 ### Gaps to a real STM32 simulator
 
