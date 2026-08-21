@@ -24,11 +24,16 @@ const STA_CMDSENT: u32 = 1 << 7;
 const STA_CMDREND: u32 = 1 << 6;
 const STA_DATAEND: u32 = 1 << 8;
 const STA_DBCKEND: u32 = 1 << 10;
+const STA_RXDAVL: u32 = 1 << 21;
+const STA_TXDAVL: u32 = 1 << 20;
 
 const DCTRL_DTEN: u32 = 1 << 0;
+const DCTRL_DTDIR: u32 = 1 << 1;
 
 #[derive(Debug, Default)]
-struct SdioBehavior;
+struct SdioBehavior {
+    fifo: std::collections::VecDeque<u8>,
+}
 
 impl Behavior for SdioBehavior {
     fn on_write(
@@ -55,10 +60,22 @@ impl Behavior for SdioBehavior {
                     if waitresp != 0 {
                         sta |= STA_CMDREND;
                     }
-                    // If data path is enabled, complete the block immediately
-                    // (firmware observes `DATAEND`/`DBCKEND` without FIFO timing).
+                    // If data path is enabled, complete the block and prime FIFO.
                     if view.get(DCTRL) & DCTRL_DTEN != 0 {
                         sta |= STA_DATAEND | STA_DBCKEND;
+                        // Prime FIFO with DLEN bytes of 0xFF for reads (card → controller).
+                        if view.get(DCTRL) & DCTRL_DTDIR == 0 {
+                            let dlen = view.get(DLEN);
+                            self.fifo.clear();
+                            for _ in 0..dlen.min(512) {
+                                self.fifo.push_back(0xFF);
+                            }
+                            if !self.fifo.is_empty() {
+                                sta |= STA_RXDAVL;
+                            }
+                        } else {
+                            sta |= STA_TXDAVL;
+                        }
                     }
                     view.set(STA, sta);
                     // CPSMEN self-clears after dispatch.
@@ -66,14 +83,54 @@ impl Behavior for SdioBehavior {
                 }
                 word
             }
+            FIFO => {
+                // Byte-lane write into FIFO (controller → card, DTDIR=1).
+                self.fifo.push_back(val);
+                let sta = view.get(STA) | STA_TXDAVL;
+                view.set(STA, sta);
+                // FIFO is not a stored word; keep the register word as 0.
+                return 0;
+            }
             ICR => {
                 // W1C into STA.
                 let sta = view.get(STA) & !word;
                 view.set(STA, sta);
+                if sta & (STA_RXDAVL | STA_TXDAVL) == 0 {
+                    // Clear FIFO when data complete is cleared.
+                    if word & (STA_DATAEND | STA_DBCKEND) != 0 {
+                        self.fifo.clear();
+                    }
+                }
                 return 0;
             }
             _ => word,
         }
+    }
+
+    fn on_read(&mut self, view: &mut Registers<&mut [u32]>, offset: u16, value: u32) -> u32 {
+        if offset == FIFO {
+            if let Some(b) = self.fifo.pop_front() {
+                let mut sta = view.get(STA);
+                if self.fifo.is_empty() {
+                    sta &= !STA_RXDAVL;
+                    view.set(STA, sta);
+                }
+                // Return the byte in the appropriate lane (word read will assemble).
+                return u32::from(b);
+            }
+            return 0;
+        }
+        if offset == STA {
+            // Reflect FIFO status.
+            let mut sta = value;
+            if !self.fifo.is_empty() {
+                sta |= STA_RXDAVL;
+            } else {
+                sta &= !STA_RXDAVL;
+            }
+            return sta;
+        }
+        value
     }
 
     fn pending(&self, view: &Registers<&[u32]>) -> u32 {
@@ -96,7 +153,7 @@ impl Sdio {
     pub fn new_for<D: Device>() -> Self {
         let def = D::peripheral("SDIO").expect("generated tables contain SDIO");
         Self {
-            inner: RegisterFile::new(def, SdioBehavior),
+            inner: RegisterFile::new(def, SdioBehavior::default()),
         }
     }
 }
