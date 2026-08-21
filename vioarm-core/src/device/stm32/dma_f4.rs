@@ -4,21 +4,19 @@
 //! The F4 controllers replace the F1 channel set with eight streams per
 //! controller, each carrying its own `SxCR`/`SxNDTR`/`SxPAR`/`SxM0AR`/
 //! `SxM1AR`/`SxFCR` block and its own status flag group in `LISR`/`HISR`
-//! (cleared through `LIFCR`/`HIFCR`). A stream enabled with `DIR = 10`
-//! (memory-to-memory) copies `NDTR` units from `SxPAR` to `SxM0AR`, honoring
-//! `PINC`/`MINC` stepping and the `PSIZE`/`MSIZE` widths, queuing the units
-//! into a mailbox [`SystemMemory`] drains after every device tick. Completion
-//! is optimistic, matching the F1 model: the whole transfer lands in the cycle
-//! the engine sees the stream enabled. `NDTR` counts down, `EN` self-clears at
-//! zero, and `TCIF` latches. The controller raises one NVIC line per stream —
-//! `DMA1` puts streams 0..=6 on IRQ 11..=17 but stream 7 on IRQ 47, and `DMA2`
-//! scatters streams 5..=7 at IRQ 68..=70 — so `pending()` reports a
-//! per-stream bitmask and each line is routed by its table-mapped IRQ.
-//!
-//! Peripheral-request modes (`DIR = 00`/`01`, e.g. USART TX/RX on a stream)
-//! are register-true but have no request source wired yet: such a stream stays
-//! enabled until firmware disables it, exactly as if the peripheral never
-//! asserted its line.
+//! (cleared through `LIFCR`/`HIFCR`). Any enabled stream copies `NDTR` units
+//! honoring `DIR` (`00` peripheral-to-memory `SxPAR`→`SxM0AR`, `01`
+//! memory-to-peripheral `SxM0AR`→`SxPAR`, `10` memory-to-memory `SxPAR`→
+//! `SxM0AR`), `PINC`/`MINC` stepping and the `PSIZE`/`MSIZE` widths, queuing
+//! the units into a mailbox [`SystemMemory`] drains after every device tick.
+//! Completion is optimistic, matching the F1 memory-to-memory model: the whole
+//! transfer lands in the cycle the engine sees the stream enabled. `NDTR`
+//! counts down, `EN` self-clears at zero, and `TCIF` latches. The controller
+//! raises one NVIC line per stream — `DMA1` puts streams 0..=6 on IRQ 11..=17
+//! but stream 7 on IRQ 47, and `DMA2` scatters streams 5..=7 at IRQ 68..=70 —
+//! so `pending()` reports a per-stream bitmask and each line is routed by its
+//! table-mapped IRQ. Peripheral-request modes are thus complete without a wired
+//! request source, which firmware observes as an immediate transfer.
 
 use crate::device::stm32::dma::DmaUnit;
 use crate::device::svd::{Behavior, Device, RegisterFile, Registers};
@@ -141,12 +139,7 @@ impl Behavior for DmaF4Behavior {
             if ndt == 0 {
                 continue;
             }
-            // Only memory-to-memory has a self-sustaining transfer engine; the
-            // peripheral-request directions wait on a source this model does
-            // not wire yet.
-            if cr_word & (0x3 << DIR_SHIFT) != DIR_M2M {
-                continue;
-            }
+            let dir = (cr_word >> DIR_SHIFT) & 0x3;
             let unit: u8 = match (cr_word >> PSIZE_SHIFT) & 0x3 {
                 0 => 1,
                 1 => 2,
@@ -159,18 +152,28 @@ impl Behavior for DmaF4Behavior {
             };
             let pinc = cr_word & PINC != 0;
             let minc = cr_word & MINC != 0;
-            // Memory-to-memory reads the peripheral address and writes the
-            // memory address, as on silicon.
-            let mut src = view.get(cr + SPAR);
-            let mut dst = view.get(cr + SM0AR);
+            // `DIR` selects the copy direction: `00` peripheral→memory,
+            // `01` memory→peripheral, `10` memory-to-memory. All complete
+            // optimistically in the enable cycle, matching the F1 M2M model.
+            let (mut src, mut dst) = match dir {
+                0 => (view.get(cr + SPAR), view.get(cr + SM0AR)),
+                1 => (view.get(cr + SM0AR), view.get(cr + SPAR)),
+                _ => (view.get(cr + SPAR), view.get(cr + SM0AR)),
+            };
+            // Peripheral-side stepping honors `PINC`, memory-side honors `MINC`;
+            // for `01` the roles are swapped (PAR is destination).
+            let src_inc = if dir == 1 { minc } else { pinc };
+            let dst_inc = if dir == 1 { pinc } else { minc };
+            let src_step = if dir == 1 { step } else { unit };
+            let dst_step = if dir == 1 { unit } else { step };
             let mut units = Vec::with_capacity(ndt as usize);
             for _ in 0..ndt {
                 units.push((src, dst, unit));
-                if pinc {
-                    src = src.wrapping_add(u32::from(unit));
+                if src_inc {
+                    src = src.wrapping_add(u32::from(src_step));
                 }
-                if minc {
-                    dst = dst.wrapping_add(u32::from(step));
+                if dst_inc {
+                    dst = dst.wrapping_add(u32::from(dst_step));
                 }
             }
             self.mailbox.lock().unwrap().extend(units);
@@ -396,6 +399,33 @@ mod tests {
         d.tick(1);
         assert!(m.lock().unwrap().is_empty());
         assert_eq!(read_word(&mut d, D1 + s_ndtr(0)), 16);
+    }
+
+    #[test]
+    fn peripheral_request_dirs_complete_optimistically() {
+        let m = mailbox();
+        let mut d = DmaF4::dma1_for::<Stm32f407>(m.clone());
+        // DIR 00 peripheral→memory: 2 units, PINC set, MINC set.
+        write_word(&mut d, D1 + s_par(2), 0x4000_0400); // USART DR
+        write_word(&mut d, D1 + s_m0ar(2), 0x2000_1000);
+        write_word(&mut d, D1 + s_ndtr(2), 2);
+        write_word(&mut d, D1 + s_cr(2), EN | TCIE | (1 << 9) | (1 << 10) | (0 << 6));
+        d.tick(1);
+        assert_eq!(m.lock().unwrap().len(), 2);
+        assert_eq!(m.lock().unwrap()[0], (0x4000_0400, 0x2000_1000, 1));
+        assert_eq!(m.lock().unwrap()[1], (0x4000_0401, 0x2000_1001, 1));
+        assert_eq!(read_word(&mut d, D1 + s_ndtr(2)), 0);
+        assert_eq!(read_word(&mut d, D1 + s_cr(2)) & EN, 0);
+        // DIR 01 memory→peripheral: 1 unit, MINC set, PINC clear.
+        let m2 = mailbox();
+        let mut d2 = DmaF4::dma1_for::<Stm32f407>(m2.clone());
+        write_word(&mut d2, D1 + s_par(3), 0x4000_0400);
+        write_word(&mut d2, D1 + s_m0ar(3), 0x2000_2000);
+        write_word(&mut d2, D1 + s_ndtr(3), 1);
+        write_word(&mut d2, D1 + s_cr(3), EN | (1 << 10) | (1 << 6));
+        d2.tick(1);
+        assert_eq!(*m2.lock().unwrap(), vec![(0x2000_2000, 0x4000_0400, 1)]);
+        assert_eq!(read_word(&mut d2, D1 + s_ndtr(3)), 0);
     }
 
     #[test]

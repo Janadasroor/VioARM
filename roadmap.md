@@ -344,12 +344,13 @@ lda_stl, splim, tt/sau_tt/mpu_tt, alu_thumb1, sg, blxns/bxns,
   at `0x0800_0000` is a separate gated store; the boot-time alias at
   `0x0000_0000` is ungated. On the F407 the main flash and its boot-time
   alias share the gated store.
-- The F4 DMA controllers transfer memory-to-memory (optimistically, in the
-  cycle the stream is enabled) with `PSIZE`/`MSIZE` widths and `PINC`/`MINC`
-  stepping; the peripheral-request directions (`DIR = 00`/`01`) are
-  register-true but have no request source wired yet, so such a stream stays
-  enabled until firmware disables it. DMA arbitration, burst/FIFO behavior,
-  and the timer/ADC/SPI request lines are not modeled.
+- The F4 DMA controllers transfer any `DIR` optimistically in the enable
+  cycle (`00` peripheral→memory `PAR`→`M0AR`, `01` memory→peripheral `M0AR`→
+  `PAR`, `10` memory-to-memory) with `PSIZE`/`MSIZE` widths and `PINC`/`MINC`
+  stepping (`peripheral_request_dirs_complete_optimistically`); the transfer
+  completes without a wired request source (firmware observes immediate
+  completion, not per-request timing). DMA arbitration, burst/FIFO behavior,
+  and per-peripheral request-line timing are not modeled.
 - The F1 DMA controllers transfer memory-to-memory (optimistically, in the
   cycle the channel is enabled) or one unit per peripheral-request assertion;
   the USART/UART family is the only request source so far (USART1 ch4/ch5,
