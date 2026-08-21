@@ -830,14 +830,16 @@ pub fn stm32h743() -> BoardMemory {
     // if <Stm32h743 as crate::device::svd::Device>::peripheral("BKP").is_some() {
     //     mem.attach(Box::new(Bkp::new_for::<Stm32h743>()));
     // }
-    // DAC - skip for H743 (different regs)
-    // if <Stm32h743 as crate::device::svd::Device>::peripheral("DAC").is_some() {
-    //     mem.attach(Box::new(Dac::new_with_dma::<Stm32h743>(dma_requests.clone())));
-    // }
-    // SDMMC1 (SDIO) - H743 uses SDMMC1 with different regs, skip for now
-    // if <Stm32h743 as crate::device::svd::Device>::peripheral("SDIO").is_some() {
-    //     mem.attach(Box::new(Sdio::new_for::<Stm32h743>()));
-    // }
+    // DAC
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("DAC").is_some() {
+        mem.attach(Box::new(Dac::new_with_dma::<Stm32h743>(dma_requests.clone())));
+    }
+    // SDMMC1 (SDIO) - H743 uses SDMMC1 at 0x52007000, same offsets as SDIO
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("SDMMC1").is_some()
+        || <Stm32h743 as crate::device::svd::Device>::peripheral("SDIO").is_some()
+    {
+        mem.attach(Box::new(Sdio::new_for::<Stm32h743>()));
+    }
     for (base, name) in [
         (0x5802_0000u32, "gpioa"),
         (0x5802_0400, "gpiob"),

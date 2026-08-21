@@ -210,7 +210,10 @@ pub struct Sdio {
 impl Sdio {
     #[must_use]
     pub fn new_for<D: Device>() -> Self {
-        let def = D::peripheral("SDIO").expect("generated tables contain SDIO");
+        let def = D::peripheral("SDIO")
+            .or_else(|| D::peripheral("SDMMC1"))
+            .or_else(|| D::peripheral("SDMMC"))
+            .expect("generated tables contain SDIO/SDMMC1");
         Self {
             inner: RegisterFile::new(def, SdioBehavior::default()),
         }
