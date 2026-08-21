@@ -2996,3 +2996,47 @@ void reset(void) {
     assert_eq!(m.core.mem().read_word(RAM + 4).unwrap(), 1, "DAC immediate DOR");
     assert_eq!(m.core.mem().read_word(RAM + 8).unwrap(), 1, "DAC SWTRIG DOR");
 }
+
+const STM32F072_GPIO_FIRMWARE: &str = r#"
+#define RCC_AHBENR  0x40021014u
+#define GPIOA_MODER 0x48000000u
+#define GPIOA_ODR   0x48000014u
+#define GPIOA_BSRR  0x48000018u
+#define OUT 0x20000000u
+
+void reset(void) {
+    *(volatile unsigned *)RCC_AHBENR |= (1u<<17);
+    *(volatile unsigned *)GPIOA_MODER = (*(volatile unsigned *)GPIOA_MODER & ~(3u<<0)) | (1u<<0);
+    *(volatile unsigned *)GPIOA_BSRR = (1u<<0);
+    *(volatile unsigned *)OUT = (*(volatile unsigned *)GPIOA_ODR & 1u) ? 1u : 0u;
+    __asm__ volatile("bkpt #0");
+}
+"#;
+
+fn run_f072_gpio() -> Option<u32> {
+    let (code, symbols) = match build_firmware(STM32F072_GPIO_FIRMWARE) {
+        Ok(image) => image,
+        Err(why) => {
+            eprintln!("skipping F072 gpio test: {why}");
+            return None;
+        }
+    };
+    let entry = *symbols.get("reset").expect("no reset symbol");
+    let mut m = Machine::new(board::stm32f072());
+    m.load_image(&load_flat(CODE_BASE, &code));
+    {
+        let mem = m.core.mem();
+        mem.write_word(FLASH, INIT_SP).unwrap();
+        mem.write_word(FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+    }
+    m.reset().expect("reset");
+    let err = m.run(50_000);
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
+    Some(m.core.mem().read_word(board::RAM).unwrap())
+}
+
+#[test]
+fn stm32f072_firmware_toggles_gpio() {
+    let Some(odr) = run_f072_gpio() else { return; };
+    assert_eq!(odr, 1);
+}
