@@ -9,16 +9,16 @@ use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
 use crate::mem::bus::Region;
 
-const CMD: u16 = 0x0C;
-const RESPCMD: u16 = 0x10;
-const RESP1: u16 = 0x14;
-const DTIMER: u16 = 0x24;
-const DLEN: u16 = 0x28;
-const DCTRL: u16 = 0x2C;
-const STA: u16 = 0x34;
-const ICR: u16 = 0x38;
-const MASK: u16 = 0x3C;
-const FIFO: u16 = 0x80;
+const CMD: u32 = 0x0C;
+const RESPCMD: u32 = 0x10;
+const RESP1: u32 = 0x14;
+const DTIMER: u32 = 0x24;
+const DLEN: u32 = 0x28;
+const DCTRL: u32 = 0x2C;
+const STA: u32 = 0x34;
+const ICR: u32 = 0x38;
+const MASK: u32 = 0x3C;
+const FIFO: u32 = 0x80;
 
 const STA_CMDSENT: u32 = 1 << 7;
 const STA_CMDREND: u32 = 1 << 6;
@@ -53,7 +53,7 @@ impl Behavior for SdioBehavior {
     fn on_write(
         &mut self,
         view: &mut Registers<&mut [u32]>,
-        offset: u16,
+        offset: u32,
         val: u8,
         shift: u32,
     ) -> u32 {
@@ -166,7 +166,7 @@ impl Behavior for SdioBehavior {
         }
     }
 
-    fn on_read(&mut self, view: &mut Registers<&mut [u32]>, offset: u16, value: u32) -> u32 {
+    fn on_read(&mut self, view: &mut Registers<&mut [u32]>, offset: u32, value: u32) -> u32 {
         if offset == FIFO {
             if let Some(b) = self.fifo.pop_front() {
                 let mut sta = view.get(STA);

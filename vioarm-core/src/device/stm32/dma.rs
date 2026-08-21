@@ -107,13 +107,13 @@ impl DmaRequests {
     }
 }
 
-const ISR: u16 = 0x00;
-const IFCR: u16 = 0x04;
-const CCR_CH: u16 = 0x08;
-const CNDTR_CH: u16 = 0x0C;
-const CPAR_CH: u16 = 0x10;
-const CMAR_CH: u16 = 0x14;
-const CH_STRIDE: u16 = 0x14;
+const ISR: u32 = 0x00;
+const IFCR: u32 = 0x04;
+const CCR_CH: u32 = 0x08;
+const CNDTR_CH: u32 = 0x0C;
+const CPAR_CH: u32 = 0x10;
+const CMAR_CH: u32 = 0x14;
+const CH_STRIDE: u32 = 0x14;
 
 const EN: u32 = 1 << 0;
 const TCIE: u32 = 1 << 1;
@@ -167,7 +167,7 @@ impl Behavior for DmaBehavior {
     fn on_write(
         &mut self,
         view: &mut Registers<&mut [u32]>,
-        offset: u16,
+        offset: u32,
         val: u8,
         shift: u32,
     ) -> u32 {
@@ -215,7 +215,7 @@ impl Behavior for DmaBehavior {
         // Arbitration: higher `PL` first, then lower channel number.
         let mut order: Vec<(u32, u8)> = (0..self.channels)
             .filter_map(|ch| {
-                let base = CH_STRIDE * u16::from(ch);
+                let base = CH_STRIDE * u32::from(ch);
                 let ccr = view.get(CCR_CH + base);
                 if ccr & EN == 0 {
                     return None;
@@ -229,7 +229,7 @@ impl Behavior for DmaBehavior {
             .collect();
         order.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
         for (_, ch) in order {
-            let base = CH_STRIDE * u16::from(ch);
+            let base = CH_STRIDE * u32::from(ch);
             let ccr = view.get(CCR_CH + base);
             if ccr & EN == 0 {
                 continue;
@@ -312,7 +312,7 @@ impl Behavior for DmaBehavior {
     fn pending(&self, view: &Registers<&[u32]>) -> u32 {
         let mut lines = 0;
         for ch in 0..self.channels {
-            let base = CH_STRIDE * u16::from(ch);
+            let base = CH_STRIDE * u32::from(ch);
             if view.get(CCR_CH + base) & TCIE != 0 && view.get(ISR) & isr_tcif(u32::from(ch)) != 0 {
                 lines |= 1 << ch;
             }

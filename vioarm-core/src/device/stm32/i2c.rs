@@ -33,11 +33,11 @@ use crate::error::BusError;
 use crate::mem::bus::Region;
 
 /// Register offsets within the I2C, per the SVD.
-const CR1: u16 = 0x00;
-const CR2: u16 = 0x04;
-const DR: u16 = 0x10;
-const SR1: u16 = 0x14;
-const SR2: u16 = 0x18;
+const CR1: u32 = 0x00;
+const CR2: u32 = 0x04;
+const DR: u32 = 0x10;
+const SR1: u32 = 0x14;
+const SR2: u32 = 0x18;
 
 /// `CR1` bits.
 const PE: u32 = 1 << 0;
@@ -131,7 +131,7 @@ impl Behavior for I2cBehavior {
     fn on_write(
         &mut self,
         view: &mut Registers<&mut [u32]>,
-        offset: u16,
+        offset: u32,
         val: u8,
         shift: u32,
     ) -> u32 {
@@ -195,7 +195,7 @@ impl Behavior for I2cBehavior {
         }
     }
 
-    fn on_read(&mut self, view: &mut Registers<&mut [u32]>, offset: u16, value: u32) -> u32 {
+    fn on_read(&mut self, view: &mut Registers<&mut [u32]>, offset: u32, value: u32) -> u32 {
         match offset {
             SR2 => {
                 // Reading SR1 and then SR2 acknowledges `ADDR`; a master

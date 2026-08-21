@@ -31,9 +31,9 @@ use std::sync::{Arc, Mutex};
 /// `0x00`/`0x04`/`0x0C` with `UE` `13`; F0/F3/L4 use `ISR`/`RDR`/`TDR`/`CR1` at
 /// `0x1C`/`0x24`/`0x28`/`0x00` with `UE` `0`. Offsets and bit positions are
 /// resolved per-instance from the SVD table.
-const SR_F1: u16 = 0x00;
-const DR_F1: u16 = 0x04;
-const CR1_F1: u16 = 0x0C;
+const SR_F1: u32 = 0x00;
+const DR_F1: u32 = 0x04;
+const CR1_F1: u32 = 0x0C;
 
 /// `SR` bit positions.
 const RXNE: u32 = 1 << 5;
@@ -71,10 +71,10 @@ struct UsartBehavior {
     requests: Option<Arc<Mutex<DmaRequests>>>,
     /// The request routing `(controller, tx_channel, rx_channel)`.
     dma: Option<(u8, u8, u8)>,
-    cr1_off: u16,
-    sr_off: u16,
-    rdr_off: u16,
-    tdr_off: u16,
+    cr1_off: u32,
+    sr_off: u32,
+    rdr_off: u32,
+    tdr_off: u32,
     ue_bit: u32,
     te_bit: u32,
     re_bit: u32,
@@ -106,7 +106,7 @@ impl Default for UsartBehavior {
 }
 
 impl Behavior for UsartBehavior {
-    fn on_read(&mut self, view: &mut Registers<&mut [u32]>, offset: u16, value: u32) -> u32 {
+    fn on_read(&mut self, view: &mut Registers<&mut [u32]>, offset: u32, value: u32) -> u32 {
         if offset == self.sr_off {
             // `TXE`/`TC` track the enable bits, the rest is latched status.
             let mut v = value & !(self.txe_bit | self.tc_bit);
@@ -135,7 +135,7 @@ impl Behavior for UsartBehavior {
     fn on_write(
         &mut self,
         view: &mut Registers<&mut [u32]>,
-        offset: u16,
+        offset: u32,
         val: u8,
         shift: u32,
     ) -> u32 {
@@ -478,7 +478,7 @@ impl Usart {
         )
     }
 
-    fn reg_offset(def: &crate::device::svd::PeripheralDef, name: &str) -> Option<u16> {
+    fn reg_offset(def: &crate::device::svd::PeripheralDef, name: &str) -> Option<u32> {
         def.registers.iter().find(|r| r.name == name).map(|r| r.offset)
     }
     fn field_bit(def: &crate::device::svd::PeripheralDef, reg: &str, field: &str) -> Option<u8> {

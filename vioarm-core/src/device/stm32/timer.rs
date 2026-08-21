@@ -21,13 +21,13 @@ use crate::error::BusError;
 use crate::mem::bus::Region;
 
 /// Register offsets within the timer, per the SVD.
-const CR1: u16 = 0x00;
-const DIER: u16 = 0x0C;
-const SR: u16 = 0x10;
-const EGR: u16 = 0x14;
-const CNT: u16 = 0x24;
-const PSC: u16 = 0x28;
-const ARR: u16 = 0x2C;
+const CR1: u32 = 0x00;
+const DIER: u32 = 0x0C;
+const SR: u32 = 0x10;
+const EGR: u32 = 0x14;
+const CNT: u32 = 0x24;
+const PSC: u32 = 0x28;
+const ARR: u32 = 0x2C;
 
 /// `CEN` bit in `CR1`.
 const CEN: u32 = 1 << 0;
@@ -59,7 +59,7 @@ impl Behavior for TimerBehavior {
     fn on_write(
         &mut self,
         view: &mut Registers<&mut [u32]>,
-        offset: u16,
+        offset: u32,
         val: u8,
         shift: u32,
     ) -> u32 {

@@ -16,12 +16,12 @@ use crate::mem::bus::Region;
 use core::ops::Deref;
 
 /// Register offsets within the port, per the SVD.
-const CRL: u16 = 0x00;
-const CRH: u16 = 0x04;
-const IDR: u16 = 0x08;
-const ODR: u16 = 0x0C;
-const BSRR: u16 = 0x10;
-const BRR: u16 = 0x14;
+const CRL: u32 = 0x00;
+const CRH: u32 = 0x04;
+const IDR: u32 = 0x08;
+const ODR: u32 = 0x0C;
+const BSRR: u32 = 0x10;
+const BRR: u32 = 0x14;
 
 /// The cross-register side effects the SVD cannot express.
 #[derive(Clone, Copy, Debug, Default)]
@@ -67,7 +67,7 @@ impl Behavior for GpioBehavior {
     fn on_write(
         &mut self,
         view: &mut Registers<&mut [u32]>,
-        offset: u16,
+        offset: u32,
         val: u8,
         shift: u32,
     ) -> u32 {
@@ -88,7 +88,7 @@ impl Behavior for GpioBehavior {
         view.merged(offset, val, shift)
     }
 
-    fn on_read(&mut self, view: &mut Registers<&mut [u32]>, offset: u16, value: u32) -> u32 {
+    fn on_read(&mut self, view: &mut Registers<&mut [u32]>, offset: u32, value: u32) -> u32 {
         if offset == IDR {
             self.idr(view)
         } else {

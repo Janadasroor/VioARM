@@ -24,14 +24,14 @@ const PLLON: u32 = 1 << 24;
 const PLLRDY: u32 = 1 << 25;
 
 /// `CR` lives at register offset `0x00`.
-const CR_OFFSET: u16 = 0x00;
+const CR_OFFSET: u32 = 0x00;
 
 /// RCC's only synthesis: the clock-ready bits in `CR`.
 #[derive(Clone, Copy, Debug, Default)]
 struct RccBehavior;
 
 impl Behavior for RccBehavior {
-    fn on_read(&mut self, _view: &mut Registers<&mut [u32]>, offset: u16, value: u32) -> u32 {
+    fn on_read(&mut self, _view: &mut Registers<&mut [u32]>, offset: u32, value: u32) -> u32 {
         if offset == CR_OFFSET {
             // HSI is always on and ready; PLL locks as soon as it is requested.
             let pll = if value & PLLON != 0 { PLLRDY } else { 0 };

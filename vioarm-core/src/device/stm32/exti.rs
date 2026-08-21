@@ -15,11 +15,11 @@ use crate::error::BusError;
 use crate::mem::bus::Region;
 
 /// Register offsets within the controller, per the SVD.
-const IMR: u16 = 0x00;
-const RTSR: u16 = 0x08;
-const FTSR: u16 = 0x0C;
-const SWIER: u16 = 0x10;
-const PR: u16 = 0x14;
+const IMR: u32 = 0x00;
+const RTSR: u32 = 0x08;
+const FTSR: u32 = 0x0C;
+const SWIER: u32 = 0x10;
+const PR: u32 = 0x14;
 
 /// The edge-detection logic the SVD cannot express.
 #[derive(Clone, Copy, Debug, Default)]
@@ -34,7 +34,7 @@ impl Behavior for ExtiBehavior {
     fn on_write(
         &mut self,
         view: &mut Registers<&mut [u32]>,
-        offset: u16,
+        offset: u32,
         val: u8,
         shift: u32,
     ) -> u32 {

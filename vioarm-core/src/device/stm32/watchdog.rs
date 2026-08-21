@@ -23,14 +23,14 @@ use crate::mem::bus::Region;
 use std::sync::{Arc, Mutex};
 
 /// Register offsets within the IWDG, per the SVD.
-const KR: u16 = 0x00;
-const PR: u16 = 0x04;
-const RLR: u16 = 0x08;
+const KR: u32 = 0x00;
+const PR: u32 = 0x04;
+const RLR: u32 = 0x08;
 
 /// IWDG key values (`KR.KEY[15:0]`).
-const KEY_ACCESS: u16 = 0x5555;
-const KEY_RELOAD: u16 = 0xAAAA;
-const KEY_START: u16 = 0xCCCC;
+const KEY_ACCESS: u32 = 0x5555;
+const KEY_RELOAD: u32 = 0xAAAA;
+const KEY_START: u32 = 0xCCCC;
 
 /// The independent-watchdog counting core.
 #[derive(Clone, Debug)]
@@ -62,7 +62,7 @@ impl Behavior for IwdgBehavior {
     fn on_write(
         &mut self,
         view: &mut Registers<&mut [u32]>,
-        offset: u16,
+        offset: u32,
         val: u8,
         shift: u32,
     ) -> u32 {
@@ -71,7 +71,7 @@ impl Behavior for IwdgBehavior {
                 // KR is write-only; the key is the low 16 bits of the stored
                 // word, which a halfword/word write assembles lane by lane.
                 let word = view.merged(KR, val, shift);
-                match (word & 0xFFFF) as u16 {
+                match word & 0xFFFF {
                     KEY_ACCESS => self.access = true,
                     KEY_RELOAD => {
                         if self.running {
@@ -126,9 +126,9 @@ impl Behavior for IwdgBehavior {
 }
 
 /// Register offsets within the WWDG, per the SVD.
-const WCR: u16 = 0x00;
-const CFR: u16 = 0x04;
-const WSR: u16 = 0x08;
+const WCR: u32 = 0x00;
+const CFR: u32 = 0x04;
+const WSR: u32 = 0x08;
 
 /// `WDGA` bit in `CR` — write-once: once set it cannot be cleared by software.
 const WDGA: u32 = 1 << 7;
@@ -161,7 +161,7 @@ impl Behavior for WwdgBehavior {
     fn on_write(
         &mut self,
         view: &mut Registers<&mut [u32]>,
-        offset: u16,
+        offset: u32,
         val: u8,
         shift: u32,
     ) -> u32 {

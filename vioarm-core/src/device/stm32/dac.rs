@@ -11,19 +11,19 @@ use crate::error::BusError;
 use crate::mem::bus::Region;
 use std::sync::{Arc, Mutex};
 
-const CR: u16 = 0x00;
-const SWTRIGR: u16 = 0x04;
-const DHR12R1: u16 = 0x08;
-const DHR12L1: u16 = 0x0C;
-const DHR8R1: u16 = 0x10;
-const DHR12R2: u16 = 0x14;
-const DHR12L2: u16 = 0x18;
-const DHR8R2: u16 = 0x1C;
-const DHR12RD: u16 = 0x20;
-const DHR12LD: u16 = 0x24;
-const DHR8RD: u16 = 0x28;
-const DOR1: u16 = 0x2C;
-const DOR2: u16 = 0x30;
+const CR: u32 = 0x00;
+const SWTRIGR: u32 = 0x04;
+const DHR12R1: u32 = 0x08;
+const DHR12L1: u32 = 0x0C;
+const DHR8R1: u32 = 0x10;
+const DHR12R2: u32 = 0x14;
+const DHR12L2: u32 = 0x18;
+const DHR8R2: u32 = 0x1C;
+const DHR12RD: u32 = 0x20;
+const DHR12LD: u32 = 0x24;
+const DHR8RD: u32 = 0x28;
+const DOR1: u32 = 0x2C;
+const DOR2: u32 = 0x30;
 
 const CR_EN1: u32 = 1 << 0;
 const CR_TEN1: u32 = 1 << 2;
@@ -82,7 +82,7 @@ impl Behavior for DacBehavior {
     fn on_write(
         &mut self,
         view: &mut Registers<&mut [u32]>,
-        offset: u16,
+        offset: u32,
         val: u8,
         shift: u32,
     ) -> u32 {

@@ -38,34 +38,34 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 // MAC window register offsets.
-const MACCR: u16 = 0x00;
+const MACCR: u32 = 0x00;
 #[allow(dead_code)] // frame filter, written through the generic path
-const MACFFR: u16 = 0x04;
+const MACFFR: u32 = 0x04;
 #[allow(dead_code)] // hash filters, written through the generic path
-const MACHTHR: u16 = 0x08;
+const MACHTHR: u32 = 0x08;
 #[allow(dead_code)] // hash filters, written through the generic path
-const MACHTLR: u16 = 0x0c;
-const MACMIIAR: u16 = 0x10;
+const MACHTLR: u32 = 0x0c;
+const MACMIIAR: u32 = 0x10;
 #[allow(dead_code)] // MII data register, no PHY behind the model
-const MACMIIDR: u16 = 0x14;
-const MACPMTCSR: u16 = 0x2c;
+const MACMIIDR: u32 = 0x14;
+const MACPMTCSR: u32 = 0x2c;
 #[allow(dead_code)] // MAC wakeup source address, read through the generic path
-const MACSR: u16 = 0x38;
-const MACIMR: u16 = 0x3c;
-const MACA0HR: u16 = 0x40;
-const MACA0LR: u16 = 0x44;
+const MACSR: u32 = 0x38;
+const MACIMR: u32 = 0x3c;
+const MACA0HR: u32 = 0x40;
+const MACA0LR: u32 = 0x44;
 
 // DMA window register offsets.
-const DMABMR: u16 = 0x00;
-const DMATPDR: u16 = 0x04;
-const DMARPDR: u16 = 0x08;
-const DMARDLAR: u16 = 0x0c;
-const DMATDLAR: u16 = 0x10;
-const DMASR: u16 = 0x14;
-const DMAOMR: u16 = 0x18;
-const DMAIER: u16 = 0x1c;
-const DMACHTDR: u16 = 0x48;
-const DMACHRDR: u16 = 0x4c;
+const DMABMR: u32 = 0x00;
+const DMATPDR: u32 = 0x04;
+const DMARPDR: u32 = 0x08;
+const DMARDLAR: u32 = 0x0c;
+const DMATDLAR: u32 = 0x10;
+const DMASR: u32 = 0x14;
+const DMAOMR: u32 = 0x18;
+const DMAIER: u32 = 0x1c;
+const DMACHTDR: u32 = 0x48;
+const DMACHRDR: u32 = 0x4c;
 
 // MACCR bits.
 const RE: u32 = 1 << 2; // receiver enable
@@ -153,7 +153,7 @@ impl Win {
         Self { def, words }
     }
 
-    fn index(&self, offset: u16) -> usize {
+    fn index(&self, offset: u32) -> usize {
         self.def
             .registers
             .iter()
@@ -161,16 +161,16 @@ impl Win {
             .unwrap_or_else(|| panic!("no register at offset 0x{offset:x}"))
     }
 
-    fn get(&self, offset: u16) -> u32 {
+    fn get(&self, offset: u32) -> u32 {
         self.words[self.index(offset)]
     }
 
-    fn set(&mut self, offset: u16, value: u32) {
+    fn set(&mut self, offset: u32, value: u32) {
         let i = self.index(offset);
         self.words[i] = value;
     }
 
-    fn merged(&self, offset: u16, val: u8, shift: u32) -> u32 {
+    fn merged(&self, offset: u32, val: u8, shift: u32) -> u32 {
         let current = self.get(offset);
         let mask = 0xFFu32 << shift;
         (current & !mask) | (u32::from(val) << shift)
@@ -300,7 +300,7 @@ fn irq_number(win: &Win, name: &str) -> Option<u8> {
 }
 
 /// The byte lane of `off` inside a four-byte register starting at `reg`.
-fn lane(off: u32, reg: u16) -> Option<u32> {
+fn lane(off: u32, reg: u32) -> Option<u32> {
     if off >= u32::from(reg) && off < u32::from(reg) + 4 {
         Some(off - u32::from(reg))
     } else {

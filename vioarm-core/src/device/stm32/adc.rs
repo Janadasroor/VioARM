@@ -19,13 +19,13 @@ use crate::error::BusError;
 use crate::mem::bus::Region;
 
 /// Register offsets within the ADC, per the SVD.
-const SR: u16 = 0x00;
-const CR1: u16 = 0x04;
-const CR2: u16 = 0x08;
-const SQR1: u16 = 0x2C;
-const SQR2: u16 = 0x30;
-const SQR3: u16 = 0x34;
-const DR: u16 = 0x4C;
+const SR: u32 = 0x00;
+const CR1: u32 = 0x04;
+const CR2: u32 = 0x08;
+const SQR1: u32 = 0x2C;
+const SQR2: u32 = 0x30;
+const SQR3: u32 = 0x34;
+const DR: u32 = 0x4C;
 
 /// `SR` flag bits.
 const EOC: u32 = 1 << 1;
@@ -118,7 +118,7 @@ impl Behavior for AdcBehavior {
     fn on_write(
         &mut self,
         view: &mut Registers<&mut [u32]>,
-        offset: u16,
+        offset: u32,
         val: u8,
         shift: u32,
     ) -> u32 {
@@ -150,7 +150,7 @@ impl Behavior for AdcBehavior {
         view.merged(offset, val, shift)
     }
 
-    fn on_read(&mut self, view: &mut Registers<&mut [u32]>, offset: u16, value: u32) -> u32 {
+    fn on_read(&mut self, view: &mut Registers<&mut [u32]>, offset: u32, value: u32) -> u32 {
         if offset == DR {
             // Reading the data register clears EOC and STRT.
             view.set(SR, view.get(SR) & !(EOC | STRT));
@@ -389,7 +389,7 @@ mod tests {
     use super::*;
     use crate::device::svd::stm32f407::Stm32f407;
 
-    fn read_word(adc: &mut Adc, off: u16) -> u32 {
+    fn read_word(adc: &mut Adc, off: u32) -> u32 {
         let base = adc.ranges()[0].base;
         let mut word = 0;
         for i in 0..4 {
@@ -399,7 +399,7 @@ mod tests {
         word
     }
 
-    fn write_word(adc: &mut Adc, off: u16, val: u32) {
+    fn write_word(adc: &mut Adc, off: u32, val: u32) {
         let base = adc.ranges()[0].base;
         for i in 0..4 {
             adc.write(base + u32::from(off) + i, ((val >> (8 * i)) & 0xFF) as u8)

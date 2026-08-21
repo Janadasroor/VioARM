@@ -24,48 +24,48 @@ use crate::mem::bus::Region;
 
 // GLOBAL window register offsets.
 #[allow(dead_code)] // reference map for the GLOBAL window (partially modeled)
-const GOTGCTL: u16 = 0x00;
-const GAHBCFG: u16 = 0x08;
+const GOTGCTL: u32 = 0x00;
+const GAHBCFG: u32 = 0x08;
 #[allow(dead_code)] // written through the generic `write_latch` path
-const GUSBCFG: u16 = 0x0c;
-const GRSTCTL: u16 = 0x10;
-const GINTSTS: u16 = 0x14;
-const GINTMSK: u16 = 0x18;
-const GRXSTSR: u16 = 0x1c;
-const GRXSTSP: u16 = 0x20;
+const GUSBCFG: u32 = 0x0c;
+const GRSTCTL: u32 = 0x10;
+const GINTSTS: u32 = 0x14;
+const GINTMSK: u32 = 0x18;
+const GRXSTSR: u32 = 0x1c;
+const GRXSTSP: u32 = 0x20;
 #[allow(dead_code)] // FIFO sizing registers (fixed-size FIFO is modeled)
-const GRXFSIZ: u16 = 0x24;
+const GRXFSIZ: u32 = 0x24;
 #[allow(dead_code)] // FIFO sizing registers (fixed-size FIFO is modeled)
-const GNPTXFSIZ: u16 = 0x28;
+const GNPTXFSIZ: u32 = 0x28;
 #[allow(dead_code)] // FIFO space is reported as always-available
-const GNPTXSTS: u16 = 0x2c;
+const GNPTXSTS: u32 = 0x2c;
 #[allow(dead_code)] // reference map for the GLOBAL window (partially modeled)
-const GCCFG: u16 = 0x38;
+const GCCFG: u32 = 0x38;
 #[allow(dead_code)] // reference map for the GLOBAL window (partially modeled)
-const CID: u16 = 0x3c;
+const CID: u32 = 0x3c;
 
 // DEVICE window register offsets.
 #[allow(dead_code)] // reference map for the DEVICE window (partially modeled)
-const DCFG: u16 = 0x00;
+const DCFG: u32 = 0x00;
 #[allow(dead_code)] // reference map for the DEVICE window (partially modeled)
-const DCTL: u16 = 0x04;
-const DSTS: u16 = 0x08;
-const DIEPMSK: u16 = 0x10;
-const DOEPMSK: u16 = 0x14;
-const DAINT: u16 = 0x18;
+const DCTL: u32 = 0x04;
+const DSTS: u32 = 0x08;
+const DIEPMSK: u32 = 0x10;
+const DOEPMSK: u32 = 0x14;
+const DAINT: u32 = 0x18;
 #[allow(dead_code)] // only the endpoint-0 INT mask bits are needed
-const DAINTMSK: u16 = 0x1c;
-const DIEPCTL0: u16 = 0x100;
+const DAINTMSK: u32 = 0x1c;
+const DIEPCTL0: u32 = 0x100;
 #[allow(dead_code)] // only the XFRC/STUP latch bits drive the INT lines
-const DIEPINT0: u16 = 0x108;
-const DIEPTSIZ0: u16 = 0x110;
+const DIEPINT0: u32 = 0x108;
+const DIEPTSIZ0: u32 = 0x110;
 #[allow(dead_code)] // the TX FIFO is drained in a single burst
-const DTXFSTS0: u16 = 0x118;
-const DOEPCTL0: u16 = 0x300;
+const DTXFSTS0: u32 = 0x118;
+const DOEPCTL0: u32 = 0x300;
 #[allow(dead_code)] // only the XFRC/STUP latch bits drive the INT lines
-const DOEPINT0: u16 = 0x308;
-const DOEPTSIZ0: u16 = 0x310;
-const EP_STRIDE: u16 = 0x20;
+const DOEPINT0: u32 = 0x308;
+const DOEPTSIZ0: u32 = 0x310;
+const EP_STRIDE: u32 = 0x20;
 
 // GINTSTS bits.
 const SOF: u32 = 1 << 3;
@@ -137,7 +137,7 @@ impl Win {
         Self { def, words }
     }
 
-    fn index(&self, offset: u16) -> usize {
+    fn index(&self, offset: u32) -> usize {
         self.def
             .registers
             .iter()
@@ -145,16 +145,16 @@ impl Win {
             .unwrap_or_else(|| panic!("no register at offset 0x{offset:x}"))
     }
 
-    fn get(&self, offset: u16) -> u32 {
+    fn get(&self, offset: u32) -> u32 {
         self.words[self.index(offset)]
     }
 
-    fn set(&mut self, offset: u16, value: u32) {
+    fn set(&mut self, offset: u32, value: u32) {
         let i = self.index(offset);
         self.words[i] = value;
     }
 
-    fn merged(&self, offset: u16, val: u8, shift: u32) -> u32 {
+    fn merged(&self, offset: u32, val: u8, shift: u32) -> u32 {
         let current = self.get(offset);
         let mask = 0xFFu32 << shift;
         (current & !mask) | (u32::from(val) << shift)
@@ -275,7 +275,7 @@ impl UsbState {
     /// `EPENA` in `DIEPCTLn`: drain the TX FIFO into the host channel and
     /// latch `XFRC` plus the IN-complete status, all immediately.
     fn start_in(&mut self, d: &Win, ep: usize) {
-        let tsz = d.get(DIEPTSIZ0 + u16::try_from(ep).unwrap_or(0) * EP_STRIDE);
+        let tsz = d.get(DIEPTSIZ0 + u32::try_from(ep).unwrap_or(0) * EP_STRIDE);
         let xfersiz = if ep == 0 {
             tsz & XFRSIZ_EP0
         } else {
@@ -307,7 +307,7 @@ impl UsbState {
             self.doepint[0] |= STUP;
             return false;
         }
-        let tsz = d.get(DOEPTSIZ0 + u16::try_from(ep).unwrap_or(0) * EP_STRIDE);
+        let tsz = d.get(DOEPTSIZ0 + u32::try_from(ep).unwrap_or(0) * EP_STRIDE);
         let xfersiz = if ep == 0 {
             tsz & XFRSIZ_EP0
         } else {
@@ -325,7 +325,7 @@ impl UsbState {
         self.enqueue(ep8, PKTSTS_OUT, 2, data);
         let expected = usize::try_from(self.out_ep[ep].xfersiz).unwrap_or(0);
         if self.out_ep[ep].armed && expected >= data.len() {
-            let reg = DOEPCTL0 + u16::try_from(ep).unwrap_or(0) * EP_STRIDE;
+            let reg = DOEPCTL0 + u32::try_from(ep).unwrap_or(0) * EP_STRIDE;
             d.set(reg, d.get(reg) & !EPENA);
             self.out_ep[ep].armed = false;
             self.doepint[ep] |= XFRC;
@@ -362,7 +362,7 @@ impl UsbState {
 
     /// `DIEPCTLn` read: the stored word plus the always-set, read-only bits.
     fn diepctl(&self, d: &Win, ep: usize) -> u32 {
-        let off = DIEPCTL0 + u16::try_from(ep).unwrap_or(0) * EP_STRIDE;
+        let off = DIEPCTL0 + u32::try_from(ep).unwrap_or(0) * EP_STRIDE;
         let mut word = d.get(off);
         if ep == 0 {
             word |= USBAEP;
@@ -375,7 +375,7 @@ impl UsbState {
 
     /// `DOEPCTLn` read: `EPENA` reflects an armed OUT endpoint.
     fn doepctl(&self, d: &Win, ep: usize) -> u32 {
-        let off = DOEPCTL0 + u16::try_from(ep).unwrap_or(0) * EP_STRIDE;
+        let off = DOEPCTL0 + u32::try_from(ep).unwrap_or(0) * EP_STRIDE;
         let mut word = d.get(off);
         if self.out_ep[ep].armed {
             word |= EPENA;
@@ -501,7 +501,7 @@ fn usb_prefixes(irq: &str) -> &'static [&'static str] {
 }
 
 /// The byte lane of `off` inside a four-byte register starting at `reg`.
-fn lane(off: u32, reg: u16) -> Option<u32> {
+fn lane(off: u32, reg: u32) -> Option<u32> {
     if off >= u32::from(reg) && off < u32::from(reg) + 4 {
         Some(off - u32::from(reg))
     } else {
@@ -690,7 +690,7 @@ impl Usb {
             } else if sub < 16 {
                 self.state.diepint(ep)
             } else if sub < 24 {
-                let reg = DIEPTSIZ0 + u16::try_from(ep).unwrap_or(0) * EP_STRIDE;
+                let reg = DIEPTSIZ0 + u32::try_from(ep).unwrap_or(0) * EP_STRIDE;
                 self.d.get(reg)
             } else {
                 self.state.dtxfsts(ep)
@@ -704,7 +704,7 @@ impl Usb {
             } else if sub < 16 {
                 self.state.doepint(ep)
             } else if sub < 24 {
-                let reg = DOEPTSIZ0 + u16::try_from(ep).unwrap_or(0) * EP_STRIDE;
+                let reg = DOEPTSIZ0 + u32::try_from(ep).unwrap_or(0) * EP_STRIDE;
                 self.d.get(reg)
             } else {
                 return Err(BusError::Reserved);
@@ -795,7 +795,7 @@ impl Usb {
     }
 
     fn write_diepctl(&mut self, ep: usize, l: u32, val: u8) {
-        let reg = DIEPCTL0 + u16::try_from(ep).unwrap_or(0) * EP_STRIDE;
+        let reg = DIEPCTL0 + u32::try_from(ep).unwrap_or(0) * EP_STRIDE;
         let mut merged = self.d.merged(reg, val, 8 * l);
         if l == 3 {
             if val & 0x80 != 0 {
@@ -815,7 +815,7 @@ impl Usb {
     }
 
     fn write_doepctl(&mut self, ep: usize, l: u32, val: u8) {
-        let reg = DOEPCTL0 + u16::try_from(ep).unwrap_or(0) * EP_STRIDE;
+        let reg = DOEPCTL0 + u32::try_from(ep).unwrap_or(0) * EP_STRIDE;
         let mut merged = self.d.merged(reg, val, 8 * l);
         if l == 3 {
             if val & 0x80 != 0 && !self.state.arm_out(&self.d, ep) {
@@ -844,7 +844,7 @@ impl Usb {
 
 /// Decompose an endpoint-block byte offset: the endpoint index, the byte
 /// within its 0x20 block, and the byte lane within the register.
-fn ep_block(off: u32, base: u16) -> (usize, u32, u32) {
+fn ep_block(off: u32, base: u32) -> (usize, u32, u32) {
     let rel = off - u32::from(base);
     let ep = usize::try_from(rel / 0x20).unwrap_or(0);
     let sub = rel % 0x20;

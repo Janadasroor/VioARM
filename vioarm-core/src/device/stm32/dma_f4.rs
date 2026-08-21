@@ -28,17 +28,17 @@ use crate::mem::bus::Region;
 use std::sync::{Arc, Mutex};
 
 /// `LISR` holds the flag groups of streams 0..=3.
-const LISR: u16 = 0x00;
+const LISR: u32 = 0x00;
 /// `HISR` holds the flag groups of streams 4..=7.
-const HISR: u16 = 0x04;
+const HISR: u32 = 0x04;
 /// `LIFCR` write-1-to-clears `LISR`.
-const LIFCR: u16 = 0x08;
+const LIFCR: u32 = 0x08;
 /// `HIFCR` write-1-to-clears `HISR`.
-const HIFCR: u16 = 0x0C;
+const HIFCR: u32 = 0x0C;
 /// `S0CR`, the first stream configuration register.
-const S0CR: u16 = 0x10;
+const S0CR: u32 = 0x10;
 /// The address stride between consecutive streams.
-const STREAM_STRIDE: u16 = 0x18;
+const STREAM_STRIDE: u32 = 0x18;
 /// The number of streams in each controller.
 const STREAMS: u8 = 8;
 
@@ -61,9 +61,9 @@ const MSIZE_SHIFT: u32 = 13;
 const NDTR_MASK: u32 = 0xFFFF;
 
 /// Sub-offsets of each stream block, relative to `SxCR`.
-const SNDTR: u16 = 0x04;
-const SPAR: u16 = 0x08;
-const SM0AR: u16 = 0x0C;
+const SNDTR: u32 = 0x04;
+const SPAR: u32 = 0x08;
+const SM0AR: u32 = 0x0C;
 
 /// The `TCIF` bit of `stream` (0-based) inside its `LISR`/`HISR` group.
 ///
@@ -99,7 +99,7 @@ impl Behavior for DmaF4Behavior {
     fn on_write(
         &mut self,
         view: &mut Registers<&mut [u32]>,
-        offset: u16,
+        offset: u32,
         val: u8,
         shift: u32,
     ) -> u32 {
@@ -133,7 +133,7 @@ impl Behavior for DmaF4Behavior {
         // Arbitration: higher `PL` first, then lower stream number.
         let mut order: Vec<(u32, u8)> = (0..STREAMS)
             .filter_map(|stream| {
-                let cr = S0CR + STREAM_STRIDE * u16::from(stream);
+                let cr = S0CR + STREAM_STRIDE * u32::from(stream);
                 let cr_word = view.get(cr);
                 if cr_word & EN == 0 {
                     return None;
@@ -148,7 +148,7 @@ impl Behavior for DmaF4Behavior {
         order.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
         for (_, stream) in order {
             let s = u32::from(stream);
-            let cr = S0CR + STREAM_STRIDE * u16::from(stream);
+            let cr = S0CR + STREAM_STRIDE * u32::from(stream);
             let cr_word = view.get(cr);
             if cr_word & EN == 0 {
                 continue;
@@ -207,7 +207,7 @@ impl Behavior for DmaF4Behavior {
         let mut lines = 0;
         for stream in 0..STREAMS {
             let s = u32::from(stream);
-            let cr = S0CR + STREAM_STRIDE * u16::from(stream);
+            let cr = S0CR + STREAM_STRIDE * u32::from(stream);
             let isr = if s < 4 { LISR } else { HISR };
             if view.get(cr) & TCIE != 0 && view.get(isr) & tcif_bit(s) != 0 {
                 lines |= 1 << s;

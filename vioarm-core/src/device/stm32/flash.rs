@@ -48,13 +48,13 @@ const CR_ERRIE: u32 = 1 << 10;
 const CR_EOPIE: u32 = 1 << 12;
 
 /// `KEYR` lives at register offset `0x04`.
-const KEYR: u16 = 0x04;
+const KEYR: u32 = 0x04;
 /// `SR` lives at register offset `0x0c`.
-const SR: u16 = 0x0c;
+const SR: u32 = 0x0c;
 /// `CR` lives at register offset `0x10`.
-const CR: u16 = 0x10;
+const CR: u32 = 0x10;
 /// `AR` lives at register offset `0x14`.
-const AR: u16 = 0x14;
+const AR: u32 = 0x14;
 
 /// A pending erase, executed by the memory gate on the next access to the
 /// flash region so the controller's instant-completion model stays visible to
@@ -149,7 +149,7 @@ impl Behavior for FlashBehavior {
     fn on_write(
         &mut self,
         view: &mut Registers<&mut [u32]>,
-        offset: u16,
+        offset: u32,
         val: u8,
         shift: u32,
     ) -> u32 {
@@ -214,7 +214,7 @@ impl Behavior for FlashBehavior {
         }
     }
 
-    fn on_read(&mut self, _view: &mut Registers<&mut [u32]>, offset: u16, value: u32) -> u32 {
+    fn on_read(&mut self, _view: &mut Registers<&mut [u32]>, offset: u32, value: u32) -> u32 {
         let gate = self.gate.lock().unwrap();
         let synth = match offset {
             SR => {
@@ -339,11 +339,11 @@ const CR4_ERRIE: u32 = 1 << 25;
 const CR4_LOCK: u32 = 1 << 31;
 
 /// `KEYR` lives at register offset `0x04`.
-const KEYR4: u16 = 0x04;
+const KEYR4: u32 = 0x04;
 /// `SR` lives at register offset `0x0c`.
-const SR4: u16 = 0x0c;
+const SR4: u32 = 0x0c;
 /// `CR` lives at register offset `0x10`.
-const CR4: u16 = 0x10;
+const CR4: u32 = 0x10;
 
 /// The STM32F407 sector-start offsets within the main-flash region, relative
 /// to its base; sector `i` spans `[sectors[i], sectors[i + 1])` — four 16 KiB
@@ -398,7 +398,7 @@ impl Behavior for FlashF4Behavior {
     fn on_write(
         &mut self,
         view: &mut Registers<&mut [u32]>,
-        offset: u16,
+        offset: u32,
         val: u8,
         shift: u32,
     ) -> u32 {
@@ -470,7 +470,7 @@ impl Behavior for FlashF4Behavior {
         }
     }
 
-    fn on_read(&mut self, _view: &mut Registers<&mut [u32]>, offset: u16, value: u32) -> u32 {
+    fn on_read(&mut self, _view: &mut Registers<&mut [u32]>, offset: u32, value: u32) -> u32 {
         let gate = self.gate.lock().unwrap();
         let synth = match offset {
             SR4 => {

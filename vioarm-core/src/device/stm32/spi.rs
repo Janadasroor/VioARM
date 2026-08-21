@@ -24,10 +24,10 @@ use crate::error::BusError;
 use crate::mem::bus::Region;
 
 /// Register offsets within the SPI, per the SVD.
-const CR1: u16 = 0x00;
-const CR2: u16 = 0x04;
-const SR: u16 = 0x08;
-const DR: u16 = 0x0C;
+const CR1: u32 = 0x00;
+const CR2: u32 = 0x04;
+const SR: u32 = 0x08;
+const DR: u32 = 0x0C;
 
 /// `CR1` bits.
 const SPE: u32 = 1 << 6;
@@ -84,7 +84,7 @@ impl Behavior for SpiBehavior {
     fn on_write(
         &mut self,
         view: &mut Registers<&mut [u32]>,
-        offset: u16,
+        offset: u32,
         val: u8,
         shift: u32,
     ) -> u32 {
@@ -106,7 +106,7 @@ impl Behavior for SpiBehavior {
         view.merged(offset, val, shift)
     }
 
-    fn on_read(&mut self, view: &mut Registers<&mut [u32]>, offset: u16, value: u32) -> u32 {
+    fn on_read(&mut self, view: &mut Registers<&mut [u32]>, offset: u32, value: u32) -> u32 {
         if offset == DR {
             // Reading the data register acknowledges `RXNE`.
             view.set(SR, view.get(SR) & !RXNE);
@@ -283,7 +283,7 @@ mod tests {
     use super::*;
     use crate::device::svd::stm32f407::Stm32f407;
 
-    fn read_word(spi: &mut Spi, off: u16) -> u32 {
+    fn read_word(spi: &mut Spi, off: u32) -> u32 {
         let base = spi.ranges()[0].base;
         let mut word = 0;
         for i in 0..4 {
@@ -293,7 +293,7 @@ mod tests {
         word
     }
 
-    fn write_word(spi: &mut Spi, off: u16, val: u32) {
+    fn write_word(spi: &mut Spi, off: u32, val: u32) {
         let base = spi.ranges()[0].base;
         for i in 0..4 {
             spi.write(base + u32::from(off) + i, ((val >> (8 * i)) & 0xFF) as u8)

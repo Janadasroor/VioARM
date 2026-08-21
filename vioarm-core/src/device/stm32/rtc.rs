@@ -13,16 +13,16 @@ use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
 use crate::mem::bus::Region;
 
-const CRH: u16 = 0x00;
-const CRL: u16 = 0x04;
-const PRLH: u16 = 0x08;
-const PRLL: u16 = 0x0C;
-const DIVH: u16 = 0x10;
-const DIVL: u16 = 0x14;
-const CNTH: u16 = 0x18;
-const CNTL: u16 = 0x1C;
-const ALRH: u16 = 0x20;
-const ALRL: u16 = 0x24;
+const CRH: u32 = 0x00;
+const CRL: u32 = 0x04;
+const PRLH: u32 = 0x08;
+const PRLL: u32 = 0x0C;
+const DIVH: u32 = 0x10;
+const DIVL: u32 = 0x14;
+const CNTH: u32 = 0x18;
+const CNTL: u32 = 0x1C;
+const ALRH: u32 = 0x20;
+const ALRL: u32 = 0x24;
 
 const CRL_SECF: u32 = 1 << 0;
 const CRL_ALRF: u32 = 1 << 1;
@@ -73,7 +73,7 @@ impl Behavior for RtcBehavior {
     fn on_write(
         &mut self,
         view: &mut Registers<&mut [u32]>,
-        offset: u16,
+        offset: u32,
         val: u8,
         shift: u32,
     ) -> u32 {

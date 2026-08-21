@@ -18,28 +18,28 @@ use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
 use crate::mem::bus::Region;
 
-const MCR: u16 = 0x00;
-const MSR: u16 = 0x04;
-const TSR: u16 = 0x08;
-const RF0R: u16 = 0x0C;
-const RF1R: u16 = 0x10;
-const IER: u16 = 0x14;
-const ESR: u16 = 0x18;
-const BTR: u16 = 0x1C;
-const TI0R: u16 = 0x180;
-const TDT0R: u16 = 0x184;
-const TDL0R: u16 = 0x188;
-const TDH0R: u16 = 0x18C;
-const TI1R: u16 = 0x190;
-const TI2R: u16 = 0x1A0;
-const RI0R: u16 = 0x1B0;
-const RDT0R: u16 = 0x1B4;
-const RDL0R: u16 = 0x1B8;
-const RDH0R: u16 = 0x1BC;
-const RI1R: u16 = 0x1C0;
-const RDT1R: u16 = 0x1C4;
-const RDL1R: u16 = 0x1C8;
-const RDH1R: u16 = 0x1CC;
+const MCR: u32 = 0x00;
+const MSR: u32 = 0x04;
+const TSR: u32 = 0x08;
+const RF0R: u32 = 0x0C;
+const RF1R: u32 = 0x10;
+const IER: u32 = 0x14;
+const ESR: u32 = 0x18;
+const BTR: u32 = 0x1C;
+const TI0R: u32 = 0x180;
+const TDT0R: u32 = 0x184;
+const TDL0R: u32 = 0x188;
+const TDH0R: u32 = 0x18C;
+const TI1R: u32 = 0x190;
+const TI2R: u32 = 0x1A0;
+const RI0R: u32 = 0x1B0;
+const RDT0R: u32 = 0x1B4;
+const RDL0R: u32 = 0x1B8;
+const RDH0R: u32 = 0x1BC;
+const RI1R: u32 = 0x1C0;
+const RDT1R: u32 = 0x1C4;
+const RDL1R: u32 = 0x1C8;
+const RDH1R: u32 = 0x1CC;
 
 const INRQ: u32 = 1 << 0;
 const RFLM: u32 = 1 << 3;
@@ -123,20 +123,20 @@ impl Frame {
     }
 }
 
-fn ti_reg(mb: u8) -> u16 {
-    TI0R + 0x10 * u16::from(mb)
+fn ti_reg(mb: u8) -> u32 {
+    TI0R + 0x10u32 * u32::from(mb)
 }
 
-fn tdt_reg(mb: u8) -> u16 {
-    TDT0R + 0x10 * u16::from(mb)
+fn tdt_reg(mb: u8) -> u32 {
+    TDT0R + 0x10u32 * u32::from(mb)
 }
 
-fn tdl_reg(mb: u8) -> u16 {
-    TDL0R + 0x10 * u16::from(mb)
+fn tdl_reg(mb: u8) -> u32 {
+    TDL0R + 0x10u32 * u32::from(mb)
 }
 
-fn tdh_reg(mb: u8) -> u16 {
-    TDH0R + 0x10 * u16::from(mb)
+fn tdh_reg(mb: u8) -> u32 {
+    TDH0R + 0x10u32 * u32::from(mb)
 }
 
 const fn rqcp_bit(mb: u8) -> u32 {
@@ -163,7 +163,7 @@ const fn abrq_bit(mb: u8) -> u32 {
     }
 }
 
-const fn fifo_reg(fifo: u8) -> u16 {
+const fn fifo_reg(fifo: u8) -> u32 {
     if fifo == 0 {
         RF0R
     } else {
@@ -346,7 +346,7 @@ impl Behavior for CanBehavior {
     fn on_write(
         &mut self,
         view: &mut Registers<&mut [u32]>,
-        offset: u16,
+        offset: u32,
         val: u8,
         shift: u32,
     ) -> u32 {
@@ -415,7 +415,7 @@ impl Behavior for CanBehavior {
         }
     }
 
-    fn on_read(&mut self, _view: &mut Registers<&mut [u32]>, offset: u16, value: u32) -> u32 {
+    fn on_read(&mut self, _view: &mut Registers<&mut [u32]>, offset: u32, value: u32) -> u32 {
         match offset {
             TSR => {
                 // The transmit-empty bits are read-only; recompute them live
@@ -653,7 +653,7 @@ mod tests {
     }
 
     fn load_mailbox(c: &mut Can, mb: u32, ti: u32, dlc: u32, data: &[u8]) {
-        let base = BASE + 0x180 + 0x10 * mb;
+        let base = BASE + 0x180u32 + 0x10u32 * mb;
         write_word(c, base + 0x04, dlc);
         let mut dl = 0u32;
         let mut dh = 0u32;

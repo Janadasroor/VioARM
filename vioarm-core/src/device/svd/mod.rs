@@ -43,7 +43,7 @@ pub struct FieldDef {
 #[derive(Clone, Copy, Debug)]
 pub struct RegisterDef {
     pub name: &'static str,
-    pub offset: u16,
+    pub offset: u32,
     pub width: u8,
     pub access: Access,
     pub reset: u32,
@@ -101,7 +101,7 @@ where
         Self { def, words }
     }
 
-    fn index(&self, offset: u16) -> usize {
+    fn index(&self, offset: u32) -> usize {
         self.def
             .registers
             .iter()
@@ -111,13 +111,13 @@ where
 
     /// The stored word at register `offset`.
     #[must_use]
-    pub fn get(&self, offset: u16) -> u32 {
+    pub fn get(&self, offset: u32) -> u32 {
         self.words[self.index(offset)]
     }
 
     /// The stored word at `offset` if the register exists, else `None`.
     #[must_use]
-    pub fn try_get(&self, offset: u16) -> Option<u32> {
+    pub fn try_get(&self, offset: u32) -> Option<u32> {
         self.def
             .registers
             .iter()
@@ -128,13 +128,13 @@ where
 
 impl Registers<&mut [u32]> {
     /// Replace the stored word at register `offset`.
-    pub fn set(&mut self, offset: u16, value: u32) {
+    pub fn set(&mut self, offset: u32, value: u32) {
         let i = self.index(offset);
         self.words[i] = value;
     }
 
     /// Replace the stored word if the register exists; return whether it did.
-    pub fn try_set(&mut self, offset: u16, value: u32) -> bool {
+    pub fn try_set(&mut self, offset: u32, value: u32) -> bool {
         if let Some(i) = self
             .def
             .registers
@@ -151,7 +151,7 @@ impl Registers<&mut [u32]> {
     /// The stored word at `offset` with byte `val` merged into lane `shift` —
     /// the byte-lane read-modify-write a plain register write stores.
     #[must_use]
-    pub fn merged(&self, offset: u16, val: u8, shift: u32) -> u32 {
+    pub fn merged(&self, offset: u32, val: u8, shift: u32) -> u32 {
         let current = self.get(offset);
         let mask = 0xFFu32 << shift;
         (current & !mask) | (u32::from(val) << shift)
@@ -174,7 +174,7 @@ pub trait Behavior: Send {
     fn on_write(
         &mut self,
         view: &mut Registers<&mut [u32]>,
-        offset: u16,
+        offset: u32,
         val: u8,
         shift: u32,
     ) -> u32 {
@@ -185,7 +185,7 @@ pub trait Behavior: Send {
     ///
     /// The view is mutable because reads have side effects on silicon: USART
     /// reading `DR` acknowledges `RXNE`.
-    fn on_read(&mut self, _view: &mut Registers<&mut [u32]>, _offset: u16, value: u32) -> u32 {
+    fn on_read(&mut self, _view: &mut Registers<&mut [u32]>, _offset: u32, value: u32) -> u32 {
         value
     }
 
@@ -355,7 +355,7 @@ impl<B: Behavior> RegisterFile<B> {
     /// # Panics
     /// Panics if `offset` is not one of the table's registers.
     #[must_use]
-    pub fn word(&self, offset: u16) -> u32 {
+    pub fn word(&self, offset: u32) -> u32 {
         let idx = self
             .def
             .registers
