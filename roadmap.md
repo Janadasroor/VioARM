@@ -46,9 +46,13 @@ Core execution:
   family, LDRD/STRD, LDM/STM, TBB/TBH, divide, multiply (including 64-bit and
   DSP forms), parallel add/subtract with SEL, sign/zero extension, saturating
   and bit-field operations.
-- VFP FPv4-SP data processing (arithmetic, fused multiply-add, compare,
-  conversions, immediate and register moves, VMRS/VMSR) plus VLDR/VSTR and
-  VLDM/VSTM, backed by a softfloat implementation ported from QEMU.
+- VFP FPv4-SP (Cortex-M4F) plus FPv5-D16 double-precision on
+  Cortex-M7/H743 (VFPv5 arithmetic, fused multiply-add, compare,
+  conversions single↔double and to/from integer/fixed-point, immediate
+  `VMOV.F32`/`VMOV.F64 #imm`, `VRINT*`, `VMRS`/`VMSR`, plus `VLDR`/`VSTR`
+  and `VLDM`/`VSTM` for both `S` and `D`) backed by a softfloat
+  implementation ported from QEMU (M4F `sz=11` correctly `UNDEFINSTR`,
+  H7 double locked with `stm32h743_firmware_does_f64*` firmware).
 - M-profile FP context switching: FPCCR ASPEN/LSPEN/LSPACT, FPCAR, FPDSCR,
   CONTROL.FPCA, extended exception frames, and lazy stacking, matching the
   Cortex-M4 oracle.
@@ -392,9 +396,13 @@ lda_stl, splim, tt/sau_tt/mpu_tt, alu_thumb1, sg, blxns/bxns,
 - Double-precision data-processing is UNDEFINED on FPv4-SP (Cortex-M4F) —
   only the `D↔S` alias moves/loads (`VMOV D↔R`, `VLDR/VSTR D`, `VLDM/VSTM D`)
   via `read_d`/`write_d` are valid; `sz=11` (`Vfp3`/`Vfp2` double) correctly
-  decode-fails to `UNDEFINSTR`/`HardFault`, matching the QEMU Cortex-M4
-  oracle (`decode_vfp_dp:2468`). A double-arithmetic FPU would be a new ISA
-  (FPv5-D16 / Cortex-M7).
+  `UNDEFINSTR`/`HardFault` on `M4F`, matching the QEMU `cortex-m4` oracle
+  (`decode_vfp_dp:2468`). On Cortex-M7/H743 (FPv5-D16) the full double
+  arithmetic is implemented (`Vfp3`/`Vfp2`/`Vcmp`/`Vcvt`/`Vrint`/`VmovImm`
+  with `is_dp`, `VLDR`/`VSTR D`, `VCVT.F64.F32`/`F32.F64` inverted `sz`
+  handling, `VMOV.F64 #imm` via `vfp_expand_imm_64`) and locked with H743
+  firmware (`vadd.f64`, `vmov.f64 #1.0`, `vcvt` int/double, `vrint`); `VJCVT`
+  and half-precision (`sz=01`) remain `UNDEFINED`.
 - The QEMU reference cannot execute taken IT-block branches; those paths are
   covered by core unit tests instead.
 
