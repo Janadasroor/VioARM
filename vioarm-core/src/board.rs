@@ -899,10 +899,16 @@ pub fn stm32h743() -> BoardMemory {
     if <Stm32h743 as crate::device::svd::Device>::peripheral("I2C3").is_some() {
         mem.attach(Box::new(I2c::i2c3_for::<Stm32h743>()));
     }
-    // ADC - H743 ADC has different regs (no CR2), skip for now
-    // if <Stm32h743 as crate::device::svd::Device>::peripheral("ADC1").is_some() {
-    //     mem.attach(Box::new(Adc::adc1_for::<Stm32h743>()));
-    // }
+    // ADC - H743 now handled via generic offsets (CR/ISR)
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("ADC1").is_some() {
+        mem.attach(Box::new(Adc::adc1_for::<Stm32h743>()));
+    }
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("ADC2").is_some() {
+        mem.attach(Box::new(Adc::adc2_for::<Stm32h743>()));
+    }
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("ADC3").is_some() {
+        mem.attach(Box::new(Adc::adc3_for::<Stm32h743>()));
+    }
     // DMA - H7 uses stream DMA like F4 plus DMAMUX; use DmaF4 with Vec mailbox
     let dma = Arc::new(Mutex::new(Vec::new()));
     mem.set_dma_mailbox(dma.clone());

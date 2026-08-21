@@ -58,12 +58,18 @@ struct Conversion {
 /// Chip differences the SVD tables express as field layouts.
 #[derive(Clone, Copy, Debug)]
 struct AdcConfig {
-    /// The `CR2.SWSTART` bit position (22 on the F1, 30 on the F4).
+    /// The `CR2.SWSTART` / `CR.ADSTART` bit position (22 on the F1, 30 on the F4, 2 on H7).
     swstart: u32,
     /// Whether `SR.OVR`/`CR1.OVRIE` exist (the F4 overrun pair).
     has_ovr: bool,
     /// Whether a second `ADON` write restarts a conversion (F1 legacy).
     adon_restarts: bool,
+    cr_off: u32,
+    sr_off: u32,
+    sqr1_off: u32,
+    dr_off: u32,
+    eoc_bit: u32,
+    adon_bit: u32,
 }
 
 /// The sampling core the SVD cannot express.
@@ -86,29 +92,30 @@ impl AdcBehavior {
     }
 
     /// The number of conversions in the regular sequence (`SQR1.L + 1`).
-    fn sequence_len(view: &Registers<&mut [u32]>) -> u32 {
-        ((view.get(SQR1) >> 20) & 0x0F) + 1
+    fn sequence_len(&self, view: &Registers<&mut [u32]>) -> u32 {
+        ((view.get(self.config.sqr1_off) >> 20) & 0x0F) + 1
     }
 
     /// The channel at `index` in the regular sequence (`SQR3` SQ1..SQ6,
     /// `SQR2` SQ7..SQ12, `SQR1` SQ13..SQ16).
-    fn channel_at(view: &Registers<&mut [u32]>, index: u32) -> u8 {
+    fn channel_at(&self, view: &Registers<&mut [u32]>, index: u32) -> u8 {
+        let sqr1 = self.config.sqr1_off;
         let (reg, shift) = match index {
-            0..=5 => (SQR3, index * 5),
-            6..=11 => (SQR2, (index - 6) * 5),
-            _ => (SQR1, (index - 12) * 5),
+            0..=5 => (sqr1 + 8, index * 5), // SQR3 = SQR1+8
+            6..=11 => (sqr1 + 4, (index - 6) * 5), // SQR2 = SQR1+4
+            _ => (sqr1, (index - 12) * 5),
         };
         ((view.get(reg) >> shift) & 0x1F) as u8
     }
 
     /// Begin a conversion of the first channel in the sequence.
     fn start_sequence(&mut self, view: &Registers<&mut [u32]>) {
-        if view.get(CR2) & ADON == 0 {
+        if view.get(self.config.cr_off) & self.config.adon_bit == 0 {
             return;
         }
         self.sq_index = 0;
         self.converting = Some(Conversion {
-            channel: Self::channel_at(view, 0),
+            channel: self.channel_at(view, 0),
             remaining: u64::from(CONVERSION_CYCLES),
         });
     }
@@ -122,18 +129,24 @@ impl Behavior for AdcBehavior {
         val: u8,
         shift: u32,
     ) -> u32 {
-        if offset == CR2 {
-            let before = view.get(CR2);
-            let word = view.merged(CR2, val, shift);
-            let powered = word & ADON != 0;
+        if offset == self.config.cr_off {
+            let before = view.get(self.config.cr_off);
+            let word = view.merged(self.config.cr_off, val, shift);
+            let powered = word & self.config.adon_bit != 0;
+            let was_powered = before & self.config.adon_bit != 0;
             let swstart = word & self.config.swstart != 0;
-            // SWSTART is a self-clearing strobe: it reads back as zero.
+            // SWSTART/ADSTART is a self-clearing strobe: it reads back as zero.
             let stored = word & !self.config.swstart;
+            // H7: ADEN rising sets ISR.ADRDY
+            if powered && !was_powered {
+                let isr = view.get(self.config.sr_off);
+                view.set(self.config.sr_off, isr | 1);
+            }
             if powered {
                 if swstart {
                     self.start_sequence(view);
                 } else if self.config.adon_restarts
-                    && before & ADON != 0
+                    && was_powered
                     && word & CONT == 0
                     && self.converting.is_none()
                 {
@@ -142,7 +155,8 @@ impl Behavior for AdcBehavior {
                     self.start_sequence(view);
                 }
             } else {
-                // Powering off aborts any in-flight conversion.
+                // Powering off aborts any in-flight conversion and clears ADRDY.
+                view.set(self.config.sr_off, view.get(self.config.sr_off) & !1);
                 self.converting = None;
             }
             return stored;
@@ -151,9 +165,12 @@ impl Behavior for AdcBehavior {
     }
 
     fn on_read(&mut self, view: &mut Registers<&mut [u32]>, offset: u32, value: u32) -> u32 {
-        if offset == DR {
+        if offset == self.config.dr_off {
             // Reading the data register clears EOC and STRT.
-            view.set(SR, view.get(SR) & !(EOC | STRT));
+            view.set(
+                self.config.sr_off,
+                view.get(self.config.sr_off) & !(self.config.eoc_bit | STRT),
+            );
         }
         value
     }
@@ -176,23 +193,24 @@ impl Behavior for AdcBehavior {
                 .unwrap_or(0)
                 & 0x0FFF,
         );
-        let aligned = if view.get(CR2) & ALIGN != 0 {
+        let aligned = if view.get(self.config.cr_off) & ALIGN != 0 {
             value << 4
         } else {
             value
         };
-        let sr = view.get(SR);
-        if self.config.has_ovr && sr & EOC != 0 {
+        let sr = view.get(self.config.sr_off);
+        let eoc = self.config.eoc_bit;
+        if self.config.has_ovr && sr & eoc != 0 {
             // A second result while the previous one is unread overruns.
-            view.set(SR, sr | EOC | STRT | OVR);
+            view.set(self.config.sr_off, sr | eoc | STRT | OVR);
         } else {
-            view.set(SR, sr | EOC | STRT);
+            view.set(self.config.sr_off, sr | eoc | STRT);
         }
-        view.set(DR, aligned);
+        view.set(self.config.dr_off, aligned);
         // Continuous or scan mode re-arms the next conversion immediately.
-        let continuous = view.get(CR2) & CONT != 0;
+        let continuous = view.get(self.config.cr_off) & CONT != 0;
         let scan = view.get(CR1) & SCAN != 0;
-        let len = Self::sequence_len(view);
+        let len = self.sequence_len(view);
         let next = if continuous && scan {
             (self.sq_index + 1) % len
         } else {
@@ -201,23 +219,26 @@ impl Behavior for AdcBehavior {
         if continuous {
             self.sq_index = next;
             self.converting = Some(Conversion {
-                channel: Self::channel_at(view, next),
+                channel: self.channel_at(view, next),
                 remaining: u64::from(CONVERSION_CYCLES),
             });
         } else if scan && next + 1 < len {
             self.sq_index = next + 1;
             self.converting = Some(Conversion {
-                channel: Self::channel_at(view, self.sq_index),
+                channel: self.channel_at(view, self.sq_index),
                 remaining: u64::from(CONVERSION_CYCLES),
             });
         }
     }
 
     fn pending(&self, view: &Registers<&[u32]>) -> u32 {
-        let sr = view.get(SR);
+        let sr = view.get(self.config.sr_off);
         let cr1 = view.get(CR1);
+        // H7 uses IER at sr_off+4 with EOCIE at bit 2, while F1/F4 use CR1 at 0x04 with EOCIE at bit 5
+        let ier = view.get(self.config.sr_off + 4);
+        let eocie = (cr1 & EOCIE != 0) || (ier & (1 << 2) != 0);
         u32::from(
-            (sr & EOC != 0 && cr1 & EOCIE != 0)
+            (sr & self.config.eoc_bit != 0 && eocie)
                 || (self.config.has_ovr && sr & OVR != 0 && cr1 & OVRIE != 0),
         )
     }
@@ -313,30 +334,54 @@ impl Adc {
 /// Derive the chip's [`AdcConfig`] from the SVD table's field layout, so the
 /// model follows whichever silicon the tables describe.
 fn config_from(def: &'static PeripheralDef) -> AdcConfig {
-    let cr2 = def
+    let cr = def
         .registers
         .iter()
-        .find(|r| r.name == "CR2")
-        .expect("ADC table contains CR2");
-    let swstart = cr2
+        .find(|r| r.name == "CR2" || r.name == "CR")
+        .expect("ADC table contains CR2/CR");
+    let swstart = cr
         .fields
         .iter()
-        .find(|f| f.name == "SWSTART")
+        .find(|f| f.name == "SWSTART" || f.name == "ADSTART")
         .map_or(1 << 22, |f| 1u32 << f.offset);
     let sr = def
         .registers
         .iter()
-        .find(|r| r.name == "SR")
-        .expect("ADC table contains SR");
+        .find(|r| r.name == "SR" || r.name == "ISR")
+        .expect("ADC table contains SR/ISR");
     let has_ovr = sr.fields.iter().any(|f| f.name == "OVR");
+    let eoc_bit = sr
+        .fields
+        .iter()
+        .find(|f| f.name == "EOC")
+        .map(|f| 1u32 << f.offset)
+        .unwrap_or(1 << 1);
+    let adon_field = cr.fields.iter().find(|f| f.name == "ADON" || f.name == "ADEN");
+    let adon_bit = adon_field.map(|f| 1u32 << f.offset).unwrap_or(1 << 0);
     // The F1 still routes the external trigger through `CR2.EXTTRIG`; the F4
     // replaced it with `EXTEN`. Where `EXTTRIG` exists, a second `ADON` write
     // restarts the converter.
-    let adon_restarts = cr2.fields.iter().any(|f| f.name == "EXTTRIG");
+    let adon_restarts = cr.fields.iter().any(|f| f.name == "EXTTRIG");
+    let sqr1 = def
+        .registers
+        .iter()
+        .find(|r| r.name == "SQR1")
+        .expect("ADC table contains SQR1");
+    let dr = def
+        .registers
+        .iter()
+        .find(|r| r.name == "DR")
+        .expect("ADC table contains DR");
     AdcConfig {
         swstart,
         has_ovr,
         adon_restarts,
+        cr_off: cr.offset,
+        sr_off: sr.offset,
+        sqr1_off: sqr1.offset,
+        dr_off: dr.offset,
+        eoc_bit,
+        adon_bit,
     }
 }
 

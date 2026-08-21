@@ -4129,3 +4129,53 @@ fn stm32h743_ram_regions() {
     assert_eq!(m.core.mem().read_word(0x24000000).unwrap(), 0x55555555);
 }
 
+const STM32H743_ADC_FW: &str = r#"
+#define RCC_AHB1ENR 0x580244E8u
+#define RCC_AHB1ENR_ADC12EN (1u<<5)
+#define ADC12_BASE 0x40022000u
+#define ADC_ISR 0x00u
+#define ADC_CR 0x08u
+#define ADC_SQR1 0x30u
+#define ADC_DR 0x40u
+#define ADC_ISR_EOC (1u<<2)
+#define ADC_CR_ADEN (1u<<0)
+#define ADC_CR_ADSTART (1u<<2)
+#define ADC_CR_ADCAL (1u<<31)
+#define OUT 0x20000000u
+void reset(void) {
+    // Enable ADC12 clock
+    *(volatile unsigned *)RCC_AHB1ENR |= RCC_AHB1ENR_ADC12EN;
+    // ADEN
+    *(volatile unsigned *)(ADC12_BASE + ADC_CR) |= ADC_CR_ADEN;
+    while (!(*(volatile unsigned *)(ADC12_BASE + 0x00) & 1u)) {}
+    // Start conversion
+    *(volatile unsigned *)(ADC12_BASE + ADC_CR) |= ADC_CR_ADSTART;
+    while (!(*(volatile unsigned *)(ADC12_BASE + ADC_ISR) & ADC_ISR_EOC)) {}
+    unsigned v = *(volatile unsigned *)(ADC12_BASE + ADC_DR);
+    *(volatile unsigned *)OUT = v & 0xFFF;
+    __asm__ volatile("bkpt #0");
+}
+"#;
+
+#[test]
+fn stm32h743_adc() {
+    let (code, symbols) = match build_firmware_h7_with_includes(STM32H743_ADC_FW, &[]) {
+        Ok(v) => v,
+        Err(why) => { eprintln!("skipping H743 adc: {why}"); return; }
+    };
+    let entry = *symbols.get("reset").unwrap();
+    let mut m = Machine::armv7em(board::stm32h743());
+    m.load_image(&load_flat(CODE_BASE, &code));
+    {
+        let mem = m.core.mem();
+        mem.write_word(board::FLASH, INIT_SP).unwrap();
+        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+    }
+    m.reset().unwrap();
+    for dev in m.core.mem().devices_mut() { dev.drive_inputs(0x0ABC); }
+    let err = m.run(5000);
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
+    let v = m.core.mem().read_word(RAM).unwrap() & 0xFFF;
+    assert_eq!(v, 0x0ABC, "H743 ADC got {v:#x}");
+}
+
