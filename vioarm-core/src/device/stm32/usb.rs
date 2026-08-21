@@ -495,8 +495,9 @@ fn win_def<D: Device>(irq: &str, which: &str) -> &'static PeripheralDef {
 
 fn usb_prefixes(irq: &str) -> &'static [&'static str] {
     match irq {
-        "OTG_HS" => &["OTG_HS"],
-        _ => &["USB_OTG", "OTG_FS"],
+        "OTG_HS" => &["OTG_HS", "OTG1_HS", "OTG2_HS"],
+        "OTG_FS" => &["USB_OTG", "OTG_FS", "OTG1_HS", "OTG2_HS"],
+        _ => &["USB_OTG", "OTG_FS", "OTG_HS", "OTG1_HS", "OTG2_HS"],
     }
 }
 
