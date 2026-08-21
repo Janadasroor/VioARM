@@ -2843,3 +2843,101 @@ fn stm32f107_firmware_talks_ethernet() {
     let expected: &[u8] = &[0x80, 6, 0, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46];
     assert_eq!(tx, expected, "the echoed frame reached the host");
 }
+
+/// Full SoC gap-fill: PWR/BKP/CRC/DAC/RTC/SDIO together on STM32F103.
+#[test]
+fn stm32f103_full_soc_gap_fill() {
+    const FW: &str = r#"
+#define PWR_CR   0x40007000u
+#define BKP_DR1  0x40006C04u
+#define CRC_DR   0x40023000u
+#define CRC_CR   0x40023008u
+#define DAC_CR   0x40007400u
+#define DAC_DHR12R1 0x40007408u
+#define DAC_DOR1 0x4000742Cu
+#define DAC_SWTRIGR 0x40007404u
+#define RTC_CRH  0x40002800u
+#define RTC_CRL  0x40002804u
+#define RTC_PRLH 0x40002808u
+#define RTC_PRLL 0x4000280Cu
+#define RTC_CNTH 0x40002818u
+#define RTC_CNTL 0x4000281Cu
+#define RTC_ALRH 0x40002820u
+#define RTC_ALRL 0x40002824u
+#define SDIO_POWER 0x40018000u
+#define SDIO_CLKCR 0x40018004u
+#define SDIO_ARG   0x40018008u
+#define SDIO_CMD   0x4001800Cu
+#define SDIO_RESPCMD 0x40018010u
+#define SDIO_RESP1 0x40018014u
+#define SDIO_STA   0x40018034u
+#define OUT 0x20000000u
+
+void reset(void) {
+    *(volatile unsigned *)PWR_CR |= (1u<<8);
+    *(volatile unsigned *)BKP_DR1 = 0x1234u;
+    *(volatile unsigned *)CRC_CR = 1u;
+    *(volatile unsigned *)CRC_DR = 0x12345678u;
+    unsigned crc = *(volatile unsigned *)CRC_DR;
+    *(volatile unsigned *)DAC_CR = 0x1u;
+    *(volatile unsigned *)DAC_DHR12R1 = 0x0ABu;
+    unsigned dor = *(volatile unsigned *)DAC_DOR1;
+    *(volatile unsigned *)DAC_CR = 0x5u;
+    *(volatile unsigned *)DAC_DHR12R1 = 0x0CDu;
+    *(volatile unsigned *)DAC_SWTRIGR = 1u;
+    unsigned dor2 = *(volatile unsigned *)DAC_DOR1;
+    *(volatile unsigned *)RTC_CRL |= (1u<<4);
+    *(volatile unsigned *)RTC_PRLH = 0;
+    *(volatile unsigned *)RTC_PRLL = 1;
+    *(volatile unsigned *)RTC_CNTH = 0;
+    *(volatile unsigned *)RTC_CNTL = 0;
+    *(volatile unsigned *)RTC_ALRH = 0;
+    *(volatile unsigned *)RTC_ALRL = 2;
+    *(volatile unsigned *)RTC_CRH = 2;
+    *(volatile unsigned *)RTC_CRL &= ~(1u<<4);
+    *(volatile unsigned *)SDIO_POWER = 0x03u;
+    *(volatile unsigned *)SDIO_CLKCR = 0x100u;
+    *(volatile unsigned *)SDIO_ARG = 0;
+    *(volatile unsigned *)SDIO_CMD = 0x400u;
+    unsigned sta0 = *(volatile unsigned *)SDIO_STA;
+    *(volatile unsigned *)SDIO_CMD = 0x448u;
+    unsigned resp = *(volatile unsigned *)SDIO_RESP1;
+    *(volatile unsigned *)SDIO_CMD = 0x477u;
+    *(volatile unsigned *)SDIO_CMD = 0x4469u;
+    unsigned ocr = *(volatile unsigned *)SDIO_RESP1;
+    *(volatile unsigned *)OUT = (*(volatile unsigned *)BKP_DR1 == 0x1234u) ? 1u : 0u;
+    *(volatile unsigned *)(OUT+4) = (crc != 0xFFFFFFFFu && crc != 0x12345678u) ? 1u : 0u;
+    *(volatile unsigned *)(OUT+8) = (dor == 0xABu) ? 1u : 0u;
+    *(volatile unsigned *)(OUT+12) = (dor2 == 0xCDu) ? 1u : 0u;
+    *(volatile unsigned *)(OUT+16) = (sta0 & (1u<<7)) ? 1u : 0u;
+    *(volatile unsigned *)(OUT+20) = (resp == 0x1AAu) ? 1u : 0u;
+    *(volatile unsigned *)(OUT+24) = (ocr & 0x80000000u) ? 1u : 0u;
+    __asm__ volatile("bkpt #0");
+}
+"#;
+    let (code, symbols) = match build_firmware_v7m_with_includes(FW, &[]) {
+        Ok(image) => image,
+        Err(why) => {
+            eprintln!("skipping full Soc test: {why}");
+            return;
+        }
+    };
+    let entry = *symbols.get("reset").expect("no reset symbol");
+    let mut m = Machine::armv7m(board::stm32f103());
+    m.load_image(&load_flat(CODE_BASE, &code));
+    {
+        let mem = m.core.mem();
+        mem.write_word(board::FLASH, INIT_SP).unwrap();
+        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+    }
+    m.reset().expect("reset");
+    let err = m.run(50_000);
+    assert_eq!(err, Err(HaltCause::NonThumbTarget), "full Soc firmware did not halt, got {err:?}");
+    assert_eq!(m.core.mem().read_word(RAM).unwrap(), 1, "BKP DR1 round-trip");
+    assert_eq!(m.core.mem().read_word(RAM + 4).unwrap(), 1, "CRC computed");
+    assert_eq!(m.core.mem().read_word(RAM + 8).unwrap(), 1, "DAC immediate DOR");
+    assert_eq!(m.core.mem().read_word(RAM + 12).unwrap(), 1, "DAC SWTRIG DOR");
+    assert_eq!(m.core.mem().read_word(RAM + 16).unwrap(), 1, "SDIO CMDSENT");
+    assert_eq!(m.core.mem().read_word(RAM + 20).unwrap(), 1, "SDIO CMD8 RESP");
+    assert_eq!(m.core.mem().read_word(RAM + 24).unwrap(), 1, "SDIO ACMD41 OCR ready");
+}
