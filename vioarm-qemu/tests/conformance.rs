@@ -3985,3 +3985,86 @@ fn mpu_data_violation_escalates_to_hardfault() {
     compare_traces("mpu_data_violation_escalates_to_hardfault", &vio, &qemu)
         .expect("traces agree");
 }
+
+/// A denied data access with `SHCSR.MEMFAULTENA` set: the same MPU
+/// violation is taken as a distinct `MemManage` fault (vector 4) instead of
+/// being escalated to `HardFault`. The handler captures `MMFSR`/`MMFAR` (no
+/// `HFSR.FORCED`) and the `MemManage` frame, patches the stacked PC, and
+/// returns; the diff locks ARMv7-M's `MEMFAULTENA` gating and the
+/// `MemManage` priority/frame against the M3.
+#[test]
+fn mpu_data_violation_taken_as_memmanage() {
+    let Some(mt) = qemu() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+    a.vec(4, "mm"); // MemManage vector
+    a.vec(3, "hf"); // HardFault fallback (should not be taken)
+
+    // Region 1: flash base, 1 MiB, rw/rw (this image runs there).
+    a.mov_imm32(0, 0xE000_ED98);
+    a.movs_imm8(1, 1);
+    a.str_imm(1, 0, 0);
+    a.mov_imm32(0, 0xE000_ED9C);
+    a.mov_imm32(1, 0x0000_0000);
+    a.str_imm(1, 0, 0);
+    a.mov_imm32(0, 0xE000_EDA0);
+    a.mov_imm32(1, 0x0300_0027);
+    a.str_imm(1, 0, 0);
+    // Region 0: 0x2000_0000..=0x2000_07FF, rw/rw (the SP lives here).
+    a.mov_imm32(0, 0xE000_ED98);
+    a.movs_imm8(1, 0);
+    a.str_imm(1, 0, 0);
+    a.mov_imm32(0, 0xE000_ED9C);
+    a.mov_imm32(1, 0x2000_0000);
+    a.str_imm(1, 0, 0);
+    a.mov_imm32(0, 0xE000_EDA0);
+    a.mov_imm32(1, 0x0300_0015);
+    a.str_imm(1, 0, 0);
+    a.mov_imm32(0, 0xE000_ED94);
+    a.movs_imm8(1, 1);
+    a.str_imm(1, 0, 0); // MPU_CTRL ENABLE
+    // Enable the distinct MemManage exception.
+    a.mov_imm32(0, 0xE000_ED24); // SHCSR
+    a.mov_imm32(1, 0x0001_0000); // MEMFAULTENA
+    a.str_imm(1, 0, 0);
+
+    // The denied load: 0x2000_2000 is outside region 0 -> MemManage.
+    a.mov_imm32(1, 0x2000_2000);
+    a.ldr_imm(0, 1, 0);
+
+    a.label("halt");
+    a.b("halt");
+
+    a.label("mm");
+    a.mov_imm32(4, 0xE000_ED20);
+    a.ldr_imm(5, 4, 8); // r5 = MMFSR (DACCVIOL|MMARVALID, no FORCED)
+    a.ldr_imm(6, 4, 12); // r6 = HFSR (must be 0)
+    a.ldr_imm(7, 4, 20); // r7 = MMFAR
+    a.mov_reg(1, 13);
+    a.ldr_imm(2, 1, 24);
+    a.adds_imm8(2, 2);
+    a.str_imm(2, 1, 24);
+    a.bx(14);
+
+    a.label("hf");
+    a.b("halt");
+
+    let img: Image = a.clone().finish_at(MPU_SP, 0x0000_0000).expect("assemble");
+    let stop = img.addr("halt").expect("halt");
+    let (vio, reached) = vio_run(&img.bytes, stop);
+    assert!(
+        reached,
+        "mpu_data_violation_taken_as_memmanage: vioarm never reached halt \
+         @ {stop:#x} (last {})",
+        snapshot_like(&vio)
+    );
+    let qemu = qemu_run_retry(&mt, &img.bytes, stop);
+    assert!(
+        !qemu.is_empty() && qemu.last().expect("empty").r[15] & !1 == stop,
+        "mpu_data_violation_taken_as_memmanage: qemu never reached halt \
+         @ {stop:#x} (got {} states)",
+        qemu.len()
+    );
+    compare_traces("mpu_data_violation_taken_as_memmanage", &vio, &qemu)
+        .expect("traces agree");
+}
