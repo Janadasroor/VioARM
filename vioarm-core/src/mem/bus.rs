@@ -215,6 +215,14 @@ pub trait PeripheralBus: Bus {
     /// Advance all peripherals by one machine cycle.
     fn tick_cycle(&mut self) {}
 
+    /// Advance all peripherals by `delta` machine cycles. Default is `delta`
+    /// calls to `tick_cycle` for back-compat.
+    fn tick_by(&mut self, delta: u64) {
+        for _ in 0..delta {
+            self.tick_cycle();
+        }
+    }
+
     /// Reset all peripheral state.
     fn reset_peripherals(&mut self) {}
 

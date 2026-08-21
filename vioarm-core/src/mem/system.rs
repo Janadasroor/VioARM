@@ -582,6 +582,10 @@ impl<M: Bus> PeripheralBus for SystemMemory<M> {
         self.tick_devices(1);
     }
 
+    fn tick_by(&mut self, delta: u64) {
+        self.tick_devices(delta);
+    }
+
     fn reset_peripherals(&mut self) {
         self.reset_devices();
     }
