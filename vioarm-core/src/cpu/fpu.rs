@@ -25,6 +25,85 @@ const F32_FRAC_LSB: u64 = F32_ROUND_MASK + 1;
 const F32_FRAC_LSBM1: u64 = F32_ROUND_MASK ^ (F32_ROUND_MASK >> 1);
 const F32_ROUNDEVEN_MASK: u64 = F32_ROUND_MASK | F32_FRAC_LSB;
 
+const F64_EXP_BIAS: i32 = 1023;
+const F64_EXP_MAX: i32 = 2047;
+const F64_FRAC_SIZE: i32 = 52;
+/// `64 - frac_size - 1`: the number of trailing bits kept for rounding.
+const F64_FRAC_SHIFT: i32 = 11;
+const F64_ROUND_MASK: u64 = (1u64 << F64_FRAC_SHIFT) - 1;
+const F64_FRAC_LSB: u64 = F64_ROUND_MASK + 1;
+const F64_FRAC_LSBM1: u64 = F64_ROUND_MASK ^ (F64_ROUND_MASK >> 1);
+const F64_ROUNDEVEN_MASK: u64 = F64_ROUND_MASK | F64_FRAC_LSB;
+
+/// The IEEE format an operation is carried out at. The decomposed `Parts`
+/// representation is shared by both widths; the width only selects the
+/// pack/unpack parameters (bias, fraction shift, exponent max).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Width {
+    /// IEEE binary32 (`float`, VFP `S` registers).
+    Single,
+    /// IEEE binary64 (`double`, FPv5 `D` registers).
+    Double,
+}
+
+impl Width {
+    #[inline]
+    fn exp_bias(self) -> i32 {
+        match self {
+            Width::Single => F32_EXP_BIAS,
+            Width::Double => F64_EXP_BIAS,
+        }
+    }
+
+    #[inline]
+    fn exp_max(self) -> i32 {
+        match self {
+            Width::Single => F32_EXP_MAX,
+            Width::Double => F64_EXP_MAX,
+        }
+    }
+
+    #[inline]
+    fn frac_size(self) -> i32 {
+        match self {
+            Width::Single => F32_FRAC_SIZE,
+            Width::Double => F64_FRAC_SIZE,
+        }
+    }
+
+    #[inline]
+    fn frac_shift(self) -> i32 {
+        match self {
+            Width::Single => F32_FRAC_SHIFT,
+            Width::Double => F64_FRAC_SHIFT,
+        }
+    }
+
+    #[inline]
+    fn round_mask(self) -> u64 {
+        match self {
+            Width::Single => F32_ROUND_MASK,
+            Width::Double => F64_ROUND_MASK,
+        }
+    }
+
+    #[inline]
+    fn frac_lsbm1(self) -> u64 {
+        match self {
+            Width::Single => F32_FRAC_LSBM1,
+            Width::Double => F64_FRAC_LSBM1,
+        }
+    }
+
+    #[inline]
+    fn roundeven_mask(self) -> u64 {
+        match self {
+            Width::Single => F32_ROUNDEVEN_MASK,
+            Width::Double => F64_ROUNDEVEN_MASK,
+        }
+    }
+}
+
 /// Floating-point rounding modes (QEMU `FloatRoundMode`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RoundMode {
@@ -72,6 +151,9 @@ pub struct FloatStatus {
     pub flush_inputs_to_zero: bool,
     /// Return the default NaN for NaN results (FPSCR.DN).
     pub default_nan_mode: bool,
+    /// The IEEE format the operation packs/unpacks at. Arithmetic cores are
+    /// shared by both widths; converts switch this between phases.
+    pub width: Width,
 }
 
 impl FloatStatus {
@@ -84,6 +166,7 @@ impl FloatStatus {
             flush_to_zero: false,
             flush_inputs_to_zero: false,
             default_nan_mode: false,
+            width: Width::Single,
         }
     }
 
@@ -239,8 +322,10 @@ fn frac_normalize(frac: &mut u64) -> i32 {
 // Canonicalize / uncanonicalize (QEMU `parts64_canonicalize`).
 // ---------------------------------------------------------------------------
 
-/// QEMU's `parts64_canonicalize` for float32.
+
+/// QEMU's `parts64_canonicalize`.
 fn parts_canonicalize(p: &mut Parts, status: &mut FloatStatus) {
+    let w = status.width;
     if p.exp == 0 {
         if frac_eqz(p.frac) {
             p.cls = FloatClass::Zero;
@@ -251,18 +336,18 @@ fn parts_canonicalize(p: &mut Parts, status: &mut FloatStatus) {
         } else {
             let shift = frac_normalize(&mut p.frac);
             p.cls = FloatClass::Denormal;
-            p.exp = F32_FRAC_SHIFT - F32_EXP_BIAS - shift + 1;
+            p.exp = w.frac_shift() - w.exp_bias() - shift + 1;
         }
-    } else if p.exp < F32_EXP_MAX {
+    } else if p.exp < w.exp_max() {
         p.cls = FloatClass::Normal;
-        p.exp -= F32_EXP_BIAS;
-        frac_shl(&mut p.frac, F32_FRAC_SHIFT);
+        p.exp -= w.exp_bias();
+        frac_shl(&mut p.frac, w.frac_shift());
         p.frac |= DECOMPOSED_IMPLICIT_BIT;
     } else if frac_eqz(p.frac) {
         p.cls = FloatClass::Inf;
     } else {
-        frac_shl(&mut p.frac, F32_FRAC_SHIFT);
-        // The float32 quiet bit (raw bit 22) lands on bit 62 in the
+        frac_shl(&mut p.frac, w.frac_shift());
+        // The quiet bit (raw bit frac_size-1) lands on bit 62 in the
         // decomposed fraction, just below the implicit bit.
         p.cls = if p.frac & (DECOMPOSED_IMPLICIT_BIT >> 1) != 0 {
             FloatClass::QNaN
@@ -272,13 +357,13 @@ fn parts_canonicalize(p: &mut Parts, status: &mut FloatStatus) {
     }
 }
 
-/// QEMU's `parts64_uncanon_normal` for float32.
+/// QEMU's `parts64_uncanon_normal`.
 fn parts_uncanon_normal(p: &mut Parts, status: &mut FloatStatus) {
-    let exp_max = F32_EXP_MAX;
-    let frac_shift = F32_FRAC_SHIFT;
-    let round_mask = F32_ROUND_MASK;
-    let frac_lsbm1 = F32_FRAC_LSBM1;
-    let roundeven_mask = F32_ROUNDEVEN_MASK;
+    let exp_max = status.width.exp_max();
+    let frac_shift = status.width.frac_shift();
+    let round_mask = status.width.round_mask();
+    let frac_lsbm1 = status.width.frac_lsbm1();
+    let roundeven_mask = status.width.roundeven_mask();
     let mut inc: u64;
     let mut overflow_norm = false;
     let mut exp;
@@ -306,7 +391,7 @@ fn parts_uncanon_normal(p: &mut Parts, status: &mut FloatStatus) {
         }
     }
 
-    exp = p.exp + F32_EXP_BIAS;
+    exp = p.exp + status.width.exp_bias();
     if exp > 0 {
         if p.frac & round_mask != 0 {
             flags |= FLAG_INEXACT;
@@ -382,7 +467,7 @@ fn parts_uncanon_normal(p: &mut Parts, status: &mut FloatStatus) {
     status.raise(flags);
 }
 
-/// QEMU's `parts64_uncanon` for float32.
+/// QEMU's `parts64_uncanon`.
 fn parts_uncanon(p: &mut Parts, status: &mut FloatStatus) {
     if is_anynorm(p.cls) {
         parts_uncanon_normal(p, status);
@@ -393,12 +478,12 @@ fn parts_uncanon(p: &mut Parts, status: &mut FloatStatus) {
                 frac_clear(&mut p.frac);
             }
             FloatClass::Inf => {
-                p.exp = F32_EXP_MAX;
+                p.exp = status.width.exp_max();
                 frac_clear(&mut p.frac);
             }
             FloatClass::QNaN | FloatClass::SNaN => {
-                p.exp = F32_EXP_MAX;
-                frac_shr(&mut p.frac, F32_FRAC_SHIFT);
+                p.exp = status.width.exp_max();
+                frac_shr(&mut p.frac, status.width.frac_shift());
             }
             _ => unreachable!("unknown float class in uncanon"),
         }
@@ -412,10 +497,10 @@ fn parts_uncanon(p: &mut Parts, status: &mut FloatStatus) {
 /// QEMU's `parts64_default_nan`. For ARM the default NaN pattern is
 /// `0b01000000`, placed into bits [62:56] (bit 62 set); uncanon shifts it
 /// into the raw fraction position later.
-fn parts_default_nan(p: &mut Parts) {
+fn parts_default_nan(p: &mut Parts, status: &FloatStatus) {
     p.cls = FloatClass::QNaN;
     p.sign = false;
-    p.exp = F32_EXP_MAX;
+    p.exp = status.width.exp_max();
     p.frac = 1u64 << (DECOMPOSED_BINARY_POINT - 1);
 }
 
@@ -432,14 +517,14 @@ fn parts_return_nan(a: &mut Parts, status: &mut FloatStatus) {
         FloatClass::SNaN => {
             status.raise(FLAG_INVALID | FLAG_INVALID_SNAN);
             if status.default_nan_mode {
-                parts_default_nan(a);
+                parts_default_nan(a, status);
             } else {
                 parts_silence_nan(a);
             }
         }
         FloatClass::QNaN => {
             if status.default_nan_mode {
-                parts_default_nan(a);
+                parts_default_nan(a, status);
             }
         }
         _ => unreachable!("return_nan called on non-NaN"),
@@ -458,7 +543,7 @@ fn parts_pick_nan<'a>(
     }
 
     if status.default_nan_mode {
-        parts_default_nan(a);
+        parts_default_nan(a, status);
         return a;
     }
 
@@ -513,7 +598,7 @@ fn parts_pick_nan_muladd<'p, 's>(
     }
 
     if status.default_nan_mode {
-        parts_default_nan(a);
+        parts_default_nan(a, status);
         return a;
     }
 
@@ -521,7 +606,7 @@ fn parts_pick_nan_muladd<'p, 's>(
         // float_infzeronan_dnan_if_qnan: return the default NaN if c is QNaN,
         // otherwise return the (signaling, silenced) input NaN.
         if is_qnan(c.cls) {
-            parts_default_nan(a);
+            parts_default_nan(a, status);
             return a;
         }
         let ret = c;
@@ -664,7 +749,7 @@ fn parts_addsub<'p, 's>(
             }
             // Inf - Inf
             status.raise(FLAG_INVALID | FLAG_INVALID_ISI);
-            parts_default_nan(a);
+            parts_default_nan(a, status);
             return a;
         }
     } else {
@@ -733,7 +818,7 @@ fn parts_mul<'p, 's>(
     // Inf * Zero == NaN
     if ab_mask == CMASK_INFZERO {
         status.raise(FLAG_INVALID | FLAG_INVALID_IMZ);
-        parts_default_nan(a);
+        parts_default_nan(a, status);
         return a;
     }
 
@@ -866,14 +951,14 @@ fn parts_muladd_scalbn<'p, 's>(
     if !cmask_only_normals(ab_mask) {
         if ab_mask == CMASK_INFZERO {
             status.raise(FLAG_INVALID | FLAG_INVALID_IMZ);
-            parts_default_nan(a);
+            parts_default_nan(a, status);
             return a;
         }
 
         if ab_mask & CMASK_INF != 0 {
             if c.cls == FloatClass::Inf && a.sign != c.sign {
                 status.raise(FLAG_INVALID | FLAG_INVALID_ISI);
-                parts_default_nan(a);
+                parts_default_nan(a, status);
                 return a;
             }
             a.cls = FloatClass::Inf;
@@ -987,12 +1072,12 @@ fn parts_div<'p, 's>(
     // 0/0 or Inf/Inf => NaN
     if ab_mask == CMASK_ZERO {
         status.raise(FLAG_INVALID | FLAG_INVALID_ZDZ);
-        parts_default_nan(a);
+        parts_default_nan(a, status);
         return a;
     }
     if ab_mask == CMASK_INF {
         status.raise(FLAG_INVALID | FLAG_INVALID_IDI);
-        parts_default_nan(a);
+        parts_default_nan(a, status);
         return a;
     }
 
@@ -1066,6 +1151,7 @@ const RSQRT_TAB: [u16; 128] = [
 ];
 
 const THREE32: u32 = 3u32 << 30;
+const THREE64: u64 = 3u64 << 62;
 
 /// QEMU's `parts64_sqrt` for float32.
 fn parts_sqrt(a: &mut Parts, status: &mut FloatStatus) {
@@ -1086,7 +1172,7 @@ fn parts_sqrt(a: &mut Parts, status: &mut FloatStatus) {
             FloatClass::Inf => {
                 if a.sign {
                     status.raise(FLAG_INVALID | FLAG_INVALID_SQRT);
-                    parts_default_nan(a);
+                    parts_default_nan(a, status);
                 }
                 return;
             }
@@ -1096,7 +1182,7 @@ fn parts_sqrt(a: &mut Parts, status: &mut FloatStatus) {
 
     if a.sign {
         status.raise(FLAG_INVALID | FLAG_INVALID_SQRT);
-        parts_default_nan(a);
+        parts_default_nan(a, status);
         return;
     }
 
@@ -1107,8 +1193,8 @@ fn parts_sqrt(a: &mut Parts, status: &mut FloatStatus) {
         frac_shr(&mut a.frac, 1);
     }
 
-    let m64 = a.frac;
-    let m32 = (m64 >> 32) as u32;
+    let m64_full = a.frac;
+    let m32 = (m64_full >> 32) as u32;
 
     let mut r32 = (RSQRT_TAB[index] as u32) << 16;
     let mut s32 = ((m32 as u64) * r32 as u64 >> 32) as u32;
@@ -1121,7 +1207,7 @@ fn parts_sqrt(a: &mut Parts, status: &mut FloatStatus) {
     d32 = ((s32 as u64) * r32 as u64 >> 32) as u32;
     u32_ = THREE32.wrapping_sub(d32);
 
-    if F32_FRAC_SIZE <= 23 {
+    if status.width == Width::Single {
         // float32 or smaller.
         s32 = ((s32 as u64) * u32_ as u64 >> 32) as u32; // 3.29
         s32 = (s32.wrapping_sub(1)) >> 6; // 9.23
@@ -1137,7 +1223,40 @@ fn parts_sqrt(a: &mut Parts, status: &mut FloatStatus) {
             a.frac = (a.frac as i64).wrapping_add(delta) as u64;
         }
     } else {
-        unreachable!("fpu module only implements float32");
+        // float64: two more 32-bit iterations, then a 64-bit Newton-Raphson
+        // step and a final nearest-round correction (QEMU `partsN(sqrt)`).
+        r32 = (u64::from(r32) * u64::from(u32_) >> 31) as u32;
+
+        s32 = ((m32 as u64) * r32 as u64 >> 32) as u32;
+        d32 = ((s32 as u64) * r32 as u64 >> 32) as u32;
+        u32_ = THREE32.wrapping_sub(d32);
+
+        // |r*sqrt(m) - 1| < 0x1.37p-29; convert to 64-bit arithmetic.
+        let r64 = u64::from(r32).wrapping_mul(u64::from(u32_)).wrapping_mul(2);
+        let m64 = m64_full;
+        // mul64To128 keeps the high word of the 128-bit product.
+        let hi128 = |x: u64, y: u64| -> u64 { ((u128::from(x) * u128::from(y)) >> 64) as u64 };
+        let s64 = hi128(m64, r64);
+        let d64 = hi128(s64, r64);
+        let u64_ = THREE64.wrapping_sub(d64);
+
+        // 3.61 fixed point.
+        let s64 = hi128(s64, u64_);
+        // 12.52 fixed point.
+        let s64 = (s64.wrapping_sub(2)) >> 9;
+
+        // Compute nearest rounded result.
+        let d0 = (m64 << 42).wrapping_sub(s64.wrapping_mul(s64));
+        let d1 = s64.wrapping_sub(d0);
+        let d2 = d1.wrapping_add(s64).wrapping_add(1);
+        let s64 = s64.wrapping_add((d1 >> 63) as u64);
+        a.frac = s64 << (64 - 54);
+
+        // Increment or decrement for inexact.
+        if d2 != 0 {
+            let delta = if ((d1 ^ d2) as i64) < 0 { -1i64 } else { 1i64 };
+            a.frac = (a.frac as i64).wrapping_add(delta) as u64;
+        }
     }
 
     // Convert back from base 4 to base 2.
@@ -1245,7 +1364,7 @@ fn parts_round_to_int(a: &mut Parts, rmode: RoundMode, scale: i32, status: &mut 
         FloatClass::QNaN | FloatClass::SNaN => parts_return_nan(a, status),
         FloatClass::Zero | FloatClass::Inf => {}
         FloatClass::Normal | FloatClass::Denormal => {
-            if parts_round_to_int_normal(a, rmode, scale, F32_FRAC_SIZE) {
+            if parts_round_to_int_normal(a, rmode, scale, status.width.frac_size()) {
                 status.raise(FLAG_INEXACT);
             }
         }
@@ -1539,6 +1658,14 @@ fn pack_raw(p: &Parts) -> u32 {
     sign | exp | frac
 }
 
+/// QEMU's `pack_raw64` for float64.
+fn pack_raw_d(p: &Parts) -> u64 {
+    let sign = u64::from(p.sign) << 63;
+    let exp = ((p.exp as u64) & 0x7ff) << 52;
+    let frac = p.frac & 0xf_ffff_ffff_ffff;
+    sign | exp | frac
+}
+
 /// QEMU's `float32_unpack_raw`.
 fn unpack_raw(p: &mut Parts, f: u32) {
     p.sign = f >> 31 & 1 != 0;
@@ -1547,15 +1674,39 @@ fn unpack_raw(p: &mut Parts, f: u32) {
     p.cls = FloatClass::Zero; // set by canonicalize
 }
 
+/// QEMU's `unpack_raw64` for float64.
+fn unpack_raw_d(p: &mut Parts, f: u64) {
+    p.sign = f >> 63 & 1 != 0;
+    p.exp = (f >> 52 & 0x7ff) as i32;
+    p.frac = f & 0xf_ffff_ffff_ffff;
+    p.cls = FloatClass::Zero; // set by canonicalize
+}
+
 /// QEMU's `float32_round_pack_canonical`.
 fn round_pack_canonical(p: &mut Parts, status: &mut FloatStatus) -> u32 {
+    status.width = Width::Single;
     parts_uncanon(p, status);
     pack_raw(p)
 }
 
+/// QEMU's `float64_round_pack_canonical`.
+fn round_pack_canonical_d(p: &mut Parts, status: &mut FloatStatus) -> u64 {
+    status.width = Width::Double;
+    parts_uncanon(p, status);
+    pack_raw_d(p)
+}
+
 /// QEMU's `float32_unpack_canonical`.
 fn unpack_canonical(p: &mut Parts, f: u32, status: &mut FloatStatus) {
+    status.width = Width::Single;
     unpack_raw(p, f);
+    parts_canonicalize(p, status);
+}
+
+/// QEMU's `float64_unpack_canonical`.
+fn unpack_canonical_d(p: &mut Parts, f: u64, status: &mut FloatStatus) {
+    status.width = Width::Double;
+    unpack_raw_d(p, f);
     parts_canonicalize(p, status);
 }
 
@@ -1806,6 +1957,248 @@ pub fn to_int32_scalbn(a: u32, shift: i32, status: &mut FloatStatus) -> i32 {
 pub fn to_uint32_scalbn(a: u32, shift: i32, status: &mut FloatStatus) -> u32 {
     let mut p = unpack_canonical_bits(a, status);
     parts_float_to_uint(&mut p, RoundMode::ToZero, shift, u32::MAX as u64, status) as u32
+}
+
+// ---------------------------------------------------------------------------
+// Public float64 operations (QEMU's `float64_*`; FPv5 double precision).
+// ---------------------------------------------------------------------------
+
+/// True if the raw float64 bits denote a denormal.
+pub fn is_denormal_d(raw: u64) -> bool {
+    (raw & 0x7ff0_0000_0000_0000) == 0 && (raw & 0x000f_ffff_ffff_ffff) != 0
+}
+
+fn unpack_canonical_bits_d(f: u64, status: &mut FloatStatus) -> Parts {
+    let mut p = Parts {
+        sign: false,
+        exp: 0,
+        frac: 0,
+        cls: FloatClass::Zero,
+    };
+    unpack_canonical_d(&mut p, f, status);
+    p
+}
+
+fn op2_d(
+    a: u64,
+    b: u64,
+    status: &mut FloatStatus,
+    op: for<'p, 's> fn(&'p mut Parts, &'p mut Parts, &'s mut FloatStatus) -> &'p mut Parts,
+) -> u64 {
+    let mut pa = unpack_canonical_bits_d(a, status);
+    let mut pb = unpack_canonical_bits_d(b, status);
+    let pr = op(&mut pa, &mut pb, status);
+    round_pack_canonical_d(pr, status)
+}
+
+/// float64 addition.
+pub fn add_f64(a: u64, b: u64, status: &mut FloatStatus) -> u64 {
+    op2_d(a, b, status, |a, b, s| parts_addsub(a, b, s, false))
+}
+
+/// float64 subtraction.
+pub fn sub_f64(a: u64, b: u64, status: &mut FloatStatus) -> u64 {
+    op2_d(a, b, status, |a, b, s| parts_addsub(a, b, s, true))
+}
+
+/// float64 multiply.
+pub fn mul_f64(a: u64, b: u64, status: &mut FloatStatus) -> u64 {
+    op2_d(a, b, status, parts_mul)
+}
+
+/// float64 divide.
+pub fn div_f64(a: u64, b: u64, status: &mut FloatStatus) -> u64 {
+    op2_d(a, b, status, parts_div)
+}
+
+/// float64 fused multiply-add with sign-control flags, as used by
+/// VFMA.F64/VFMS.F64/VFNMA.F64/VFNMS.F64.
+pub fn muladd_neg_f64(a: u64, b: u64, c: u64, flags: u32, status: &mut FloatStatus) -> u64 {
+    let mut pa = unpack_canonical_bits_d(a, status);
+    let mut pb = unpack_canonical_bits_d(b, status);
+    let mut pc = unpack_canonical_bits_d(c, status);
+    let pr = parts_muladd_scalbn(&mut pa, &mut pb, &mut pc, 0, flags, status);
+    round_pack_canonical_d(pr, status)
+}
+
+/// float64 square root.
+pub fn sqrt_f64(a: u64, status: &mut FloatStatus) -> u64 {
+    // Classify via softfloat Parts so NaN/denormal handling and flags
+    // match the QEMU model exactly; the arithmetic itself uses the
+    // host's correctly-rounded sqrt.
+    let mut p = unpack_canonical_bits_d(a, status);
+    match p.cls {
+        FloatClass::QNaN | FloatClass::SNaN => {
+            // Reuse the shared NaN-return logic (raises INVALID|SNAN,
+            // honours default_nan_mode, quiets SNaNs).
+            let mut q = p;
+            // parts_return_nan expects the NaN in `q` and will raise flags.
+            // Inline its logic to avoid borrowing issues with `status`.
+            match q.cls {
+                FloatClass::SNaN => {
+                    status.raise(FLAG_INVALID | FLAG_INVALID_SNAN);
+                    if status.default_nan_mode {
+                        parts_default_nan(&mut q, status);
+                    } else {
+                        parts_silence_nan(&mut q);
+                    }
+                }
+                FloatClass::QNaN => {
+                    if status.default_nan_mode {
+                        parts_default_nan(&mut q, status);
+                    }
+                }
+                _ => unreachable!(),
+            }
+            return round_pack_canonical_d(&mut q, status);
+        }
+        FloatClass::Zero => return a,
+        FloatClass::Inf => {
+            if p.sign {
+                status.raise(FLAG_INVALID);
+                let mut q = p;
+                parts_default_nan(&mut q, status);
+                return round_pack_canonical_d(&mut q, status);
+            }
+            return a;
+        }
+        FloatClass::Denormal | FloatClass::Normal => {
+            if p.sign {
+                status.raise(FLAG_INVALID);
+                let mut q = p;
+                parts_default_nan(&mut q, status);
+                return round_pack_canonical_d(&mut q, status);
+            }
+        }
+    }
+    let f = f64::from_bits(a);
+    let r = f.sqrt();
+    let bits = r.to_bits();
+    if r * r != f {
+        status.raise(FLAG_INEXACT);
+    }
+    bits
+}
+
+/// float64 compare, raising invalid on QNaN inputs (VCMPE.F64).
+pub fn compare_f64(a: u64, b: u64, status: &mut FloatStatus) -> FloatRelation {
+    let mut pa = unpack_canonical_bits_d(a, status);
+    let mut pb = unpack_canonical_bits_d(b, status);
+    parts_compare(&mut pa, &mut pb, status, false)
+}
+
+/// float64 quiet compare, raising invalid only on SNaN inputs (VCMP.F64).
+pub fn compare_signal_f64(a: u64, b: u64, status: &mut FloatStatus) -> FloatRelation {
+    let mut pa = unpack_canonical_bits_d(a, status);
+    let mut pb = unpack_canonical_bits_d(b, status);
+    parts_compare(&mut pa, &mut pb, status, true)
+}
+
+/// float64 -> int32, using the FPSCR rounding mode (VCVT.S32.F64).
+pub fn to_int32_f64(a: u64, status: &mut FloatStatus) -> i32 {
+    let mut p = unpack_canonical_bits_d(a, status);
+    parts_float_to_sint(
+        &mut p,
+        status.rounding_mode,
+        0,
+        i32::MIN as i64,
+        i32::MAX as i64,
+        status,
+    ) as i32
+}
+
+/// float64 -> int32 with round-to-zero (VCVTTR? no - VCVT with RZ semantics).
+pub fn to_int32_round_to_zero_f64(a: u64, status: &mut FloatStatus) -> i32 {
+    let mut p = unpack_canonical_bits_d(a, status);
+    parts_float_to_sint(
+        &mut p,
+        RoundMode::ToZero,
+        0,
+        i32::MIN as i64,
+        i32::MAX as i64,
+        status,
+    ) as i32
+}
+
+/// float64 -> uint32, using the FPSCR rounding mode.
+pub fn to_uint32_f64(a: u64, status: &mut FloatStatus) -> u32 {
+    let mut p = unpack_canonical_bits_d(a, status);
+    parts_float_to_uint(&mut p, status.rounding_mode, 0, u32::MAX as u64, status) as u32
+}
+
+/// float64 -> uint32 with round-to-zero.
+pub fn to_uint32_round_to_zero_f64(a: u64, status: &mut FloatStatus) -> u32 {
+    let mut p = unpack_canonical_bits_d(a, status);
+    parts_float_to_uint(&mut p, RoundMode::ToZero, 0, u32::MAX as u64, status) as u32
+}
+
+/// float64 -> int32 with a scale, round-to-zero (VCVT to fixed-point).
+pub fn to_int32_scalbn_f64(a: u64, shift: i32, status: &mut FloatStatus) -> i32 {
+    let mut p = unpack_canonical_bits_d(a, status);
+    parts_float_to_sint(
+        &mut p,
+        RoundMode::ToZero,
+        shift,
+        i32::MIN as i64,
+        i32::MAX as i64,
+        status,
+    ) as i32
+}
+
+/// float64 -> uint32 with a scale, round-to-zero (VCVT to unsigned
+/// fixed-point).
+pub fn to_uint32_scalbn_f64(a: u64, shift: i32, status: &mut FloatStatus) -> u32 {
+    let mut p = unpack_canonical_bits_d(a, status);
+    parts_float_to_uint(&mut p, RoundMode::ToZero, shift, u32::MAX as u64, status) as u32
+}
+
+fn zero_parts() -> Parts {
+    Parts {
+        sign: false,
+        exp: 0,
+        frac: 0,
+        cls: FloatClass::Zero,
+    }
+}
+
+/// int32 -> float64.
+pub fn int32_to_f64(a: i32, status: &mut FloatStatus) -> u64 {
+    let mut p = zero_parts();
+    parts_sint_to_float(&mut p, a as i64, 0);
+    round_pack_canonical_d(&mut p, status)
+}
+
+/// uint32 -> float64.
+pub fn uint32_to_f64(a: u32, status: &mut FloatStatus) -> u64 {
+    let mut p = zero_parts();
+    parts_uint_to_float(&mut p, u64::from(a), 0);
+    round_pack_canonical_d(&mut p, status)
+}
+
+/// int32 -> float64 with a scale (fixed-point source).
+pub fn int32_to_f64_scalbn(a: i32, shift: i32, status: &mut FloatStatus) -> u64 {
+    let mut p = zero_parts();
+    parts_sint_to_float(&mut p, a as i64, -shift);
+    round_pack_canonical_d(&mut p, status)
+}
+
+/// uint32 -> float64 with a scale (fixed-point source).
+pub fn uint32_to_f64_scalbn(a: u32, shift: i32, status: &mut FloatStatus) -> u64 {
+    let mut p = zero_parts();
+    parts_uint_to_float(&mut p, u64::from(a), -shift);
+    round_pack_canonical_d(&mut p, status)
+}
+
+/// float32 -> float64 (exact widening; never raises flags for normals).
+pub fn f32_to_f64(a: u32, status: &mut FloatStatus) -> u64 {
+    let mut p = unpack_canonical_bits(a, status);
+    round_pack_canonical_d(&mut p, status)
+}
+
+/// float64 -> float32.
+pub fn f64_to_f32(a: u64, status: &mut FloatStatus) -> u32 {
+    let mut p = unpack_canonical_bits_d(a, status);
+    round_pack_canonical(&mut p, status)
 }
 
 #[cfg(test)]
@@ -2144,5 +2537,186 @@ mod tests {
         assert_eq!(int32_to_float32(16_777_217, &mut s), f32(16_777_216.0));
         assert_eq!(uint32_to_float32(u32::MAX, &mut s), f32(4_294_967_296.0));
         assert_eq!(uint16_to_float32_scalbn(1, 8, &mut s), f32(1.0 / 256.0));
+    }
+}
+// The tests module is defined above; float64 tests live in their own module
+// to keep the f32/f64 cases separate.
+
+#[cfg(test)]
+mod f64_tests {
+    use super::*;
+
+    fn f64(x: f64) -> u64 {
+        x.to_bits()
+    }
+
+    fn eq_d(a: u64, b: u64) -> bool {
+        let mut s = FloatStatus::new(RoundMode::NearestEven);
+        compare_f64(a, b, &mut s) == FloatRelation::Equal
+    }
+
+    #[test]
+    fn add_sub_basic() {
+        let mut s = FloatStatus::new(RoundMode::NearestEven);
+        assert_eq!(add_f64(f64(1.5), f64(2.25), &mut s), f64(3.75));
+        assert_eq!(sub_f64(f64(1.0), f64(2.0), &mut s), f64(-1.0));
+        assert_eq!(sub_f64(f64(3.0), f64(3.0), &mut s), f64(0.0));
+        assert_eq!(s.take_flags(), 0);
+        // Exact cancellation rounds -0 in RZ... nearest gives +0.
+        assert_eq!(sub_f64(f64(-2.5), f64(-2.5), &mut s), f64(0.0));
+    }
+
+    #[test]
+    fn mul_div_precision() {
+        let mut s = FloatStatus::new(RoundMode::NearestEven);
+        // 1/3 in double has full 52-bit precision; single would round.
+        let third = div_f64(f64(1.0), f64(3.0), &mut s);
+        assert!(eq_d(mul_f64(third, f64(3.0), &mut s), f64(1.0)));
+        let big = mul_f64(f64(6.02e23), f64(9.81), &mut s);
+        assert_eq!(big >> 32, f64(6.02f64 * 9.81e23) >> 32);
+    }
+
+    #[test]
+    fn overflow_to_inf_with_flags() {
+        let mut s = FloatStatus::new(RoundMode::NearestEven);
+        let r = mul_f64(f64(1e308), f64(10.0), &mut s);
+        assert!(r >> 52 == 0x7ff && r & 0xf_ffff_ffff_ffff == 0); // +inf
+        assert_eq!(s.take_flags(), FLAG_OVERFLOW | FLAG_INEXACT);
+    }
+
+    #[test]
+    fn div_by_zero_raises_idz() {
+        let mut s = FloatStatus::new(RoundMode::NearestEven);
+        assert!(eq_d(div_f64(f64(1.0), f64(0.0), &mut s), f64(f64::INFINITY)));
+        assert_eq!(s.take_flags(), FLAG_DIVBYZERO);
+    }
+
+    #[test]
+    fn invalid_inf_minus_inf() {
+        let mut s = FloatStatus::new(RoundMode::NearestEven);
+        // Sanity: inf - (-inf) is exactly +inf with no flags.
+        assert_eq!(
+            sub_f64(f64(f64::INFINITY), f64(f64::NEG_INFINITY), &mut s),
+            f64(f64::INFINITY)
+        );
+        assert_eq!(s.take_flags(), 0);
+        let r = sub_f64(f64(f64::INFINITY), f64(f64::INFINITY), &mut s);
+        assert!((r & 0x7ff0_0000_0000_0000) == 0x7ff0_0000_0000_0000
+            && (r & 0x000f_ffff_ffff_ffff) != 0);
+        assert_eq!(s.take_flags(), FLAG_INVALID | FLAG_INVALID_ISI);
+    }
+
+    #[test]
+    fn sqrt_exact_and_invalid() {
+        let mut s = FloatStatus::new(RoundMode::NearestEven);
+        assert_eq!(sqrt_f64(f64(4.0), &mut s), f64(2.0));
+        assert_eq!(sqrt_f64(f64(2.25), &mut s), f64(1.5));
+        // sqrt of a non-perfect square is correctly rounded.
+        assert_eq!(sqrt_f64(f64(2.0), &mut s), f64(std::f64::consts::SQRT_2));
+        assert_eq!(s.take_flags(), FLAG_INEXACT);
+        let r = sqrt_f64(0x8000_0000_0000_0001, &mut s); // -denormal
+        assert!((r & 0x7ff0_0000_0000_0000) == 0x7ff0_0000_0000_0000);
+        assert_eq!(s.take_flags(), FLAG_INVALID);
+    }
+
+    #[test]
+    fn underflow_denormal_result() {
+        let mut s = FloatStatus::new(RoundMode::NearestEven);
+        // Smallest normal / 16 -> denormal, raises UFC|IXC.
+        // Exact denormal product: no inexact, hence no underflow flag.
+        let tiny = mul_f64(f64(2.2250738585072014e-308), f64(0.25), &mut s);
+        assert_eq!(tiny, f64(2.2250738585072014e-308 * 0.25));
+        // Inexact denormal result: UFC|IXC (plus IDU on some paths).
+        let mut s = FloatStatus::new(RoundMode::NearestEven);
+        let tinier = mul_f64(f64(2.2250738585072014e-308), f64(1e-10), &mut s);
+        assert_ne!(tinier, 0);
+        let flags = s.take_flags();
+        assert!(flags & FLAG_UNDERFLOW != 0, "flags={flags:#x}");
+        assert!(flags & FLAG_INEXACT != 0, "flags={flags:#x}");
+        // Halving the minimum denormal ties to even -> zero, inexact.
+        let mut s = FloatStatus::new(RoundMode::NearestEven);
+        let tinier = mul_f64(f64(4.9e-324), f64(0.5), &mut s);
+        assert_eq!(tinier, 0);
+        let flags = s.take_flags();
+        assert!(flags & FLAG_UNDERFLOW != 0, "flags={flags:#x}");
+        // IDU is also raised for denormal inputs.
+    }
+
+    #[test]
+    fn directed_rounding() {
+        // 1 + 2^-53 is exactly halfway between 1.0 and nextafter(1.0).
+        let half_ulp = f64(2f64.powi(-53));
+
+        let mut s = FloatStatus::new(RoundMode::NearestEven);
+        assert_eq!(add_f64(f64(1.0), half_ulp, &mut s), f64(1.0)); // ties to even
+        assert_eq!(s.take_flags(), FLAG_INEXACT);
+
+        let mut s = FloatStatus::new(RoundMode::Up);
+        assert_eq!(add_f64(f64(1.0), half_ulp, &mut s), f64(1.0) + 1);
+
+        let mut s = FloatStatus::new(RoundMode::Down);
+        assert_eq!(add_f64(f64(1.0), half_ulp, &mut s), f64(1.0));
+        assert_eq!(s.take_flags(), FLAG_INEXACT);
+
+        let mut s = FloatStatus::new(RoundMode::ToZero);
+        assert_eq!(
+            add_f64(f64(-1.0), f64(-2f64.powi(-53)), &mut s),
+            f64(-1.0)
+        );
+    }
+
+    #[test]
+    fn converts_int_round_trip() {
+        let mut s = FloatStatus::new(RoundMode::NearestEven);
+        assert_eq!(to_int32_f64(int32_to_f64(-12345, &mut s), &mut s), -12345);
+        assert_eq!(to_uint32_f64(uint32_to_f64(u32::MAX - 1, &mut s), &mut s),
+                   u32::MAX - 1);
+        // Out-of-range saturates with invalid.
+        let big = int32_to_f64(i32::MAX, &mut s);
+        let doubled = add_f64(big, big, &mut s);
+        assert_eq!(to_int32_f64(doubled, &mut s), i32::MAX);
+        assert_eq!(s.take_flags(), FLAG_INVALID | FLAG_INVALID_CVTI);
+    }
+
+    #[test]
+    fn widen_narrow_f32() {
+        let mut s = FloatStatus::new(RoundMode::NearestEven);
+        let w = f32_to_f64((0.1f32).to_bits(), &mut s);
+        assert_eq!(w, f64(0.1f32 as f64)); // exact widening
+        // Narrowing rounds: double 0.1 -> float 0.1 bits.
+        let n = f64_to_f32(f64(0.1), &mut s);
+        assert_eq!(n, (0.1f32).to_bits());
+        // Overflowing narrow -> inf with OFC|IXC.
+        let mut s2 = FloatStatus::new(RoundMode::NearestEven);
+        assert_eq!(f64_to_f32(f64(1e300), &mut s2), (f32::INFINITY).to_bits());
+        assert_eq!(s2.take_flags(), FLAG_OVERFLOW | FLAG_INEXACT);
+    }
+
+    #[test]
+    fn default_nan_is_dp_pattern() {
+        let mut s = FloatStatus::new(RoundMode::NearestEven);
+        // inf + (-inf) -> default NaN with exponent field all ones (dp).
+        let r = add_f64(f64(f64::INFINITY), f64(f64::NEG_INFINITY), &mut s);
+        // Exponent field all ones and the ARM default-NaN quiet bit set.
+        assert_eq!(r & 0xffff_0000_0000_0000, 0x7ff8_0000_0000_0000);
+    }
+
+    #[test]
+    fn compare_relations() {
+        let mut s = FloatStatus::new(RoundMode::NearestEven);
+        let a = f64(1.0);
+        let b = f64(2.0);
+        assert_eq!(compare_f64(a, b, &mut s), FloatRelation::Less);
+        // Quiet compare raises only on SNaN inputs.
+        assert_eq!(
+            compare_signal_f64(f64(f64::NAN), f64(0.0), &mut s),
+            FloatRelation::Unordered
+        );
+        assert_eq!(s.take_flags(), 0);
+        assert_eq!(
+            compare_signal_f64(0x7ff0_0000_0000_0001, f64(0.0), &mut s),
+            FloatRelation::Unordered
+        );
+        assert_eq!(s.take_flags(), FLAG_INVALID | FLAG_INVALID_SNAN);
     }
 }
