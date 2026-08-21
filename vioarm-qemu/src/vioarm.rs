@@ -119,6 +119,23 @@ pub fn run_until_pc_v8m(bin: &[u8], stop_pc: u32) -> (Vec<CpuState>, bool) {
     run_machine(new_machine_v8m(bin), stop_pc)
 }
 
+/// Build an ARMv7E-M (Cortex-M7) machine with FPv5-D16 and load `bin` at 0.
+#[must_use]
+pub fn new_machine_v7em(bin: &[u8]) -> Machine<SystemMemory<FlatMemory>> {
+    let backing = FlatMemory::with_layout(&[0x0000_0000, 0x2000_0000], &[FLASH_LEN, SRAM_LEN]);
+    let fpu_ctx = Arc::new(Mutex::new(FpuCtx::new()));
+    let mem = SystemMemory::new_with_fpu(backing, fpu_ctx.clone());
+    let mut m = Machine::armv7em_with_fpu(mem, fpu_ctx);
+    m.load_image(&load_flat(0x0000_0000, bin));
+    m
+}
+
+/// Run `bin` under an ARMv7E-M VioARM machine until `stop_pc`.
+#[must_use]
+pub fn run_until_pc_v7em(bin: &[u8], stop_pc: u32) -> (Vec<CpuState>, bool) {
+    run_machine(new_machine_v7em(bin), stop_pc)
+}
+
 #[must_use]
 fn run_machine(mut m: Machine<SystemMemory<FlatMemory>>, stop_pc: u32) -> (Vec<CpuState>, bool) {
     m.reset().expect("reset should pick the reset vector");

@@ -24,6 +24,7 @@ use vioarm_qemu::asm::{Asm, Image, CODE_BASE, SP};
 use vioarm_qemu::qemu::{run_until_pc as qemu_run, QemuMachine};
 use vioarm_qemu::vioarm::run_until_pc as vio_run;
 use vioarm_qemu::vioarm::run_until_pc_v6m as vio_run_v6m;
+use vioarm_qemu::vioarm::run_until_pc_v7em as vio_run_v7em;
 use vioarm_qemu::vioarm::run_until_pc_v8m as vio_run_v8m;
 use vioarm_qemu::{compare_traces, CpuState};
 
@@ -119,6 +120,15 @@ fn qemu_m33() -> Option<QemuMachine> {
     mt
 }
 
+/// An ARMv7E-M (Cortex-M7) QEMU reference with FPv5-D16, for double tests.
+fn qemu_m7() -> Option<QemuMachine> {
+    let mt = QemuMachine::detect_m7();
+    if mt.is_none() {
+        eprintln!("skipping ARMv7E-M conformance tests: `qemu-system-arm` not found on PATH");
+    }
+    mt
+}
+
 /// The ARMv6-M variant of [`conformance`]: runs `a` through the v6m VioARM
 /// machine (no FPU) against the Cortex-M0 reference.
 fn conformance_m0(name: &str, a: &mut Asm, halt: &str, mt: &QemuMachine) {
@@ -170,6 +180,16 @@ fn conformance_v8m_at(name: &str, a: &mut Asm, halt: &str, sp: u32, mt: &QemuMac
         "{name}: qemu never reached halt @ {stop:#x} (got {} states)",
         qemu.len()
     );
+    compare_traces(name, &vio, &qemu).expect("traces agree");
+}
+
+fn conformance_v7em(name: &str, a: &mut Asm, halt: &str, mt: &QemuMachine) {
+    let img: Image = a.clone().finish(SP).expect("assemble");
+    let stop = img.addr(halt).unwrap_or_else(|| panic!("{name}: no label {halt:?}"));
+    let (vio, reached) = vio_run_v7em(&img.bytes, stop);
+    assert!(reached, "{name}: vioarm never reached halt @ {stop:#x} (last {})", snapshot_like(&vio));
+    let qemu = qemu_run_retry(mt, &img.bytes, stop);
+    assert!(!qemu.is_empty() && qemu.last().expect("empty").r[15] & !1 == stop, "{name}: qemu never reached halt @ {stop:#x} (got {} states)", qemu.len());
     compare_traces(name, &vio, &qemu).expect("traces agree");
 }
 
@@ -4186,4 +4206,38 @@ fn busfault_precise_taken_as_busfault() {
     a.b("halt");
 
     conformance("busfault_precise_taken_as_busfault", &mut a, "halt", &mt);
+}
+
+// ---------------------------------------------------------------------------
+// Cortex-M7 FPv5-D16 double-precision: vmov.f64 #imm, vadd.f64, vcvt
+// between single and double, and vrint. Diffed against cortex-m7
+// (mps2-an500) with fpu log. Skipped if qemu-system-arm lacks the board.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn m7_f64() {
+    let Some(mt) = qemu_m7() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+    a.enable_fpu();
+    // Seed s0=1.5f via GPR->S
+    a.mov_imm32(0, 0x3FC00000);
+    a.raw32(0xEE00_0A10); // vmov s0, r0
+    a.mov_imm32(0, 0x40200000);
+    a.raw32(0xEE01_0A10); // vmov s1, r0 (s1)
+    // Seed doubles d1=1.5, d2=2.5 via GPR pair -> D
+    a.mov_imm32(0, 0x00000000);
+    a.mov_imm32(1, 0x3FF80000);
+    a.raw32(0xEC51_0B10); // vmov d1, r0, r1
+    a.mov_imm32(0, 0x00000000);
+    a.mov_imm32(1, 0x40040000);
+    a.raw32(0xEC51_0B20); // vmov d2, r0, r1
+    a.raw32(0xEE31_0B02); // vadd.f64 d0, d1, d2
+    a.raw32(0xEEB7_0AC0); // vcvt.f64.f32 d0, s0
+    a.raw32(0xEEB7_0BC0); // vcvt.f32.f64 s0, d0
+    a.raw32(0xEEB7_1B00); // vmov.f64 d1, #1.0
+    a.raw32(0xEEB6_0B40); // vrintr.f64 d2, d0 (approx)
+    a.label("halt");
+    a.b("halt");
+    conformance_v7em("m7_f64", &mut a, "halt", &mt);
 }
