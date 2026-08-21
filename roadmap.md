@@ -80,7 +80,7 @@ System model:
   `PINC`/`MINC` stepping, and per-stream NVIC lines mapped through the SVD
   IRQ table so scattered lines like `DMA1_Stream7` at IRQ 47 land correctly).
   The 64 KiB CCM RAM at `0x1000_0000` on the F407 is mapped and round-trips
-  words. An SCB covers the modeled subset (ICSR, `AIRCR` with
+   words. A `DWT` (`0xE000_1000`, `CTRL.CYCCNTENA` + `CYCCNT` R/W, ticked by `cyccnt` delta) exposes the TRM-accurate count. An SCB covers the modeled subset (ICSR, `AIRCR` with
   VECTKEY-protected `PRIGROUP` and `SYSRESETREQ`, `SCR` with `SLEEPONEXIT`,
   `CCR` with `STKALIGN`/`DIV_0_TRP`, `VTOR`, `SHCSR` with software-pended
   SVCall arbitration and `USGFAULTENA`-gated distinct `UsageFault` handling,
@@ -116,7 +116,7 @@ Tooling:
 
 ### In progress
 
-- **Cycle-accurate timing (item 6 hardening).** Instruction-accurate `1c/insn` is implemented (`WFI`/`WFE` sleep, `SEV` latch). Hardening to Cortex-M3/M4 TRM `CPI` – per-opcode `DWT_CYCCNT` (data-processing `1c`, `LDR`/`STR` `2c`, `LDM`/`STM` `n+1`, taken branch `3-4c` with pipeline flush, `MUL`/`DIV` variable) plus `FLASH_ACR` wait-state stalls – is next. `qemu` is not a timing oracle; hardening via unit tests against the TRM table.
+- **Cycle-accurate timing (item 6 hardening).** `DWT_CYCCNT` at `0xE000_1000` (`CTRL.CYCCNTENA` + `CYCCNT`) and `FLASH_ACR` wait-states (`0x4002_2000`/`0x4002_3C00` `LATENCY`) are modeled; per-opcode `CPI` (data `1c`, `LDR/STR 2c`, `LDM/STM n+1`, taken branch `3c`, `BL 4c`) is implemented via `Core::cyccnt` (kept alongside `cycles` 1c/insn). Next: variable `DIV` 2-12c and `DWT` `DEMCR.TRCENA` gating.
 
 ### Gaps to a real STM32 simulator
 
@@ -333,11 +333,7 @@ lda_stl, splim, tt/sau_tt/mpu_tt, alu_thumb1, sg, blxns/bxns,
 
 ## Known limitations
 
-- No cycle-accurate timing: one cycle per retired instruction (and one per
-  sleeping cycle), `WFI`/`WFE` sleep until an exception wakes them, and
-  `SEV`/`WFE` share a 1-bit event latch. Time-sensitive firmware that needs
-  real cycle counts (baud rates, peripheral delays) still does not reproduce
-  silicon timing. See the cycle/timing gap (item 6).
+- Cycle timing: `cycles` is still 1c/insn (and 1c/sleep) for compat; `DWT_CYCCNT` (`0xE000_1004`, `CTRL.CYCCNTENA`) counts `cyccnt` (`1c` data, `2c` `LDR/STR`, `n+1` `LDM/STM`, `3c` taken branch, `4c` `BL`, plus `FLASH_ACR` `LATENCY` `WS` when `pc < 0x2000_0000`). `WFI`/`WFE` sleep and `SEV` latch are modeled. See item 6 hardening.
 - UsageFault is a distinct exception gated by `SHCSR.USGFAULTENA`, FP access
   is gated by `CPACR` (`NOCP` when denied), and the MPU enforces eight
   configurable regions on every fetch and data access.
