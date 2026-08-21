@@ -247,6 +247,13 @@ projects, RTOSes, and bare-metal drivers.
     (`DAC` at `0x4000_7400`) with `CR`/`SWTRIGR`/`DHR12R1`/`DOR1` latch (SVD
     register file, `dac_registers_round_trip_and_do_not_fault`; mounted on
     F103/F107/F407 so firmware touching the DAC no longer `HardFault`s).
+    **RTC/BKP done:** the backup domain (`RTC` at `0x4000_2800`, `BKP` at
+    `0x4000_6C00` on F1) as SVD latches (`rtc_registers_do_not_fault`/
+    `bkp_registers_round_trip`; `BKP` only on F1/F107, `RTC` on all lines).
+    **SDIO done:** the SD-card host (`SDIO` at `0x4001_8000` on F1 / `0x4001_2C00`
+    on F4) as a latch (`sdio_registers_do_not_fault`;Mounted on F103/F107/F407
+    so `SD_Init` HAL no longer `HardFault`s — full card protocol remains
+    stubbed).
 8. **ARMv6-M (Cortex-M0/M0+)** and instruction-table/SVD codegen hardening.
    **Done.** The ARMv6-M exception model is now distinct from ARMv7-M: `MRS`/
    `MSR` of `BASEPRI`/`BASEPRI_MAX`/`FAULTMASK` read zero and ignore writes

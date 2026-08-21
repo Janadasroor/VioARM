@@ -12,11 +12,14 @@
 
 pub mod adc;
 pub mod afio;
+pub mod bkp;
 pub mod can;
 pub mod crc;
 pub mod dac;
 pub mod dma;
 pub mod dma_f4;
+pub mod rtc;
+pub mod sdio;
 pub mod eth;
 pub mod exti;
 pub mod flash;
