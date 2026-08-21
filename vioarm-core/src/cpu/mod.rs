@@ -578,18 +578,98 @@ impl<B: PeripheralBus> Core<B> {
             Isa::Armv7M => self.step_v7m(pc)?,
             Isa::Armv8MBaseline => self.step_v8m(pc)?,
         };
-        match next {
-            Next::Advance(a) => self.regs.pc = a,
+        let next_pc = match next {
+            Next::Advance(a) => a,
             Next::Stop(cause) => return Err(cause),
-        }
-        self.cycles += 1;
+        };
+        let base = self.base_cycles(pc, next_pc);
         let ws = if pc < 0x2000_0000 {
             self.flash_ws()
         } else {
             0
         };
-        self.cyccnt += 1 + ws;
+        self.regs.pc = next_pc;
+        self.cycles += 1;
+        self.cyccnt += base + ws;
         Ok(())
+    }
+
+    fn base_cycles(&mut self, pc: u32, next_pc: u32) -> u64 {
+        // TRM CPI: 1c data, 2c single LDR/STR, n+1 LDM/STM, 3c taken branch, 4c BL.
+        let h0 = match self.mem.read_half(pc) {
+            Ok(v) => v,
+            Err(_) => return 1,
+        };
+        let is32 = match self.isa {
+            Isa::Armv6M => is_thumb2(h0),
+            Isa::Armv7M => is_thumb2_v7m(h0),
+            Isa::Armv8MBaseline => is_thumb2_v7m(h0),
+        };
+        let seq = if is32 { pc.wrapping_add(4) } else { pc.wrapping_add(2) };
+        let taken = next_pc != seq;
+        if is32 {
+            let h1 = match self.mem.read_half(pc.wrapping_add(2)) {
+                Ok(v) => v,
+                Err(_) => return 1,
+            };
+            let inst = match self.isa {
+                Isa::Armv6M => decode32(h0, h1).ok(),
+                Isa::Armv7M => decode32_v7m(h0, h1).ok(),
+                Isa::Armv8MBaseline => decode32_v8m(h0, h1).ok(),
+            };
+            if let Some(i) = inst {
+                return match i {
+                    Inst32::Bl { .. } | Inst32::BlxImm { .. } => 4,
+                    Inst32::BranchWide { .. } => {
+                        if taken { 3 } else { 1 }
+                    }
+                    Inst32::BranchCondWide { .. } => {
+                        if taken { 3 } else { 1 }
+                    }
+                    Inst32::Mem { .. }
+                    | Inst32::LdrdStrd { .. }
+                    | Inst32::Ldrex { .. }
+                    | Inst32::Strex { .. }
+                    | Inst32::Lda { .. }
+                    | Inst32::Stl { .. } => 2,
+                    Inst32::LdmStm { regs, .. } => 1 + regs.count_ones() as u64,
+                    Inst32::Div { .. } => 4, // 2-12, use 4
+                    Inst32::TblBranch { .. } => 3,
+                    _ => 1,
+                };
+            }
+        } else {
+            let inst = match self.isa {
+                Isa::Armv6M => decode16(h0).ok(),
+                Isa::Armv7M => decode16_v7m(h0).ok(),
+                Isa::Armv8MBaseline => decode16(h0).ok(),
+            };
+            if let Some(i) = inst {
+                return match i {
+                    Inst16::LdrLiteral { .. }
+                    | Inst16::LsReg { .. }
+                    | Inst16::LsImm { .. }
+                    | Inst16::LsSp { .. } => 2,
+                    Inst16::Push { regs, include_lr } => {
+                        1 + regs.count_ones() as u64 + if include_lr { 1 } else { 0 }
+                    }
+                    Inst16::Pop { regs, load_pc } => {
+                        let n = regs.count_ones() as u64 + if load_pc { 1 } else { 0 };
+                        if load_pc { 3 } else { 1 + n }
+                    }
+                    Inst16::LdmStm { regs, .. } => 1 + regs.count_ones() as u64,
+                    Inst16::Branch { .. } => {
+                        if taken { 3 } else { 1 }
+                    }
+                    Inst16::BranchCond { .. } | Inst16::CbzCbnz { .. } => {
+                        if taken { 3 } else { 1 }
+                    }
+                    Inst16::Bx { .. } | Inst16::Blx { .. } | Inst16::BxNs { .. } | Inst16::BlxNs { .. } => 3,
+                    _ => 1,
+                };
+            }
+        }
+        1
     }
 
     fn flash_ws(&mut self) -> u64 {
