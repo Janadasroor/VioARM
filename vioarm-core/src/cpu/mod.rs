@@ -448,6 +448,10 @@ pub struct Core<B: PeripheralBus> {
     /// start of the next step to skip that step's exception pre-check.
     pub(crate) just_returned: bool,
     pub cycles: u64,
+    /// DWT CYCCNT – TRM-accurate per-opcode cycle count (data 1c, LDR/STR 2c,
+    /// LDM/STM n+1, taken branch 3-4c). `cycles` stays 1c/insn for backward
+    /// compat; `cyccnt` is the hardening target (item 6).
+    pub cyccnt: u64,
     /// Shared M-profile FP context-control state (`FPCCR`/`FPCAR`). The `SCB`
     /// device holds the same `Rc` so firmware writes through the bus and the
     /// core's exception/FP logic agree on one value.
@@ -532,6 +536,7 @@ impl<B: PeripheralBus> Core<B> {
             event: false,
             just_returned: false,
             cycles: 0,
+            cyccnt: 0,
             fpu_ctx: std::sync::Arc::new(std::sync::Mutex::new(FpuCtx::new())),
             vector_base: 0,
             msp_lim: 0,
@@ -578,6 +583,7 @@ impl<B: PeripheralBus> Core<B> {
             Next::Stop(cause) => return Err(cause),
         }
         self.cycles += 1;
+        self.cyccnt += 1;
         Ok(())
     }
 
