@@ -2759,4 +2759,32 @@ mod f64_tests {
         );
         assert_eq!(s.take_flags(), FLAG_INVALID | FLAG_INVALID_SNAN);
     }
+
+    #[test]
+    fn round_to_int_f64_modes() {
+        let mut s = FloatStatus::new(RoundMode::NearestEven);
+        assert_eq!(round_to_int_f64(f64(1.5), &mut s), f64(2.0));
+        assert_eq!(round_to_int_f64(f64(2.5), &mut s), f64(2.0));
+        let mut s2 = FloatStatus::new(RoundMode::ToZero);
+        assert_eq!(round_to_int_f64(f64(1.5), &mut s2), f64(1.0));
+        assert_eq!(round_to_int_f64(f64(-1.5), &mut s2), f64(-1.0));
+        let mut s3 = FloatStatus::new(RoundMode::Down);
+        assert_eq!(round_to_int_f64(f64(1.5), &mut s3), f64(1.0));
+        assert_eq!(round_to_int_f64(f64(-1.5), &mut s3), f64(-2.0));
+    }
+
+    #[test]
+    fn f64_fixed_point_scalbn() {
+        let mut s = FloatStatus::new(RoundMode::NearestEven);
+        // 1.5 * 2^16 = 98304 > i16::MAX -> saturates
+        assert_eq!(to_int16_scalbn_f64(f64(1.5), 16, &mut s), i16::MAX);
+        assert!(s.take_flags() & (FLAG_INVALID | FLAG_INVALID_CVTI) != 0);
+        let mut s = FloatStatus::new(RoundMode::NearestEven);
+        // int16 -> f64 with scale 4: 8 -> 0.5
+        let r = int16_to_f64_scalbn(8, 4, &mut s);
+        assert_eq!(r, f64(0.5));
+        let mut s = FloatStatus::new(RoundMode::NearestEven);
+        let r = uint32_to_f64_scalbn(1, 1, &mut s);
+        assert_eq!(r, f64(0.5));
+    }
 }

@@ -5363,4 +5363,49 @@ mod tests {
             })
         );
     }
+
+    #[test]
+    fn vfp_double_decode() {
+        // `vmov.f64 d1, #1.0` (imm8 0x70) -> vd 1, imm 0x3ff0000000000000 (eeb71b00)
+        assert_eq!(
+            v7m_bytes([0xb7, 0xee, 0x00, 0x1b]),
+            Ok(Inst32::VfpMovImm {
+                vd: 1,
+                imm: 0x3ff0_0000_0000_0000,
+                is_dp: true,
+            })
+        );
+        // `vcvt.f64.f32 d0, s0` -> to_double true, vd D0, vm S0 (eeb70ac0)
+        assert_eq!(
+            v7m_bytes([0xb7, 0xee, 0xc0, 0x0a]),
+            Ok(Inst32::VfpCvt {
+                to_double: true,
+                vd: 0,
+                vm: 0,
+            })
+        );
+        // `vcvt.f32.f64 s0, d0` -> to_double false, vd S0, vm D0 (eeb70bc0)
+        assert_eq!(
+            v7m_bytes([0xb7, 0xee, 0xc0, 0x0b]),
+            Ok(Inst32::VfpCvt {
+                to_double: false,
+                vd: 0,
+                vm: 0,
+            })
+        );
+        // `vadd.f64 d0, d1, d2` double (ee310b02)
+        assert_eq!(
+            v7m_bytes([0x31, 0xee, 0x02, 0x0b]),
+            Ok(Inst32::Vfp3 {
+                op: Vfp3Op::Vadd,
+                vd: 0,
+                vn: 1,
+                vm: 2,
+                is_dp: true,
+            })
+        );
+        // VJCVT and half remain undefined on FPv5-D16 (no JS/half)
+        assert!(v7m_bytes([0xf9, 0xee, 0x40, 0x0b]).is_err());
+        assert!(v7m_bytes([0xf2, 0xee, 0x40, 0x0b]).is_err());
+    }
 }
