@@ -34,7 +34,7 @@ The ARMv7-M integer core, the DSP extension, and the FPv4-SP floating-point
 unit are implemented and verified per-instruction against `qemu-system-arm`
 (Cortex-M3 and Cortex-M4 board models) by a differential conformance suite.
 The ARMv6-M and ARMv8-M baseline cores are verified against the `Cortex-M0`
-micro:bit and `Cortex-M33` (`mps2-an505`) references. All 663 workspace tests
+micro:bit and `Cortex-M33` (`mps2-an505`) references. All 722 workspace tests
 pass. See "Implemented" for the full inventory.
 
 ### Implemented
@@ -117,7 +117,7 @@ Tooling:
 
 ### In progress
 
-- **Cycle-accurate timing (item 6 hardening).** `DWT_CYCCNT` at `0xE000_1000` (`CTRL.CYCCNTENA` + `CYCCNT`) and `FLASH_ACR` wait-states (`0x4002_2000`/`0x4002_3C00` `LATENCY`) are modeled; per-opcode `CPI` (data `1c`, `LDR/STR 2c`, `LDM/STM n+1`, taken branch `3c`, `BL 4c`) is implemented via `Core::cyccnt` (kept alongside `cycles` 1c/insn). Next: variable `DIV` 2-12c and `DWT` `DEMCR.TRCENA` gating.
+- None. Cycle-accurate timing hardening (item 6) is complete.
 
 ### Gaps to a real STM32 simulator
 
@@ -161,8 +161,15 @@ projects, RTOSes, and bare-metal drivers.
    resumes the instruction after the `WFI`. `SEV`/`WFE` implement the 1-bit
    event latch (an interrupt is itself a wakeup event; `WFE` consumes a pending
    event without sleeping), and the machine's cycle counter stays monotonic
-   across sleep. Locked in with CPU unit tests, machine e2e tests, and CMSIS
-   firmware that `WFI`-loops until `SysTick` wakes it.
+   across sleep. **TRM-accurate hardening done:** `DWT_CYCCNT` (`0xE000_1000`,
+   `CTRL.CYCCNTENA`) counts `Core::cyccnt` with per-opcode CPI (data `1c`,
+   `LDR/STR 2c`, `LDM/STM n+1`, taken branch `3c`, `BL 4c`, variable `DIV`
+   `2-12c` via divisor leading zeros, `MUL 1c`/`MLA 2c`/long `3c`) plus
+   `FLASH_ACR LATENCY` wait-states on fetch (`0x4002_2000` F1 /
+   `0x4002_3C00` F4); the machine ticks peripherals by the instruction's
+   cycle delta. Locked in with CPU unit tests, machine e2e tests, CMSIS
+   firmware that `WFI`-loops until `SysTick` wakes it, and the e2e flash-wait
+   lock (`cyccnt_incudes_flash_wait_states`).
 7. **Peripheral breadth.** Only GPIO, USART1, TIM2/3, EXTI, RCC, FLASH, DMA are
     behaviorally modeled. **IWDG/WWDG watchdog done:** the 12-bit/7-bit
     down-counters implement their key/refresh protocols, prescalers, the WWDG
