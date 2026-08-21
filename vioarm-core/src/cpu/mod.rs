@@ -3046,7 +3046,55 @@ impl<B: PeripheralBus> Core<B> {
                 Ok(Next::Advance(pc + 4))
             }
             // ---- VFP (FPv4-SP) ----
-            I::Vfp3 { op, vd, vn, vm } => {
+            I::Vfp3 { op, vd, vn, vm, is_dp } => {
+                if is_dp {
+                    let mut st = self.vfp.float_status();
+                    st.width = fpu::Width::Double;
+                    let a = self.vfp.read_d(vn);
+                    let b = self.vfp.read_d(vm);
+                    let c = self.vfp.read_d(vd);
+
+                    let result = match op {
+                        Vfp3Op::Vmla => {
+                            let prod = fpu::mul_f64(a, b, &mut st);
+                            fpu::add_f64(c, prod, &mut st)
+                        }
+                        Vfp3Op::Vmls => {
+                            let prod = fpu::mul_f64(a, b, &mut st);
+                            fpu::add_f64(c, prod ^ 0x8000_0000_0000_0000, &mut st)
+                        }
+                        Vfp3Op::Vnmls => {
+                            let prod = fpu::mul_f64(a, b, &mut st);
+                            fpu::add_f64(c ^ 0x8000_0000_0000_0000, prod, &mut st)
+                        }
+                        Vfp3Op::Vnmla => {
+                            let prod = fpu::mul_f64(a, b, &mut st);
+                            fpu::add_f64(
+                                c ^ 0x8000_0000_0000_0000,
+                                prod ^ 0x8000_0000_0000_0000,
+                                &mut st,
+                            )
+                        }
+                        Vfp3Op::Vmul => fpu::mul_f64(a, b, &mut st),
+                        Vfp3Op::Vnmul => fpu::mul_f64(a, b, &mut st) ^ 0x8000_0000_0000_0000,
+                        Vfp3Op::Vadd => fpu::add_f64(a, b, &mut st),
+                        Vfp3Op::Vsub => fpu::sub_f64(a, b, &mut st),
+                        Vfp3Op::Vdiv => fpu::div_f64(a, b, &mut st),
+                        Vfp3Op::Vfma => fpu::muladd_neg_f64(a, b, c, 0, &mut st),
+                        Vfp3Op::Vfms => {
+                            fpu::muladd_neg_f64(a, b, c, 0x8000_0000, &mut st)
+                        }
+                        Vfp3Op::Vfnma => {
+                            fpu::muladd_neg_f64(a, b, c, 0x8000_0000 | 0x4000_0000, &mut st)
+                        }
+                        Vfp3Op::Vfnms => {
+                            fpu::muladd_neg_f64(a, b, c, 0x4000_0000, &mut st)
+                        }
+                    };
+                    self.vfp.write_d(vd, result);
+                    self.vfp.fold_flags(st.flags);
+                    return Ok(Next::Advance(pc + 4));
+                }
                 let mut st = self.vfp.float_status();
                 let a = self.vfp.read_s(vn);
                 let b = self.vfp.read_s(vm);
@@ -3089,7 +3137,25 @@ impl<B: PeripheralBus> Core<B> {
                 self.vfp.fold_flags(st.flags);
                 Ok(Next::Advance(pc + 4))
             }
-            I::Vfp2 { op, vd, vm } => {
+            I::Vfp2 { op, vd, vm, is_dp } => {
+                if is_dp {
+                    let m = self.vfp.read_d(vm);
+                    let result = match op {
+                        Vfp2Op::Vmov => m,
+                        Vfp2Op::Vabs => m & 0x7fff_ffff_ffff_ffff,
+                        Vfp2Op::Vneg => m ^ 0x8000_0000_0000_0000,
+                        Vfp2Op::Vsqrt => {
+                            let mut st = self.vfp.float_status();
+                            st.width = fpu::Width::Double;
+                            let r = fpu::sqrt_f64(m, &mut st);
+                            self.vfp.fold_flags(st.flags);
+                            r
+                        }
+                    };
+                    // VABS/VNEG/VMOV do not raise; VSQRT already folded.
+                    self.vfp.write_d(vd, result);
+                    return Ok(Next::Advance(pc + 4));
+                }
                 let m = self.vfp.read_s(vm);
                 // VMOV/VABS/VNEG are plain register moves that neither
                 // consume denormals nor raise exceptions.
@@ -3107,7 +3173,27 @@ impl<B: PeripheralBus> Core<B> {
                 self.vfp.write_s(vd, result);
                 Ok(Next::Advance(pc + 4))
             }
-            I::VfpCmp { vd, vm, e, z } => {
+            I::VfpCmp { vd, vm, e, z, is_dp } => {
+                if is_dp {
+                    let a = self.vfp.read_d(vd);
+                    let b = if z { 0x0000_0000_0000_0000 } else { self.vfp.read_d(vm) };
+                    let mut st = self.vfp.float_status();
+                    st.width = fpu::Width::Double;
+                    let rel = if e {
+                        fpu::compare_f64(a, b, &mut st)
+                    } else {
+                        fpu::compare_signal_f64(a, b, &mut st)
+                    };
+                    self.vfp.fold_flags(st.flags);
+                    let nzcv = match rel {
+                        fpu::FloatRelation::Equal => 0b0110,
+                        fpu::FloatRelation::Less => 0b1000,
+                        fpu::FloatRelation::Greater => 0b0010,
+                        fpu::FloatRelation::Unordered => 0b0011,
+                    };
+                    self.vfp.fpscr = (self.vfp.fpscr & !fpscr::NZCV) | (nzcv << 28);
+                    return Ok(Next::Advance(pc + 4));
+                }
                 // VCMP compares `S{vd}` against `S{vm}` (or `+0.0` for the
                 // `z` form) and writes FPSCR bits[31:28]. `e` selects VCMPE,
                 // the signaling compare that raises Invalid on any NaN.

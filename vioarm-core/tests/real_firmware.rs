@@ -246,6 +246,14 @@ fn build_firmware_v7m_fp_with_includes(
     build_firmware_for(source, includes, "thumbv7em-none-eabi", "cortex-m4", true)
 }
 
+/// H7 double-precision firmware: Cortex-M7 + FPv5-D16, hard float for `double`.
+fn build_firmware_h7_with_includes(
+    source: &str,
+    includes: &[&str],
+) -> Result<(Vec<u8>, HashMap<String, u32>), String> {
+    build_firmware_for_h7(source, includes, "thumbv7em-none-eabi", "cortex-m7")
+}
+
 fn build_firmware_for(
     source: &str,
     includes: &[&str],
@@ -299,6 +307,72 @@ fn build_firmware_for(
     run(&clang, &args)?;
 
     let listing = run(&nm, &["-n", obj])?;
+    let mut symbols = HashMap::new();
+    for line in listing.lines() {
+        let mut it = line.split_whitespace();
+        let (Some(offset), Some(_ty), Some(name)) = (it.next(), it.next(), it.next()) else {
+            continue;
+        };
+        if let Ok(off) = u32::from_str_radix(offset, 16) {
+            symbols.insert(name.to_string(), off);
+        }
+    }
+
+    let bin = dir.join("firmware.bin");
+    let bin = bin.to_str().ok_or("temp path not UTF-8")?;
+    run(
+        &objcopy,
+        &["--output-target=binary", "-j", ".text", obj, bin],
+    )?;
+    let bytes = fs::read(bin).map_err(|e| e.to_string())?;
+    Ok((bytes, symbols))
+}
+
+fn build_firmware_for_h7(
+    source: &str,
+    includes: &[&str],
+    target: &str,
+    cpu: &str,
+) -> Result<(Vec<u8>, HashMap<String, u32>), String> {
+    let clang = which("clang").ok_or_else(|| "clang not found on PATH".to_string())?;
+    let objcopy = which("llvm-objcopy")
+        .or_else(|| which("objcopy"))
+        .ok_or_else(|| "objcopy not found on PATH".to_string())?;
+    let nm = which("llvm-nm")
+        .or_else(|| which("nm"))
+        .ok_or_else(|| "nm not found on PATH".to_string())?;
+
+    let dir = env::temp_dir().join(format!("vioarm-fw-{}", SEQ.fetch_add(1, Ordering::Relaxed)));
+    fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    let src = dir.join("firmware.c");
+    let obj = dir.join("firmware.o");
+    fs::write(&src, source).map_err(|e| e.to_string())?;
+
+    let src = src.to_str().ok_or("temp path not UTF-8")?;
+    let obj = obj.to_str().ok_or("temp path not UTF-8")?;
+    let target_arg = format!("--target={target}");
+    let cpu_arg = format!("-mcpu={cpu}");
+    let float_args: [&str; 2] = ["-mfloat-abi=hard", "-mfpu=fpv5-d16"];
+    let mut args = vec![
+        target_arg.as_str(),
+        cpu_arg.as_str(),
+        float_args[0],
+        float_args[1],
+        "-O0",
+        "-ffreestanding",
+        "-nostdlib",
+        "-fno-builtin",
+        src,
+        "-c",
+        "-o",
+        obj,
+    ];
+    for inc in includes {
+        args.push("-I");
+        args.push(inc);
+    }
+    run(&clang, &args)?;
+    let listing = run(&nm, &[obj])?;
     let mut symbols = HashMap::new();
     for line in listing.lines() {
         let mut it = line.split_whitespace();
@@ -3881,4 +3955,42 @@ fn stm32h743_firmware_talks_usart() {
     let err = m.run(50_000);
     assert_eq!(err, Err(HaltCause::NonThumbTarget));
     assert_eq!(m.core.mem().read_word(RAM).unwrap(), 0x5A);
+}
+
+const STM32H743_F64_FW: &str = r#"
+#define SCB_CPACR 0xE000ED88u
+#define OUT 0x20000000u
+void reset(void) {
+    *(volatile unsigned *)SCB_CPACR |= (0xF << 20);
+    double a = 3.141592653589793;
+    double b = 2.718281828459045;
+    double c = a + b;
+    *(volatile unsigned *)OUT = *(unsigned *)&c;
+    *(volatile unsigned *)(OUT+4) = *((unsigned *)&c + 1);
+    __asm__ volatile("bkpt #0");
+}
+"#;
+
+#[test]
+fn stm32h743_firmware_does_f64() {
+    let (code, symbols) = match build_firmware_h7_with_includes(STM32H743_F64_FW, &[]) {
+        Ok(v) => v,
+        Err(why) => { eprintln!("skipping H743 f64: {why}"); return; }
+    };
+    let entry = *symbols.get("reset").unwrap();
+    let mut m = Machine::armv7m(board::stm32h743());
+    m.load_image(&load_flat(CODE_BASE, &code));
+    {
+        let mem = m.core.mem();
+        mem.write_word(board::FLASH, INIT_SP).unwrap();
+        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+    }
+    m.reset().unwrap();
+    let err = m.run(50_000);
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
+    let lo = m.core.mem().read_word(RAM).unwrap();
+    let hi = m.core.mem().read_word(RAM+4).unwrap();
+    let bits = (u64::from(hi) << 32) | u64::from(lo);
+    let expect = (3.141592653589793f64 + 2.718281828459045f64).to_bits();
+    assert_eq!(bits, expect, "got {bits:#x} want {expect:#x}");
 }
