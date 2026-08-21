@@ -27,10 +27,13 @@ use crate::error::BusError;
 use crate::mem::bus::Region;
 use std::sync::{Arc, Mutex};
 
-/// Register offsets within the peripheral, per the SVD.
-const SR: u16 = 0x00;
-const DR: u16 = 0x04;
-const CR1: u16 = 0x0C;
+/// Register offsets within the peripheral, per the SVD. F1 uses `SR`/`DR`/`CR1` at
+/// `0x00`/`0x04`/`0x0C` with `UE` `13`; F0/F3/L4 use `ISR`/`RDR`/`TDR`/`CR1` at
+/// `0x1C`/`0x24`/`0x28`/`0x00` with `UE` `0`. Offsets and bit positions are
+/// resolved per-instance from the SVD table.
+const SR_F1: u16 = 0x00;
+const DR_F1: u16 = 0x04;
+const CR1_F1: u16 = 0x0C;
 
 /// `SR` bit positions.
 const RXNE: u32 = 1 << 5;
@@ -60,7 +63,7 @@ const UART5_RX_CHANNEL: u8 = 4;
 /// The cross-register side effects the SVD cannot express: status synthesis
 /// on `SR` reads, `RXNE` acknowledge on `DR` reads and zero writes, and the
 /// DMA request lines asserted while data is ready to move.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct UsartBehavior {
     /// Bytes firmware wrote to the data register, for host draining.
     output: Vec<u8>,
@@ -68,32 +71,65 @@ struct UsartBehavior {
     requests: Option<Arc<Mutex<DmaRequests>>>,
     /// The request routing `(controller, tx_channel, rx_channel)`.
     dma: Option<(u8, u8, u8)>,
+    cr1_off: u16,
+    sr_off: u16,
+    rdr_off: u16,
+    tdr_off: u16,
+    ue_bit: u32,
+    te_bit: u32,
+    re_bit: u32,
+    rxneie_bit: u32,
+    rxne_bit: u32,
+    txe_bit: u32,
+    tc_bit: u32,
+}
+
+impl Default for UsartBehavior {
+    fn default() -> Self {
+        Self {
+            output: Vec::new(),
+            requests: None,
+            dma: None,
+            cr1_off: CR1_F1,
+            sr_off: SR_F1,
+            rdr_off: DR_F1,
+            tdr_off: DR_F1,
+            ue_bit: 1 << 13,
+            te_bit: 1 << 3,
+            re_bit: 1 << 2,
+            rxneie_bit: 1 << 5,
+            rxne_bit: 1 << 5,
+            txe_bit: 1 << 7,
+            tc_bit: 1 << 6,
+        }
+    }
 }
 
 impl Behavior for UsartBehavior {
     fn on_read(&mut self, view: &mut Registers<&mut [u32]>, offset: u16, value: u32) -> u32 {
-        match offset {
-            SR => {
-                // `TXE`/`TC` track the enable bits, the rest is latched status.
-                let mut v = value & !(TXE | TC);
-                let cr1 = view.get(CR1);
-                if cr1 & UE != 0 {
-                    v |= TC;
-                    if cr1 & TE != 0 {
-                        v |= TXE;
+        if offset == self.sr_off {
+            // `TXE`/`TC` track the enable bits, the rest is latched status.
+            let mut v = value & !(self.txe_bit | self.tc_bit);
+            if let Some(cr1) = view.try_get(self.cr1_off) {
+                if cr1 & self.ue_bit != 0 {
+                    v |= self.tc_bit;
+                    if cr1 & self.te_bit != 0 {
+                        v |= self.txe_bit;
                     }
                 }
-                v
             }
-            DR => {
-                // Reading the data register drains the received byte and
-                // acknowledges `RXNE`, dropping the DMA RX request line.
-                view.set(SR, view.get(SR) & !RXNE);
-                self.drop_rx_request();
-                value
-            }
-            _ => value,
+            return v;
         }
+        if offset == self.rdr_off {
+            // Reading the data register drains the received byte and
+            // acknowledges `RXNE`, dropping the DMA RX request line.
+            if let Some(sr) = view.try_get(self.sr_off) {
+                view.try_set(self.sr_off, sr & !self.rxne_bit);
+            }
+            self.drop_rx_request();
+            return value;
+        }
+        value
     }
 
     fn on_write(
@@ -103,27 +139,42 @@ impl Behavior for UsartBehavior {
         val: u8,
         shift: u32,
     ) -> u32 {
-        match offset {
-            DR => {
-                // Byte 0 of the data register is the transmitted character;
-                // the higher lanes are the extension of the same store on
-                // silicon, so only it queues a byte for output.
-                if shift == 0 {
-                    if view.get(CR1) & TE != 0 {
-                        self.output.push(val);
-                    }
-                    // A zero write to the data register acknowledges `RXNE`,
-                    // matching the silicon rule that zero is not data.
-                    if val == 0 {
-                        view.set(SR, view.get(SR) & !RXNE);
-                        self.drop_rx_request();
-                    }
+        if offset == self.tdr_off {
+            // Byte 0 of the data register is the transmitted character;
+            // the higher lanes are the extension of the same store on
+            // silicon, so only it queues a byte for output.
+            if shift == 0 {
+                if view.try_get(self.cr1_off).unwrap_or(0) & self.te_bit != 0 {
+                    self.output.push(val);
                 }
-                // A transmit does not alter the received data.
-                view.get(DR)
+                // A zero write to the data register acknowledges `RXNE`,
+                // matching the silicon rule that zero is not data.
+                if val == 0 {
+                    if let Some(sr) = view.try_get(self.sr_off) {
+                        view.try_set(self.sr_off, sr & !self.rxne_bit);
+                    }
+                    self.drop_rx_request();
+                }
             }
-            _ => view.merged(offset, val, shift),
+            // A transmit does not alter the received data.
+            return view.try_get(self.tdr_off).unwrap_or(0);
         }
+        // For old single-DR (rdr==tdr), also handle DR at same offset for TX
+        if self.rdr_off == self.tdr_off && offset == self.rdr_off {
+            if shift == 0 {
+                if view.try_get(self.cr1_off).unwrap_or(0) & self.te_bit != 0 {
+                    self.output.push(val);
+                }
+                if val == 0 {
+                    if let Some(sr) = view.try_get(self.sr_off) {
+                        view.try_set(self.sr_off, sr & !self.rxne_bit);
+                    }
+                    self.drop_rx_request();
+                }
+            }
+            return view.try_get(self.rdr_off).unwrap_or(0);
+        }
+        view.merged(offset, val, shift)
     }
 
     fn tick(&mut self, view: &mut Registers<&mut [u32]>, _delta: u64) {
@@ -132,13 +183,13 @@ impl Behavior for UsartBehavior {
             return;
         };
         let mut req = requests.lock().unwrap();
-        let cr1 = view.get(CR1);
+        let cr1 = view.try_get(self.cr1_off).unwrap_or(0);
         // The TX line is high whenever the transmitter can take a byte.
-        if cr1 & (UE | TE) == (UE | TE) {
+        if cr1 & (self.ue_bit | self.te_bit) == (self.ue_bit | self.te_bit) {
             req.request(controller, tx_channel, true);
         }
         // The RX line is high while a received byte sits unread in `DR`.
-        if view.get(SR) & RXNE != 0 {
+        if view.try_get(self.sr_off).unwrap_or(0) & self.rxne_bit != 0 {
             req.request(controller, rx_channel, false);
         }
     }
@@ -146,7 +197,12 @@ impl Behavior for UsartBehavior {
     fn pending(&self, view: &Registers<&[u32]>) -> u32 {
         // Level-triggered: asserts while a received byte is both unread and
         // unmasked. The handler clears it by reading `DR`.
-        u32::from(view.get(SR) & RXNE != 0 && view.get(CR1) & (RXNEIE | UE) == (RXNEIE | UE))
+        let sr = view.try_get(self.sr_off).unwrap_or(0);
+        let cr1 = view.try_get(self.cr1_off).unwrap_or(0);
+        u32::from(
+            sr & self.rxne_bit != 0
+                && cr1 & (self.rxneie_bit | self.ue_bit) == (self.rxneie_bit | self.ue_bit),
+        )
     }
 
     fn reset(&mut self) {
@@ -155,8 +211,10 @@ impl Behavior for UsartBehavior {
 
     fn drive_inputs(&mut self, view: &mut Registers<&mut [u32]>, value: u32) {
         // The low byte is one received character.
-        view.set(DR, value & 0xFF);
-        view.set(SR, view.get(SR) | RXNE);
+        view.try_set(self.rdr_off, value & 0xFF);
+        if let Some(sr) = view.try_get(self.sr_off) {
+            view.try_set(self.sr_off, sr | self.rxne_bit);
+        }
     }
 
     fn drain_output(&mut self) -> Vec<u8> {
@@ -420,6 +478,16 @@ impl Usart {
         )
     }
 
+    fn reg_offset(def: &crate::device::svd::PeripheralDef, name: &str) -> Option<u16> {
+        def.registers.iter().find(|r| r.name == name).map(|r| r.offset)
+    }
+    fn field_bit(def: &crate::device::svd::PeripheralDef, reg: &str, field: &str) -> Option<u8> {
+        def.registers
+            .iter()
+            .find(|r| r.name == reg)
+            .and_then(|r| r.fields.iter().find(|f| f.name == field).map(|f| f.offset))
+    }
+
     fn for_device_with<D: Device>(
         peripheral: &str,
         name: &'static str,
@@ -428,10 +496,60 @@ impl Usart {
     ) -> Self {
         let def = D::peripheral(peripheral)
             .unwrap_or_else(|| panic!("generated tables contain {peripheral}"));
+        // Resolve per-family register offsets and bit positions from the SVD.
+        // Old (F1) uses SR/DR/CR1@0x0C with UE13; new (F0/F3/L4) uses ISR/RDR/TDR/CR1@0x00 with UE0.
+        let is_new = Self::reg_offset(def, "ISR").is_some();
+        let (cr1_off, sr_off, rdr_off, tdr_off) = if is_new {
+            (
+                Self::reg_offset(def, "CR1").unwrap_or(0x00),
+                Self::reg_offset(def, "ISR").unwrap_or(0x1C),
+                Self::reg_offset(def, "RDR").unwrap_or(0x24),
+                Self::reg_offset(def, "TDR").unwrap_or(0x28),
+            )
+        } else {
+            (
+                Self::reg_offset(def, "CR1").unwrap_or(CR1_F1),
+                Self::reg_offset(def, "SR").unwrap_or(SR_F1),
+                Self::reg_offset(def, "DR").unwrap_or(DR_F1),
+                Self::reg_offset(def, "DR").unwrap_or(DR_F1),
+            )
+        };
+        let ue_bit = Self::field_bit(def, "CR1", "UE")
+            .map(|b| 1u32 << b)
+            .unwrap_or(if is_new { 1 << 0 } else { 1 << 13 });
+        let te_bit = Self::field_bit(def, "CR1", "TE")
+            .map(|b| 1u32 << b)
+            .unwrap_or(1 << 3);
+        let re_bit = Self::field_bit(def, "CR1", "RE")
+            .map(|b| 1u32 << b)
+            .unwrap_or(1 << 2);
+        let rxneie_bit = Self::field_bit(def, "CR1", "RXNEIE")
+            .map(|b| 1u32 << b)
+            .unwrap_or(1 << 5);
+        let rxne_bit = Self::field_bit(def, if is_new { "ISR" } else { "SR" }, "RXNE")
+            .map(|b| 1u32 << b)
+            .unwrap_or(1 << 5);
+        let txe_bit = Self::field_bit(def, if is_new { "ISR" } else { "SR" }, "TXE")
+            .map(|b| 1u32 << b)
+            .unwrap_or(1 << 7);
+        let tc_bit = Self::field_bit(def, if is_new { "ISR" } else { "SR" }, "TC")
+            .map(|b| 1u32 << b)
+            .unwrap_or(1 << 6);
         let behavior = UsartBehavior {
             output: Vec::new(),
             requests,
             dma,
+            cr1_off,
+            sr_off,
+            rdr_off,
+            tdr_off,
+            ue_bit,
+            te_bit,
+            re_bit,
+            rxneie_bit,
+            rxne_bit,
+            txe_bit,
+            tc_bit,
         };
         Self {
             inner: RegisterFile::new(def, behavior),
@@ -496,7 +614,7 @@ impl InterruptSource for Usart {
 
 #[cfg(test)]
 mod tests {
-    use super::{Usart, CR1, DR, RXNE, RXNEIE, SR, TC, TE, TXE, UE};
+    use super::{Usart, CR1_F1 as CR1, DR_F1 as DR, RXNE, RXNEIE, SR_F1 as SR, TC, TE, TXE, UE};
     use crate::device::svd::stm32f407::Stm32f407;
     use crate::device::{InterruptSource, Peripheral};
     use crate::error::BusError;
