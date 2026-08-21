@@ -316,20 +316,21 @@ lda_stl, splim, tt/sau_tt/mpu_tt, alu_thumb1, sg, blxns/bxns,
 - UsageFault is a distinct exception gated by `SHCSR.USGFAULTENA`, FP access
   is gated by `CPACR` (`NOCP` when denied), and the MPU enforces eight
   configurable regions on every fetch and data access.
-- `MemManage` is distinct when `SHCSR.MEMFAULTENA` is set and its
-  `SHPR1` priority allows it (vector 4, ARMv7-M); otherwise MPU violations
-  escalate to `HardFault` with `HFSR.FORCED` (ARMv6-M always escalates).
-  Multi-word load/store bursts (PUSH/POP/LDM/STM/LDRD/STRD/VLDM/VSTM) are
-  checked per word, so a burst straddling a region boundary faults with
-  `MMFAR` equal to the first faulting word. The `_A1`/`_A2`/`_A3` aliases
-  index `MPU_RNR` like the base registers (the v8M alias-region override is
-  not modeled). MPU fault behavior is locked with QEMU conformance
+- `MemManage`/`BusFault` are distinct when `SHCSR.MEMFAULTENA`/
+  `BUSFAULTENA` are set and their `SHPR1` priorities allow them (vectors 4/5,
+  ARMv7-M); otherwise MPU violations / precise bus errors escalate to
+  `HardFault` with `HFSR.FORCED` (ARMv6-M always escalates). Multi-word
+  load/store bursts (PUSH/POP/LDM/STM/LDRD/STRD/VLDM/VSTM) are checked per
+  word, so a burst straddling a region boundary faults with `MMFAR`/`BFAR`
+  equal to the first faulting word. The `_A1`/`_A2`/`_A3` aliases index
+  `MPU_RNR` like the base registers (the v8M alias-region override is not
+  modeled). Fault behavior is locked with QEMU conformance
   (`mpu_data_violation_escalates_to_hardfault`,
-  `mpu_data_violation_taken_as_memmanage`, and `mpu_burst_straddles_region`
-  diff the `MMFSR`/`HFSR`/`MMFAR` recording — without/with `FORCED` — the
-  `MemManage` priority/frame, and the per-word burst check against the M3),
-  and the private peripheral bus (`0xE000_0000`..) bypasses the MPU exactly as
-  QEMU's `m_is_ppb_region` does.
+  `mpu_data_violation_taken_as_memmanage`, `mpu_burst_straddles_region`, and
+  `busfault_precise_taken_as_busfault` diff the `MMFSR`/`BFSR`/`HFSR`/`MMFAR`
+  recording — without/with `FORCED` — and the fault priority/frame against the
+  M3), and the private peripheral bus (`0xE000_0000`..) bypasses the MPU
+  exactly as QEMU's `m_is_ppb_region` does.
 - FPDSCR trap-enable bits are unmodeled.
 - `HFSR.FORCED` is reported at bit 30 and the `SHCSR` active-status (`*ACT`)
   bits read zero, both to match the QEMU oracle rather than the ARMv7-M bit
