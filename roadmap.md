@@ -25,8 +25,8 @@ planning artifact and is intentionally not version controlled.
   - ARMv8-M baseline (Cortex-M23/M33) - stretch.
 - Boards: a generic virtual board (CPU + RAM + UART + SysTick) plus STM32F103,
   STM32F072 (F0, M0), STM32F107, STM32F303xE (F3, M4), STM32G474 (G4, M4),
-  STM32L476 (L4, M4), and STM32F407 board models backed by
-  SVD-generated register layouts.
+  STM32L476 (L4, M4), STM32H743 (H7, M7), and STM32F407 board models
+  backed by SVD-generated register layouts.
 
 ## Status
 
