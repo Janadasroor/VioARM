@@ -259,7 +259,10 @@ projects, RTOSes, and bare-metal drivers.
     `STA.CMDSENT`/`CMDREND`/`DATAEND`/`DBCKEND` + `MASK` → IRQ 49,
     `sdio_cmd_sets_sta_and_irq`/`sdio_data_block_completes`; mounted on
     F103/F107/F407 so `SD_Init` HAL no longer `HardFault`s — FIFO/card FSM
-    remain stubbed).
+    remain stubbed). **PWR done:** the STM32 PWR (`PWR` at `0x4000_7000`) with
+    `CR`/`CSR` (`DBP`/`PVDE`/`WUF`) latch (`pwr_registers_do_not_fault`;
+    mounted on F103/F107/F407, `DBP` gates backup domain on silicon but `RTC`/
+    `BKP` latches ignore it as HAL always sets `DBP` first).
 8. **ARMv6-M (Cortex-M0/M0+)** and instruction-table/SVD codegen hardening.
    **Done.** The ARMv6-M exception model is now distinct from ARMv7-M: `MRS`/
    `MSR` of `BASEPRI`/`BASEPRI_MAX`/`FAULTMASK` read zero and ignore writes
