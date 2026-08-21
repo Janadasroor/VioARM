@@ -111,6 +111,16 @@ where
     pub fn get(&self, offset: u16) -> u32 {
         self.words[self.index(offset)]
     }
+
+    /// The stored word at `offset` if the register exists, else `None`.
+    #[must_use]
+    pub fn try_get(&self, offset: u16) -> Option<u32> {
+        self.def
+            .registers
+            .iter()
+            .position(|r| r.offset == offset)
+            .map(|i| self.words[i])
+    }
 }
 
 impl Registers<&mut [u32]> {
@@ -118,6 +128,21 @@ impl Registers<&mut [u32]> {
     pub fn set(&mut self, offset: u16, value: u32) {
         let i = self.index(offset);
         self.words[i] = value;
+    }
+
+    /// Replace the stored word if the register exists; return whether it did.
+    pub fn try_set(&mut self, offset: u16, value: u32) -> bool {
+        if let Some(i) = self
+            .def
+            .registers
+            .iter()
+            .position(|r| r.offset == offset)
+        {
+            self.words[i] = value;
+            true
+        } else {
+            false
+        }
     }
 
     /// The stored word at `offset` with byte `val` merged into lane `shift` —
