@@ -3720,3 +3720,38 @@ fn stm32l476_firmware_talks_usart() {
     assert_eq!(err, Err(HaltCause::NonThumbTarget));
     assert_eq!(m.core.mem().read_word(RAM).unwrap(), 0x5A);
 }
+
+const STM32H743_GPIO_FW: &str = r#"
+#define RCC_AHB4ENR 0x580244E0u
+#define GPIOA_MODER 0x58020000u
+#define GPIOA_ODR   0x58020014u
+#define GPIOA_BSRR  0x58020018u
+#define OUT 0x20000000u
+void reset(void) {
+    *(volatile unsigned *)RCC_AHB4ENR |= (1u<<0);
+    *(volatile unsigned *)GPIOA_MODER = (*(volatile unsigned *)GPIOA_MODER & ~(3u<<0)) | (1u<<0);
+    *(volatile unsigned *)GPIOA_BSRR = (1u<<0);
+    *(volatile unsigned *)OUT = (*(volatile unsigned *)GPIOA_ODR & 1u) ? 1u : 0u;
+    __asm__ volatile("bkpt #0");
+}
+"#;
+
+#[test]
+fn stm32h743_firmware_toggles_gpio() {
+    let (code, symbols) = match build_firmware_v7m_with_includes(STM32H743_GPIO_FW, &[]) {
+        Ok(v) => v,
+        Err(why) => { eprintln!("skipping H743 gpio: {why}"); return; }
+    };
+    let entry = *symbols.get("reset").unwrap();
+    let mut m = Machine::armv7m(board::stm32h743());
+    m.load_image(&load_flat(CODE_BASE, &code));
+    {
+        let mem = m.core.mem();
+        mem.write_word(board::FLASH, INIT_SP).unwrap();
+        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+    }
+    m.reset().unwrap();
+    let err = m.run(50_000);
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
+    assert_eq!(m.core.mem().read_word(RAM).unwrap(), 1);
+}
