@@ -810,6 +810,16 @@ pub fn stm32h743() -> BoardMemory {
         }
     }
     for ctor in [
+        Usart::for_device::<Stm32h743> as fn() -> Usart,
+        Usart::usart2_for::<Stm32h743>,
+        Usart::usart3_for::<Stm32h743>,
+    ] {
+        let base = ctor().ranges()[0].base;
+        if <Stm32h743 as crate::device::svd::Device>::by_base(base).is_some() {
+            mem.attach(Box::new(ctor()));
+        }
+    }
+    for ctor in [
         Timer::tim2_for::<Stm32h743>,
         Timer::tim6_for::<Stm32h743>,
     ] {
