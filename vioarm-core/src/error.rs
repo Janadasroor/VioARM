@@ -59,6 +59,11 @@ pub enum Exception {
     /// Exception number 3: the only fault ARMv6-M software can reach without
     /// a peripheral-provided interrupt.
     HardFault,
+    /// Exception number 4: the `MemManage` fault, taken for MPU access
+    /// violations when `SHCSR.MEMFAULTENA` is set. When disabled (or when it
+    /// cannot preempt the running context) it escalates to `HardFault` with
+    /// `HFSR.FORCED`.
+    MemManage,
     /// Exception number 6: the `UsageFault`, taken for undefined instructions,
     /// divide-by-zero with `CCR.DIV_0_TRP`, coprocessor access violations
     /// (`NOCP`), and alignment faults, when `SHCSR.USGFAULTENA` is set. When
@@ -90,6 +95,7 @@ impl Exception {
     pub const fn number(self) -> u8 {
         match self {
             Self::HardFault => 3,
+            Self::MemManage => 4,
             Self::UsageFault => 6,
             Self::SecureFault => 7,
             Self::SvCall => 11,

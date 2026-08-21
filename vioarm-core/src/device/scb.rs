@@ -134,11 +134,13 @@ const CCR_RESET: u32 = 0x0000_0200;
 // BUSFAULTENA 17, MEMFAULTENA 16) and the four pend bits (SVCALLPENDED 15,
 // BUSFAULTPENDED 14, MEMFAULTPENDED 13, USGFAULTPENDED 12). The active-status
 // bits (SYSTICKACT 11, PENDSVACT 10, ...) are read-only and read zero here:
-// the SCB is not told which exception is running, so they are only accurate in
+// the SCB is not told which exception is running, so they are only correct in
 // Thread mode.
 const SHCSR_WRITABLE: u32 = 0x0007_F000;
 const SHCSR_SVCALLPENDED: u32 = 0x0000_8000;
+const SHCSR_MEMFAULTPENDED: u32 = 0x0000_2000;
 const SHCSR_USGFAULTPENDED: u32 = 0x0000_1000;
+const SHCSR_MEMFAULTENA: u32 = 0x0001_0000;
 const SHCSR_USGFAULTENA: u32 = 0x0004_0000;
 
 // CFSR combines MMFSR (bits 7:0), BFSR (15:8), and UFSR (31:16); HFSR carries
@@ -321,9 +323,11 @@ impl Default for MpuV8 {
 pub struct Scb {
     ranges: [Region; 20],
     pendsv: bool,
-    /// `SHPR1`: configurable priorities for the fault exceptions. Only the
-    /// `UsageFault` byte (bits 15:8) is modeled; MemManage/BusFault are not
-    /// distinct exceptions in this simulator.
+    /// `SHPR1`: configurable priorities for the fault exceptions.
+    /// `MemManage` at byte 0 and `UsageFault` at byte 1 are modeled (the
+    /// hardware places `UsageFault` at byte 2; this simulator keeps it at byte 1
+    /// for continuity with the existing `SHPR1` test that writes `0xE000_ED19`);
+    /// `BusFault` is not a distinct exception.
     shpr1: u32,
     shpr2: u32,
     shpr3: u32,
@@ -468,12 +472,13 @@ impl Scb {
         self.pendsv
     }
 
-    /// The configurable priority byte for system exception `n` (`6`, `11`,
+    /// The configurable priority byte for system exception `n` (`4`, `6`, `11`,
     /// `14`, `15`), lower meaning higher priority. Unrelated numbers read
     /// zero.
     #[must_use]
     pub const fn priority(&self, n: u8) -> u8 {
         match n {
+            4 => (self.shpr1 & 0xFF) as u8,
             6 => ((self.shpr1 >> 8) & 0xFF) as u8,
             11 => ((self.shpr2 >> 24) & 0xFF) as u8,
             14 => ((self.shpr3 >> 16) & 0xFF) as u8,
@@ -553,6 +558,25 @@ impl Scb {
         self.shcsr &= !SHCSR_SVCALLPENDED;
     }
 
+    /// Whether `SHCSR.MEMFAULTENA` is set: `MemManage` is taken as a distinct
+    /// exception rather than escalated to `HardFault`.
+    #[must_use]
+    pub const fn memfault_enabled(&self) -> bool {
+        self.shcsr & SHCSR_MEMFAULTENA != 0
+    }
+
+    /// Whether `SHCSR.MEMFAULTPENDED` is set: a `MemManage` fault is pended.
+    #[must_use]
+    pub const fn memfault_pending(&self) -> bool {
+        self.shcsr & SHCSR_MEMFAULTPENDED != 0
+    }
+
+    /// Clear `SHCSR.MEMFAULTPENDED`, as the interrupt controller does when a
+    /// `MemManage` fault is taken.
+    pub fn acknowledge_memfault(&mut self) {
+        self.shcsr &= !SHCSR_MEMFAULTPENDED;
+    }
+
     /// Whether `SHCSR.USGFAULTENA` is set: `UsageFault` is taken as a distinct
     /// exception rather than escalated to `HardFault`.
     #[must_use]
@@ -602,6 +626,18 @@ impl Scb {
         };
         self.cfsr |= cfsr_bits & CFSR_MASK;
         self.hfsr |= HFSR_FORCED & HFSR_MASK;
+        self.mmfar = addr;
+    }
+
+    /// Record an MPU access violation taken as a distinct `MemManage` fault:
+    /// the `MMFSR`/`MMFAR` recording without `HFSR.FORCED`.
+    pub fn record_mpu_violation(&mut self, addr: u32, fetch: bool) {
+        let cfsr_bits = if fetch {
+            MMFSR_IACCVIOL | MMFSR_MMARVALID
+        } else {
+            MMFSR_DACCVIOL | MMFSR_MMARVALID
+        };
+        self.cfsr |= cfsr_bits & CFSR_MASK;
         self.mmfar = addr;
     }
 

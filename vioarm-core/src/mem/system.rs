@@ -293,7 +293,7 @@ impl<M: Bus> SystemMemory<M> {
             // HardFault is priority -1: encoded as the highest possible
             // (lowest numeric) priority, so nothing preempts it.
             3 => 0,
-            6 => self.scb.priority(6),
+            4 | 6 => self.scb.priority(ipsr),
             11 | 14 | 15 => self.scb.priority(ipsr),
             n => self.nvic.priority(u32::from(n - 16)),
         }
@@ -336,9 +336,14 @@ impl<M: Bus> SystemMemory<M> {
             let (g, s) = self.split_priority(p);
             Self::consider(&mut best, 11, g, s, p);
         }
-        // A software-pended UsageFault is taken only while the exception is
-        // enabled; disabled, the pend stays latched (it escalates only when a
-        // fault is raised synchronously).
+        // A software-pended UsageFault / MemManage fault is taken only while
+        // the exception is enabled; disabled, the pend stays latched (it
+        // escalates only when a fault is raised synchronously).
+        if self.scb.memfault_pending() && self.scb.memfault_enabled() {
+            let p = self.scb.priority(4);
+            let (g, s) = self.split_priority(p);
+            Self::consider(&mut best, 4, g, s, p);
+        }
         if self.scb.usage_fault_pending() && self.scb.usage_fault_enabled() {
             let p = self.scb.priority(6);
             let (g, s) = self.split_priority(p);
@@ -376,6 +381,7 @@ impl<M: Bus> SystemMemory<M> {
     /// NVIC pending latch and tell the source device to drop its line.
     fn consume_exception(&mut self, n: u8) {
         match n {
+            4 => self.scb.acknowledge_memfault(),
             6 => self.scb.acknowledge_usage_fault(),
             11 => self.scb.acknowledge_svcall(),
             14 => self.scb.acknowledge(1),
@@ -595,6 +601,10 @@ impl<M: Bus> PeripheralBus for SystemMemory<M> {
 
     fn mpu_fault(&mut self, addr: u32, fetch: bool) {
         self.scb.record_mpu_fault(addr, fetch);
+    }
+
+    fn mpu_violation(&mut self, addr: u32, fetch: bool) {
+        self.scb.record_mpu_violation(addr, fetch);
     }
 
     /// The ARMSSE (mps2-an505-style) IDAU, which attributes by address bit

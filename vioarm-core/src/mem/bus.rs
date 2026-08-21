@@ -252,8 +252,14 @@ pub trait PeripheralBus: Bus {
 
     /// Record an MPU access violation at `addr` (an instruction fetch when
     /// `fetch` is true), so firmware reads the cause back through `MMFAR` and
-    /// the `MMFSR` bits in `CFSR`. Default: no recording (plain memory).
+    /// the `MMFSR` bits in `CFSR` plus `HFSR.FORCED` (the escalated-to-
+    /// `HardFault` case). Default: no recording (plain memory).
     fn mpu_fault(&mut self, _addr: u32, _fetch: bool) {}
+
+    /// Record an MPU access violation taken as a distinct `MemManage` fault
+    /// at `addr` (an instruction fetch when `fetch` is true): the `MMFSR`/
+    /// `MMFAR` recording without `HFSR.FORCED`. Default: no recording.
+    fn mpu_violation(&mut self, _addr: u32, _fetch: bool) {}
 
     /// The IDAU's security attribution for `addr`, or `None` when the machine
     /// has no IDAU. The core consults this for the `TT` instruction family's

@@ -353,9 +353,11 @@ const SFSR_INVER: u32 = 0x0000_0004; // invalid Non-secure exception return (ES/
                                          // architectural bit 31; the differential oracle is the arbiter here.
 const HFSR_FORCED: u32 = 0x4000_0000;
 
-/// `SHCSR.USGFAULTENA` (bit 18): a distinct `UsageFault` exception, enabled by
-/// firmware through the SCB window.
+/// `SHCSR.USGFAULTENA` (bit 18) / `SHCSR.MEMFAULTENA` (bit 16): distinct
+/// `UsageFault` / `MemManage` exceptions, enabled by firmware through the SCB
+/// window.
 const SHCSR_ADDR: u32 = 0xE000_ED24;
+const SHCSR_MEMFAULTENA: u32 = 0x0001_0000;
 const SHCSR_USGFAULTENA: u32 = 0x0004_0000;
 
 /// `SHPR1` (bits 15:8) holds the configurable `UsageFault` priority byte;
@@ -3979,7 +3981,7 @@ impl<B: PeripheralBus> Core<B> {
             // SecureFault (v8-M) has a fixed priority above any configurable
             // exception; encoded like HardFault at the top of the range.
             3 | 7 => 0,
-            6 | 11 | 14 | 15 => self.priority_byte(self.ipsr),
+            4 | 6 | 11 | 14 | 15 => self.priority_byte(self.ipsr),
             n => self
                 .mem
                 .read(NVIC_IPR.wrapping_add(u32::from(n - 16)))
@@ -3987,10 +3989,11 @@ impl<B: PeripheralBus> Core<B> {
         }
     }
 
-    /// The configurable priority byte for system exception `n` (`6`, `11`,
+    /// The configurable priority byte for system exception `n` (`4`, `6`, `11`,
     /// `14`, `15`), lower meaning higher priority.
     fn priority_byte(&mut self, n: u8) -> u8 {
         let (addr, shift) = match n {
+            4 => (SHPR1_ADDR, 0),
             6 => (SHPR1_ADDR, 8),
             11 => (SHPR2_ADDR, 24),
             14 => (SHPR3_ADDR, 16),
@@ -4021,14 +4024,31 @@ impl<B: PeripheralBus> Core<B> {
         self.mem.mpu_check(addr, access, privileged, self.ipsr)
     }
 
-    /// Escalate an MPU access violation at `addr` (from the instruction at
-    /// `pc`) to HardFault. `fetch` distinguishes an instruction access
-    /// violation from a data access violation in the recorded `MMFSR`; the
-    /// faulting address is latched in `MMFAR`. Continues into the handler.
+    /// Take a `MemManage` fault for an MPU access violation at `addr` (from the
+    /// instruction at `pc`). With `SHCSR.MEMFAULTENA` set and a `MemManage`
+    /// that outranks the running context, a distinct `MemManage` (vector 4) is
+    /// taken; otherwise the fault escalates to `HardFault` with `HFSR.FORCED`.
+    /// `fetch` distinguishes `MMFSR.IACCVIOL` from `DACCVIOL`; the faulting
+    /// address is latched in `MMFAR`.
+    ///
+    /// ARMv6-M (Cortex-M0/M0+) has no `MemManage` exception at all: the fold to
+    /// `HardFault` is unconditional there.
     fn mpu_fault(&mut self, addr: u32, pc: u32, fetch: bool) -> Result<Next, HaltCause> {
-        self.mem.mpu_fault(addr, fetch);
-        let targets_secure = self.hardfault_target_secure();
-        self.take_exception_target(Exception::HardFault, pc, targets_secure)?;
+        let enabled = self.isa == Isa::Armv7M
+            && self.mem.read_word(SHCSR_ADDR).unwrap_or(0) & SHCSR_MEMFAULTENA != 0;
+        let current = if self.faultmask {
+            0
+        } else {
+            self.current_priority()
+        };
+        if enabled && self.priority_byte(4) < current {
+            self.mem.mpu_violation(addr, fetch);
+            self.take_exception(Exception::MemManage, pc)?;
+        } else {
+            self.mem.mpu_fault(addr, fetch);
+            let targets_secure = self.hardfault_target_secure();
+            self.take_exception_target(Exception::HardFault, pc, targets_secure)?;
+        }
         Ok(Next::Advance(self.regs.pc))
     }
 
@@ -4347,6 +4367,7 @@ impl<B: PeripheralBus> Core<B> {
     pub fn enter_exception(&mut self, n: u8) -> Result<(), HaltCause> {
         let ex = match n {
             3 => Exception::HardFault,
+            4 => Exception::MemManage,
             6 => Exception::UsageFault,
             7 => Exception::SecureFault,
             11 => Exception::SvCall,
@@ -8628,6 +8649,83 @@ mod tests {
         // An instruction access violation: IACCVIOL|MMARVALID, MMFAR = CODE.
         assert_eq!(c.mem().read_word(0xE000_ED28).unwrap(), 0x0000_0081);
         assert_eq!(c.mem().read_word(0xE000_ED34).unwrap(), CODE);
+    }
+
+    #[test]
+    fn mpu_data_violation_taken_as_memmanage_when_enabled() {
+        const CODE: u32 = 0x2000_0100;
+        const DATA: u32 = 0x2000_0800;
+        const MM_HANDLER: u32 = 0x2000_0600;
+        const SP: u32 = 0x2000_0C00;
+        let mut c = armv7m_sys_core();
+        c.mem().write_word(4 * 4, MM_HANDLER | 1).unwrap();
+        c.mem().write_word(0xE000_ED24, 0x0001_0000).unwrap(); // MEMFAULTENA
+        enable_mpu_region0(c.mem());
+        c.regs.sp = SP;
+        c.regs.msp = SP;
+        c.regs.write(1, DATA);
+        c.regs.pc = CODE;
+        load_inst(&mut c, CODE, &[0x08, 0x68]); // ldr r0, [r1]
+        load_inst(&mut c, MM_HANDLER, &[0x70, 0x47]); // bx lr
+        c.step().unwrap();
+        assert_eq!(c.ipsr, 4, "MPU violation with MEMFAULTENA must take MemManage");
+        assert_eq!(c.regs.pc, MM_HANDLER);
+        assert_eq!(c.mem().read_word(0xE000_ED28).unwrap(), 0x0000_0082); // DACCVIOL|MMARVALID
+        assert_eq!(c.mem().read_word(0xE000_ED2C).unwrap(), 0); // no FORCED
+        assert_eq!(c.mem().read_word(0xE000_ED34).unwrap(), DATA);
+    }
+
+    #[test]
+    fn mpu_data_violation_with_blocked_memmanage_locks_up() {
+        const CODE: u32 = 0x2000_0100;
+        const DATA: u32 = 0x2000_0800;
+        const HF_HANDLER: u32 = 0x2000_0600;
+        const SP: u32 = 0x2000_0C00;
+        let mut c = armv7m_sys_core();
+        c.mem().write_word(3 * 4, HF_HANDLER | 1).unwrap();
+        c.mem().write_word(0xE000_ED24, 0x0001_0000).unwrap(); // MEMFAULTENA
+        // FAULTMASK raises current priority to -1, so even HardFault cannot
+        // preempt it: the escalation locks up.
+        c.faultmask = true;
+        enable_mpu_region0(c.mem());
+        c.regs.sp = SP;
+        c.regs.msp = SP;
+        c.regs.write(1, DATA);
+        c.regs.pc = CODE;
+        load_inst(&mut c, CODE, &[0x08, 0x68]); // ldr r0, [r1]
+        load_inst(&mut c, HF_HANDLER, &[0x70, 0x47]); // bx lr
+        assert!(matches!(
+            c.step(),
+            Err(crate::error::HaltCause::UnhandledException)
+        ));
+    }
+
+    #[test]
+    fn armv6m_mpu_violation_always_escalates_to_hardfault() {
+        const CODE: u32 = 0x2000_0100;
+        const DATA: u32 = 0x2000_0800;
+        const HF_HANDLER: u32 = 0x2000_0600;
+        const SP: u32 = 0x2000_0C00;
+        let backing = crate::mem::flat::FlatMemory::with_layout(
+            &[0x0000_0000, 0x2000_0000],
+            &[0x1000, 0x1000],
+        );
+        let mem = crate::mem::system::SystemMemory::new(backing);
+        let mut c = Core::new(mem);
+        c.mem().write_word(3 * 4, HF_HANDLER | 1).unwrap();
+        c.mem().write_word(0xE000_ED24, 0x0001_0000).unwrap(); // MEMFAULTENA (ignored on v6M)
+        c.mem().write_word(0xE000_ED94, 0x1).unwrap();
+        c.mem().write_word(0xE000_ED98, 0).unwrap();
+        c.mem().write_word(0xE000_ED9C, 0x2000_0000).unwrap();
+        c.mem().write_word(0xE000_EDA0, 0x0300_0015).unwrap();
+        c.regs.sp = SP;
+        c.regs.msp = SP;
+        c.regs.write(1, DATA);
+        c.regs.pc = CODE;
+        load_inst(&mut c, CODE, &[0x08, 0x68]); // ldr r0, [r1]
+        load_inst(&mut c, HF_HANDLER, &[0x70, 0x47]); // bx lr
+        c.step().unwrap();
+        assert_eq!(c.ipsr, 3, "ARMv6-M must fold MemManage to HardFault");
     }
 
     #[test]
