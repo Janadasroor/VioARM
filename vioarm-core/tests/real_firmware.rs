@@ -3620,3 +3620,103 @@ fn stm32g474xx_firmware_talks_usart() {
     assert_eq!(err, Err(HaltCause::NonThumbTarget));
     assert_eq!(m.core.mem().read_word(RAM).unwrap(), 0x5A);
 }
+
+const STM32F303_USART_FW: &str = r#"
+#define RCC_AHBENR  0x40021014u
+#define RCC_APB2ENR 0x40021018u
+#define GPIOA_MODER 0x48000000u
+#define GPIOA_AFRH  0x48000024u
+#define USART1_CR1 0x40013800u
+#define USART1_BRR 0x4001380Cu
+#define USART1_ISR 0x4001381Cu
+#define USART1_RDR 0x40013824u
+#define USART1_TDR 0x40013828u
+#define OUT 0x20000000u
+void reset(void) {
+    *(volatile unsigned *)RCC_AHBENR |= (1u<<17);
+    *(volatile unsigned *)RCC_APB2ENR |= (1u<<14);
+    *(volatile unsigned *)GPIOA_MODER = (*(volatile unsigned *)GPIOA_MODER & ~(3u<<18)) | (2u<<18);
+    *(volatile unsigned *)GPIOA_MODER = (*(volatile unsigned *)GPIOA_MODER & ~(3u<<20)) | (2u<<20);
+    *(volatile unsigned *)GPIOA_AFRH = (*(volatile unsigned *)GPIOA_AFRH & ~(0xFFu<<4)) | (0x77u<<4);
+    *(volatile unsigned *)USART1_BRR = 0x341;
+    *(volatile unsigned *)USART1_CR1 = (1u<<0) | (1u<<3) | (1u<<2);
+    while (!(*(volatile unsigned *)USART1_ISR & (1u<<7))) { }
+    *(volatile unsigned *)USART1_TDR = 0x6B;
+    while (!(*(volatile unsigned *)USART1_ISR & (1u<<7))) { }
+    while (!(*(volatile unsigned *)USART1_ISR & (1u<<5))) { }
+    unsigned rx = *(volatile unsigned *)USART1_RDR;
+    *(volatile unsigned *)OUT = rx;
+    __asm__ volatile("bkpt #0");
+}
+"#;
+
+#[test]
+fn stm32f303xe_firmware_talks_usart() {
+    let (code, symbols) = match build_firmware_v7m_with_includes(STM32F303_USART_FW, &[]) {
+        Ok(v) => v,
+        Err(why) => { eprintln!("skipping F303 usart: {why}"); return; }
+    };
+    let entry = *symbols.get("reset").unwrap();
+    let mut m = Machine::armv7m(board::stm32f303xe());
+    m.load_image(&load_flat(CODE_BASE, &code));
+    {
+        let mem = m.core.mem();
+        mem.write_word(board::FLASH, INIT_SP).unwrap();
+        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+    }
+    m.reset().unwrap();
+    for d in m.core.mem().devices_mut() { d.drive_inputs(0x5A); }
+    let err = m.run(50_000);
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
+    assert_eq!(m.core.mem().read_word(RAM).unwrap(), 0x5A);
+}
+
+const STM32L476_USART_FW: &str = r#"
+#define RCC_AHB2ENR 0x4002104Cu
+#define RCC_APB2ENR 0x40021060u
+#define GPIOA_MODER 0x48000000u
+#define GPIOA_AFRH  0x48000024u
+#define USART1_CR1 0x40013800u
+#define USART1_BRR 0x4001380Cu
+#define USART1_ISR 0x4001381Cu
+#define USART1_RDR 0x40013824u
+#define USART1_TDR 0x40013828u
+#define OUT 0x20000000u
+void reset(void) {
+    *(volatile unsigned *)RCC_AHB2ENR |= (1u<<0);
+    *(volatile unsigned *)RCC_APB2ENR |= (1u<<14);
+    *(volatile unsigned *)GPIOA_MODER = (*(volatile unsigned *)GPIOA_MODER & ~(3u<<18)) | (2u<<18);
+    *(volatile unsigned *)GPIOA_MODER = (*(volatile unsigned *)GPIOA_MODER & ~(3u<<20)) | (2u<<20);
+    *(volatile unsigned *)GPIOA_AFRH = (*(volatile unsigned *)GPIOA_AFRH & ~(0xFFu<<4)) | (0x77u<<4);
+    *(volatile unsigned *)USART1_BRR = 0x341;
+    *(volatile unsigned *)USART1_CR1 = (1u<<0) | (1u<<3) | (1u<<2);
+    while (!(*(volatile unsigned *)USART1_ISR & (1u<<7))) { }
+    *(volatile unsigned *)USART1_TDR = 0x6B;
+    while (!(*(volatile unsigned *)USART1_ISR & (1u<<7))) { }
+    while (!(*(volatile unsigned *)USART1_ISR & (1u<<5))) { }
+    unsigned rx = *(volatile unsigned *)USART1_RDR;
+    *(volatile unsigned *)OUT = rx;
+    __asm__ volatile("bkpt #0");
+}
+"#;
+
+#[test]
+fn stm32l476_firmware_talks_usart() {
+    let (code, symbols) = match build_firmware_v7m_with_includes(STM32L476_USART_FW, &[]) {
+        Ok(v) => v,
+        Err(why) => { eprintln!("skipping L476 usart: {why}"); return; }
+    };
+    let entry = *symbols.get("reset").unwrap();
+    let mut m = Machine::armv7m(board::stm32l476());
+    m.load_image(&load_flat(CODE_BASE, &code));
+    {
+        let mem = m.core.mem();
+        mem.write_word(board::FLASH, INIT_SP).unwrap();
+        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+    }
+    m.reset().unwrap();
+    for d in m.core.mem().devices_mut() { d.drive_inputs(0x5A); }
+    let err = m.run(50_000);
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
+    assert_eq!(m.core.mem().read_word(RAM).unwrap(), 0x5A);
+}
