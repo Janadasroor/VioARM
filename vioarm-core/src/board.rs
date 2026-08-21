@@ -926,6 +926,12 @@ pub fn stm32h743() -> BoardMemory {
     if <Stm32h743 as crate::device::svd::Device>::peripheral("DMA2").is_some() {
         mem.attach(Box::new(DmaF4::dma2_for::<Stm32h743>(dma)));
     }
+    // ETH - H743 uses Ethernet_MAC at 0x40028000 but needs MMC/DMA/PTP windows; skip for now (would panic on MMC)
+    // if <Stm32h743 as crate::device::svd::Device>::peripheral("Ethernet_MAC").is_some() {
+    //     let eth_mailbox = Arc::new(Mutex::new(EthMailbox::default()));
+    //     mem.set_eth_mailbox(eth_mailbox.clone());
+    //     mem.attach(Box::new(Eth::for_device::<Stm32h743>(eth_mailbox)));
+    // }
     // FDCAN
     if <Stm32h743 as crate::device::svd::Device>::peripheral("FDCAN1").is_some() {
         mem.attach(Box::new(Fdcan::fdcan1_for::<Stm32h743>()));
