@@ -1017,6 +1017,36 @@ pub fn decode32_v7m(hi: u16, lo: u16) -> Result<Inst32, DecodeError> {
         .unwrap_or_else(|| Err(err_for(hi)))
 }
 
+/// Decode ARMv7E-M (Cortex-M7) with FPv5-D16 double support.
+pub fn decode32_v7em(hi: u16, lo: u16) -> Result<Inst32, DecodeError> {
+    decode_mrs(hi, lo)
+        .or_else(|| decode_msr(hi, lo))
+        .or_else(|| decode_clrex(hi, lo))
+        .or_else(|| decode_barrier(hi, lo))
+        .or_else(|| decode_branch(hi, lo))
+        .or_else(|| decode_movwide(hi, lo))
+        .or_else(|| decode_mem(hi, lo))
+        .or_else(|| decode_ldm_stm(hi, lo))
+        .or_else(|| decode_exclusive(hi, lo))
+        .or_else(|| decode_tbranch(hi, lo))
+        .or_else(|| decode_ldrd_strd(hi, lo))
+        .or_else(|| decode_dp_plain(hi, lo))
+        .or_else(|| decode_dp_modified(hi, lo))
+        .or_else(|| decode_dp_reg(hi, lo))
+        .or_else(|| decode_div(hi, lo))
+        .or_else(|| decode_mul(hi, lo))
+        .or_else(|| decode_dsp_mul(hi, lo))
+        .or_else(|| decode_dual_mul(hi, lo))
+        .or_else(|| decode_extend(hi, lo))
+        .or_else(|| decode_par_addsub(hi, lo))
+        .or_else(|| decode_qadd(hi, lo))
+        .or_else(|| decode_unary(hi, lo))
+        .or_else(|| decode_bitfield(hi, lo))
+        .or_else(|| decode_sat(hi, lo))
+        .or_else(|| decode_vfp_v7em(hi, lo))
+        .unwrap_or_else(|| Err(err_for(hi)))
+}
+
 /// Decode the two halfwords of a 32-bit ARMv8-M baseline instruction.
 ///
 /// ARMv8-M baseline (Cortex-M23) is a subset of ARMv7-M: it adds only
@@ -2475,9 +2505,48 @@ fn decode_vfp_dp(hi: u16, lo: u16, w: u32) -> Option<Result<Inst32, DecodeError>
     }
     // The remaining data-processing uses bits[11:8] to select the register
     // size. Only `1010` (single) is implemented on FPv4-SP; `1001` (half)
-    // and `1011` (double) are undefined.
+    // and `1011` (double) are undefined on ARMv7-M. FPv5-D16 (M7) uses
+    // decode_vfp_v7em which allows 1011.
     match (lo >> 8) & 0xF {
-        0xA | 0xB => decode_vfp_sp(hi, lo, w),
+        0xA => decode_vfp_sp(hi, lo, w, false),
+        0xB | 0x9 => Some(Err(err_for(hi))),
+        _ => None,
+    }
+}
+
+fn decode_vfp_v7em(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
+    if hi & 0xFC00 != 0xEC00 || hi & 0x0F00 == 0x0F00 {
+        return None;
+    }
+    let w = (u32::from(hi) << 16) | u32::from(lo);
+    match (hi >> 8) & 0xF {
+        0xC => decode_vfp_mov64_ldm(hi, lo, w),
+        0xD => decode_vfp_ldr_str_ldmdb(hi, lo, w),
+        0xE => decode_vfp_dp_v7em(hi, lo, w),
+        _ => None,
+    }
+}
+
+fn decode_vfp_dp_v7em(hi: u16, lo: u16, w: u32) -> Option<Result<Inst32, DecodeError>> {
+    if hi & 0x0FE0 == 0x0EE0 && lo & 0x0FFF == 0x0A10 {
+        let reg = (w >> 16) & 0xF;
+        if reg != 1 {
+            return Some(Err(err_for(hi)));
+        }
+        return Some(Ok(Inst32::VfpMrsVmsr {
+            is_read: (w >> 20) & 1 == 1,
+            rt: ((w >> 12) & 0xF) as u8,
+        }));
+    }
+    if hi & 0x0FE0 == 0x0E00 && lo & 0x0F7F == 0x0A10 {
+        return Some(Ok(Inst32::VfpMov {
+            to_gp: (w >> 20) & 1 == 1,
+            vd: vn_sp(w),
+            rt: ((w >> 12) & 0xF) as u8,
+        }));
+    }
+    match (lo >> 8) & 0xF {
+        0xA | 0xB => decode_vfp_sp(hi, lo, w, true),
         0x9 => Some(Err(err_for(hi))),
         _ => None,
     }
@@ -2485,13 +2554,16 @@ fn decode_vfp_dp(hi: u16, lo: u16, w: u32) -> Option<Result<Inst32, DecodeError>
 
 /// Decode the VFP single-precision data-processing space
 /// (`bits[11:8] == 1010`).
-fn decode_vfp_sp(hi: u16, lo: u16, w: u32) -> Option<Result<Inst32, DecodeError>> {
+fn decode_vfp_sp(hi: u16, lo: u16, w: u32, allow_double: bool) -> Option<Result<Inst32, DecodeError>> {
     let is_dp = (lo >> 8 & 0xF) == 0xB;
     // VMOV immediate: `1110 1110 1.11 imm4 Vd 1010 0000 imm4` (single) or
     // `1011` (double).
     if hi & 0x00B0 == 0x00B0 && (lo & 0x0FF0 == 0x0A00 || lo & 0x0FF0 == 0x0B00) {
         let imm8 = (((w >> 16) & 0xF) << 4) as u32 | (w & 0xF) as u32;
         if is_dp {
+            if !allow_double {
+                return Some(Err(err_for(hi)));
+            }
             return Some(Ok(Inst32::VfpMovImm {
                 vd: vd_dp(w),
                 imm: vfp_expand_imm_64(imm8),
@@ -2517,6 +2589,9 @@ fn decode_vfp_sp(hi: u16, lo: u16, w: u32) -> Option<Result<Inst32, DecodeError>
     // The three-operand zone is everything that is not `1.11` (bit23, bit21,
     // bit20 all set).
     if !(b23 == 1 && b21 == 1 && b20 == 1) {
+        if is_dp && !allow_double {
+            return Some(Err(err_for(hi)));
+        }
         let op = (b23 << 3) | (b21 << 2) | (b20 << 1) | bit6;
         let vd = if is_dp { vd_dp(w) } else { vd_sp(w) };
         let vn = if is_dp {
@@ -2639,6 +2714,9 @@ fn decode_vfp_sp(hi: u16, lo: u16, w: u32) -> Option<Result<Inst32, DecodeError>
     match b19_16 {
         // 0000: VMOV (register) / VABS, selected by bit7.
         0x0 => {
+            if is_dp && !allow_double {
+                return Some(Err(err_for(hi)));
+            }
             if bit7 == 0 {
                 Some(Ok(Inst32::Vfp2 {
                     op: Vfp2Op::Vmov,
@@ -2657,6 +2735,9 @@ fn decode_vfp_sp(hi: u16, lo: u16, w: u32) -> Option<Result<Inst32, DecodeError>
         }
         // 0001: VNEG / VSQRT, selected by bit7.
         0x1 => {
+            if is_dp && !allow_double {
+                return Some(Err(err_for(hi)));
+            }
             if bit7 == 0 {
                 Some(Ok(Inst32::Vfp2 {
                     op: Vfp2Op::Vneg,
@@ -2676,15 +2757,23 @@ fn decode_vfp_sp(hi: u16, lo: u16, w: u32) -> Option<Result<Inst32, DecodeError>
         // 0010/0011: VCVT half/single (fp16), undefined on FPv4-SP.
         0x2 | 0x3 => Some(Err(err_for(hi))),
         // 010z: VCMP/VCMPE. `bit5` is the Vm<0> field, not an opcode bit.
-        0x4 | 0x5 => Some(Ok(Inst32::VfpCmp {
+        0x4 | 0x5 => {
+            if is_dp && !allow_double {
+                return Some(Err(err_for(hi)));
+            }
+            Some(Ok(Inst32::VfpCmp {
             vd,
             vm,
             e: bit7 == 1,
             z: b19_16 & 1 == 1,
         is_dp,
-            })),
+            }))
+        },
         // 0110: VRINTR/VRINTZ, selected by bit7.
         0x6 => {
+            if is_dp && !allow_double {
+                return Some(Err(err_for(hi)));
+            }
             let op = if bit7 == 0 { VrintOp::R } else { VrintOp::Z };
             Some(Ok(Inst32::VfpVrint { op, vd, vm, is_dp }))
         }
@@ -2695,6 +2784,9 @@ fn decode_vfp_sp(hi: u16, lo: u16, w: u32) -> Option<Result<Inst32, DecodeError>
         // S->D (VCVT.F64.F32) and 1011 (is_dp==true) is D->S.
         0x7 => {
             if bit7 == 0 {
+                if is_dp && !allow_double {
+                    return Some(Err(err_for(hi)));
+                }
                 Some(Ok(Inst32::VfpVrint {
                     op: VrintOp::X,
                     vd,
@@ -2702,6 +2794,9 @@ fn decode_vfp_sp(hi: u16, lo: u16, w: u32) -> Option<Result<Inst32, DecodeError>
                     is_dp,
                 }))
             } else {
+                if !allow_double {
+                    return Some(Err(err_for(hi)));
+                }
                 // 1010 => S->D, 1011 => D->S
                 if !is_dp {
                     let vm_s = vm_sp(w);
@@ -2725,6 +2820,9 @@ fn decode_vfp_sp(hi: u16, lo: u16, w: u32) -> Option<Result<Inst32, DecodeError>
         // 1000: VCVT from integer (VCVT.F{32,64}.{S,U}32), `s` = bit7.
         // Dest float size selects D vs S; source int is always in S.
         0x8 => {
+            if is_dp && !allow_double {
+                return Some(Err(err_for(hi)));
+            }
             let vd2 = if is_dp { vd_dp(w) } else { vd_sp(w) };
             let vm2 = vm_sp(w);
             Some(Ok(Inst32::VfpCvtInt {
@@ -2741,6 +2839,9 @@ fn decode_vfp_sp(hi: u16, lo: u16, w: u32) -> Option<Result<Inst32, DecodeError>
         // 1100/1101: VCVT to integer (VCVT.{S,U}32.F{32,64} / VCVTR),
         // `s` = bit16, `rz` = bit7. Dest int is in S; source float size selects.
         0xC | 0xD => {
+            if is_dp && !allow_double {
+                return Some(Err(err_for(hi)));
+            }
             let vd2 = vd_sp(w);
             let vm2 = if is_dp {
                 (w as u8 & 0xF) | (((w >> 5 & 1) as u8) << 4)
@@ -2761,6 +2862,9 @@ fn decode_vfp_sp(hi: u16, lo: u16, w: u32) -> Option<Result<Inst32, DecodeError>
         // Vm slot (`imm` = bits[3:0]<<1 | bit5): 16 - imm for the 16-bit
         // form, 32 - imm for the 32-bit form.
         0xA | 0xB | 0xE | 0xF => {
+            if is_dp && !allow_double {
+                return Some(Err(err_for(hi)));
+            }
             let opc = ((((w >> 18) & 1) << 2) | ((b19_16 & 1) << 1) | bit7) as u8;
             let imm = (((w & 0xF) << 1) as u8) | ((w >> 5) & 1) as u8;
             let frac = if opc & 1 == 0 { 16 - imm } else { 32 - imm };
@@ -2809,6 +2913,13 @@ mod tests {
         let hi = u16::from_le_bytes([bytes[0], bytes[1]]);
         let lo = u16::from_le_bytes([bytes[2], bytes[3]]);
         decode32_v7m(hi, lo)
+    }
+
+    /// Decode a byte quadruple as an ARMv7E-M (M7) 32-bit instruction (FPv5-D16).
+    fn v7em_bytes(bytes: [u8; 4]) -> Result<Inst32, DecodeError> {
+        let hi = u16::from_le_bytes([bytes[0], bytes[1]]);
+        let lo = u16::from_le_bytes([bytes[2], bytes[3]]);
+        decode32_v7em(hi, lo)
     }
 
     /// Decode a byte quadruple (little-endian halfword pair) as an ARMv8-M
@@ -5366,9 +5477,10 @@ mod tests {
 
     #[test]
     fn vfp_double_decode() {
-        // `vmov.f64 d1, #1.0` (imm8 0x70) -> vd 1, imm 0x3ff0000000000000 (eeb71b00)
+        // `vmov.f64 d1, #1.0` (imm8 0x70) -> vd 1, imm 0x3ff0000000000000 (eeb71b00) - only on M7
+        assert!(v7m_bytes([0xb7, 0xee, 0x00, 0x1b]).is_err());
         assert_eq!(
-            v7m_bytes([0xb7, 0xee, 0x00, 0x1b]),
+            v7em_bytes([0xb7, 0xee, 0x00, 0x1b]),
             Ok(Inst32::VfpMovImm {
                 vd: 1,
                 imm: 0x3ff0_0000_0000_0000,
@@ -5376,8 +5488,9 @@ mod tests {
             })
         );
         // `vcvt.f64.f32 d0, s0` -> to_double true, vd D0, vm S0 (eeb70ac0)
+        assert!(v7m_bytes([0xb7, 0xee, 0xc0, 0x0a]).is_err());
         assert_eq!(
-            v7m_bytes([0xb7, 0xee, 0xc0, 0x0a]),
+            v7em_bytes([0xb7, 0xee, 0xc0, 0x0a]),
             Ok(Inst32::VfpCvt {
                 to_double: true,
                 vd: 0,
@@ -5385,17 +5498,19 @@ mod tests {
             })
         );
         // `vcvt.f32.f64 s0, d0` -> to_double false, vd S0, vm D0 (eeb70bc0)
+        assert!(v7m_bytes([0xb7, 0xee, 0xc0, 0x0b]).is_err());
         assert_eq!(
-            v7m_bytes([0xb7, 0xee, 0xc0, 0x0b]),
+            v7em_bytes([0xb7, 0xee, 0xc0, 0x0b]),
             Ok(Inst32::VfpCvt {
                 to_double: false,
                 vd: 0,
                 vm: 0,
             })
         );
-        // `vadd.f64 d0, d1, d2` double (ee310b02)
+        // `vadd.f64 d0, d1, d2` double (ee310b02) - only M7
+        assert!(v7m_bytes([0x31, 0xee, 0x02, 0x0b]).is_err());
         assert_eq!(
-            v7m_bytes([0x31, 0xee, 0x02, 0x0b]),
+            v7em_bytes([0x31, 0xee, 0x02, 0x0b]),
             Ok(Inst32::Vfp3 {
                 op: Vfp3Op::Vadd,
                 vd: 0,

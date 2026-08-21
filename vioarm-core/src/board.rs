@@ -783,14 +783,18 @@ pub const STM32_H743_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
 pub fn stm32h743() -> BoardMemory {
     use crate::device::svd::stm32h743::Stm32h743;
-    // H7 memory: ITCM alias at 0x00000000, DTCM 128K at 0x20000000, AXI SRAM 512K at 0x24000000
+    // H7 memory: ITCM alias at 0x00000000, DTCM 128K at 0x20000000, AXI SRAM 512K at 0x24000000, SRAM1/2
     const DTCM_BASE: u32 = 0x2000_0000;
     const DTCM_LEN: u32 = 0x0002_0000;
     const AXI_BASE: u32 = 0x2400_0000;
     const AXI_LEN: u32 = 0x0008_0000;
+    const SRAM1_BASE: u32 = 0x3000_0000;
+    const SRAM1_LEN: u32 = 0x0002_0000;
+    const SRAM2_BASE: u32 = 0x3002_0000;
+    const SRAM2_LEN: u32 = 0x0002_0000;
     let backing = FlatMemory::with_layout(
-        &[FLASH, STM32_MAIN_FLASH, DTCM_BASE, AXI_BASE],
-        &[STM32_H743_FLASH_LEN, STM32_H743_FLASH_LEN, DTCM_LEN, AXI_LEN],
+        &[FLASH, STM32_MAIN_FLASH, DTCM_BASE, AXI_BASE, SRAM1_BASE, SRAM2_BASE],
+        &[STM32_H743_FLASH_LEN, STM32_H743_FLASH_LEN, DTCM_LEN, AXI_LEN, SRAM1_LEN, SRAM2_LEN],
     );
     let gate = Arc::new(Mutex::new(FlashGate::new(
         Region::new(STM32_MAIN_FLASH, STM32_H743_FLASH_LEN),

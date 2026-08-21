@@ -3817,7 +3817,7 @@ fn stm32h743_firmware_toggles_gpio() {
         Err(why) => { eprintln!("skipping H743 gpio: {why}"); return; }
     };
     let entry = *symbols.get("reset").unwrap();
-    let mut m = Machine::armv7m(board::stm32h743());
+    let mut m = Machine::armv7em(board::stm32h743());
     m.load_image(&load_flat(CODE_BASE, &code));
     {
         let mem = m.core.mem();
@@ -3853,7 +3853,7 @@ fn stm32h743_firmware_shifts_spi() {
         Err(why) => { eprintln!("skipping H743 spi: {why}"); return; }
     };
     let entry = *symbols.get("reset").unwrap();
-    let mut m = Machine::armv7m(board::stm32h743());
+    let mut m = Machine::armv7em(board::stm32h743());
     m.load_image(&load_flat(CODE_BASE, &code));
     {
         let mem = m.core.mem();
@@ -3894,7 +3894,7 @@ fn stm32h743_firmware_counts_tim() {
         Err(why) => { eprintln!("skipping H743 tim: {why}"); return; }
     };
     let entry = *symbols.get("reset").unwrap();
-    let mut m = Machine::armv7m(board::stm32h743());
+    let mut m = Machine::armv7em(board::stm32h743());
     m.load_image(&load_flat(CODE_BASE, &code));
     {
         let mem = m.core.mem();
@@ -3943,7 +3943,7 @@ fn stm32h743_firmware_talks_usart() {
         Err(why) => { eprintln!("skipping H743 usart: {why}"); return; }
     };
     let entry = *symbols.get("reset").unwrap();
-    let mut m = Machine::armv7m(board::stm32h743());
+    let mut m = Machine::armv7em(board::stm32h743());
     m.load_image(&load_flat(CODE_BASE, &code));
     {
         let mem = m.core.mem();
@@ -3978,7 +3978,7 @@ fn stm32h743_firmware_does_f64() {
         Err(why) => { eprintln!("skipping H743 f64: {why}"); return; }
     };
     let entry = *symbols.get("reset").unwrap();
-    let mut m = Machine::armv7m(board::stm32h743());
+    let mut m = Machine::armv7em(board::stm32h743());
     m.load_image(&load_flat(CODE_BASE, &code));
     {
         let mem = m.core.mem();
@@ -4030,7 +4030,7 @@ fn stm32h743_firmware_does_f64_cvt() {
         Err(why) => { eprintln!("skipping H743 f64 cvt: {why}"); return; }
     };
     let entry = *symbols.get("reset").unwrap();
-    let mut m = Machine::armv7m(board::stm32h743());
+    let mut m = Machine::armv7em(board::stm32h743());
     m.load_image(&load_flat(CODE_BASE, &code));
     {
         let mem = m.core.mem();
@@ -4112,8 +4112,13 @@ fn stm32h743_iwdg_resets() {
 #[test]
 fn stm32h743_ram_regions() {
     let mut m = Machine::armv7em(board::stm32h743());
-    // DTCM at 0x20000000, AXI at 0x24000000
-    for (base, val) in [(0x20000000u32, 0x12345678u32), (0x24000000u32, 0x9abcdef0u32)] {
+    // DTCM at 0x20000000, AXI at 0x24000000, SRAM1/2 at 0x30000000/0x30020000
+    for (base, val) in [
+        (0x20000000u32, 0x12345678u32),
+        (0x24000000u32, 0x9abcdef0u32),
+        (0x30000000u32, 0xDEADBEEFu32),
+        (0x30020000u32, 0xCAFEBABEu32),
+    ] {
         m.core.mem().write_word(base, val).unwrap();
         assert_eq!(m.core.mem().read_word(base).unwrap(), val, "ram at {base:#x}");
     }

@@ -17,7 +17,7 @@ use decode16::{
     ShiftImm,
 };
 use decode32::{
-    decode32, decode32_v7m, decode32_v8m, is_thumb2, is_thumb2_v7m, thumb_expand_imm, BitfieldOp,
+    decode32, decode32_v7m, decode32_v7em, decode32_v8m, is_thumb2, is_thumb2_v7m, thumb_expand_imm, BitfieldOp,
     DpOp, DspMulOp,
     DualMulOp, ExSize, ExtendAddOp, Inst32, MemOp, MulOp, ParOp, ParSat, QaddOp, SatOp, ShiftType,
     SysReg, TtVariant, UnaryOp, Vfp2Op, Vfp3Op, VrintOp,
@@ -634,7 +634,8 @@ impl<B: PeripheralBus> Core<B> {
             };
             let inst = match self.isa {
                 Isa::Armv6M => decode32(h0, h1).ok(),
-                Isa::Armv7M | Isa::Armv7EM => decode32_v7m(h0, h1).ok(),
+                Isa::Armv7M => decode32_v7m(h0, h1).ok(),
+                Isa::Armv7EM => decode32_v7em(h0, h1).ok(),
                 Isa::Armv8MBaseline => decode32_v8m(h0, h1).ok(),
             };
             if let Some(i) = inst {
@@ -772,7 +773,12 @@ impl<B: PeripheralBus> Core<B> {
             .read_half(pc.wrapping_add(2))
             .map_err(|_| HaltCause::FetchAbort)?;
         if is_thumb2_v7m(h0) {
-            match decode32_v7m(h0, h1) {
+            let decoded = if self.isa == crate::cpu::Isa::Armv7EM {
+                decode32_v7em(h0, h1)
+            } else {
+                decode32_v7m(h0, h1)
+            };
+            match decoded {
                 Ok(inst) => self.exec_it_step(pc, 4, |s| s.exec32(pc, inst)),
                 Err(_) => self.hardfault_on_undefined(pc, 4),
             }
