@@ -248,8 +248,10 @@ projects, RTOSes, and bare-metal drivers.
     register file, `dac_registers_round_trip_and_do_not_fault`; mounted on
     F103/F107/F407 so firmware touching the DAC no longer `HardFault`s).
     **RTC/BKP done:** the backup domain (`RTC` at `0x4000_2800`, `BKP` at
-    `0x4000_6C00` on F1) as SVD latches (`rtc_registers_do_not_fault`/
-    `bkp_registers_round_trip`; `BKP` only on F1/F107, `RTC` on all lines).
+    `0x4000_6C00` on F1) — `RTC` now accurate prescaler/counter/alarm
+    (`PRL`→`DIV`→`CNT` 32-bit, `SECF`/`ALRF`/`OWF`, `CRH` enables, `CNF`/`RTOFF`
+    gating, `RTCAlarm` IRQ 41, `rtc_prescaler_ticks_counter_and_alarm`; `BKP`
+    remains `DR1..10` latches, `RTC` on all lines, `BKP` only on F1/F107).
     **SDIO done:** the SD-card host (`SDIO` at `0x4001_8000` on F1 / `0x4001_2C00`
     on F4) as a latch (`sdio_registers_do_not_fault`;Mounted on F103/F107/F407
     so `SD_Init` HAL no longer `HardFault`s — full card protocol remains
