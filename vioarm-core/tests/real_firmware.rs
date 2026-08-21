@@ -171,7 +171,7 @@ static SEQ: AtomicUsize = AtomicUsize::new(0);
 /// Find an executable by name on `PATH` (trying `name.exe` on Windows, where
 /// `clang` is installed as `clang.exe`).
 fn which(name: &str) -> Option<PathBuf> {
-    env::var_os("PATH").and_then(|paths| {
+    if let Some(found) = env::var_os("PATH").and_then(|paths| {
         env::split_paths(&paths).find_map(|dir| {
             let plain = dir.join(name);
             if plain.is_file() {
@@ -183,7 +183,21 @@ fn which(name: &str) -> Option<PathBuf> {
             }
             None
         })
-    })
+    }) {
+        return Some(found);
+    }
+    for dir in [
+        "/usr/lib/llvm-21/bin",
+        "/usr/lib/llvm-20/bin",
+        "/usr/lib/llvm-19/bin",
+        "/usr/lib/llvm-18/bin",
+    ] {
+        let candidate = Path::new(dir).join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 /// Run a tool, capturing stdout; `Err` on spawn or non-zero exit.
