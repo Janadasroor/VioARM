@@ -623,3 +623,83 @@ pub fn stm32f303xe() -> BoardMemory {
     mem.attach(Box::new(SysTick::new()));
     mem
 }
+
+/// STM32L476 (L4, Cortex-M4) flash size in bytes (1 MiB).
+pub const STM32_L476_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32L476 RAM size in bytes (128 KiB).
+pub const STM32_L476_RAM_LEN: u32 = 0x0002_0000;
+
+/// An STM32L476 board: the L4 line with `Stm32l476` tables.
+#[must_use]
+pub fn stm32l476() -> BoardMemory {
+    use crate::device::svd::stm32l476::Stm32l476;
+    let backing = FlatMemory::with_layout(
+        &[FLASH, STM32_MAIN_FLASH, RAM],
+        &[STM32_L476_FLASH_LEN, STM32_L476_FLASH_LEN, STM32_L476_RAM_LEN],
+    );
+    let gate = Arc::new(Mutex::new(FlashGate::new(
+        Region::new(STM32_MAIN_FLASH, STM32_L476_FLASH_LEN),
+        2048,
+    )));
+    let mut mem = SystemMemory::new(backing);
+    mem.set_flash_gate(gate.clone());
+    // L4 flash is at 0x40022000 like F1, use FlashF1
+    if <Stm32l476 as crate::device::svd::Device>::peripheral("FLASH").is_some() {
+        mem.attach(Box::new(FlashF1::for_device::<Stm32l476>(gate)));
+    }
+    mem.attach(Box::new(Rcc::for_device::<Stm32l476>()));
+    if <Stm32l476 as crate::device::svd::Device>::peripheral("PWR").is_some() {
+        mem.attach(Box::new(Pwr::new_for::<Stm32l476>()));
+    }
+    if <Stm32l476 as crate::device::svd::Device>::peripheral("CRC").is_some() {
+        mem.attach(Box::new(Crc::new_for::<Stm32l476>()));
+    }
+    // L4 GPIO is F4-style (MODER)
+    for (base, name) in [
+        (0x4800_0000u32, "gpioa"),
+        (0x4800_0400, "gpiob"),
+        (0x4800_0800, "gpioc"),
+        (0x4800_0c00, "gpiod"),
+        (0x4800_1000, "gpioe"),
+    ] {
+        if <Stm32l476 as crate::device::svd::Device>::by_base(base).is_some() {
+            mem.attach(Box::new(GpioF4::at_in::<Stm32l476>(base, name)));
+        }
+    }
+    for ctor in [
+        Usart::for_device::<Stm32l476> as fn() -> Usart,
+        Usart::usart2_for::<Stm32l476>,
+        Usart::usart3_for::<Stm32l476>,
+    ] {
+        let base = ctor().ranges()[0].base;
+        if <Stm32l476 as crate::device::svd::Device>::by_base(base).is_some() {
+            mem.attach(Box::new(ctor()));
+        }
+    }
+    for ctor in [
+        Timer::tim2_for::<Stm32l476>,
+        Timer::tim6_for::<Stm32l476>,
+    ] {
+        let base = ctor().ranges()[0].base;
+        if <Stm32l476 as crate::device::svd::Device>::by_base(base).is_some() {
+            mem.attach(Box::new(ctor()));
+        }
+    }
+    if <Stm32l476 as crate::device::svd::Device>::peripheral("EXTI").is_some() {
+        mem.attach(Box::new(Exti::for_device::<Stm32l476>()));
+    }
+    if <Stm32l476 as crate::device::svd::Device>::peripheral("SYSCFG").is_some() {
+        mem.attach(Box::new(Syscfg::for_device::<Stm32l476>()));
+    }
+    let watchdog = Arc::new(Mutex::new(false));
+    mem.set_watchdog_reset(watchdog.clone());
+    if <Stm32l476 as crate::device::svd::Device>::peripheral("IWDG").is_some() {
+        mem.attach(Box::new(Iwdg::for_device::<Stm32l476>(watchdog.clone())));
+    }
+    if <Stm32l476 as crate::device::svd::Device>::peripheral("WWDG").is_some() {
+        mem.attach(Box::new(Wwdg::for_device::<Stm32l476>(watchdog)));
+    }
+    mem.attach(Box::new(Dwt::new()));
+    mem.attach(Box::new(SysTick::new()));
+    mem
+}
