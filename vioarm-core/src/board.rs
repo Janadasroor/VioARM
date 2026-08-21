@@ -783,14 +783,20 @@ pub const STM32_H743_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
 pub fn stm32h743() -> BoardMemory {
     use crate::device::svd::stm32h743::Stm32h743;
+    // H7 memory: ITCM alias at 0x00000000, DTCM 128K at 0x20000000, AXI SRAM 512K at 0x24000000
+    const DTCM_BASE: u32 = 0x2000_0000;
+    const DTCM_LEN: u32 = 0x0002_0000;
+    const AXI_BASE: u32 = 0x2400_0000;
+    const AXI_LEN: u32 = 0x0008_0000;
     let backing = FlatMemory::with_layout(
-        &[FLASH, STM32_MAIN_FLASH, RAM],
-        &[STM32_H743_FLASH_LEN, STM32_H743_FLASH_LEN, STM32_H743_RAM_LEN],
+        &[FLASH, STM32_MAIN_FLASH, DTCM_BASE, AXI_BASE],
+        &[STM32_H743_FLASH_LEN, STM32_H743_FLASH_LEN, DTCM_LEN, AXI_LEN],
     );
     let gate = Arc::new(Mutex::new(FlashGate::new(
         Region::new(STM32_MAIN_FLASH, STM32_H743_FLASH_LEN),
         32 * 1024,
     )));
+    let dma_requests = Arc::new(Mutex::new(DmaRequests::new()));
     let mut mem = SystemMemory::new(backing);
     mem.set_flash_gate(gate.clone());
     if <Stm32h743 as crate::device::svd::Device>::peripheral("FLASH").is_some() {
@@ -800,10 +806,46 @@ pub fn stm32h743() -> BoardMemory {
     if <Stm32h743 as crate::device::svd::Device>::peripheral("PWR").is_some() {
         mem.attach(Box::new(Pwr::new_for::<Stm32h743>()));
     }
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("CRC").is_some() {
+        mem.attach(Box::new(Crc::new_for::<Stm32h743>()));
+    }
+    // Watchdogs
+    let watchdog = Arc::new(Mutex::new(false));
+    mem.set_watchdog_reset(watchdog.clone());
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("IWDG").is_some() {
+        mem.attach(Box::new(Iwdg::for_device::<Stm32h743>(watchdog.clone())));
+    }
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("WWDG").is_some() {
+        mem.attach(Box::new(Wwdg::for_device::<Stm32h743>(watchdog)));
+    }
+    // RTC - H743 RTC at 0x58004000, may be okay, keep
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("RTC").is_some() {
+        mem.attach(Box::new(Rtc::new_for::<Stm32h743>()));
+    }
+    // BKP only on F1
+    // if <Stm32h743 as crate::device::svd::Device>::peripheral("BKP").is_some() {
+    //     mem.attach(Box::new(Bkp::new_for::<Stm32h743>()));
+    // }
+    // DAC - skip for H743 (different regs)
+    // if <Stm32h743 as crate::device::svd::Device>::peripheral("DAC").is_some() {
+    //     mem.attach(Box::new(Dac::new_with_dma::<Stm32h743>(dma_requests.clone())));
+    // }
+    // SDMMC1 (SDIO) - H743 uses SDMMC1 with different regs, skip for now
+    // if <Stm32h743 as crate::device::svd::Device>::peripheral("SDIO").is_some() {
+    //     mem.attach(Box::new(Sdio::new_for::<Stm32h743>()));
+    // }
     for (base, name) in [
         (0x5802_0000u32, "gpioa"),
         (0x5802_0400, "gpiob"),
         (0x5802_0800, "gpioc"),
+        (0x5802_0c00, "gpiod"),
+        (0x5802_1000, "gpioe"),
+        (0x5802_1400, "gpiof"),
+        (0x5802_1800, "gpiog"),
+        (0x5802_1c00, "gpioh"),
+        (0x5802_2000, "gpioi"),
+        (0x5802_2400, "gpioj"),
+        (0x5802_2800, "gpiok"),
     ] {
         if <Stm32h743 as crate::device::svd::Device>::by_base(base).is_some() {
             mem.attach(Box::new(GpioF4::at_in::<Stm32h743>(base, name)));
@@ -813,6 +855,7 @@ pub fn stm32h743() -> BoardMemory {
         Usart::for_device::<Stm32h743> as fn() -> Usart,
         Usart::usart2_for::<Stm32h743>,
         Usart::usart3_for::<Stm32h743>,
+        Usart::usart6_for::<Stm32h743>,
     ] {
         let base = ctor().ranges()[0].base;
         if <Stm32h743 as crate::device::svd::Device>::by_base(base).is_some() {
@@ -822,6 +865,11 @@ pub fn stm32h743() -> BoardMemory {
     for ctor in [
         Timer::tim2_for::<Stm32h743>,
         Timer::tim6_for::<Stm32h743>,
+        Timer::tim7_for::<Stm32h743>,
+        Timer::tim1_for::<Stm32h743>,
+        Timer::tim3_for::<Stm32h743>,
+        Timer::tim4_for::<Stm32h743>,
+        Timer::tim5_for::<Stm32h743>,
     ] {
         let base = ctor().ranges()[0].base;
         if <Stm32h743 as crate::device::svd::Device>::by_base(base).is_some() {
@@ -833,6 +881,39 @@ pub fn stm32h743() -> BoardMemory {
     }
     if <Stm32h743 as crate::device::svd::Device>::peripheral("SPI2").is_some() {
         mem.attach(Box::new(Spi::spi2_for::<Stm32h743>()));
+    }
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("SPI3").is_some() {
+        mem.attach(Box::new(Spi::spi3_for::<Stm32h743>()));
+    }
+    // I2C
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("I2C1").is_some() {
+        mem.attach(Box::new(I2c::for_device::<Stm32h743>()));
+    }
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("I2C2").is_some() {
+        mem.attach(Box::new(I2c::i2c2_for::<Stm32h743>()));
+    }
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("I2C3").is_some() {
+        mem.attach(Box::new(I2c::i2c3_for::<Stm32h743>()));
+    }
+    // ADC - H743 ADC has different regs (no CR2), skip for now
+    // if <Stm32h743 as crate::device::svd::Device>::peripheral("ADC1").is_some() {
+    //     mem.attach(Box::new(Adc::adc1_for::<Stm32h743>()));
+    // }
+    // DMA - H7 uses stream DMA like F4 plus DMAMUX; use DmaF4 with Vec mailbox
+    let dma = Arc::new(Mutex::new(Vec::new()));
+    mem.set_dma_mailbox(dma.clone());
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("DMA1").is_some() {
+        mem.attach(Box::new(DmaF4::dma1_for::<Stm32h743>(dma.clone())));
+    }
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("DMA2").is_some() {
+        mem.attach(Box::new(DmaF4::dma2_for::<Stm32h743>(dma)));
+    }
+    // EXTI/SYSCFG if present
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("EXTI").is_some() {
+        mem.attach(Box::new(Exti::for_device::<Stm32h743>()));
+    }
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("SYSCFG").is_some() {
+        mem.attach(Box::new(Syscfg::for_device::<Stm32h743>()));
     }
     mem.attach(Box::new(Dwt::new()));
     mem.attach(Box::new(SysTick::new()));

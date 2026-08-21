@@ -4068,3 +4068,59 @@ fn stm32h743_firmware_does_f64_cvt() {
     assert_eq!(bits, 2.0f64.to_bits(), "vrint got {bits:#x}");
 }
 
+const STM32H743_IWDG_FW: &str = r#"
+#define BOOTCOUNT 0x20000000u
+#define IWDG_KR  0x58004800u
+#define IWDG_RLR 0x58004808u
+void reset(void) {
+    unsigned n = (*(volatile unsigned *)BOOTCOUNT)++;
+    if (n < 3) {
+        *(volatile unsigned *)IWDG_KR = 0x5555u;
+        *(volatile unsigned *)IWDG_RLR = 0x10u;
+        *(volatile unsigned *)IWDG_KR = 0xCCCCu;
+        while (1) { }
+    }
+    *(volatile unsigned *)IWDG_KR = 0x5555u;
+    *(volatile unsigned *)IWDG_RLR = 0xFFFu;
+    *(volatile unsigned *)IWDG_KR = 0xCCCCu;
+    while (1) { }
+}
+"#;
+
+#[test]
+fn stm32h743_iwdg_resets() {
+    let (code, symbols) = match build_firmware_h7_with_includes(STM32H743_IWDG_FW, &[]) {
+        Ok(v) => v,
+        Err(why) => { eprintln!("skipping H743 iwdg: {why}"); return; }
+    };
+    let entry = *symbols.get("reset").unwrap();
+    let mut m = Machine::armv7em(board::stm32h743());
+    m.load_image(&load_flat(CODE_BASE, &code));
+    {
+        let mem = m.core.mem();
+        mem.write_word(board::FLASH, INIT_SP).unwrap();
+        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+        mem.write_word(board::RAM, 0).unwrap();
+    }
+    m.reset().unwrap();
+    let err = m.run(4000);
+    assert_eq!(err, Err(HaltCause::CycleBudgetExhausted));
+    let boots = m.core.mem().read_word(board::RAM).unwrap();
+    assert!(boots >= 4, "H743 IWDG reset at least 3 times, got {boots}");
+}
+
+#[test]
+fn stm32h743_ram_regions() {
+    let mut m = Machine::armv7em(board::stm32h743());
+    // DTCM at 0x20000000, AXI at 0x24000000
+    for (base, val) in [(0x20000000u32, 0x12345678u32), (0x24000000u32, 0x9abcdef0u32)] {
+        m.core.mem().write_word(base, val).unwrap();
+        assert_eq!(m.core.mem().read_word(base).unwrap(), val, "ram at {base:#x}");
+    }
+    // Verify AXI SRAM is distinct from DTCM
+    m.core.mem().write_word(0x20000000, 0xAAAAAAAA).unwrap();
+    m.core.mem().write_word(0x24000000, 0x55555555).unwrap();
+    assert_eq!(m.core.mem().read_word(0x20000000).unwrap(), 0xAAAAAAAA);
+    assert_eq!(m.core.mem().read_word(0x24000000).unwrap(), 0x55555555);
+}
+

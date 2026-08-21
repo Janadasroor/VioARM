@@ -41,6 +41,7 @@ use registers::{Registers, Xpsr, APSR_FLAGS, APSR_GE, APSR_Q, APSR_QFLAGS, XPSR_
 pub enum Isa {
     Armv6M,
     Armv7M,
+    Armv7EM,
     Armv8MBaseline,
 }
 
@@ -509,6 +510,12 @@ impl<B: PeripheralBus> Core<B> {
         Self::new_with_isa(mem, Isa::Armv7M)
     }
 
+    /// Create an uninitialized ARMv7E-M (Cortex-M7) core over `mem` with
+    /// FPv5-D16 double-precision support.
+    pub fn armv7em(mem: B) -> Self {
+        Self::new_with_isa(mem, Isa::Armv7EM)
+    }
+
     /// Create an uninitialized ARMv8-M baseline core over `mem`.
     pub fn armv8m(mem: B) -> Self {
         Self::new_with_isa(mem, Isa::Armv8MBaseline)
@@ -521,6 +528,13 @@ impl<B: PeripheralBus> Core<B> {
     #[must_use]
     pub fn armv7m_with_fpu(mem: B, fpu_ctx: std::sync::Arc<std::sync::Mutex<FpuCtx>>) -> Self {
         let mut core = Self::new_with_isa(mem, Isa::Armv7M);
+        core.fpu_ctx = fpu_ctx;
+        core
+    }
+
+    #[must_use]
+    pub fn armv7em_with_fpu(mem: B, fpu_ctx: std::sync::Arc<std::sync::Mutex<FpuCtx>>) -> Self {
+        let mut core = Self::new_with_isa(mem, Isa::Armv7EM);
         core.fpu_ctx = fpu_ctx;
         core
     }
@@ -581,7 +595,7 @@ impl<B: PeripheralBus> Core<B> {
         let pc = self.regs.pc;
         let next = match self.isa {
             Isa::Armv6M => self.step_v6m(pc)?,
-            Isa::Armv7M => self.step_v7m(pc)?,
+            Isa::Armv7M | Isa::Armv7EM => self.step_v7m(pc)?,
             Isa::Armv8MBaseline => self.step_v8m(pc)?,
         };
         let next_pc = match next {
@@ -608,7 +622,7 @@ impl<B: PeripheralBus> Core<B> {
         };
         let is32 = match self.isa {
             Isa::Armv6M => is_thumb2(h0),
-            Isa::Armv7M => is_thumb2_v7m(h0),
+            Isa::Armv7M | Isa::Armv7EM => is_thumb2_v7m(h0),
             Isa::Armv8MBaseline => is_thumb2_v7m(h0),
         };
         let seq = if is32 { pc.wrapping_add(4) } else { pc.wrapping_add(2) };
@@ -620,7 +634,7 @@ impl<B: PeripheralBus> Core<B> {
             };
             let inst = match self.isa {
                 Isa::Armv6M => decode32(h0, h1).ok(),
-                Isa::Armv7M => decode32_v7m(h0, h1).ok(),
+                Isa::Armv7M | Isa::Armv7EM => decode32_v7m(h0, h1).ok(),
                 Isa::Armv8MBaseline => decode32_v8m(h0, h1).ok(),
             };
             if let Some(i) = inst {
@@ -665,7 +679,7 @@ impl<B: PeripheralBus> Core<B> {
         } else {
             let inst = match self.isa {
                 Isa::Armv6M => decode16(h0).ok(),
-                Isa::Armv7M => decode16_v7m(h0).ok(),
+                Isa::Armv7M | Isa::Armv7EM => decode16_v7m(h0).ok(),
                 Isa::Armv8MBaseline => decode16(h0).ok(),
             };
             if let Some(i) = inst {
@@ -707,7 +721,12 @@ impl<B: PeripheralBus> Core<B> {
             .read_word(0x4002_3C00)
             .map(|v| (v & 0xF) as u64)
             .unwrap_or(0);
-        ws_f1.max(ws_f4)
+        let ws_h7 = self
+            .mem
+            .read_word(0x5200_2000)
+            .map(|v| (v & 0xF) as u64)
+            .unwrap_or(0);
+        ws_f1.max(ws_f4).max(ws_h7)
     }
 
     /// Fetch and execute a single 16-bit-centric ARMv6-M instruction.
@@ -1084,7 +1103,7 @@ impl<B: PeripheralBus> Core<B> {
             // encodings are UNPREDICTABLE on silicon, and the QEMU M0/M33
             // references RAZ them.
             SysReg::Basepri | SysReg::BasepriMax | SysReg::Faultmask
-                if self.isa != Isa::Armv7M =>
+                if !matches!(self.isa, Isa::Armv7M | Isa::Armv7EM) =>
             {
                 0
             }
@@ -1220,7 +1239,7 @@ impl<B: PeripheralBus> Core<B> {
             // ARMv6-M and ARMv8-M baseline have no BASEPRI/FAULTMASK: writes
             // are UNPREDICTABLE on silicon and ignored by the QEMU references.
             SysReg::Basepri | SysReg::BasepriMax | SysReg::Faultmask
-                if self.isa != Isa::Armv7M =>
+                if !matches!(self.isa, Isa::Armv7M | Isa::Armv7EM) =>
             {
             }
             // The stack-limit registers only exist on the ARMv8-M baseline
@@ -1274,7 +1293,7 @@ impl<B: PeripheralBus> Core<B> {
                 // are false, so no swap happens there (QEMU
                 // `write_v7m_control_spsel`).
                 if self.ipsr != 0 || self.control & 1 == 0 {
-                    let mask = if self.isa == Isa::Armv7M { 0x7 } else { 0x3 };
+                    let mask = if matches!(self.isa, Isa::Armv7M | Isa::Armv7EM) { 0x7 } else { 0x3 };
                     let new = v & mask;
                     let old_is_psp = self.sp_is_process();
                     self.control = new;
@@ -1642,7 +1661,7 @@ impl<B: PeripheralBus> Core<B> {
                 if im & 0b010 != 0 {
                     self.primask = disable;
                 }
-                if self.isa == Isa::Armv7M && im & 0b001 != 0 {
+                if matches!(self.isa, Isa::Armv7M | Isa::Armv7EM) && im & 0b001 != 0 {
                     self.faultmask = disable;
                 }
                 Ok(Next::Advance(pc + 2))
@@ -4321,7 +4340,7 @@ impl<B: PeripheralBus> Core<B> {
     /// ARMv6-M (Cortex-M0/M0+) has no UsageFault exception at all: the fold
     /// to HardFault is unconditional there.
     fn usage_fault(&mut self, pc: u32, ufsr_bit: u32) -> Result<Next, HaltCause> {
-        let enabled = self.isa == Isa::Armv7M
+        let enabled = matches!(self.isa, Isa::Armv7M | Isa::Armv7EM)
             && self.mem.read_word(SHCSR_ADDR).unwrap_or(0) & SHCSR_USGFAULTENA != 0;
         // FAULTMASK raises the current priority to -1, below which nothing can
         // preempt, so a distinct UsageFault cannot be taken under it.
@@ -4382,7 +4401,7 @@ impl<B: PeripheralBus> Core<B> {
     /// ARMv6-M (Cortex-M0/M0+) has no `BusFault` exception at all: the fold to
     /// `HardFault` is unconditional there.
     fn data_fault(&mut self, addr: u32, pc: u32) -> Result<Next, HaltCause> {
-        let enabled = self.isa == Isa::Armv7M
+        let enabled = matches!(self.isa, Isa::Armv7M | Isa::Armv7EM)
             && self.mem.read_word(SHCSR_ADDR).unwrap_or(0) & SHCSR_BUSFAULTENA != 0;
         let current = if self.faultmask {
             0
@@ -4418,7 +4437,7 @@ impl<B: PeripheralBus> Core<B> {
     /// ARMv6-M (Cortex-M0/M0+) has no `MemManage` exception at all: the fold to
     /// `HardFault` is unconditional there.
     fn mpu_fault(&mut self, addr: u32, pc: u32, fetch: bool) -> Result<Next, HaltCause> {
-        let enabled = self.isa == Isa::Armv7M
+        let enabled = matches!(self.isa, Isa::Armv7M | Isa::Armv7EM)
             && self.mem.read_word(SHCSR_ADDR).unwrap_or(0) & SHCSR_MEMFAULTENA != 0;
         let current = if self.faultmask {
             0
@@ -5653,7 +5672,7 @@ mod tests {
     #[test]
     fn v8m_baseline_tt_undef_on_v6m_and_v7m() {
         // TT is not an ARMv6-M/ARMv7-M instruction: the encoding faults.
-        for isa in [Isa::Armv6M, Isa::Armv7M] {
+        for isa in [Isa::Armv6M, Isa::Armv7M, Isa::Armv7EM] {
             let mut c = Core::new_with_isa(
                 crate::mem::flat::FlatMemory::with_layout(
                     &[0x0000_0000, 0x2000_0000],
@@ -5674,7 +5693,7 @@ mod tests {
     #[test]
     fn v8m_baseline_bxns_blxns_undef_on_v6m_and_v7m() {
         // BXNS/BLXNS are ARMv8-M-only: on ARMv6-M/ARMv7-M the encoding faults.
-        for isa in [Isa::Armv6M, Isa::Armv7M] {
+        for isa in [Isa::Armv6M, Isa::Armv7M, Isa::Armv7EM] {
             for (bytes, name) in [(&[0x04, 0x47][..], "bxns"), (&[0x84, 0x47][..], "blxns")] {
                 let mut c = Core::new_with_isa(
                     crate::mem::flat::FlatMemory::with_layout(

@@ -89,6 +89,14 @@ impl QemuMachine {
         Self::for_cpu_at("cortex-m33", "mps2-an505", false, 0x1000_0000)
     }
 
+    /// An ARMv7E-M reference (`Cortex-M7` with FPv5-D16), for diffing double-
+    /// precision (`FPv5-D16`) instruction behavior that the M4 board faults on.
+    /// Uses `mps2-an500` (Cortex-M7) with `fpu` log so the VFP block is dumped.
+    #[must_use]
+    pub fn detect_m7() -> Option<Self> {
+        Self::for_cpu("cortex-m7", "mps2-an500", true)
+    }
+
     #[must_use]
     fn for_cpu(cpu: &str, machine: &str, fpu: bool) -> Option<Self> {
         Self::for_cpu_at(cpu, machine, fpu, 0)

@@ -2069,6 +2069,10 @@ pub fn sqrt_f64(a: u64, status: &mut FloatStatus) -> u64 {
                 parts_default_nan(&mut q, status);
                 return round_pack_canonical_d(&mut q, status);
             }
+            // Mirror single path's IDU for positive denormal inputs
+            if p.cls == FloatClass::Denormal {
+                status.raise(FLAG_INPUT_DENORMAL_USED);
+            }
         }
     }
     let f = f64::from_bits(a);

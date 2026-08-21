@@ -35,6 +35,14 @@ impl<M: PeripheralBus> Machine<M> {
         }
     }
 
+    /// A machine over an ARMv7E-M (Cortex-M7) core with FPv5-D16.
+    #[must_use]
+    pub fn armv7em(mem: M) -> Self {
+        Self {
+            core: Core::armv7em(mem),
+        }
+    }
+
     /// An ARMv7-M machine whose FP context-control state is shared between the
     /// core and the `SCB` device. `mem` must be a `SystemMemory` built with the
     /// same `fpu_ctx`.
@@ -42,6 +50,14 @@ impl<M: PeripheralBus> Machine<M> {
     pub fn armv7m_with_fpu(mem: M, fpu_ctx: Arc<Mutex<FpuCtx>>) -> Self {
         Self {
             core: Core::armv7m_with_fpu(mem, fpu_ctx),
+        }
+    }
+
+    /// An ARMv7E-M machine whose FP context-control state is shared.
+    #[must_use]
+    pub fn armv7em_with_fpu(mem: M, fpu_ctx: Arc<Mutex<FpuCtx>>) -> Self {
+        Self {
+            core: Core::armv7em_with_fpu(mem, fpu_ctx),
         }
     }
 
