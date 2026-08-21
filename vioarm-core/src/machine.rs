@@ -115,7 +115,10 @@ impl<M: PeripheralBus> Machine<M> {
             self.core.ipsr,
         );
         if just_returned {
+            let before = self.core.cyccnt;
             self.run_instruction()?;
+            let delta = self.core.cyccnt.wrapping_sub(before);
+            self.core.mem().tick_by(delta.max(1));
         } else if let Some(n) = self
             .core
             .mem()
@@ -124,10 +127,19 @@ impl<M: PeripheralBus> Machine<M> {
             self.core.enter_exception(n)?;
             self.core.mem().acknowledge_exception(n);
             self.core.cycles += 1;
+            self.core.cyccnt += 1;
+            self.core.mem().tick_by(1);
         } else {
+            let before = self.core.cyccnt;
             self.run_instruction()?;
+            let delta = self.core.cyccnt.wrapping_sub(before);
+            if delta == 0 {
+                // run_instruction already ticked (e.g. just_returned path); avoid double tick
+                self.core.mem().tick_by(1);
+            } else {
+                self.core.mem().tick_by(delta);
+            }
         }
-        self.core.mem().tick_cycle();
         Ok(())
     }
 
@@ -157,11 +169,13 @@ impl<M: PeripheralBus> Machine<M> {
             self.core.enter_exception(n)?;
             self.core.mem().acknowledge_exception(n);
             self.core.cycles += 1;
+            self.core.cyccnt += 1;
         } else if was_sleeping {
             // A sleeping core that no exception wakes still spends the
             // cycle asleep; count it so `cycles()` advances monotonically
             // while firmware sits in `WFI`/`WFE` (peripherals keep ticking).
             self.core.cycles += 1;
+            self.core.cyccnt += 1;
         }
         Ok(())
     }
