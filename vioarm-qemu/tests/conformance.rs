@@ -4143,3 +4143,47 @@ fn mpu_burst_straddles_region() {
     );
     compare_traces("mpu_burst_straddles_region", &vio, &qemu).expect("traces agree");
 }
+
+/// A precise bus error with `SHCSR.BUSFAULTENA` set: a load from an
+/// unmapped address (`0x5000_0000`, in the peripheral window but not backed
+/// by any device on this machine) is taken as a distinct `BusFault` (vector
+/// 5) with `BFSR.PRECISERR` and no `HFSR.FORCED`. The handler captures
+/// `BFSR`/`HFSR` into the trace, patches the stacked PC past the faulting
+/// load, and returns; the diff locks ARMv7-M's `BUSFAULTENA` gating and the
+/// `BusFault` priority/frame against the M3.
+#[test]
+fn busfault_precise_taken_as_busfault() {
+    let Some(mt) = qemu() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+    a.vec(5, "bf"); // BusFault vector
+    a.vec(3, "hf"); // HardFault fallback
+
+    // Enable the distinct BusFault.
+    a.mov_imm32(0, 0xE000_ED24); // SHCSR
+    a.mov_imm32(1, 0x0002_0000); // BUSFAULTENA
+    a.str_imm(1, 0, 0);
+
+    // The faulting load: an address in the peripheral window that no device
+    // claims on this machine (reserved -> precise BusFault).
+    a.mov_imm32(1, 0x5000_0000);
+    a.ldr_imm(0, 1, 0);
+
+    a.label("halt");
+    a.b("halt");
+
+    a.label("bf");
+    a.mov_imm32(4, 0xE000_ED20);
+    a.ldr_imm(5, 4, 8); // r5 = CFSR (BFSR byte must have PRECISERR)
+    a.ldr_imm(6, 4, 12); // r6 = HFSR (must be 0, no FORCED)
+    a.mov_reg(1, 13);
+    a.ldr_imm(2, 1, 24);
+    a.adds_imm8(2, 2);
+    a.str_imm(2, 1, 24);
+    a.bx(14);
+
+    a.label("hf");
+    a.b("halt");
+
+    conformance("busfault_precise_taken_as_busfault", &mut a, "halt", &mt);
+}
