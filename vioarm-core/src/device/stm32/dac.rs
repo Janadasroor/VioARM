@@ -58,14 +58,17 @@ impl DacBehavior {
         view.set(DOR1, val12 & 0xFFF);
     }
     fn transfer_ch2(view: &mut Registers<&mut [u32]>, val12: u32) {
-        let cr = view.get(CR);
+        let cr = match view.try_get(CR) {
+            Some(v) => v,
+            None => return,
+        };
         if cr & CR_EN2 == 0 {
             return;
         }
         if cr & CR_TEN2 != 0 && cr & CR_DMAEN2 == 0 {
             return;
         }
-        view.set(DOR2, val12 & 0xFFF);
+        view.try_set(DOR2, val12 & 0xFFF);
     }
     fn assert_dma(&self, ch: u8) {
         if let Some(req) = &self.requests {
@@ -104,9 +107,9 @@ impl Behavior for DacBehavior {
                     if cr & CR_EN2 != 0 && cr & CR_TEN2 != 0 && ((cr >> CR_TSEL2_SHIFT) & 0x7) == 0 {
                         if cr & CR_DMAEN2 != 0 {
                             self.assert_dma(4);
-                        } else {
-                            let v = view.get(DHR12R2) & 0xFFF;
-                            view.set(DOR2, v);
+                        } else if let Some(v) = view.try_get(DHR12R2) {
+                            let v = v & 0xFFF;
+                            view.try_set(DOR2, v);
                         }
                     }
                 }
