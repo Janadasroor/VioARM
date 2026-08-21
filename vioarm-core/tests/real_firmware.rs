@@ -3994,3 +3994,77 @@ fn stm32h743_firmware_does_f64() {
     let expect = (3.141592653589793f64 + 2.718281828459045f64).to_bits();
     assert_eq!(bits, expect, "got {bits:#x} want {expect:#x}");
 }
+const STM32H743_F64_CVT_FW: &str = r#"
+#define SCB_CPACR 0xE000ED88u
+#define OUT 0x20000000u
+void reset(void) {
+    *(volatile unsigned *)SCB_CPACR |= (0xF << 20);
+    // VMOV.F64 #imm (1.0) + VADD.F64
+    double a;
+    __asm__ volatile("vmov.f64 d0, #1.0; vmov r0, r1, d0; mov %0, r0; mov %1, r1" : "=r"(*(unsigned*)0x20000000), "=r"(*(unsigned*)0x20000004) :: "r0","r1","d0");
+    // Use C for VCVT paths: f32->f64, f64->f32, int->f64, f64->int, VRINT
+    float f = 1.5f;
+    double d = (double)f; // VCVT.F64.F32
+    double e = d + 1.0;   // VADD.F64 with imm-derived 1.0
+    float g = (float)e;   // VCVT.F32.F64
+    int i = (int)e;       // VCVT.S32.F64
+    double h = (double)i; // VCVT.F64.S32
+    double vr = __builtin_rint(d); // VRINT
+    // store results at OUT+8 .. for checking
+    *(volatile unsigned *)(OUT+8)  = *(unsigned *)&d;
+    *(volatile unsigned *)(OUT+12) = *((unsigned *)&d + 1);
+    *(volatile unsigned *)(OUT+16) = *(unsigned *)&g;
+    *(volatile unsigned *)(OUT+20) = (unsigned)i;
+    *(volatile unsigned *)(OUT+24) = *(unsigned *)&h;
+    *(volatile unsigned *)(OUT+28) = *((unsigned *)&h + 1);
+    *(volatile unsigned *)(OUT+32) = *(unsigned *)&vr;
+    *(volatile unsigned *)(OUT+36) = *((unsigned *)&vr + 1);
+    __asm__ volatile("bkpt #0");
+}
+"#;
+
+#[test]
+fn stm32h743_firmware_does_f64_cvt() {
+    let (code, symbols) = match build_firmware_h7_with_includes(STM32H743_F64_CVT_FW, &[]) {
+        Ok(v) => v,
+        Err(why) => { eprintln!("skipping H743 f64 cvt: {why}"); return; }
+    };
+    let entry = *symbols.get("reset").unwrap();
+    let mut m = Machine::armv7m(board::stm32h743());
+    m.load_image(&load_flat(CODE_BASE, &code));
+    {
+        let mem = m.core.mem();
+        mem.write_word(board::FLASH, INIT_SP).unwrap();
+        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+    }
+    m.reset().unwrap();
+    let err = m.run(50_000);
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
+    // VMOV.F64 #1.0 at OUT
+    let lo = m.core.mem().read_word(RAM).unwrap();
+    let hi = m.core.mem().read_word(RAM+4).unwrap();
+    let bits = (u64::from(hi) << 32) | u64::from(lo);
+    assert_eq!(bits, 1.0f64.to_bits(), "vmov.f64 #1.0 got {bits:#x}");
+    // VCVT.F64.F32 1.5f -> 1.5f64 at OUT+8
+    let lo = m.core.mem().read_word(RAM+8).unwrap();
+    let hi = m.core.mem().read_word(RAM+12).unwrap();
+    let bits = (u64::from(hi) << 32) | u64::from(lo);
+    assert_eq!(bits, 1.5f64.to_bits(), "vcvt.f64.f32 got {bits:#x}");
+    // VCVT.F32.F64 e(2.5) -> g at OUT+16 as f32 bits
+    let g = m.core.mem().read_word(RAM+16).unwrap();
+    assert_eq!(g, (2.5f32).to_bits(), "vcvt.f32.f64 got {g:#x}");
+    // VCVT.S32.F64 e(2.5) -> i at OUT+20
+    let i = m.core.mem().read_word(RAM+20).unwrap() as i32;
+    assert_eq!(i, 2, "vcvt.s32.f64 got {i}");
+    // VCVT.F64.S32 i(2) -> h at OUT+24 as 2.0f64
+    let lo = m.core.mem().read_word(RAM+24).unwrap();
+    let hi = m.core.mem().read_word(RAM+28).unwrap();
+    let bits = (u64::from(hi) << 32) | u64::from(lo);
+    assert_eq!(bits, 2.0f64.to_bits(), "vcvt.f64.s32 got {bits:#x}");
+    // VRINT d(1.5) -> 2.0 (nearest even) at OUT+32
+    let lo = m.core.mem().read_word(RAM+32).unwrap();
+    let hi = m.core.mem().read_word(RAM+36).unwrap();
+    let bits = (u64::from(hi) << 32) | u64::from(lo);
+    assert_eq!(bits, 2.0f64.to_bits(), "vrint got {bits:#x}");
+}
+

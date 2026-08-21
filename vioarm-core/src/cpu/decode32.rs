@@ -2690,7 +2690,9 @@ fn decode_vfp_sp(hi: u16, lo: u16, w: u32) -> Option<Result<Inst32, DecodeError>
         }
         // 0111: VRINTX / VCVT.F64.F32 / VCVT.F32.F64, selected by bit7.
         // bit7==0 => VRINTX (size selected by is_dp); bit7==1 => VCVT
-        // between single and double.
+        // between single and double. For the VCVT pair the size bit is
+        // inverted relative to the other VFP ops: 1010 (is_dp==false) is
+        // S->D (VCVT.F64.F32) and 1011 (is_dp==true) is D->S.
         0x7 => {
             if bit7 == 0 {
                 Some(Ok(Inst32::VfpVrint {
@@ -2700,17 +2702,18 @@ fn decode_vfp_sp(hi: u16, lo: u16, w: u32) -> Option<Result<Inst32, DecodeError>
                     is_dp,
                 }))
             } else {
-                // sz == 1 (is_dp) => Dd from Sm, sz == 0 => Sd from Dm
-                if is_dp {
+                // 1010 => S->D, 1011 => D->S
+                if !is_dp {
                     let vm_s = vm_sp(w);
+                    let vd_d = vd_dp(w);
                     Some(Ok(Inst32::VfpCvt {
                         to_double: true,
-                        vd,
+                        vd: vd_d,
                         vm: vm_s,
                     }))
                 } else {
                     let vm_d = vd_dp(w);
-                    // vd is Sd (already), vm is Dm
+                    // vd is Sd
                     Some(Ok(Inst32::VfpCvt {
                         to_double: false,
                         vd: vd_sp(w),
@@ -2780,14 +2783,13 @@ const fn vfp_expand_imm(imm8: u32) -> u32 {
 }
 
 /// Expand a VFP `imm8` into the float bits of `VMOV.F64 Dd, #imm`, following
-/// qemu's `vfp_expand_imm(MO_64, imm8)`: sign in bit63, exponent `0x400` (b==0)
-/// vs `0x3FC` (b==1) in bits 62:52, and `imm6` in bits 51:46.
+/// qemu's `vfp_expand_imm(MO_64, imm8)`.
 const fn vfp_expand_imm_64(imm8: u32) -> u64 {
-    let sign = ((imm8 >> 7) & 1) as u64;
-    let b = (imm8 >> 6) & 1;
-    let imm6 = (imm8 & 0x3F) as u64;
-    let exp: u64 = if b == 1 { 0x3FC } else { 0x400 };
-    (sign << 63) | (exp << 52) | (imm6 << 46)
+    let f = ((imm8 >> 7) & 1) * 0x8000
+        | (((imm8 >> 6) & 1) * 0x3FC0)
+        | (((imm8 >> 6) & 1 ^ 1) * 0x4000)
+        | (imm8 & 0x3F);
+    (f as u64) << 48
 }
 
 #[cfg(test)]
