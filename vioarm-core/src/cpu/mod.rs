@@ -1560,10 +1560,13 @@ impl<B: PeripheralBus> Core<B> {
                 if self.stack_limit_violation(new_sp) {
                     return self.stack_fault(pc);
                 }
-                let mut addr = new_sp;
-                if !self.mpu_allows(addr, MpuAccess::Write) {
-                    return self.mpu_fault(addr, pc, false);
+                for i in 0..count {
+                    let a = new_sp.wrapping_add(4 * i);
+                    if !self.mpu_allows(a, MpuAccess::Write) {
+                        return self.mpu_fault(a, pc, false);
+                    }
                 }
+                let mut addr = new_sp;
                 for r in 0..8 {
                     if regs & (1 << r) != 0 {
                         let v = self.regs.read(r);
@@ -1578,10 +1581,14 @@ impl<B: PeripheralBus> Core<B> {
                 Ok(Next::Advance(pc + 2))
             }
             I::Pop { regs, load_pc } => {
-                let mut addr = self.regs.sp;
-                if !self.mpu_allows(addr, MpuAccess::Read) {
-                    return self.mpu_fault(addr, pc, false);
+                let count = regs.count_ones() + u32::from(load_pc);
+                for i in 0..count {
+                    let a = self.regs.sp.wrapping_add(4 * i);
+                    if !self.mpu_allows(a, MpuAccess::Read) {
+                        return self.mpu_fault(a, pc, false);
+                    }
                 }
+                let mut addr = self.regs.sp;
                 for r in 0..8 {
                     if regs & (1 << r) != 0 {
                         let v = self.read_word_halt(addr)?;
@@ -1609,11 +1616,22 @@ impl<B: PeripheralBus> Core<B> {
                 if base & 3 != 0 {
                     return self.data_fault(base, pc);
                 }
+                let count = regs.count_ones();
+                for i in 0..count {
+                    let a = base.wrapping_add(4 * i);
+                    if !self.mpu_allows(
+                        a,
+                        if is_load {
+                            MpuAccess::Read
+                        } else {
+                            MpuAccess::Write
+                        },
+                    ) {
+                        return self.mpu_fault(a, pc, false);
+                    }
+                }
                 let mut addr = base;
                 if is_load {
-                    if !self.mpu_allows(base, MpuAccess::Read) {
-                        return self.mpu_fault(base, pc, false);
-                    }
                     for r in 0..8 {
                         if regs & (1 << r) != 0 {
                             let v = self.read_word_halt(addr)?;
@@ -1634,9 +1652,6 @@ impl<B: PeripheralBus> Core<B> {
                         if self.stack_limit_violation(new_sp) {
                             return self.stack_fault(pc);
                         }
-                    }
-                    if !self.mpu_allows(base, MpuAccess::Write) {
-                        return self.mpu_fault(base, pc, false);
                     }
                     for r in 0..8 {
                         if regs & (1 << r) != 0 {
@@ -2123,15 +2138,18 @@ impl<B: PeripheralBus> Core<B> {
                 if addr & 3 != 0 {
                     return self.data_fault(addr, pc);
                 }
-                if !self.mpu_allows(
-                    addr,
-                    if is_load {
-                        MpuAccess::Read
-                    } else {
-                        MpuAccess::Write
-                    },
-                ) {
-                    return self.mpu_fault(addr, pc, false);
+                for i in 0..words {
+                    let a = addr.wrapping_add(4 * i);
+                    if !self.mpu_allows(
+                        a,
+                        if is_load {
+                            MpuAccess::Read
+                        } else {
+                            MpuAccess::Write
+                        },
+                    ) {
+                        return self.mpu_fault(a, pc, false);
+                    }
                 }
                 if is_load {
                     let mut pc_target = None;
@@ -2197,15 +2215,18 @@ impl<B: PeripheralBus> Core<B> {
                 if address & 3 != 0 {
                     return self.data_fault(address, pc);
                 }
-                if !self.mpu_allows(
-                    address,
-                    if is_load {
-                        MpuAccess::Read
-                    } else {
-                        MpuAccess::Write
-                    },
-                ) {
-                    return self.mpu_fault(address, pc, false);
+                for off in [0u32, 4] {
+                    let a = address.wrapping_add(off);
+                    if !self.mpu_allows(
+                        a,
+                        if is_load {
+                            MpuAccess::Read
+                        } else {
+                            MpuAccess::Write
+                        },
+                    ) {
+                        return self.mpu_fault(a, pc, false);
+                    }
                 }
                 if is_load {
                     // The low word lands in `rt`, the high word in `rt2`;
@@ -3228,15 +3249,18 @@ impl<B: PeripheralBus> Core<B> {
                 if addr & 7 != 0 {
                     return self.data_fault(addr, pc);
                 }
-                if !self.mpu_allows(
-                    addr,
-                    if is_load {
-                        MpuAccess::Read
-                    } else {
-                        MpuAccess::Write
-                    },
-                ) {
-                    return self.mpu_fault(addr, pc, false);
+                for off in [0u32, 4] {
+                    let a = addr.wrapping_add(off);
+                    if !self.mpu_allows(
+                        a,
+                        if is_load {
+                            MpuAccess::Read
+                        } else {
+                            MpuAccess::Write
+                        },
+                    ) {
+                        return self.mpu_fault(a, pc, false);
+                    }
                 }
                 if is_load {
                     let lo = self.read_word_halt(addr)?;
@@ -3276,15 +3300,18 @@ impl<B: PeripheralBus> Core<B> {
                 if start & 3 != 0 {
                     return self.data_fault(start, pc);
                 }
-                if !self.mpu_allows(
-                    start,
-                    if is_load {
-                        MpuAccess::Read
-                    } else {
-                        MpuAccess::Write
-                    },
-                ) {
-                    return self.mpu_fault(start, pc, false);
+                for i in 0..u32::from(n) {
+                    let a = start.wrapping_add(4 * i);
+                    if !self.mpu_allows(
+                        a,
+                        if is_load {
+                            MpuAccess::Read
+                        } else {
+                            MpuAccess::Write
+                        },
+                    ) {
+                        return self.mpu_fault(a, pc, false);
+                    }
                 }
                 let mut addr = start;
                 for i in 0..u32::from(n) {
@@ -8726,6 +8753,30 @@ mod tests {
         load_inst(&mut c, HF_HANDLER, &[0x70, 0x47]); // bx lr
         c.step().unwrap();
         assert_eq!(c.ipsr, 3, "ARMv6-M must fold MemManage to HardFault");
+    }
+
+    #[test]
+    fn mpu_burst_checks_every_word() {
+        const CODE: u32 = 0x2000_0100;
+        const MM_HANDLER: u32 = 0x2000_0600;
+        const SP: u32 = 0x2000_0804; // push {r0,r1} -> 0x07FC (in) + 0x0800 (out)
+        let mut c = armv7m_sys_core();
+        c.mem().write_word(4 * 4, MM_HANDLER | 1).unwrap();
+        c.mem().write_word(0xE000_ED24, 0x0001_0000).unwrap(); // MEMFAULTENA
+        enable_mpu_region0(c.mem());
+        c.regs.sp = SP;
+        c.regs.msp = SP;
+        c.regs.write(0, 0x1111_1111);
+        c.regs.write(1, 0x2222_2222);
+        c.regs.pc = CODE;
+        // push {r0, r1}
+        load_inst(&mut c, CODE, &[0x03, 0xB4]);
+        load_inst(&mut c, MM_HANDLER, &[0x70, 0x47]); // bx lr
+        c.step().unwrap();
+        assert_eq!(c.ipsr, 4, "burst straddling region boundary must fault");
+        assert_eq!(c.mem().read_word(0xE000_ED34).unwrap(), 0x2000_0800);
+        assert_eq!(c.mem().read_word(0xE000_ED28).unwrap() & 0x82, 0x82);
+        assert_eq!(c.mem().read_word(0xE000_ED2C).unwrap(), 0); // MemManage, no FORCED
     }
 
     #[test]
