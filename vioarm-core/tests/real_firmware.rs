@@ -3040,3 +3040,93 @@ fn stm32f072_firmware_toggles_gpio() {
     let Some(odr) = run_f072_gpio() else { return; };
     assert_eq!(odr, 1);
 }
+
+const STM32F072_SPI_FIRMWARE: &str = r#"
+#define RCC_APB2ENR 0x40021018u
+#define SPI1_CR1 0x40013000u
+#define SPI1_SR  0x40013008u
+#define SPI1_DR  0x4001300Cu
+#define POLL (*(volatile unsigned *)0x20000000u)
+
+void reset(void) {
+    *(volatile unsigned *)RCC_APB2ENR |= (1u<<12);
+    *(volatile unsigned *)SPI1_CR1 = (1u<<2) | (1u<<6); // MSTR | SPE
+    *(volatile unsigned *)SPI1_DR = 0xAA;
+    while (!(*(volatile unsigned *)SPI1_SR & (1u<<0))) { }
+    POLL = *(volatile unsigned *)SPI1_DR;
+    __asm__ volatile("bkpt #0");
+}
+"#;
+
+fn run_f072_spi() -> Option<u32> {
+    let (code, symbols) = match build_firmware(STM32F072_SPI_FIRMWARE) {
+        Ok(v) => v,
+        Err(why) => { eprintln!("skipping F072 spi: {why}"); return None; }
+    };
+    let entry = *symbols.get("reset").unwrap();
+    let mut m = Machine::new(board::stm32f072());
+    m.load_image(&load_flat(CODE_BASE, &code));
+    {
+        let mem = m.core.mem();
+        mem.write_word(FLASH, INIT_SP).unwrap();
+        mem.write_word(FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+    }
+    m.reset().unwrap();
+    for d in m.core.mem().devices_mut() { d.drive_inputs(0xA5); }
+    let err = m.run(50_000);
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
+    Some(m.core.mem().read_word(board::RAM).unwrap())
+}
+
+#[test]
+fn stm32f072_firmware_shifts_spi() {
+    let Some(polled) = run_f072_spi() else { return; };
+    assert_eq!(polled, 0xA5);
+}
+
+const STM32F072_TIM_FIRMWARE: &str = r#"
+#define RCC_APB1ENR 0x4002101Cu
+#define TIM2_CR1 0x40000000u
+#define TIM2_PSC 0x40000028u
+#define TIM2_ARR 0x4000002Cu
+#define TIM2_CNT 0x40000024u
+#define TIM2_EGR 0x40000014u
+#define OUT 0x20000000u
+
+void reset(void) {
+    *(volatile unsigned *)RCC_APB1ENR |= (1u<<0);
+    *(volatile unsigned *)TIM2_ARR = 0xFFFFu;
+    *(volatile unsigned *)TIM2_PSC = 0;
+    *(volatile unsigned *)TIM2_EGR = 1u;
+    *(volatile unsigned *)TIM2_CR1 = 1u;
+    // spin a bit
+    for (volatile int i=0;i<100;i++) { }
+    *(volatile unsigned *)OUT = *(volatile unsigned *)TIM2_CNT;
+    __asm__ volatile("bkpt #0");
+}
+"#;
+
+fn run_f072_tim() -> Option<u32> {
+    let (code, symbols) = match build_firmware(STM32F072_TIM_FIRMWARE) {
+        Ok(v) => v,
+        Err(why) => { eprintln!("skipping F072 tim: {why}"); return None; }
+    };
+    let entry = *symbols.get("reset").unwrap();
+    let mut m = Machine::new(board::stm32f072());
+    m.load_image(&load_flat(CODE_BASE, &code));
+    {
+        let mem = m.core.mem();
+        mem.write_word(FLASH, INIT_SP).unwrap();
+        mem.write_word(FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+    }
+    m.reset().unwrap();
+    let err = m.run(50_000);
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
+    Some(m.core.mem().read_word(board::RAM).unwrap())
+}
+
+#[test]
+fn stm32f072_firmware_counts_tim() {
+    let Some(cnt) = run_f072_tim() else { return; };
+    assert!(cnt > 0, "TIM2 never counted: {cnt}");
+}
