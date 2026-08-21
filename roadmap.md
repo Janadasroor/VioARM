@@ -323,8 +323,9 @@ lda_stl, splim, tt/sau_tt/mpu_tt, alu_thumb1, sg, blxns/bxns,
   load/store bursts (PUSH/POP/LDM/STM/LDRD/STRD/VLDM/VSTM) are checked per
   word, so a burst straddling a region boundary faults with `MMFAR`/`BFAR`
   equal to the first faulting word. The `_A1`/`_A2`/`_A3` aliases index
-  `MPU_RNR` like the base registers (the v8M alias-region override is not
-  modeled). Fault behavior is locked with QEMU conformance
+  `MPU_RNR` on PMSAv7 and override `MPU_RNR[1:0]` on PMSAv8 via
+  `mpu_v8_region_index` (`mpu_v8_aliases_override_the_rnr_low_bits`). Fault
+  behavior is locked with QEMU conformance
   (`mpu_data_violation_escalates_to_hardfault`,
   `mpu_data_violation_taken_as_memmanage`, `mpu_burst_straddles_region`, and
   `busfault_precise_taken_as_busfault` diff the `MMFSR`/`BFSR`/`HFSR`/`MMFAR`

@@ -13,8 +13,9 @@
 //! exception-entry behavior.
 //!
 //! The ARMv7-M MPU is modeled here too: the `MPU_TYPE`/`MPU_CTRL`/`MPU_RNR`/
-//! `MPU_RBAR`/`MPU_RASR` registers (plus their v7M `_A1`/`_A2`/`_A3` aliases,
-//! which index `MPU_RNR` like the base registers) with eight unified regions,
+//! `MPU_RBAR`/`MPU_RASR` registers (plus their `_A1`/`_A2`/`_A3` aliases —
+//! PMSAv7 indexes `MPU_RNR`, PMSAv8 overrides `MPU_RNR[1:0]` via
+//! `mpu_v8_region_index`) with eight unified regions,
 //! subregion disable, `AP`/`XN` permissions, and the `PRIVDEFENA` background
 //! region. [`Scb::mpu_check`] answers permission queries from the core's
 //! fetch/data paths, and [`Scb::record_mpu_fault`] latches `MMFSR`, `MMFAR`,
@@ -95,9 +96,8 @@ const SAU: u32 = 0xE000_EDD0;
 
 /// The MPU register window. One 4-byte-aligned window covers `MPU_TYPE` ..=
 /// `MPU_RASR_A3`, dispatched by byte offset; the aliases `_A1`/`_A2`/`_A3`
-/// behave exactly like the base registers on ARMv7-M (they are indexed by
-/// `MPU_RNR`, unlike the v8M PMSAv8 alias-region override), matching the QEMU
-/// oracle.
+/// index `MPU_RNR` on PMSAv7 and override `MPU_RNR[1:0]` on PMSAv8 via
+/// `mpu_v8_region_index`, matching the QEMU oracle.
 const MPU: u32 = 0xE000_ED90;
 
 // MMFSR fault-status bits (CFSR bits 7:0). `IACCVIOL`/`DACCVIOL` are the
