@@ -1,7 +1,8 @@
 //! STM32 SDIO (`SDIO`, `0x4001_8000` on F1 / `0x4001_2C00` on F4), SVD-driven.
-//! Minimal CMD-accurate: `ARG`/`CMD` with `CPSMEN` latches `RESPCMD`/`RESP1`,
-//! sets `STA.CMDSENT`/`CMDREND` and `ICR` W1C, `MASK` gates `SDIO` IRQ 49.
-//! Data FIFO and card FSM remain stubbed; `STA` no longer just latch.
+//! CMD-accurate plus data stub: `ARG`/`CMD` with `CPSMEN` latches `RESPCMD`/
+//! `RESP1`, sets `STA.CMDSENT`/`CMDREND` and `DATAEND`/`DBCKEND` when `DCTRL`/
+//! `DLEN` indicate a block, `ICR` W1C, `MASK` gates `SDIO` IRQ 49. FIFO and
+//! full card FSM remain stubbed.
 
 use crate::device::svd::{Behavior, Device, RegisterFile, Registers};
 use crate::device::{InterruptSource, Peripheral};
@@ -11,12 +12,20 @@ use crate::mem::bus::Region;
 const CMD: u16 = 0x0C;
 const RESPCMD: u16 = 0x10;
 const RESP1: u16 = 0x14;
+const DTIMER: u16 = 0x24;
+const DLEN: u16 = 0x28;
+const DCTRL: u16 = 0x2C;
 const STA: u16 = 0x34;
 const ICR: u16 = 0x38;
 const MASK: u16 = 0x3C;
+const FIFO: u16 = 0x80;
 
 const STA_CMDSENT: u32 = 1 << 7;
 const STA_CMDREND: u32 = 1 << 6;
+const STA_DATAEND: u32 = 1 << 8;
+const STA_DBCKEND: u32 = 1 << 10;
+
+const DCTRL_DTEN: u32 = 1 << 0;
 
 #[derive(Debug, Default)]
 struct SdioBehavior;
@@ -45,6 +54,11 @@ impl Behavior for SdioBehavior {
                     let mut sta = view.get(STA) | STA_CMDSENT;
                     if waitresp != 0 {
                         sta |= STA_CMDREND;
+                    }
+                    // If data path is enabled, complete the block immediately
+                    // (firmware observes `DATAEND`/`DBCKEND` without FIFO timing).
+                    if view.get(DCTRL) & DCTRL_DTEN != 0 {
+                        sta |= STA_DATAEND | STA_DBCKEND;
                     }
                     view.set(STA, sta);
                     // CPSMEN self-clears after dispatch.
@@ -164,5 +178,19 @@ mod tests {
         write_word(&mut s, base + 0x38, (1 << 6) | (1 << 7));
         assert_eq!(read_word(&mut s, base + 0x34) & ((1 << 6) | (1 << 7)), 0);
         assert_eq!(s.pending(), 0);
+    }
+
+    #[test]
+    fn sdio_data_block_completes() {
+        let base = Stm32f103::peripheral("SDIO").unwrap().base;
+        let mut s = Sdio::new_for::<Stm32f103>();
+        // Enable DATAEND.
+        write_word(&mut s, base + 0x3C, 1 << 8); // MASK DATAENDIE
+        write_word(&mut s, base + 0x28, 512); // DLEN
+        write_word(&mut s, base + 0x2C, 0x0000_0001); // DCTRL DTEN
+        write_word(&mut s, base + 0x0C, 0x0000_0440 | (1 << 10)); // CMD17 READ_SINGLE_BLOCK + CPSMEN
+        assert_ne!(read_word(&mut s, base + 0x34) & (1 << 8), 0, "DATAEND set");
+        assert_ne!(read_word(&mut s, base + 0x34) & (1 << 10), 0, "DBCKEND set");
+        assert_ne!(s.pending(), 0);
     }
 }

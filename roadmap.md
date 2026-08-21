@@ -254,10 +254,12 @@ projects, RTOSes, and bare-metal drivers.
     gating, `RTCAlarm` IRQ 41, `rtc_prescaler_ticks_counter_and_alarm`; `BKP`
     remains `DR1..10` latches, `RTC` on all lines, `BKP` only on F1/F107).
     **SDIO done:** the SD-card host (`SDIO` at `0x4001_8000` on F1 / `0x4001_2C00`
-    on F4) with `POWER`/`CLKCR`/`ARG`/`CMD`/`RESP`/`STA`/`ICR`/`MASK` CMD-accurate
-    (`CPSMEN` latches `RESPCMD`/`RESP1`, `STA.CMDSENT`/`CMDREND` + `MASK` → IRQ 49,
-    `sdio_cmd_sets_sta_and_irq`; mounted on F103/F107/F407 so `SD_Init` HAL no
-    longer `HardFault`s — data FIFO/card FSM remain stubbed).
+    on F4) with `POWER`/`CLKCR`/`ARG`/`CMD`/`RESP`/`STA`/`ICR`/`MASK`/`DLEN`/
+    `DCTRL` CMD+data-accurate (`CPSMEN` latches `RESPCMD`/`RESP1`,
+    `STA.CMDSENT`/`CMDREND`/`DATAEND`/`DBCKEND` + `MASK` → IRQ 49,
+    `sdio_cmd_sets_sta_and_irq`/`sdio_data_block_completes`; mounted on
+    F103/F107/F407 so `SD_Init` HAL no longer `HardFault`s — FIFO/card FSM
+    remain stubbed).
 8. **ARMv6-M (Cortex-M0/M0+)** and instruction-table/SVD codegen hardening.
    **Done.** The ARMv6-M exception model is now distinct from ARMv7-M: `MRS`/
    `MSR` of `BASEPRI`/`BASEPRI_MAX`/`FAULTMASK` read zero and ignore writes
