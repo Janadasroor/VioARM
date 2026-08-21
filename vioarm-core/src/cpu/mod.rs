@@ -647,6 +647,11 @@ impl<B: PeripheralBus> Core<B> {
                             2 + ((32 - lz) * 10 + 31) / 32
                         }
                     }
+                    Inst32::Mul { op, .. } => match op {
+                        MulOp::Mul => 1,
+                        MulOp::Mla | MulOp::Mls => 2,
+                        _ => 3,
+                    },
                     Inst32::TblBranch { .. } => 3,
                     _ => 1,
                 };
