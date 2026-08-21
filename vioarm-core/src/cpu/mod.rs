@@ -153,6 +153,12 @@ fn is_f32_nan(raw: u32) -> bool {
     raw & 0x7f80_0000 == 0x7f80_0000 && raw & 0x007f_ffff != 0
 }
 
+#[inline]
+#[must_use]
+fn is_f64_nan(raw: u64) -> bool {
+    raw & 0x7ff0_0000_0000_0000 == 0x7ff0_0000_0000_0000 && raw & 0x000f_ffff_ffff_ffff != 0
+}
+
 /// VFP (FPv4-SP) architectural state: the S0-S31 single-precision register
 /// bank and FPSCR. D0-D15 alias the S pairs (`Dn` == `S{2n}:S{2n+1}`) for the
 /// 64-bit move and load/store instructions.
@@ -1811,6 +1817,7 @@ impl<B: PeripheralBus> Core<B> {
                 | I::VfpVrint { .. }
                 | I::VfpCvtInt { .. }
                 | I::VfpCvtFix { .. }
+                | I::VfpCvt { .. }
                 | I::VfpMovImm { .. }
                 | I::VfpMov { .. }
                 | I::VfpMov64 { .. }
@@ -3215,7 +3222,25 @@ impl<B: PeripheralBus> Core<B> {
                 self.vfp.fpscr = (self.vfp.fpscr & !fpscr::NZCV) | (nzcv << 28);
                 Ok(Next::Advance(pc + 4))
             }
-            I::VfpVrint { op, vd, vm } => {
+            I::VfpVrint { op, vd, vm, is_dp } => {
+                if is_dp {
+                    let a = self.vfp.read_d(vm);
+                    let mut st = self.vfp.float_status();
+                    st.width = fpu::Width::Double;
+                    let result = match op {
+                        VrintOp::Z => {
+                            let prev = st.rounding_mode;
+                            st.rounding_mode = fpu::RoundMode::ToZero;
+                            let r = fpu::round_to_int_f64(a, &mut st);
+                            st.rounding_mode = prev;
+                            r
+                        }
+                        VrintOp::R | VrintOp::X => fpu::round_to_int_f64(a, &mut st),
+                    };
+                    self.vfp.write_d(vd, result);
+                    self.vfp.fold_flags(st.flags);
+                    return Ok(Next::Advance(pc + 4));
+                }
                 let a = self.vfp.read_s(vm);
                 let mut st = self.vfp.float_status();
                 let result = match op {
@@ -3243,7 +3268,42 @@ impl<B: PeripheralBus> Core<B> {
                 rz,
                 vd,
                 vm,
+                is_dp,
             } => {
+                if is_dp {
+                    let mut st = self.vfp.float_status();
+                    st.width = fpu::Width::Double;
+                    if to_float {
+                        // int bits are in S register Vm; dest is D
+                        let a = self.vfp.read_s(vm);
+                        let result = if signed {
+                            fpu::int32_to_f64(a as i32, &mut st)
+                        } else {
+                            fpu::uint32_to_f64(a, &mut st)
+                        };
+                        self.vfp.write_d(vd, result);
+                    } else {
+                        // float is D, int bits go to S
+                        let a = self.vfp.read_d(vm);
+                        let result = if is_f64_nan(a) {
+                            st.flags |= fpu::FLAG_INVALID;
+                            0
+                        } else if signed {
+                            if rz {
+                                fpu::to_int32_round_to_zero_f64(a, &mut st) as u32
+                            } else {
+                                fpu::to_int32_f64(a, &mut st) as u32
+                            }
+                        } else if rz {
+                            fpu::to_uint32_round_to_zero_f64(a, &mut st)
+                        } else {
+                            fpu::to_uint32_f64(a, &mut st)
+                        };
+                        self.vfp.write_s(vd, result);
+                    }
+                    self.vfp.fold_flags(st.flags);
+                    return Ok(Next::Advance(pc + 4));
+                }
                 let a = self.vfp.read_s(vm);
                 let mut st = self.vfp.float_status();
                 let result = if to_float {
@@ -3278,7 +3338,50 @@ impl<B: PeripheralBus> Core<B> {
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss
             )]
-            I::VfpCvtFix { opc, frac, vd } => {
+            I::VfpCvtFix { opc, frac, vd, is_dp } => {
+                if is_dp {
+                    let a = self.vfp.read_d(vd);
+                    let mut st = self.vfp.float_status();
+                    st.width = fpu::Width::Double;
+                    let to_int = opc & 4 != 0;
+                    let is_16 = opc & 1 == 0;
+                    let signed = opc & 2 == 0;
+                    if to_int {
+                        let intbits: u32 = if is_f64_nan(a) {
+                            st.flags |= fpu::FLAG_INVALID;
+                            0
+                        } else if signed {
+                            if is_16 {
+                                fpu::to_int16_scalbn_f64(a, i32::from(frac), &mut st) as u32
+                            } else {
+                                fpu::to_int32_scalbn_f64(a, i32::from(frac), &mut st) as u32
+                            }
+                        } else if is_16 {
+                            u32::from(fpu::to_uint16_scalbn_f64(a, i32::from(frac), &mut st))
+                        } else {
+                            fpu::to_uint32_scalbn_f64(a, i32::from(frac), &mut st)
+                        };
+                        self.vfp.write_d(vd, u64::from(intbits));
+                    } else {
+                        let prev = st.rounding_mode;
+                        st.rounding_mode = fpu::RoundMode::NearestEven;
+                        let r: u64 = if signed {
+                            if is_16 {
+                                fpu::int16_to_f64_scalbn(a as u16 as i16, i32::from(frac), &mut st)
+                            } else {
+                                fpu::int32_to_f64_scalbn(a as i32, i32::from(frac), &mut st)
+                            }
+                        } else if is_16 {
+                            fpu::uint16_to_f64_scalbn(a as u16, i32::from(frac), &mut st)
+                        } else {
+                            fpu::uint32_to_f64_scalbn(a as u32, i32::from(frac), &mut st)
+                        };
+                        st.rounding_mode = prev;
+                        self.vfp.write_d(vd, r);
+                    }
+                    self.vfp.fold_flags(st.flags);
+                    return Ok(Next::Advance(pc + 4));
+                }
                 // The convert is in place: source and destination are both
                 // `S{vd}`. `opc` = bit18<<2 | bit16<<1 | bit7: bit18 = `op`
                 // (1 = float-to-int), bit16 = `u` (0 = signed), bit7 = `sx`
@@ -3326,8 +3429,30 @@ impl<B: PeripheralBus> Core<B> {
                 self.vfp.fold_flags(st.flags);
                 Ok(Next::Advance(pc + 4))
             }
-            I::VfpMovImm { vd, imm } => {
-                self.vfp.write_s(vd, imm);
+            I::VfpMovImm { vd, imm, is_dp } => {
+                if is_dp {
+                    self.vfp.write_d(vd, imm);
+                } else {
+                    self.vfp.write_s(vd, imm as u32);
+                }
+                Ok(Next::Advance(pc + 4))
+            }
+            I::VfpCvt { to_double, vd, vm } => {
+                let mut st = self.vfp.float_status();
+                if to_double {
+                    // S -> D
+                    let a = self.vfp.read_s(vm);
+                    st.width = fpu::Width::Double;
+                    let r = fpu::f32_to_f64(a, &mut st);
+                    self.vfp.write_d(vd, r);
+                } else {
+                    // D -> S
+                    let a = self.vfp.read_d(vm);
+                    st.width = fpu::Width::Single;
+                    let r = fpu::f64_to_f32(a, &mut st);
+                    self.vfp.write_s(vd, r);
+                }
+                self.vfp.fold_flags(st.flags);
                 Ok(Next::Advance(pc + 4))
             }
             I::VfpMov { to_gp, vd, rt } => {

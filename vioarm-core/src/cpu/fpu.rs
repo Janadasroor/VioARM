@@ -2152,6 +2152,32 @@ pub fn to_uint32_scalbn_f64(a: u64, shift: i32, status: &mut FloatStatus) -> u32
     parts_float_to_uint(&mut p, RoundMode::ToZero, shift, u32::MAX as u64, status) as u32
 }
 
+/// float64 -> int16 with a scale, round-to-zero.
+pub fn to_int16_scalbn_f64(a: u64, shift: i32, status: &mut FloatStatus) -> i16 {
+    let mut p = unpack_canonical_bits_d(a, status);
+    parts_float_to_sint(
+        &mut p,
+        RoundMode::ToZero,
+        shift,
+        i16::MIN as i64,
+        i16::MAX as i64,
+        status,
+    ) as i16
+}
+
+/// float64 -> uint16 with a scale, round-to-zero.
+pub fn to_uint16_scalbn_f64(a: u64, shift: i32, status: &mut FloatStatus) -> u16 {
+    let mut p = unpack_canonical_bits_d(a, status);
+    parts_float_to_uint(&mut p, RoundMode::ToZero, shift, u16::MAX as u64, status) as u16
+}
+
+/// float64 round to integral (VRINT*).
+pub fn round_to_int_f64(a: u64, status: &mut FloatStatus) -> u64 {
+    let mut p = unpack_canonical_bits_d(a, status);
+    parts_round_to_int(&mut p, status.rounding_mode, 0, status);
+    round_pack_canonical_d(&mut p, status)
+}
+
 fn zero_parts() -> Parts {
     Parts {
         sign: false,
@@ -2184,6 +2210,20 @@ pub fn int32_to_f64_scalbn(a: i32, shift: i32, status: &mut FloatStatus) -> u64 
 
 /// uint32 -> float64 with a scale (fixed-point source).
 pub fn uint32_to_f64_scalbn(a: u32, shift: i32, status: &mut FloatStatus) -> u64 {
+    let mut p = zero_parts();
+    parts_uint_to_float(&mut p, u64::from(a), -shift);
+    round_pack_canonical_d(&mut p, status)
+}
+
+/// int16 -> float64 with a scale (fixed-point source).
+pub fn int16_to_f64_scalbn(a: i16, shift: i32, status: &mut FloatStatus) -> u64 {
+    let mut p = zero_parts();
+    parts_sint_to_float(&mut p, a as i64, -shift);
+    round_pack_canonical_d(&mut p, status)
+}
+
+/// uint16 -> float64 with a scale (fixed-point source).
+pub fn uint16_to_f64_scalbn(a: u16, shift: i32, status: &mut FloatStatus) -> u64 {
     let mut p = zero_parts();
     parts_uint_to_float(&mut p, u64::from(a), -shift);
     round_pack_canonical_d(&mut p, status)

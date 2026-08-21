@@ -491,36 +491,48 @@ pub enum Inst32 {
         z: bool,
         is_dp: bool,
     },
-    /// VFP round-to-integral (`VRINTR`/`VRINTZ`/`VRINTX`).
+    /// VFP round-to-integral (`VRINTR`/`VRINTZ`/`VRINTX`). `is_dp`
+    /// selects `D` (double) vs `S` (single) registers.
     VfpVrint {
         op: VrintOp,
         vd: u8,
         vm: u8,
+        is_dp: bool,
     },
-    /// VFP convert between single and integer: `VCVT.F32.{S,U}32`
-    /// (`to_float`) or `VCVT{R}.{S,U}32.F32` (to integer; `rz` selects the
-    /// `R` form). `signed` selects the signed forms.
+    /// VFP convert between float and integer: `VCVT.F{32,64}.{S,U}32`
+    /// (`to_float`) or `VCVT{R}.{S,U}32.F{32,64}` (to integer; `rz` selects the
+    /// `R` form). `is_dp` selects the float size (double vs single).
     VfpCvtInt {
         to_float: bool,
         signed: bool,
         rz: bool,
         vd: u8,
         vm: u8,
+        is_dp: bool,
     },
-    /// VFP fixed-point convert: `VCVT.F32.{S,U}{16,32}.{fbits}` and the
-    /// `VCVT{R}.{S,U}{16,32}.{fbits}.F32` forms. `opc` is the `sx:op:u` field
-    /// (bit18, bit16, bit7) that selects signedness and operand width;
-    /// `frac` is the fixed-point fraction length (16 or 32 minus `imm`). The
-    /// source is the destination register: the convert is in place on `S{vd}`.
+    /// VFP fixed-point convert: `VCVT.F{32,64}.{S,U}{16,32}.{fbits}` and the
+    /// `VCVT{R}.{S,U}{16,32}.{fbits}.F{32,64}` forms. `opc` is the `sx:op:u`
+    /// field (bit18, bit16, bit7); `frac` is the fraction length (16 or 32
+    /// minus `imm`). `is_dp` selects `D` vs `S`.
     VfpCvtFix {
         opc: u8,
         frac: u8,
         vd: u8,
+        is_dp: bool,
     },
-    /// `VMOV.F32 S{vd}, #imm` where `imm` is the already-expanded float bits.
+    /// VFP float↔float convert `VCVT.F64.F32` / `VCVT.F32.F64`. `to_double`
+    /// selects `F64` destination.
+    VfpCvt {
+        to_double: bool,
+        vd: u8,
+        vm: u8,
+    },
+    /// `VMOV.F32/F64 S/D{vd}, #imm` where `imm` is the already-expanded float
+    /// bits (low 32 bits for single, full 64 for double). `is_dp` selects size.
     VfpMovImm {
         vd: u8,
-        imm: u32,
+        imm: u64,
+        is_dp: bool,
     },
     /// `VMOV S{vd}, Rt` / `VMOV Rt, S{vd}`: single-word VFP/GP move.
     VfpMov {
@@ -554,7 +566,7 @@ pub enum Inst32 {
         imm: u32,
     },
     /// `VLDR`/`VSTR D{vd}, [Rn, #±imm]` with `imm` the already-scaled byte
-    /// offset (`imm8 << 3`). On FPv4-SP the D16-D31 forms are undefined.
+    /// offset (`imm8 << 2`). On FPv4-SP the D16-D31 forms are undefined.
     VfpLdStD {
         is_load: bool,
         vd: u8,
@@ -2476,15 +2488,20 @@ fn decode_vfp_dp(hi: u16, lo: u16, w: u32) -> Option<Result<Inst32, DecodeError>
 fn decode_vfp_sp(hi: u16, lo: u16, w: u32) -> Option<Result<Inst32, DecodeError>> {
     let is_dp = (lo >> 8 & 0xF) == 0xB;
     // VMOV immediate: `1110 1110 1.11 imm4 Vd 1010 0000 imm4` (single) or
-    // `1011` (double). Double immediates are not yet implemented.
+    // `1011` (double).
     if hi & 0x00B0 == 0x00B0 && (lo & 0x0FF0 == 0x0A00 || lo & 0x0FF0 == 0x0B00) {
-        if is_dp {
-            return Some(Err(err_for(hi)));
-        }
         let imm8 = (((w >> 16) & 0xF) << 4) as u32 | (w & 0xF) as u32;
+        if is_dp {
+            return Some(Ok(Inst32::VfpMovImm {
+                vd: vd_dp(w),
+                imm: vfp_expand_imm_64(imm8),
+                is_dp: true,
+            }));
+        }
         return Some(Ok(Inst32::VfpMovImm {
             vd: vd_sp(w),
-            imm: vfp_expand_imm(imm8),
+            imm: vfp_expand_imm(imm8) as u64,
+            is_dp: false,
         }));
     }
     // Every remaining op has bit4 clear.
@@ -2669,40 +2686,73 @@ fn decode_vfp_sp(hi: u16, lo: u16, w: u32) -> Option<Result<Inst32, DecodeError>
         // 0110: VRINTR/VRINTZ, selected by bit7.
         0x6 => {
             let op = if bit7 == 0 { VrintOp::R } else { VrintOp::Z };
-            Some(Ok(Inst32::VfpVrint { op, vd, vm }))
+            Some(Ok(Inst32::VfpVrint { op, vd, vm, is_dp }))
         }
-        // 0111: VRINTX / VCVT (F64.F32, needs double precision), selected by
-        // bit7.
+        // 0111: VRINTX / VCVT.F64.F32 / VCVT.F32.F64, selected by bit7.
+        // bit7==0 => VRINTX (size selected by is_dp); bit7==1 => VCVT
+        // between single and double.
         0x7 => {
             if bit7 == 0 {
                 Some(Ok(Inst32::VfpVrint {
                     op: VrintOp::X,
                     vd,
                     vm,
+                    is_dp,
                 }))
             } else {
-                Some(Err(err_for(hi)))
+                // sz == 1 (is_dp) => Dd from Sm, sz == 0 => Sd from Dm
+                if is_dp {
+                    let vm_s = vm_sp(w);
+                    Some(Ok(Inst32::VfpCvt {
+                        to_double: true,
+                        vd,
+                        vm: vm_s,
+                    }))
+                } else {
+                    let vm_d = vd_dp(w);
+                    // vd is Sd (already), vm is Dm
+                    Some(Ok(Inst32::VfpCvt {
+                        to_double: false,
+                        vd: vd_sp(w),
+                        vm: vm_d,
+                    }))
+                }
             }
         }
-        // 1000: VCVT from integer (VCVT.F32.{S,U}32), `s` = bit7.
-        0x8 => Some(Ok(Inst32::VfpCvtInt {
-            to_float: true,
-            signed: bit7 == 1,
-            rz: false,
-            vd,
-            vm,
-        })),
-        // 1001: VJCVT (double) — undefined on FPv4-SP.
+        // 1000: VCVT from integer (VCVT.F{32,64}.{S,U}32), `s` = bit7.
+        // Dest float size selects D vs S; source int is always in S.
+        0x8 => {
+            let vd2 = if is_dp { vd_dp(w) } else { vd_sp(w) };
+            let vm2 = vm_sp(w);
+            Some(Ok(Inst32::VfpCvtInt {
+                to_float: true,
+                signed: bit7 == 1,
+                rz: false,
+                vd: vd2,
+                vm: vm2,
+                is_dp,
+            }))
+        }
+        // 1001: VJCVT — JavaScript convert, undefined.
         0x9 => Some(Err(err_for(hi))),
-        // 1100/1101: VCVT to integer (VCVT.{S,U}32.F32 / VCVTR), `s` = bit16,
-        // `rz` = bit7.
-        0xC | 0xD => Some(Ok(Inst32::VfpCvtInt {
-            to_float: false,
-            signed: b19_16 & 1 == 1,
-            rz: bit7 == 1,
-            vd,
-            vm,
-        })),
+        // 1100/1101: VCVT to integer (VCVT.{S,U}32.F{32,64} / VCVTR),
+        // `s` = bit16, `rz` = bit7. Dest int is in S; source float size selects.
+        0xC | 0xD => {
+            let vd2 = vd_sp(w);
+            let vm2 = if is_dp {
+                (w as u8 & 0xF) | (((w >> 5 & 1) as u8) << 4)
+            } else {
+                vm_sp(w)
+            };
+            Some(Ok(Inst32::VfpCvtInt {
+                to_float: false,
+                signed: b19_16 & 1 == 1,
+                rz: bit7 == 1,
+                vd: vd2,
+                vm: vm2,
+                is_dp,
+            }))
+        }
         // 101x/111x: VCVT to/from fixed-point. `opc` = bit18<<2 | bit16<<1 |
         // bit7; the number of fraction bits comes from the `imm` field in the
         // Vm slot (`imm` = bits[3:0]<<1 | bit5): 16 - imm for the 16-bit
@@ -2711,7 +2761,7 @@ fn decode_vfp_sp(hi: u16, lo: u16, w: u32) -> Option<Result<Inst32, DecodeError>
             let opc = ((((w >> 18) & 1) << 2) | ((b19_16 & 1) << 1) | bit7) as u8;
             let imm = (((w & 0xF) << 1) as u8) | ((w >> 5) & 1) as u8;
             let frac = if opc & 1 == 0 { 16 - imm } else { 32 - imm };
-            Some(Ok(Inst32::VfpCvtFix { opc, frac, vd }))
+            Some(Ok(Inst32::VfpCvtFix { opc, frac, vd, is_dp }))
         }
         _ => Some(Err(err_for(hi))),
     }
@@ -2727,6 +2777,17 @@ const fn vfp_expand_imm(imm8: u32) -> u32 {
         | (((imm8 >> 6) & 1 ^ 1) * 0x4000)
         | ((imm8 & 0x3F) << 3);
     f << 16
+}
+
+/// Expand a VFP `imm8` into the float bits of `VMOV.F64 Dd, #imm`, following
+/// qemu's `vfp_expand_imm(MO_64, imm8)`: sign in bit63, exponent `0x400` (b==0)
+/// vs `0x3FC` (b==1) in bits 62:52, and `imm6` in bits 51:46.
+const fn vfp_expand_imm_64(imm8: u32) -> u64 {
+    let sign = ((imm8 >> 7) & 1) as u64;
+    let b = (imm8 >> 6) & 1;
+    let imm6 = (imm8 & 0x3F) as u64;
+    let exp: u64 = if b == 1 { 0x3FC } else { 0x400 };
+    (sign << 63) | (exp << 52) | (imm6 << 46)
 }
 
 #[cfg(test)]
@@ -5072,6 +5133,7 @@ mod tests {
             Ok(Inst32::VfpMovImm {
                 vd: 1,
                 imm: 0x3f80_0000,
+                is_dp: false,
             })
         );
         // VMRS APSR_nzcv, FPSCR.
@@ -5237,6 +5299,7 @@ mod tests {
                 rz: false,
                 vd: 1,
                 vm: 2,
+                is_dp: false,
             })
         );
         // `vcvt.s32.f32 s1, s2` (float -> int, signed, FPSCR rounding).
@@ -5248,6 +5311,7 @@ mod tests {
                 rz: false,
                 vd: 1,
                 vm: 2,
+                is_dp: false,
             })
         );
         // `vcvtr.u32.f32 s1, s2` (float -> int, unsigned, round-to-zero).
@@ -5259,6 +5323,7 @@ mod tests {
                 rz: true,
                 vd: 1,
                 vm: 2,
+                is_dp: false,
             })
         );
     }
@@ -5272,6 +5337,7 @@ mod tests {
                 opc: 0,
                 frac: 12,
                 vd: 1,
+                is_dp: false,
             })
         );
         // `vcvt.s32.f32 s1, s1, #4`: opc = 101, frac = 32-4 = 28.
@@ -5281,6 +5347,7 @@ mod tests {
                 opc: 5,
                 frac: 28,
                 vd: 1,
+                is_dp: false,
             })
         );
         // `vcvt.u16.f32 s1, s1, #8`: opc = 110, frac = 16-8 = 8.
@@ -5290,6 +5357,7 @@ mod tests {
                 opc: 6,
                 frac: 8,
                 vd: 1,
+                is_dp: false,
             })
         );
     }
