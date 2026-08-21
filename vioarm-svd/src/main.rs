@@ -97,6 +97,10 @@ mod tests {
                 "packs/Keil.STM32G4xx_DFP/SVD/STM32G474xx.svd",
                 "vioarm-core/src/device/svd/stm32g474xx.rs",
             ),
+            (
+                "packs/Keil.STM32H7xx_DFP/SVD/STM32H743.svd",
+                "vioarm-core/src/device/svd/stm32h743.rs",
+            ),
         ];
         for (svd_rel, out_rel) in pairs {
             let svd_path = workspace.join(svd_rel);

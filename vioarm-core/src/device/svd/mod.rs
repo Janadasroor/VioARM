@@ -20,6 +20,7 @@ pub mod stm32f107;
 pub mod stm32f303xe;
 pub mod stm32f407;
 pub mod stm32g474xx;
+pub mod stm32h743;
 pub mod stm32l476;
 
 /// The register access vocabulary used by the supported SVD files.
