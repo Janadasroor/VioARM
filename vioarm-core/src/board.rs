@@ -809,6 +809,21 @@ pub fn stm32h743() -> BoardMemory {
             mem.attach(Box::new(GpioF4::at_in::<Stm32h743>(base, name)));
         }
     }
+    for ctor in [
+        Timer::tim2_for::<Stm32h743>,
+        Timer::tim6_for::<Stm32h743>,
+    ] {
+        let base = ctor().ranges()[0].base;
+        if <Stm32h743 as crate::device::svd::Device>::by_base(base).is_some() {
+            mem.attach(Box::new(ctor()));
+        }
+    }
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("SPI1").is_some() {
+        mem.attach(Box::new(Spi::spi1_for::<Stm32h743>()));
+    }
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("SPI2").is_some() {
+        mem.attach(Box::new(Spi::spi2_for::<Stm32h743>()));
+    }
     mem.attach(Box::new(Dwt::new()));
     mem.attach(Box::new(SysTick::new()));
     mem
