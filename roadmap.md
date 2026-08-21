@@ -316,16 +316,18 @@ lda_stl, splim, tt/sau_tt/mpu_tt, alu_thumb1, sg, blxns/bxns,
 - UsageFault is a distinct exception gated by `SHCSR.USGFAULTENA`, FP access
   is gated by `CPACR` (`NOCP` when denied), and the MPU enforces eight
   configurable regions on every fetch and data access.
-- The MPU has no distinct MemManage exception: violations escalate to
-  HardFault, and `SHCSR.MEMFAULTENA` is not honored. Multi-word load/store
-  bursts (PUSH/POP/LDM/STM/LDRD/STRD/VLDM/VSTM) are checked at their first
-  address only. The `_A1`/`_A2`/`_A3` aliases index `MPU_RNR` like the base
-  registers (the v8M alias-region override is not modeled). Single-access MPU
-  fault behavior is locked with QEMU conformance
-  (`mpu_data_violation_escalates_to_hardfault` diffs the
-  `MMFSR`/`HFSR`/`MMFAR` recording and escalation to HardFault against the
-  M3), and the private peripheral bus (`0xE000_0000`..) bypasses the MPU
-  exactly as QEMU's `m_is_ppb_region` does.
+- `MemManage` is distinct when `SHCSR.MEMFAULTENA` is set and its
+  `SHPR1` priority allows it (vector 4, ARMv7-M); otherwise MPU violations
+  escalate to `HardFault` with `HFSR.FORCED` (ARMv6-M always escalates).
+  Multi-word load/store bursts (PUSH/POP/LDM/STM/LDRD/STRD/VLDM/VSTM) are
+  checked at their first address only. The `_A1`/`_A2`/`_A3` aliases index
+  `MPU_RNR` like the base registers (the v8M alias-region override is not
+  modeled). Single-access MPU fault behavior is locked with QEMU conformance
+  (`mpu_data_violation_escalates_to_hardfault` and
+  `mpu_data_violation_taken_as_memmanage` diff the `MMFSR`/`HFSR`/`MMFAR`
+  recording — without/with `FORCED` — and the `MemManage` priority/frame
+  against the M3), and the private peripheral bus (`0xE000_0000`..) bypasses
+  the MPU exactly as QEMU's `m_is_ppb_region` does.
 - FPDSCR trap-enable bits are unmodeled.
 - `HFSR.FORCED` is reported at bit 30 and the `SHCSR` active-status (`*ACT`)
   bits read zero, both to match the QEMU oracle rather than the ARMv7-M bit
