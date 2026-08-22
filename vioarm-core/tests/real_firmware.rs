@@ -4397,3 +4397,43 @@ void reset(void) {
     assert_eq!(m.core.mem().read_word(RAM+4).unwrap(), 1, "DMA2D");
 }
 
+#[test]
+fn stm32h743_rcc_hse() {
+    const FW: &str = r#"
+#define RCC_CR 0x58024400u
+#define RCC_CR_HSEON (1u<<16)
+#define RCC_CR_HSERDY (1u<<17)
+#define RCC_CR_PLL1ON (1u<<24)
+#define RCC_CR_PLL1RDY (1u<<25)
+#define OUT 0x20000000u
+void reset(void) {
+    volatile unsigned *cr = (volatile unsigned *)RCC_CR;
+    *cr |= RCC_CR_HSEON;
+    while (!(*cr & RCC_CR_HSERDY)) { }
+    *cr |= RCC_CR_PLL1ON;
+    while (!(*cr & RCC_CR_PLL1RDY)) { }
+    *(volatile unsigned *)OUT = 0xA5A5u;
+    *(volatile unsigned *)(OUT+4) = *cr & (RCC_CR_HSERDY|RCC_CR_PLL1RDY);
+    __asm__ volatile("bkpt #0");
+}
+"#;
+    let (code, symbols) = match build_firmware_h7_with_includes(FW, &[]) {
+        Ok(v) => v,
+        Err(why) => { eprintln!("skipping H743 hse: {why}"); return; }
+    };
+    let entry = *symbols.get("reset").unwrap();
+    let mut m = Machine::armv7em(board::stm32h743());
+    m.load_image(&load_flat(CODE_BASE, &code));
+    {
+        let mem = m.core.mem();
+        mem.write_word(board::FLASH, INIT_SP).unwrap();
+        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+    }
+    m.reset().unwrap();
+    let err = m.run(50_000);
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
+    assert_eq!(m.core.mem().read_word(RAM).unwrap(), 0xA5A5, "HSE loop terminated");
+    let cr = m.core.mem().read_word(RAM+4).unwrap();
+    assert_eq!(cr & ((1u32<<17)|(1u32<<25)), (1u32<<17)|(1u32<<25), "HSERDY|PLL1RDY");
+}
+

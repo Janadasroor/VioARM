@@ -16,12 +16,24 @@ use crate::mem::bus::Region;
 
 /// HSION bit in `CR`.
 const HSION: u32 = 1 << 0;
-/// HSIRDY bit in `CR`.
-const HSIRDY: u32 = 1 << 1;
-/// PLLON bit in `CR`.
+/// HSIRDY bit in `CR` — F1 is bit 1, H7 is bit 2.
+const HSIRDY_F1: u32 = 1 << 1;
+const HSIRDY_H7: u32 = 1 << 2;
+/// HSEON/HSERDY bits (H7 `CR` 16/17).
+const HSEON: u32 = 1 << 16;
+const HSERDY: u32 = 1 << 17;
+/// PLLON / PLL1ON bit in `CR`.
 const PLLON: u32 = 1 << 24;
-/// PLLRDY bit in `CR`.
+/// PLLRDY / PLL1RDY bit in `CR`.
 const PLLRDY: u32 = 1 << 25;
+/// H7 PLL2/PLL3.
+const PLL2ON: u32 = 1 << 26;
+const PLL2RDY: u32 = 1 << 27;
+const PLL3ON: u32 = 1 << 28;
+const PLL3RDY: u32 = 1 << 29;
+/// CSI comparable (H7 CSION 7 / CSIRDY 8).
+const CSION: u32 = 1 << 7;
+const CSIRDY: u32 = 1 << 8;
 
 /// `CR` lives at register offset `0x00`.
 const CR_OFFSET: u32 = 0x00;
@@ -33,9 +45,14 @@ struct RccBehavior;
 impl Behavior for RccBehavior {
     fn on_read(&mut self, _view: &mut Registers<&mut [u32]>, offset: u32, value: u32) -> u32 {
         if offset == CR_OFFSET {
-            // HSI is always on and ready; PLL locks as soon as it is requested.
+            // HSI is always on and ready (both F1 bit1 and H7 bit2 so `while (!(RCC->CR & RCC_CR_HSIRDY))` terminates on either).
+            // HSE locks instantly once HSEON is set, likewise PLL* once *ON is set. CSI likewise.
+            let hse = if value & HSEON != 0 { HSERDY } else { 0 };
             let pll = if value & PLLON != 0 { PLLRDY } else { 0 };
-            value | HSION | HSIRDY | pll
+            let pll2 = if value & PLL2ON != 0 { PLL2RDY } else { 0 };
+            let pll3 = if value & PLL3ON != 0 { PLL3RDY } else { 0 };
+            let csi = if value & CSION != 0 { CSIRDY } else { 0 };
+            value | HSION | HSIRDY_F1 | HSIRDY_H7 | hse | pll | pll2 | pll3 | csi
         } else {
             value
         }
@@ -116,7 +133,7 @@ impl InterruptSource for Rcc {
 
 #[cfg(test)]
 mod tests {
-    use super::{Rcc, HSION, HSIRDY, PLLON, PLLRDY};
+    use super::{Rcc, HSION, HSIRDY_F1 as HSIRDY, PLLON, PLLRDY};
     use crate::device::Peripheral;
     use crate::error::BusError;
 
@@ -172,7 +189,8 @@ mod tests {
         write_word(&mut r, BASE + CR, PLLON);
         write_word(&mut r, BASE + APB2ENR, 0xFFFF_FFFF);
         r.reset();
-        assert_eq!(read_word(&mut r, BASE + CR) & 0xFF, 0x83);
+        // SVD CR reset is 0x83 (HSION|HSIRDY_F1| bit7); behavior also synthesizes HSIRDY_H7 so read is 0x87.
+        assert_eq!(read_word(&mut r, BASE + CR) & 0xFF, 0x87);
         assert_eq!(read_word(&mut r, BASE + APB2ENR), 0);
     }
 
