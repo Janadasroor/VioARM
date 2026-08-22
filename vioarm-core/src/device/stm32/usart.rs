@@ -479,7 +479,10 @@ impl Usart {
     }
 
     fn reg_offset(def: &crate::device::svd::PeripheralDef, name: &str) -> Option<u32> {
-        def.registers.iter().find(|r| r.name == name).map(|r| r.offset)
+        def.registers
+            .iter()
+            .find(|r| r.name == name)
+            .map(|r| r.offset)
     }
     fn field_bit(def: &crate::device::svd::PeripheralDef, reg: &str, field: &str) -> Option<u8> {
         def.registers

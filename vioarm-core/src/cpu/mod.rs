@@ -1,4 +1,4 @@
-﻿//! The ARMv6-M CPU core: fetch, decode, execute, and the (typed) halt states.
+//! The ARMv6-M CPU core: fetch, decode, execute, and the (typed) halt states.
 //!
 //! The executor is the *only* place that interprets semantics. It is written
 //! against `Bus`, so swapping the memory behind the CPU does not change
@@ -17,10 +17,10 @@ use decode16::{
     ShiftImm,
 };
 use decode32::{
-    decode32, decode32_v7m, decode32_v7em, decode32_v8m, is_thumb2, is_thumb2_v7m, thumb_expand_imm, BitfieldOp,
-    DpOp, DspMulOp,
-    DualMulOp, ExSize, ExtendAddOp, Inst32, MemOp, MulOp, ParOp, ParSat, QaddOp, SatOp, ShiftType,
-    SysReg, TtVariant, UnaryOp, Vfp2Op, Vfp3Op, VrintOp,
+    decode32, decode32_v7em, decode32_v7m, decode32_v8m, is_thumb2, is_thumb2_v7m,
+    thumb_expand_imm, BitfieldOp, DpOp, DspMulOp, DualMulOp, ExSize, ExtendAddOp, Inst32, MemOp,
+    MulOp, ParOp, ParSat, QaddOp, SatOp, ShiftType, SysReg, TtVariant, UnaryOp, Vfp2Op, Vfp3Op,
+    VrintOp,
 };
 use registers::{Registers, Xpsr, APSR_FLAGS, APSR_GE, APSR_Q, APSR_QFLAGS, XPSR_T};
 
@@ -143,7 +143,8 @@ pub mod fpscr {
     /// UFE/IXE/IDE) — supported only in VFPv2/VFPv3U/VFPv4U, RAZ/WI on the
     /// Cortex-M4's FPv4-SP (and thus on the `FPSCR` VMSR/VMRS window and on
     /// the `FPDSCR` reset value).
-    pub const TRAP_ENABLE: u32 = (1 << 8) | (1 << 9) | (1 << 10) | (1 << 11) | (1 << 12) | (1 << 15);
+    pub const TRAP_ENABLE: u32 =
+        (1 << 8) | (1 << 9) | (1 << 10) | (1 << 11) | (1 << 12) | (1 << 15);
 }
 
 /// True if the raw float32 bits denote a NaN (exponent all ones, fraction
@@ -358,12 +359,12 @@ const UFSR_NOCP: u32 = 0x0002_0000; // UFSR bit 1 -> combined bit 17
 const UFSR_DIVBYZERO: u32 = 0x0200_0000; // UFSR bit 9 -> combined bit 25
 const UFSR_INVPC: u32 = 0x0008_0000; // UFSR bit 3 -> combined bit 19
 const BFSR_PRECISERR: u32 = 0x0000_0100; // BFSR bit 0 -> combined bit 8
-// `SFSR` (v8-M `SecureFault`) causes the core records on the exception-return
-// failure paths, written through `PeripheralBus::record_secure_fault`.
+                                         // `SFSR` (v8-M `SecureFault`) causes the core records on the exception-return
+                                         // failure paths, written through `PeripheralBus::record_secure_fault`.
 const SFSR_INVIS: u32 = 0x0000_0002; // callee-saves integrity signature mismatch
 const SFSR_INVER: u32 = 0x0000_0004; // invalid Non-secure exception return (ES/DCRS)
-                                         // QEMU reports HFSR.FORCED at bit 30 (0x4000_0000) rather than the ARMv7-M
-                                         // architectural bit 31; the differential oracle is the arbiter here.
+                                     // QEMU reports HFSR.FORCED at bit 30 (0x4000_0000) rather than the ARMv7-M
+                                     // architectural bit 31; the differential oracle is the arbiter here.
 const HFSR_FORCED: u32 = 0x4000_0000;
 
 /// `SHCSR` fault enable bits: distinct `MemManage` (bit 16), `BusFault`
@@ -603,11 +604,7 @@ impl<B: PeripheralBus> Core<B> {
             Next::Stop(cause) => return Err(cause),
         };
         let base = self.base_cycles(pc, next_pc);
-        let ws = if pc < 0x2000_0000 {
-            self.flash_ws()
-        } else {
-            0
-        };
+        let ws = if pc < 0x2000_0000 { self.flash_ws() } else { 0 };
         self.regs.pc = next_pc;
         self.cycles += 1;
         self.cyccnt += base + ws;
@@ -625,7 +622,11 @@ impl<B: PeripheralBus> Core<B> {
             Isa::Armv7M | Isa::Armv7EM => is_thumb2_v7m(h0),
             Isa::Armv8MBaseline => is_thumb2_v7m(h0),
         };
-        let seq = if is32 { pc.wrapping_add(4) } else { pc.wrapping_add(2) };
+        let seq = if is32 {
+            pc.wrapping_add(4)
+        } else {
+            pc.wrapping_add(2)
+        };
         let taken = next_pc != seq;
         if is32 {
             let h1 = match self.mem.read_half(pc.wrapping_add(2)) {
@@ -642,10 +643,18 @@ impl<B: PeripheralBus> Core<B> {
                 return match i {
                     Inst32::Bl { .. } | Inst32::BlxImm { .. } => 4,
                     Inst32::BranchWide { .. } => {
-                        if taken { 3 } else { 1 }
+                        if taken {
+                            3
+                        } else {
+                            1
+                        }
                     }
                     Inst32::BranchCondWide { .. } => {
-                        if taken { 3 } else { 1 }
+                        if taken {
+                            3
+                        } else {
+                            1
+                        }
                     }
                     Inst32::Mem { .. }
                     | Inst32::LdrdStrd { .. }
@@ -659,11 +668,7 @@ impl<B: PeripheralBus> Core<B> {
                         if d == 0 {
                             2
                         } else {
-                            let abs = if signed {
-                                (d as i32).unsigned_abs()
-                            } else {
-                                d
-                            };
+                            let abs = if signed { (d as i32).unsigned_abs() } else { d };
                             let lz = abs.leading_zeros() as u64;
                             2 + ((32 - lz) * 10 + 31) / 32
                         }
@@ -694,16 +699,31 @@ impl<B: PeripheralBus> Core<B> {
                     }
                     Inst16::Pop { regs, load_pc } => {
                         let n = regs.count_ones() as u64 + if load_pc { 1 } else { 0 };
-                        if load_pc { 3 } else { 1 + n }
+                        if load_pc {
+                            3
+                        } else {
+                            1 + n
+                        }
                     }
                     Inst16::LdmStm { regs, .. } => 1 + regs.count_ones() as u64,
                     Inst16::Branch { .. } => {
-                        if taken { 3 } else { 1 }
+                        if taken {
+                            3
+                        } else {
+                            1
+                        }
                     }
                     Inst16::BranchCond { .. } | Inst16::CbzCbnz { .. } => {
-                        if taken { 3 } else { 1 }
+                        if taken {
+                            3
+                        } else {
+                            1
+                        }
                     }
-                    Inst16::Bx { .. } | Inst16::Blx { .. } | Inst16::BxNs { .. } | Inst16::BlxNs { .. } => 3,
+                    Inst16::Bx { .. }
+                    | Inst16::Blx { .. }
+                    | Inst16::BxNs { .. }
+                    | Inst16::BlxNs { .. } => 3,
                     _ => 1,
                 };
             }
@@ -962,8 +982,7 @@ impl<B: PeripheralBus> Core<B> {
                 }
             }
         } else {
-            self.other_ss_control =
-                (self.other_ss_control & !0x2) | u32::from(new_spsel) << 1;
+            self.other_ss_control = (self.other_ss_control & !0x2) | u32::from(new_spsel) << 1;
         }
     }
 
@@ -1121,9 +1140,7 @@ impl<B: PeripheralBus> Core<B> {
             // S-bank `FPCA` is folded into the NS value; the baseline never
             // sets it, so this is just the NS bank here.
             SysReg::ControlNs if !self.secure => 0,
-            SysReg::ControlNs => {
-                self.other_ss_control | (self.control & CONTROL_FPCA)
-            }
+            SysReg::ControlNs => self.other_ss_control | (self.control & CONTROL_FPCA),
             // Unprivileged reads of these special-purpose registers are RAZ.
             SysReg::Msp
             | SysReg::Psp
@@ -1146,22 +1163,14 @@ impl<B: PeripheralBus> Core<B> {
             // `secure` state is always false on ARMv6-M/ARMv7-M, so the next
             // arm's `!secure` gate already RAZs them there; kept explicit for
             // clarity).
-            SysReg::MspNs
-            | SysReg::PspNs
-            | SysReg::MsplimNs
-            | SysReg::PsplimNs
-            | SysReg::SpNs
+            SysReg::MspNs | SysReg::PspNs | SysReg::MsplimNs | SysReg::PsplimNs | SysReg::SpNs
                 if self.isa != Isa::Armv8MBaseline =>
             {
                 0
             }
             // From the Non-secure state the NS encodings read as 0 (QEMU
             // `v7m_mrs`: `if (!env->v7m.secure) return 0`).
-            SysReg::MspNs
-            | SysReg::PspNs
-            | SysReg::MsplimNs
-            | SysReg::PsplimNs
-            | SysReg::SpNs
+            SysReg::MspNs | SysReg::PspNs | SysReg::MsplimNs | SysReg::PsplimNs | SysReg::SpNs
                 if !self.secure =>
             {
                 0
@@ -1245,12 +1254,10 @@ impl<B: PeripheralBus> Core<B> {
             // ARMv6-M and ARMv8-M baseline have no BASEPRI/FAULTMASK: writes
             // are UNPREDICTABLE on silicon and ignored by the QEMU references.
             SysReg::Basepri | SysReg::BasepriMax | SysReg::Faultmask
-                if !matches!(self.isa, Isa::Armv7M | Isa::Armv7EM) =>
-            {
-            }
+                if !matches!(self.isa, Isa::Armv7M | Isa::Armv7EM) => {}
             // The stack-limit registers only exist on the ARMv8-M baseline
             // here; their encodings are RAZ/WI on ARMv6-M/ARMv7-M.
-            SysReg::MspLim | SysReg::PspLim if self.isa != Isa::Armv8MBaseline => {} 
+            SysReg::MspLim | SysReg::PspLim if self.isa != Isa::Armv8MBaseline => {}
             SysReg::MspLim => self.msp_lim = v,
             SysReg::PspLim => self.psp_lim = v,
             SysReg::Basepri => self.basepri = v as u8,
@@ -1299,7 +1306,11 @@ impl<B: PeripheralBus> Core<B> {
                 // are false, so no swap happens there (QEMU
                 // `write_v7m_control_spsel`).
                 if self.ipsr != 0 || self.control & 1 == 0 {
-                    let mask = if matches!(self.isa, Isa::Armv7M | Isa::Armv7EM) { 0x7 } else { 0x3 };
+                    let mask = if matches!(self.isa, Isa::Armv7M | Isa::Armv7EM) {
+                        0x7
+                    } else {
+                        0x3
+                    };
                     let new = v & mask;
                     let old_is_psp = self.sp_is_process();
                     self.control = new;
@@ -1326,9 +1337,7 @@ impl<B: PeripheralBus> Core<B> {
             | SysReg::PsplimNs
             | SysReg::ControlNs
             | SysReg::SpNs
-                if !(self.secure && (self.ipsr != 0 || self.control & 1 == 0)) =>
-            {
-            }
+                if !(self.secure && (self.ipsr != 0 || self.control & 1 == 0)) => {}
             SysReg::MspNs => self.other_ss_msp = v & !3,
             SysReg::PspNs => self.other_ss_psp = v & !3,
             SysReg::MsplimNs => self.other_ss_msp_lim = v & !7,
@@ -3078,7 +3087,13 @@ impl<B: PeripheralBus> Core<B> {
                 Ok(Next::Advance(pc + 4))
             }
             // ---- VFP (FPv4-SP) ----
-            I::Vfp3 { op, vd, vn, vm, is_dp } => {
+            I::Vfp3 {
+                op,
+                vd,
+                vn,
+                vm,
+                is_dp,
+            } => {
                 if is_dp {
                     let mut st = self.vfp.float_status();
                     st.width = fpu::Width::Double;
@@ -3113,15 +3128,11 @@ impl<B: PeripheralBus> Core<B> {
                         Vfp3Op::Vsub => fpu::sub_f64(a, b, &mut st),
                         Vfp3Op::Vdiv => fpu::div_f64(a, b, &mut st),
                         Vfp3Op::Vfma => fpu::muladd_neg_f64(a, b, c, 0, &mut st),
-                        Vfp3Op::Vfms => {
-                            fpu::muladd_neg_f64(a, b, c, 0x8000_0000, &mut st)
-                        }
+                        Vfp3Op::Vfms => fpu::muladd_neg_f64(a, b, c, 0x8000_0000, &mut st),
                         Vfp3Op::Vfnma => {
                             fpu::muladd_neg_f64(a, b, c, 0x8000_0000 | 0x4000_0000, &mut st)
                         }
-                        Vfp3Op::Vfnms => {
-                            fpu::muladd_neg_f64(a, b, c, 0x4000_0000, &mut st)
-                        }
+                        Vfp3Op::Vfnms => fpu::muladd_neg_f64(a, b, c, 0x4000_0000, &mut st),
                     };
                     self.vfp.write_d(vd, result);
                     self.vfp.fold_flags(st.flags);
@@ -3205,10 +3216,20 @@ impl<B: PeripheralBus> Core<B> {
                 self.vfp.write_s(vd, result);
                 Ok(Next::Advance(pc + 4))
             }
-            I::VfpCmp { vd, vm, e, z, is_dp } => {
+            I::VfpCmp {
+                vd,
+                vm,
+                e,
+                z,
+                is_dp,
+            } => {
                 if is_dp {
                     let a = self.vfp.read_d(vd);
-                    let b = if z { 0x0000_0000_0000_0000 } else { self.vfp.read_d(vm) };
+                    let b = if z {
+                        0x0000_0000_0000_0000
+                    } else {
+                        self.vfp.read_d(vm)
+                    };
                     let mut st = self.vfp.float_status();
                     st.width = fpu::Width::Double;
                     let rel = if e {
@@ -3363,7 +3384,12 @@ impl<B: PeripheralBus> Core<B> {
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss
             )]
-            I::VfpCvtFix { opc, frac, vd, is_dp } => {
+            I::VfpCvtFix {
+                opc,
+                frac,
+                vd,
+                is_dp,
+            } => {
                 if is_dp {
                     let a = self.vfp.read_d(vd);
                     let mut st = self.vfp.float_status();
@@ -4162,8 +4188,7 @@ impl<B: PeripheralBus> Core<B> {
         // (R_HXSR). This precedes the `RES0` check: a return that violates
         // both takes the SecureFault, not the UsageFault.
         let mut exc_secure = value & EXC_RETURN_ES;
-        let sfault = !self.secure
-            && (value & EXC_RETURN_ES != 0 || value & EXC_RETURN_DCRS == 0);
+        let sfault = !self.secure && (value & EXC_RETURN_ES != 0 || value & EXC_RETURN_DCRS == 0);
         if sfault {
             exc_secure = 0;
         }
@@ -4233,7 +4258,11 @@ impl<B: PeripheralBus> Core<B> {
         self.regs.lr = frame[5];
         // Consume the frame, undoing any entry-time stack alignment.
         let new_sp = frameptr.wrapping_add(0x20);
-        let new_sp = if xpsr & XPSR_ALIGN != 0 { new_sp | 4 } else { new_sp };
+        let new_sp = if xpsr & XPSR_ALIGN != 0 {
+            new_sp | 4
+        } else {
+            new_sp
+        };
         if !return_to_handler && self.control & EXC_RETURN_SPSEL != 0 {
             self.regs.psp = new_sp;
             self.regs.sp = new_sp;
@@ -4245,9 +4274,7 @@ impl<B: PeripheralBus> Core<B> {
         self.ipsr = (xpsr & 0xFF) as u8;
         self.itstate = ((xpsr >> 8) & 0xFC) as u8 | ((xpsr >> 25) & 0x03) as u8;
         // SCR.SLEEPONEXIT: returning to Thread mode re-enters sleep.
-        if !return_to_handler
-            && self.mem.read_word(SCR_ADDR).unwrap_or(0) & SCR_SLEEPONEXIT != 0
-        {
+        if !return_to_handler && self.mem.read_word(SCR_ADDR).unwrap_or(0) & SCR_SLEEPONEXIT != 0 {
             self.sleeping = true;
         }
         self.just_returned = true;
@@ -4320,7 +4347,7 @@ impl<B: PeripheralBus> Core<B> {
         self.usage_fault(pc, UFSR_UNDEFINSTR)
     }
 
-/// Whether an escalated HardFault targets `Secure` state, mirroring QEMU's
+    /// Whether an escalated HardFault targets `Secure` state, mirroring QEMU's
     /// `exc_targets_secure` on the derived-exception escalation path: Secure
     /// when the fault already targeted Secure, or when `AIRCR.BFHFNMINS` is
     /// clear - the reset state, which disables `Non-secure HardFault` entirely
@@ -5529,7 +5556,10 @@ mod tests {
             ],
         );
         c.step().unwrap();
-        assert_eq!(c.ipsr, 3, "baseline must fold the undefined encoding to HardFault");
+        assert_eq!(
+            c.ipsr, 3,
+            "baseline must fold the undefined encoding to HardFault"
+        );
     }
 
     #[test]
@@ -5606,8 +5636,8 @@ mod tests {
         c.mem().write_word(0xE000_ED9C, 0x2000_0000 | 0x2).unwrap();
         c.mem().write_word(0xE000_EDA0, 0x2000_001F | 0x1).unwrap();
         c.mem().write_word(0xE000_ED94, 0x1).unwrap(); // MPU ENABLE
-        // A region hit reports R/W plus MRVALID=1, MREGION=0 (the IDAU adds
-        // IREGION/IRVALID/S like the baseline test).
+                                                       // A region hit reports R/W plus MRVALID=1, MREGION=0 (the IDAU adds
+                                                       // IREGION/IRVALID/S like the baseline test).
         c.regs.write(0, 0x2000_0000);
         load_inst(&mut c, 0x2000_0000, &[0x40, 0xe8, 0x00, 0xf4]); // tt r4, r0
         c.step().unwrap();
@@ -5765,7 +5795,10 @@ mod tests {
         c.step().unwrap();
         assert!(c.secure);
         assert_eq!(c.regs.lr, 0x2000_0003);
-        assert_eq!(c.regs.sp, 0x2000_0040, "no frame pushed for a Secure target");
+        assert_eq!(
+            c.regs.sp, 0x2000_0040,
+            "no frame pushed for a Secure target"
+        );
         assert_eq!(c.regs.pc, 0x2000_0010);
     }
 
@@ -5783,7 +5816,10 @@ mod tests {
         load_inst(&mut c, 0x2000_0010, &[0x04, 0x47]); // bxns r0
         c.step().unwrap();
         assert!(!c.secure);
-        assert_eq!(c.other_ss_msp, 0x2000_0040, "Secure bank stashed on the switch");
+        assert_eq!(
+            c.other_ss_msp, 0x2000_0040,
+            "Secure bank stashed on the switch"
+        );
         assert_eq!(c.regs.pc, 0x2000_0020);
     }
 
@@ -5859,7 +5895,10 @@ mod tests {
         c.regs.sp = 0x2000_0100;
         c.write_control_spsel_for_secstate(true, true);
         assert_eq!(c.control, 0x2);
-        assert_eq!(c.regs.sp, 0x2000_0200, "SPSEL set moves to the process stack");
+        assert_eq!(
+            c.regs.sp, 0x2000_0200,
+            "SPSEL set moves to the process stack"
+        );
         assert_eq!(c.regs.msp, 0x2000_0100);
         c.write_control_spsel_for_secstate(true, false);
         assert_eq!(c.control, 0);
@@ -5896,7 +5935,10 @@ mod tests {
         c.sysreg_write(SysReg::MspNs, 0x2000_0900).unwrap();
         c.sysreg_write(SysReg::ControlNs, 0x3).unwrap();
         c.sysreg_write(SysReg::SpNs, 0x2000_0A00).unwrap();
-        assert_eq!(c.other_ss_msp, 0x2000_0300, "NS-bank writes ignored from NS");
+        assert_eq!(
+            c.other_ss_msp, 0x2000_0300,
+            "NS-bank writes ignored from NS"
+        );
         assert_eq!(c.other_ss_control, 0);
         // Unprivileged Secure code is also ignored for the NS bank...
         let mut c = armv8m_core();
@@ -5929,7 +5971,9 @@ mod tests {
         c.regs.sp = 0x2000_0100;
         let frame = [0, 0, 0, 0, 0, 0xFFFF_FFF9, 0x2000_0001, 0x0100_0000];
         for (i, w) in frame.iter().enumerate() {
-            c.mem().write_word(0x2000_0100 + (i as u32) * 4, *w).unwrap();
+            c.mem()
+                .write_word(0x2000_0100 + (i as u32) * 4, *w)
+                .unwrap();
         }
         c.exception_return_v8m(EXC_RETURN_THREAD_MSP).unwrap();
         assert!(c.secure);
@@ -5949,7 +5993,9 @@ mod tests {
         c.other_ss_msp = 0x2000_0500;
         let frame = [0, 0, 0, 0, 0, 0xFFFF_FFB9, 0x2000_0001, 0x0100_0000];
         for (i, w) in frame.iter().enumerate() {
-            c.mem().write_word(0x2000_0500 + (i as u32) * 4, *w).unwrap();
+            c.mem()
+                .write_word(0x2000_0500 + (i as u32) * 4, *w)
+                .unwrap();
         }
         c.exception_return_v8m(0xFFFF_FFB9).unwrap();
         assert!(!c.secure);
@@ -5973,14 +6019,16 @@ mod tests {
         Core::armv8m(mem)
     }
 
-/// A core positioned in the `Non-secure HardFault` handler, with `S_VTOR`
+    /// A core positioned in the `Non-secure HardFault` handler, with `S_VTOR`
     /// relocated to `0x1000_0000` (the `SecureFault` vector set at its entry 7)
     /// and the `Secure MSP` at `0x2000_0900` - the setup for the `SecureFault`
     /// exception-return tests.
     fn ns_hardfault_core() -> Core<crate::mem::system::SystemMemory<crate::mem::flat::FlatMemory>> {
         let mut c = armv8m_sys_core_tables();
         c.mem().write_word(0xE002_ED08, 0x1000_0000).unwrap(); // S_VTOR
-        c.mem().write_word(0x1000_0000 + 7 * 4, 0x2000_0401).unwrap(); // SecureFault vector
+        c.mem()
+            .write_word(0x1000_0000 + 7 * 4, 0x2000_0401)
+            .unwrap(); // SecureFault vector
         c.regs.msp = 0x2000_0900; // the Secure bank's MSP
         c.regs.sp = 0x2000_0900;
         c.switch_security_state(false);
@@ -5996,7 +6044,9 @@ mod tests {
         // the handler comes from S_VTOR and the EXC_RETURN carries S|ES.
         let mut c = armv8m_sys_core_tables();
         c.mem().write_word(0xE002_ED08, 0x1000_0000).unwrap(); // S_VTOR
-        c.mem().write_word(0x1000_0000 + 3 * 4, 0x2000_0401).unwrap(); // Secure HF vector
+        c.mem()
+            .write_word(0x1000_0000 + 3 * 4, 0x2000_0401)
+            .unwrap(); // Secure HF vector
         c.regs.pc = 0x2000_0000;
         c.regs.sp = 0x2000_0100;
         load_inst(&mut c, 0x2000_0000, &[0x09, 0xea, 0x0a, 0x08]); // and.w (baseline undef)
@@ -6015,7 +6065,9 @@ mod tests {
         // target leaves the caller-saved registers untouched (v8.0M).
         let mut c = armv8m_sys_core_tables();
         c.mem().write_word(0xE002_ED08, 0x1000_0000).unwrap(); // S_VTOR
-        c.mem().write_word(0x1000_0000 + 3 * 4, 0x2000_0401).unwrap(); // Secure HF vector
+        c.mem()
+            .write_word(0x1000_0000 + 3 * 4, 0x2000_0401)
+            .unwrap(); // Secure HF vector
         c.switch_security_state(false); // Non-secure background
         c.regs.pc = 0x2000_0000;
         c.regs.sp = 0x2000_0100;
@@ -6024,7 +6076,10 @@ mod tests {
         c.step().unwrap();
         assert_eq!(c.ipsr, 3);
         assert!(c.secure, "Secure HardFault handler runs Secure");
-        assert_eq!(c.regs.lr, 0xFFFF_FFB9, "ES set, S clear: returns to NS thread");
+        assert_eq!(
+            c.regs.lr, 0xFFFF_FFB9,
+            "ES set, S clear: returns to NS thread"
+        );
         assert_eq!(c.regs.pc, 0x2000_0400, "handler from the Secure table");
         assert_eq!(c.regs.read(0), 0xDEAD_BEEF, "Secure target keeps r0");
     }
@@ -6037,7 +6092,9 @@ mod tests {
         let mut c = armv8m_sys_core_tables();
         c.mem().write_word(0xE000_ED08, 0x1000_0000).unwrap(); // NS VTOR
         c.mem().write_word(0xE000_ED0C, 0x05FA_0002).unwrap(); // BFHFNMINS
-        c.mem().write_word(0x1000_0000 + 3 * 4, 0x2000_0401).unwrap(); // HF vector
+        c.mem()
+            .write_word(0x1000_0000 + 3 * 4, 0x2000_0401)
+            .unwrap(); // HF vector
         c.switch_security_state(false); // Non-secure background
         c.regs.pc = 0x2000_0000;
         c.regs.sp = 0x2000_0100;
@@ -6048,7 +6105,11 @@ mod tests {
         assert!(!c.secure, "Non-secure HardFault handler stays Non-secure");
         assert_eq!(c.regs.lr, 0xFFFF_FFB8, "S and ES clear: NS thread MSP");
         assert_eq!(c.regs.pc, 0x2000_0400, "handler from the Non-secure table");
-        assert_eq!(c.regs.read(0), 0, "caller-saved regs cleared for NS handler");
+        assert_eq!(
+            c.regs.read(0),
+            0,
+            "caller-saved regs cleared for NS handler"
+        );
     }
 
     #[test]
@@ -6085,13 +6146,17 @@ mod tests {
     /// A core in Secure thread mode with banked `S_VTOR`/`VTOR` tables at
     /// `0x1000_0000` and the `HardFault` and `SecureFault` vectors set,
     /// positioned for an exception-return test.
-    fn secure_thread_v8m_core() -> Core<crate::mem::system::SystemMemory<crate::mem::flat::FlatMemory>>
-    {
+    fn secure_thread_v8m_core(
+    ) -> Core<crate::mem::system::SystemMemory<crate::mem::flat::FlatMemory>> {
         let mut c = armv8m_sys_core_tables();
         c.mem().write_word(0xE002_ED08, 0x1000_0000).unwrap(); // S_VTOR
         c.mem().write_word(0xE000_ED08, 0x1000_0000).unwrap(); // NS VTOR
-        c.mem().write_word(0x1000_0000 + 3 * 4, 0x2000_0401).unwrap(); // HF vector
-        c.mem().write_word(0x1000_0000 + 7 * 4, 0x2000_0401).unwrap(); // SecureFault vector
+        c.mem()
+            .write_word(0x1000_0000 + 3 * 4, 0x2000_0401)
+            .unwrap(); // HF vector
+        c.mem()
+            .write_word(0x1000_0000 + 7 * 4, 0x2000_0401)
+            .unwrap(); // SecureFault vector
         c.regs.pc = 0x2000_0000;
         c.regs.sp = 0x2000_0100;
         c.regs.msp = 0x2000_0100;
@@ -6188,7 +6253,9 @@ mod tests {
         // caller-saved registers are cleared for the Non-secure handler).
         let mut c = armv8m_sys_core_tables();
         c.mem().write_word(0xE000_ED08, 0x1000_0000).unwrap(); // NS VTOR
-        c.mem().write_word(0x1000_0000 + 3 * 4, 0x2000_0401).unwrap();
+        c.mem()
+            .write_word(0x1000_0000 + 3 * 4, 0x2000_0401)
+            .unwrap();
         c.switch_security_state(false); // Non-secure background
         c.regs.pc = 0x2000_0000;
         c.regs.sp = 0x2000_0100;
@@ -6244,7 +6311,9 @@ mod tests {
         // Secure MSP, the handler runs Non-secure with r0-r12 cleared, and its
         // return pops the block and restores r4-r11 along with the basic frame.
         let mut c = secure_thread_v8m_core();
-        c.mem().write_word(0x1000_0000 + 16 * 4, 0x2000_0501).unwrap(); // IRQ0 vector
+        c.mem()
+            .write_word(0x1000_0000 + 16 * 4, 0x2000_0501)
+            .unwrap(); // IRQ0 vector
         c.enter_exception(16).unwrap();
         assert!(!c.secure, "default ITNS routes the IRQ to Non-secure");
         assert_eq!(c.ipsr, 16);
@@ -6278,7 +6347,9 @@ mod tests {
         // frame, no callee-saves block, and r4-r11 preserved.
         let mut c = secure_thread_v8m_core();
         c.mem().write_word(0xE000_E380, 0xFFFF_FFFE).unwrap(); // ITNS0: line 0 Secure
-        c.mem().write_word(0x1000_0000 + 16 * 4, 0x2000_0501).unwrap(); // IRQ0 vector
+        c.mem()
+            .write_word(0x1000_0000 + 16 * 4, 0x2000_0501)
+            .unwrap(); // IRQ0 vector
         c.enter_exception(16).unwrap();
         assert!(c.secure, "secure-targeted line stays Secure");
         assert_eq!(c.ipsr, 16);
@@ -6336,7 +6407,7 @@ mod tests {
         c.mem().write_word(0xE000_EDDC, 0x0000_0000).unwrap(); // RBAR
         c.mem().write_word(0xE000_EDE0, 0x0000_0003).unwrap(); // RLAR NSC, ENABLE
         c.mem().write_word(0xE000_EDD0, 0x1).unwrap(); // ENABLE
-        // Region 0 hit: Non-secure with SRVALID, SREGION = 0.
+                                                       // Region 0 hit: Non-secure with SRVALID, SREGION = 0.
         let s = c.security_attribution(0x8000_0000, true);
         assert!(s.ns && !s.nsc && s.srvalid && s.sregion == 0);
         // Just past region 0, IDAU-NS region 8 with no SAU hit: matching QEMU,
@@ -6487,7 +6558,10 @@ mod tests {
         assert_eq!(c.regs.pc, HANDLER);
         // The write was suppressed: the stacked frame still holds the old SP.
         assert_eq!(c.regs.sp, 0x2000_0800 - FRAME_BYTES);
-        assert_eq!(c.sysreg_read(SysReg::Msp).unwrap(), 0x2000_0800 - FRAME_BYTES);
+        assert_eq!(
+            c.sysreg_read(SysReg::Msp).unwrap(),
+            0x2000_0800 - FRAME_BYTES
+        );
         // Writing the *non-current* process stack below PSPLIM is allowed.
         c.sysreg_write(SysReg::PspLim, 0x2000_0800).unwrap();
         c.sysreg_write(SysReg::Psp, 0x2000_0050).unwrap();
@@ -6517,7 +6591,10 @@ mod tests {
         for _ in 0..3 {
             c.step().unwrap();
         }
-        assert_eq!(c.regs.r[0], 0, "gated move must be suppressed when Z is clear");
+        assert_eq!(
+            c.regs.r[0], 0,
+            "gated move must be suppressed when Z is clear"
+        );
         assert_eq!(c.ipsr, 0);
     }
 
@@ -9077,7 +9154,10 @@ mod tests {
         load_inst(&mut c, CODE, &[0x08, 0x68]); // ldr r0, [r1]
         load_inst(&mut c, MM_HANDLER, &[0x70, 0x47]); // bx lr
         c.step().unwrap();
-        assert_eq!(c.ipsr, 4, "MPU violation with MEMFAULTENA must take MemManage");
+        assert_eq!(
+            c.ipsr, 4,
+            "MPU violation with MEMFAULTENA must take MemManage"
+        );
         assert_eq!(c.regs.pc, MM_HANDLER);
         assert_eq!(c.mem().read_word(0xE000_ED28).unwrap(), 0x0000_0082); // DACCVIOL|MMARVALID
         assert_eq!(c.mem().read_word(0xE000_ED2C).unwrap(), 0); // no FORCED
@@ -9093,8 +9173,8 @@ mod tests {
         let mut c = armv7m_sys_core();
         c.mem().write_word(3 * 4, HF_HANDLER | 1).unwrap();
         c.mem().write_word(0xE000_ED24, 0x0001_0000).unwrap(); // MEMFAULTENA
-        // FAULTMASK raises current priority to -1, so even HardFault cannot
-        // preempt it: the escalation locks up.
+                                                               // FAULTMASK raises current priority to -1, so even HardFault cannot
+                                                               // preempt it: the escalation locks up.
         c.faultmask = true;
         enable_mpu_region0(c.mem());
         c.regs.sp = SP;

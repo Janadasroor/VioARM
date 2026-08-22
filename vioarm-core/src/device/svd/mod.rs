@@ -136,12 +136,7 @@ impl Registers<&mut [u32]> {
 
     /// Replace the stored word if the register exists; return whether it did.
     pub fn try_set(&mut self, offset: u32, value: u32) -> bool {
-        if let Some(i) = self
-            .def
-            .registers
-            .iter()
-            .position(|r| r.offset == offset)
-        {
+        if let Some(i) = self.def.registers.iter().position(|r| r.offset == offset) {
             self.words[i] = value;
             true
         } else {

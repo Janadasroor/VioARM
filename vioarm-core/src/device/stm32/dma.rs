@@ -699,7 +699,10 @@ mod tests {
         write_word(&mut d, BASE + 0x14 + CCR1, EN | MEM2MEM | (3 << 12)); // PL 3
         d.tick(1);
         // Higher PL (ch2) queued first.
-        assert_eq!(*m.lock().unwrap(), vec![(0x3000, 0x4000, 1), (0x1000, 0x2000, 1)]);
+        assert_eq!(
+            *m.lock().unwrap(),
+            vec![(0x3000, 0x4000, 1), (0x1000, 0x2000, 1)]
+        );
         assert_eq!(ch2, 1);
     }
 }

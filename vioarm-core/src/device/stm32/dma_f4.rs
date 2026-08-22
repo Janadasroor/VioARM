@@ -427,7 +427,11 @@ mod tests {
         write_word(&mut d, D1 + s_par(2), 0x4000_0400); // USART DR
         write_word(&mut d, D1 + s_m0ar(2), 0x2000_1000);
         write_word(&mut d, D1 + s_ndtr(2), 2);
-        write_word(&mut d, D1 + s_cr(2), EN | TCIE | (1 << 9) | (1 << 10) | (0 << 6));
+        write_word(
+            &mut d,
+            D1 + s_cr(2),
+            EN | TCIE | (1 << 9) | (1 << 10) | (0 << 6),
+        );
         d.tick(1);
         assert_eq!(m.lock().unwrap().len(), 2);
         assert_eq!(m.lock().unwrap()[0], (0x4000_0400, 0x2000_1000, 1));
@@ -517,6 +521,9 @@ mod tests {
         write_word(&mut d, D1 + s_ndtr(1), 1);
         write_word(&mut d, D1 + s_cr(1), EN | (3 << 16) | (2 << 6)); // PL 3
         d.tick(1);
-        assert_eq!(*m.lock().unwrap(), vec![(0x3000, 0x4000, 1), (0x1000, 0x2000, 1)]);
+        assert_eq!(
+            *m.lock().unwrap(),
+            vec![(0x3000, 0x4000, 1), (0x1000, 0x2000, 1)]
+        );
     }
 }

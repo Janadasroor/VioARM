@@ -274,7 +274,10 @@ mod tests {
         let mut s = Sdio::new_for::<Stm32f103>();
         write_word(&mut s, base + 0x00, 0x03); // POWER
         assert_eq!(read_word(&mut s, base + 0x00) & 0x03, 0x03);
-        assert!(matches!(s.read(base + 0x500), Err(crate::error::BusError::Reserved)));
+        assert!(matches!(
+            s.read(base + 0x500),
+            Err(crate::error::BusError::Reserved)
+        ));
     }
 
     #[test]
@@ -283,7 +286,7 @@ mod tests {
         let mut s = Sdio::new_for::<Stm32f103>();
         // Enable CMDSENT interrupt.
         write_word(&mut s, base + 0x3C, 1 << 7); // MASK CMDSENTIE
-        // CMD0 GO_IDLE, no response, CPSMEN.
+                                                 // CMD0 GO_IDLE, no response, CPSMEN.
         write_word(&mut s, base + 0x08, 0x0000_0000); // ARG
         write_word(&mut s, base + 0x0C, 0x0000_0400); // CMDINDEX 0 + CPSMEN
         assert_ne!(read_word(&mut s, base + 0x34) & (1 << 7), 0, "CMDSENT set");

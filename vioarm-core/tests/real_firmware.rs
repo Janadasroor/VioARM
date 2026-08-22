@@ -3004,18 +3004,43 @@ void reset(void) {
     {
         let mem = m.core.mem();
         mem.write_word(board::FLASH, INIT_SP).unwrap();
-        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1)
+            .unwrap();
     }
     m.reset().expect("reset");
     let err = m.run(50_000);
-    assert_eq!(err, Err(HaltCause::NonThumbTarget), "full Soc firmware did not halt, got {err:?}");
-    assert_eq!(m.core.mem().read_word(RAM).unwrap(), 1, "BKP DR1 round-trip");
+    assert_eq!(
+        err,
+        Err(HaltCause::NonThumbTarget),
+        "full Soc firmware did not halt, got {err:?}"
+    );
+    assert_eq!(
+        m.core.mem().read_word(RAM).unwrap(),
+        1,
+        "BKP DR1 round-trip"
+    );
     assert_eq!(m.core.mem().read_word(RAM + 4).unwrap(), 1, "CRC computed");
-    assert_eq!(m.core.mem().read_word(RAM + 8).unwrap(), 1, "DAC immediate DOR");
-    assert_eq!(m.core.mem().read_word(RAM + 12).unwrap(), 1, "DAC SWTRIG DOR");
+    assert_eq!(
+        m.core.mem().read_word(RAM + 8).unwrap(),
+        1,
+        "DAC immediate DOR"
+    );
+    assert_eq!(
+        m.core.mem().read_word(RAM + 12).unwrap(),
+        1,
+        "DAC SWTRIG DOR"
+    );
     assert_eq!(m.core.mem().read_word(RAM + 16).unwrap(), 1, "SDIO CMDSENT");
-    assert_eq!(m.core.mem().read_word(RAM + 20).unwrap(), 1, "SDIO CMD8 RESP");
-    assert_eq!(m.core.mem().read_word(RAM + 24).unwrap(), 1, "SDIO ACMD41 OCR ready");
+    assert_eq!(
+        m.core.mem().read_word(RAM + 20).unwrap(),
+        1,
+        "SDIO CMD8 RESP"
+    );
+    assert_eq!(
+        m.core.mem().read_word(RAM + 24).unwrap(),
+        1,
+        "SDIO ACMD41 OCR ready"
+    );
 }
 
 #[test]
@@ -3061,14 +3086,27 @@ void reset(void) {
     {
         let mem = m.core.mem();
         mem.write_word(board::FLASH, INIT_SP).unwrap();
-        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1)
+            .unwrap();
     }
     m.reset().expect("reset");
     let err = m.run(50_000);
-    assert_eq!(err, Err(HaltCause::NonThumbTarget), "F072 firmware did not halt, got {err:?}");
+    assert_eq!(
+        err,
+        Err(HaltCause::NonThumbTarget),
+        "F072 firmware did not halt, got {err:?}"
+    );
     assert_eq!(m.core.mem().read_word(RAM).unwrap(), 1, "CRC computed");
-    assert_eq!(m.core.mem().read_word(RAM + 4).unwrap(), 1, "DAC immediate DOR");
-    assert_eq!(m.core.mem().read_word(RAM + 8).unwrap(), 1, "DAC SWTRIG DOR");
+    assert_eq!(
+        m.core.mem().read_word(RAM + 4).unwrap(),
+        1,
+        "DAC immediate DOR"
+    );
+    assert_eq!(
+        m.core.mem().read_word(RAM + 8).unwrap(),
+        1,
+        "DAC SWTRIG DOR"
+    );
 }
 
 const STM32F072_GPIO_FIRMWARE: &str = r#"
@@ -3111,7 +3149,9 @@ fn run_f072_gpio() -> Option<u32> {
 
 #[test]
 fn stm32f072_firmware_toggles_gpio() {
-    let Some(odr) = run_f072_gpio() else { return; };
+    let Some(odr) = run_f072_gpio() else {
+        return;
+    };
     assert_eq!(odr, 1);
 }
 
@@ -3135,7 +3175,10 @@ void reset(void) {
 fn run_f072_spi() -> Option<u32> {
     let (code, symbols) = match build_firmware(STM32F072_SPI_FIRMWARE) {
         Ok(v) => v,
-        Err(why) => { eprintln!("skipping F072 spi: {why}"); return None; }
+        Err(why) => {
+            eprintln!("skipping F072 spi: {why}");
+            return None;
+        }
     };
     let entry = *symbols.get("reset").unwrap();
     let mut m = Machine::new(board::stm32f072());
@@ -3146,7 +3189,9 @@ fn run_f072_spi() -> Option<u32> {
         mem.write_word(FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
     }
     m.reset().unwrap();
-    for d in m.core.mem().devices_mut() { d.drive_inputs(0xA5); }
+    for d in m.core.mem().devices_mut() {
+        d.drive_inputs(0xA5);
+    }
     let err = m.run(50_000);
     assert_eq!(err, Err(HaltCause::NonThumbTarget));
     Some(m.core.mem().read_word(board::RAM).unwrap())
@@ -3154,7 +3199,9 @@ fn run_f072_spi() -> Option<u32> {
 
 #[test]
 fn stm32f072_firmware_shifts_spi() {
-    let Some(polled) = run_f072_spi() else { return; };
+    let Some(polled) = run_f072_spi() else {
+        return;
+    };
     assert_eq!(polled, 0xA5);
 }
 
@@ -3183,7 +3230,10 @@ void reset(void) {
 fn run_f072_tim() -> Option<u32> {
     let (code, symbols) = match build_firmware(STM32F072_TIM_FIRMWARE) {
         Ok(v) => v,
-        Err(why) => { eprintln!("skipping F072 tim: {why}"); return None; }
+        Err(why) => {
+            eprintln!("skipping F072 tim: {why}");
+            return None;
+        }
     };
     let entry = *symbols.get("reset").unwrap();
     let mut m = Machine::new(board::stm32f072());
@@ -3201,7 +3251,9 @@ fn run_f072_tim() -> Option<u32> {
 
 #[test]
 fn stm32f072_firmware_counts_tim() {
-    let Some(cnt) = run_f072_tim() else { return; };
+    let Some(cnt) = run_f072_tim() else {
+        return;
+    };
     assert!(cnt > 0, "TIM2 never counted: {cnt}");
 }
 
@@ -3240,7 +3292,10 @@ void reset(void) {
 fn stm32f072_firmware_talks_usart() {
     let (code, symbols) = match build_firmware(STM32F072_USART_FW) {
         Ok(v) => v,
-        Err(why) => { eprintln!("skipping F072 usart: {why}"); return; }
+        Err(why) => {
+            eprintln!("skipping F072 usart: {why}");
+            return;
+        }
     };
     let entry = *symbols.get("reset").unwrap();
     let mut m = Machine::new(board::stm32f072());
@@ -3251,7 +3306,9 @@ fn stm32f072_firmware_talks_usart() {
         mem.write_word(FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
     }
     m.reset().unwrap();
-    for d in m.core.mem().devices_mut() { d.drive_inputs(0x5A); }
+    for d in m.core.mem().devices_mut() {
+        d.drive_inputs(0x5A);
+    }
     let err = m.run(50_000);
     assert_eq!(err, Err(HaltCause::NonThumbTarget));
     assert_eq!(m.core.mem().read_word(RAM).unwrap(), 0x5A);
@@ -3289,7 +3346,10 @@ void reset(void) {
 "#;
     let (code, symbols) = match build_firmware_v7m_with_includes(FW, &[]) {
         Ok(v) => v,
-        Err(why) => { eprintln!("skipping F303 gap-fill: {why}"); return; }
+        Err(why) => {
+            eprintln!("skipping F303 gap-fill: {why}");
+            return;
+        }
     };
     let entry = *symbols.get("reset").unwrap();
     let mut m = Machine::armv7m(board::stm32f303xe());
@@ -3297,14 +3357,19 @@ void reset(void) {
     {
         let mem = m.core.mem();
         mem.write_word(board::FLASH, INIT_SP).unwrap();
-        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1)
+            .unwrap();
     }
     m.reset().unwrap();
     let err = m.run(50_000);
-    assert_eq!(err, Err(HaltCause::NonThumbTarget), "F303 gap-fill did not halt {err:?}");
+    assert_eq!(
+        err,
+        Err(HaltCause::NonThumbTarget),
+        "F303 gap-fill did not halt {err:?}"
+    );
     assert_eq!(m.core.mem().read_word(RAM).unwrap(), 1, "CRC");
-    assert_eq!(m.core.mem().read_word(RAM+4).unwrap(), 1, "DAC1");
-    assert_eq!(m.core.mem().read_word(RAM+8).unwrap(), 1, "DAC2");
+    assert_eq!(m.core.mem().read_word(RAM + 4).unwrap(), 1, "DAC1");
+    assert_eq!(m.core.mem().read_word(RAM + 8).unwrap(), 1, "DAC2");
 }
 
 const STM32F303_GPIO_FIRMWARE: &str = r#"
@@ -3327,7 +3392,10 @@ void reset(void) {
 fn stm32f303xe_firmware_toggles_gpio() {
     let (code, symbols) = match build_firmware_v7m_with_includes(STM32F303_GPIO_FIRMWARE, &[]) {
         Ok(v) => v,
-        Err(why) => { eprintln!("skipping F303 gpio: {why}"); return; }
+        Err(why) => {
+            eprintln!("skipping F303 gpio: {why}");
+            return;
+        }
     };
     let entry = *symbols.get("reset").unwrap();
     let mut m = Machine::armv7m(board::stm32f303xe());
@@ -3335,7 +3403,8 @@ fn stm32f303xe_firmware_toggles_gpio() {
     {
         let mem = m.core.mem();
         mem.write_word(board::FLASH, INIT_SP).unwrap();
-        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1)
+            .unwrap();
     }
     m.reset().unwrap();
     let err = m.run(50_000);
@@ -3363,7 +3432,10 @@ void reset(void) {
 fn stm32f303xe_firmware_shifts_spi() {
     let (code, symbols) = match build_firmware_v7m_with_includes(STM32F303_SPI_FIRMWARE, &[]) {
         Ok(v) => v,
-        Err(why) => { eprintln!("skipping F303 spi: {why}"); return; }
+        Err(why) => {
+            eprintln!("skipping F303 spi: {why}");
+            return;
+        }
     };
     let entry = *symbols.get("reset").unwrap();
     let mut m = Machine::armv7m(board::stm32f303xe());
@@ -3371,10 +3443,13 @@ fn stm32f303xe_firmware_shifts_spi() {
     {
         let mem = m.core.mem();
         mem.write_word(board::FLASH, INIT_SP).unwrap();
-        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1)
+            .unwrap();
     }
     m.reset().unwrap();
-    for d in m.core.mem().devices_mut() { d.drive_inputs(0xA5); }
+    for d in m.core.mem().devices_mut() {
+        d.drive_inputs(0xA5);
+    }
     let err = m.run(50_000);
     assert_eq!(err, Err(HaltCause::NonThumbTarget));
     assert_eq!(m.core.mem().read_word(RAM).unwrap(), 0xA5);
@@ -3404,7 +3479,10 @@ void reset(void) {
 fn stm32f303xe_firmware_counts_tim() {
     let (code, symbols) = match build_firmware_v7m_with_includes(STM32F303_TIM_FIRMWARE, &[]) {
         Ok(v) => v,
-        Err(why) => { eprintln!("skipping F303 tim: {why}"); return; }
+        Err(why) => {
+            eprintln!("skipping F303 tim: {why}");
+            return;
+        }
     };
     let entry = *symbols.get("reset").unwrap();
     let mut m = Machine::armv7m(board::stm32f303xe());
@@ -3439,7 +3517,10 @@ void reset(void) {
 fn stm32l476_firmware_toggles_gpio() {
     let (code, symbols) = match build_firmware_v7m_with_includes(STM32L476_GPIO_FIRMWARE, &[]) {
         Ok(v) => v,
-        Err(why) => { eprintln!("skipping L476 gpio: {why}"); return; }
+        Err(why) => {
+            eprintln!("skipping L476 gpio: {why}");
+            return;
+        }
     };
     let entry = *symbols.get("reset").unwrap();
     let mut m = Machine::armv7m(board::stm32l476());
@@ -3447,7 +3528,8 @@ fn stm32l476_firmware_toggles_gpio() {
     {
         let mem = m.core.mem();
         mem.write_word(board::FLASH, INIT_SP).unwrap();
-        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1)
+            .unwrap();
     }
     m.reset().unwrap();
     let err = m.run(50_000);
@@ -3475,7 +3557,10 @@ void reset(void) {
 fn stm32l476_firmware_shifts_spi() {
     let (code, symbols) = match build_firmware_v7m_with_includes(STM32L476_SPI_FIRMWARE, &[]) {
         Ok(v) => v,
-        Err(why) => { eprintln!("skipping L476 spi: {why}"); return; }
+        Err(why) => {
+            eprintln!("skipping L476 spi: {why}");
+            return;
+        }
     };
     let entry = *symbols.get("reset").unwrap();
     let mut m = Machine::armv7m(board::stm32l476());
@@ -3483,10 +3568,13 @@ fn stm32l476_firmware_shifts_spi() {
     {
         let mem = m.core.mem();
         mem.write_word(board::FLASH, INIT_SP).unwrap();
-        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1)
+            .unwrap();
     }
     m.reset().unwrap();
-    for d in m.core.mem().devices_mut() { d.drive_inputs(0xA5); }
+    for d in m.core.mem().devices_mut() {
+        d.drive_inputs(0xA5);
+    }
     let err = m.run(50_000);
     assert_eq!(err, Err(HaltCause::NonThumbTarget));
     // L476 SPI slave byte may not be latched due to new IP timing; just check no HardFault
@@ -3517,7 +3605,10 @@ void reset(void) {
 fn stm32l476_firmware_counts_tim() {
     let (code, symbols) = match build_firmware_v7m_with_includes(STM32L476_TIM_FIRMWARE, &[]) {
         Ok(v) => v,
-        Err(why) => { eprintln!("skipping L476 tim: {why}"); return; }
+        Err(why) => {
+            eprintln!("skipping L476 tim: {why}");
+            return;
+        }
     };
     let entry = *symbols.get("reset").unwrap();
     let mut m = Machine::armv7m(board::stm32l476());
@@ -3552,7 +3643,10 @@ void reset(void) {
 fn stm32g474xx_firmware_toggles_gpio() {
     let (code, symbols) = match build_firmware_v7m_with_includes(STM32G474_GPIO_FIRMWARE, &[]) {
         Ok(v) => v,
-        Err(why) => { eprintln!("skipping G474 gpio: {why}"); return; }
+        Err(why) => {
+            eprintln!("skipping G474 gpio: {why}");
+            return;
+        }
     };
     let entry = *symbols.get("reset").unwrap();
     let mut m = Machine::armv7m(board::stm32g474xx());
@@ -3560,7 +3654,8 @@ fn stm32g474xx_firmware_toggles_gpio() {
     {
         let mem = m.core.mem();
         mem.write_word(board::FLASH, INIT_SP).unwrap();
-        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1)
+            .unwrap();
     }
     m.reset().unwrap();
     let err = m.run(50_000);
@@ -3588,7 +3683,10 @@ void reset(void) {
 fn stm32g474xx_firmware_shifts_spi() {
     let (code, symbols) = match build_firmware_v7m_with_includes(STM32G474_SPI_FIRMWARE, &[]) {
         Ok(v) => v,
-        Err(why) => { eprintln!("skipping G474 spi: {why}"); return; }
+        Err(why) => {
+            eprintln!("skipping G474 spi: {why}");
+            return;
+        }
     };
     let entry = *symbols.get("reset").unwrap();
     let mut m = Machine::armv7m(board::stm32g474xx());
@@ -3596,10 +3694,13 @@ fn stm32g474xx_firmware_shifts_spi() {
     {
         let mem = m.core.mem();
         mem.write_word(board::FLASH, INIT_SP).unwrap();
-        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1)
+            .unwrap();
     }
     m.reset().unwrap();
-    for d in m.core.mem().devices_mut() { d.drive_inputs(0xA5); }
+    for d in m.core.mem().devices_mut() {
+        d.drive_inputs(0xA5);
+    }
     let err = m.run(50_000);
     assert_eq!(err, Err(HaltCause::NonThumbTarget));
     let _rx = m.core.mem().read_word(RAM).unwrap();
@@ -3629,7 +3730,10 @@ void reset(void) {
 fn stm32g474xx_firmware_counts_tim() {
     let (code, symbols) = match build_firmware_v7m_with_includes(STM32G474_TIM_FIRMWARE, &[]) {
         Ok(v) => v,
-        Err(why) => { eprintln!("skipping G474 tim: {why}"); return; }
+        Err(why) => {
+            eprintln!("skipping G474 tim: {why}");
+            return;
+        }
     };
     let entry = *symbols.get("reset").unwrap();
     let mut m = Machine::armv7m(board::stm32g474xx());
@@ -3678,7 +3782,10 @@ void reset(void) {
 fn stm32g474xx_firmware_talks_usart() {
     let (code, symbols) = match build_firmware_v7m_with_includes(STM32G474_USART_FW, &[]) {
         Ok(v) => v,
-        Err(why) => { eprintln!("skipping G474 usart: {why}"); return; }
+        Err(why) => {
+            eprintln!("skipping G474 usart: {why}");
+            return;
+        }
     };
     let entry = *symbols.get("reset").unwrap();
     let mut m = Machine::armv7m(board::stm32g474xx());
@@ -3689,7 +3796,9 @@ fn stm32g474xx_firmware_talks_usart() {
         mem.write_word(FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
     }
     m.reset().unwrap();
-    for d in m.core.mem().devices_mut() { d.drive_inputs(0x5A); }
+    for d in m.core.mem().devices_mut() {
+        d.drive_inputs(0x5A);
+    }
     let err = m.run(50_000);
     assert_eq!(err, Err(HaltCause::NonThumbTarget));
     assert_eq!(m.core.mem().read_word(RAM).unwrap(), 0x5A);
@@ -3728,7 +3837,10 @@ void reset(void) {
 fn stm32f303xe_firmware_talks_usart() {
     let (code, symbols) = match build_firmware_v7m_with_includes(STM32F303_USART_FW, &[]) {
         Ok(v) => v,
-        Err(why) => { eprintln!("skipping F303 usart: {why}"); return; }
+        Err(why) => {
+            eprintln!("skipping F303 usart: {why}");
+            return;
+        }
     };
     let entry = *symbols.get("reset").unwrap();
     let mut m = Machine::armv7m(board::stm32f303xe());
@@ -3736,10 +3848,13 @@ fn stm32f303xe_firmware_talks_usart() {
     {
         let mem = m.core.mem();
         mem.write_word(board::FLASH, INIT_SP).unwrap();
-        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1)
+            .unwrap();
     }
     m.reset().unwrap();
-    for d in m.core.mem().devices_mut() { d.drive_inputs(0x5A); }
+    for d in m.core.mem().devices_mut() {
+        d.drive_inputs(0x5A);
+    }
     let err = m.run(50_000);
     assert_eq!(err, Err(HaltCause::NonThumbTarget));
     assert_eq!(m.core.mem().read_word(RAM).unwrap(), 0x5A);
@@ -3778,7 +3893,10 @@ void reset(void) {
 fn stm32l476_firmware_talks_usart() {
     let (code, symbols) = match build_firmware_v7m_with_includes(STM32L476_USART_FW, &[]) {
         Ok(v) => v,
-        Err(why) => { eprintln!("skipping L476 usart: {why}"); return; }
+        Err(why) => {
+            eprintln!("skipping L476 usart: {why}");
+            return;
+        }
     };
     let entry = *symbols.get("reset").unwrap();
     let mut m = Machine::armv7m(board::stm32l476());
@@ -3786,10 +3904,13 @@ fn stm32l476_firmware_talks_usart() {
     {
         let mem = m.core.mem();
         mem.write_word(board::FLASH, INIT_SP).unwrap();
-        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1)
+            .unwrap();
     }
     m.reset().unwrap();
-    for d in m.core.mem().devices_mut() { d.drive_inputs(0x5A); }
+    for d in m.core.mem().devices_mut() {
+        d.drive_inputs(0x5A);
+    }
     let err = m.run(50_000);
     assert_eq!(err, Err(HaltCause::NonThumbTarget));
     assert_eq!(m.core.mem().read_word(RAM).unwrap(), 0x5A);
@@ -3814,7 +3935,10 @@ void reset(void) {
 fn stm32h743_firmware_toggles_gpio() {
     let (code, symbols) = match build_firmware_v7m_with_includes(STM32H743_GPIO_FW, &[]) {
         Ok(v) => v,
-        Err(why) => { eprintln!("skipping H743 gpio: {why}"); return; }
+        Err(why) => {
+            eprintln!("skipping H743 gpio: {why}");
+            return;
+        }
     };
     let entry = *symbols.get("reset").unwrap();
     let mut m = Machine::armv7em(board::stm32h743());
@@ -3822,7 +3946,8 @@ fn stm32h743_firmware_toggles_gpio() {
     {
         let mem = m.core.mem();
         mem.write_word(board::FLASH, INIT_SP).unwrap();
-        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1)
+            .unwrap();
     }
     m.reset().unwrap();
     let err = m.run(50_000);
@@ -3850,7 +3975,10 @@ void reset(void) {
 fn stm32h743_firmware_shifts_spi() {
     let (code, symbols) = match build_firmware_v7m_with_includes(STM32H743_SPI_FW, &[]) {
         Ok(v) => v,
-        Err(why) => { eprintln!("skipping H743 spi: {why}"); return; }
+        Err(why) => {
+            eprintln!("skipping H743 spi: {why}");
+            return;
+        }
     };
     let entry = *symbols.get("reset").unwrap();
     let mut m = Machine::armv7em(board::stm32h743());
@@ -3861,7 +3989,9 @@ fn stm32h743_firmware_shifts_spi() {
         mem.write_word(FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
     }
     m.reset().unwrap();
-    for d in m.core.mem().devices_mut() { d.drive_inputs(0xA5); }
+    for d in m.core.mem().devices_mut() {
+        d.drive_inputs(0xA5);
+    }
     let err = m.run(50_000);
     assert_eq!(err, Err(HaltCause::NonThumbTarget));
     let _rx = m.core.mem().read_word(RAM).unwrap();
@@ -3891,7 +4021,10 @@ void reset(void) {
 fn stm32h743_firmware_counts_tim() {
     let (code, symbols) = match build_firmware_v7m_with_includes(STM32H743_TIM_FW, &[]) {
         Ok(v) => v,
-        Err(why) => { eprintln!("skipping H743 tim: {why}"); return; }
+        Err(why) => {
+            eprintln!("skipping H743 tim: {why}");
+            return;
+        }
     };
     let entry = *symbols.get("reset").unwrap();
     let mut m = Machine::armv7em(board::stm32h743());
@@ -3940,7 +4073,10 @@ void reset(void) {
 fn stm32h743_firmware_talks_usart() {
     let (code, symbols) = match build_firmware_v7m_with_includes(STM32H743_USART_FW, &[]) {
         Ok(v) => v,
-        Err(why) => { eprintln!("skipping H743 usart: {why}"); return; }
+        Err(why) => {
+            eprintln!("skipping H743 usart: {why}");
+            return;
+        }
     };
     let entry = *symbols.get("reset").unwrap();
     let mut m = Machine::armv7em(board::stm32h743());
@@ -3948,10 +4084,13 @@ fn stm32h743_firmware_talks_usart() {
     {
         let mem = m.core.mem();
         mem.write_word(board::FLASH, INIT_SP).unwrap();
-        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1)
+            .unwrap();
     }
     m.reset().unwrap();
-    for d in m.core.mem().devices_mut() { d.drive_inputs(0x5A); }
+    for d in m.core.mem().devices_mut() {
+        d.drive_inputs(0x5A);
+    }
     let err = m.run(50_000);
     assert_eq!(err, Err(HaltCause::NonThumbTarget));
     assert_eq!(m.core.mem().read_word(RAM).unwrap(), 0x5A);
@@ -3975,7 +4114,10 @@ void reset(void) {
 fn stm32h743_firmware_does_f64() {
     let (code, symbols) = match build_firmware_h7_with_includes(STM32H743_F64_FW, &[]) {
         Ok(v) => v,
-        Err(why) => { eprintln!("skipping H743 f64: {why}"); return; }
+        Err(why) => {
+            eprintln!("skipping H743 f64: {why}");
+            return;
+        }
     };
     let entry = *symbols.get("reset").unwrap();
     let mut m = Machine::armv7em(board::stm32h743());
@@ -3983,13 +4125,14 @@ fn stm32h743_firmware_does_f64() {
     {
         let mem = m.core.mem();
         mem.write_word(board::FLASH, INIT_SP).unwrap();
-        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1)
+            .unwrap();
     }
     m.reset().unwrap();
     let err = m.run(50_000);
     assert_eq!(err, Err(HaltCause::NonThumbTarget));
     let lo = m.core.mem().read_word(RAM).unwrap();
-    let hi = m.core.mem().read_word(RAM+4).unwrap();
+    let hi = m.core.mem().read_word(RAM + 4).unwrap();
     let bits = (u64::from(hi) << 32) | u64::from(lo);
     let expect = (3.141592653589793f64 + 2.718281828459045f64).to_bits();
     assert_eq!(bits, expect, "got {bits:#x} want {expect:#x}");
@@ -4027,7 +4170,10 @@ void reset(void) {
 fn stm32h743_firmware_does_f64_cvt() {
     let (code, symbols) = match build_firmware_h7_with_includes(STM32H743_F64_CVT_FW, &[]) {
         Ok(v) => v,
-        Err(why) => { eprintln!("skipping H743 f64 cvt: {why}"); return; }
+        Err(why) => {
+            eprintln!("skipping H743 f64 cvt: {why}");
+            return;
+        }
     };
     let entry = *symbols.get("reset").unwrap();
     let mut m = Machine::armv7em(board::stm32h743());
@@ -4035,35 +4181,36 @@ fn stm32h743_firmware_does_f64_cvt() {
     {
         let mem = m.core.mem();
         mem.write_word(board::FLASH, INIT_SP).unwrap();
-        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1)
+            .unwrap();
     }
     m.reset().unwrap();
     let err = m.run(50_000);
     assert_eq!(err, Err(HaltCause::NonThumbTarget));
     // VMOV.F64 #1.0 at OUT
     let lo = m.core.mem().read_word(RAM).unwrap();
-    let hi = m.core.mem().read_word(RAM+4).unwrap();
+    let hi = m.core.mem().read_word(RAM + 4).unwrap();
     let bits = (u64::from(hi) << 32) | u64::from(lo);
     assert_eq!(bits, 1.0f64.to_bits(), "vmov.f64 #1.0 got {bits:#x}");
     // VCVT.F64.F32 1.5f -> 1.5f64 at OUT+8
-    let lo = m.core.mem().read_word(RAM+8).unwrap();
-    let hi = m.core.mem().read_word(RAM+12).unwrap();
+    let lo = m.core.mem().read_word(RAM + 8).unwrap();
+    let hi = m.core.mem().read_word(RAM + 12).unwrap();
     let bits = (u64::from(hi) << 32) | u64::from(lo);
     assert_eq!(bits, 1.5f64.to_bits(), "vcvt.f64.f32 got {bits:#x}");
     // VCVT.F32.F64 e(2.5) -> g at OUT+16 as f32 bits
-    let g = m.core.mem().read_word(RAM+16).unwrap();
+    let g = m.core.mem().read_word(RAM + 16).unwrap();
     assert_eq!(g, (2.5f32).to_bits(), "vcvt.f32.f64 got {g:#x}");
     // VCVT.S32.F64 e(2.5) -> i at OUT+20
-    let i = m.core.mem().read_word(RAM+20).unwrap() as i32;
+    let i = m.core.mem().read_word(RAM + 20).unwrap() as i32;
     assert_eq!(i, 2, "vcvt.s32.f64 got {i}");
     // VCVT.F64.S32 i(2) -> h at OUT+24 as 2.0f64
-    let lo = m.core.mem().read_word(RAM+24).unwrap();
-    let hi = m.core.mem().read_word(RAM+28).unwrap();
+    let lo = m.core.mem().read_word(RAM + 24).unwrap();
+    let hi = m.core.mem().read_word(RAM + 28).unwrap();
     let bits = (u64::from(hi) << 32) | u64::from(lo);
     assert_eq!(bits, 2.0f64.to_bits(), "vcvt.f64.s32 got {bits:#x}");
     // VRINT d(1.5) -> 2.0 (nearest even) at OUT+32
-    let lo = m.core.mem().read_word(RAM+32).unwrap();
-    let hi = m.core.mem().read_word(RAM+36).unwrap();
+    let lo = m.core.mem().read_word(RAM + 32).unwrap();
+    let hi = m.core.mem().read_word(RAM + 36).unwrap();
     let bits = (u64::from(hi) << 32) | u64::from(lo);
     assert_eq!(bits, 2.0f64.to_bits(), "vrint got {bits:#x}");
 }
@@ -4091,7 +4238,10 @@ void reset(void) {
 fn stm32h743_iwdg_resets() {
     let (code, symbols) = match build_firmware_h7_with_includes(STM32H743_IWDG_FW, &[]) {
         Ok(v) => v,
-        Err(why) => { eprintln!("skipping H743 iwdg: {why}"); return; }
+        Err(why) => {
+            eprintln!("skipping H743 iwdg: {why}");
+            return;
+        }
     };
     let entry = *symbols.get("reset").unwrap();
     let mut m = Machine::armv7em(board::stm32h743());
@@ -4099,7 +4249,8 @@ fn stm32h743_iwdg_resets() {
     {
         let mem = m.core.mem();
         mem.write_word(board::FLASH, INIT_SP).unwrap();
-        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1)
+            .unwrap();
         mem.write_word(board::RAM, 0).unwrap();
     }
     m.reset().unwrap();
@@ -4120,7 +4271,11 @@ fn stm32h743_ram_regions() {
         (0x30020000u32, 0xCAFEBABEu32),
     ] {
         m.core.mem().write_word(base, val).unwrap();
-        assert_eq!(m.core.mem().read_word(base).unwrap(), val, "ram at {base:#x}");
+        assert_eq!(
+            m.core.mem().read_word(base).unwrap(),
+            val,
+            "ram at {base:#x}"
+        );
     }
     // Verify AXI SRAM is distinct from DTCM
     m.core.mem().write_word(0x20000000, 0xAAAAAAAA).unwrap();
@@ -4161,7 +4316,10 @@ void reset(void) {
 fn stm32h743_adc() {
     let (code, symbols) = match build_firmware_h7_with_includes(STM32H743_ADC_FW, &[]) {
         Ok(v) => v,
-        Err(why) => { eprintln!("skipping H743 adc: {why}"); return; }
+        Err(why) => {
+            eprintln!("skipping H743 adc: {why}");
+            return;
+        }
     };
     let entry = *symbols.get("reset").unwrap();
     let mut m = Machine::armv7em(board::stm32h743());
@@ -4169,10 +4327,13 @@ fn stm32h743_adc() {
     {
         let mem = m.core.mem();
         mem.write_word(board::FLASH, INIT_SP).unwrap();
-        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1)
+            .unwrap();
     }
     m.reset().unwrap();
-    for dev in m.core.mem().devices_mut() { dev.drive_inputs(0x0ABC); }
+    for dev in m.core.mem().devices_mut() {
+        dev.drive_inputs(0x0ABC);
+    }
     let err = m.run(5000);
     assert_eq!(err, Err(HaltCause::NonThumbTarget));
     let v = m.core.mem().read_word(RAM).unwrap() & 0xFFF;
@@ -4202,7 +4363,10 @@ void reset(void) {
 "#;
     let (code, symbols) = match build_firmware_h7_with_includes(FW, &[]) {
         Ok(v) => v,
-        Err(why) => { eprintln!("skipping H743 DAC gap: {why}"); return; }
+        Err(why) => {
+            eprintln!("skipping H743 DAC gap: {why}");
+            return;
+        }
     };
     let entry = *symbols.get("reset").unwrap();
     let mut m = Machine::armv7em(board::stm32h743());
@@ -4210,13 +4374,22 @@ void reset(void) {
     {
         let mem = m.core.mem();
         mem.write_word(board::FLASH, INIT_SP).unwrap();
-        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1)
+            .unwrap();
     }
     m.reset().unwrap();
     let err = m.run(50_000);
     assert_eq!(err, Err(HaltCause::NonThumbTarget));
-    assert_eq!(m.core.mem().read_word(RAM).unwrap(), 1, "H743 DAC immediate DOR");
-    assert_eq!(m.core.mem().read_word(RAM+4).unwrap(), 1, "H743 DAC SWTRIG DOR");
+    assert_eq!(
+        m.core.mem().read_word(RAM).unwrap(),
+        1,
+        "H743 DAC immediate DOR"
+    );
+    assert_eq!(
+        m.core.mem().read_word(RAM + 4).unwrap(),
+        1,
+        "H743 DAC SWTRIG DOR"
+    );
 }
 
 #[test]
@@ -4241,7 +4414,10 @@ void reset(void) {
 "#;
     let (code, symbols) = match build_firmware_h7_with_includes(FW, &[]) {
         Ok(v) => v,
-        Err(why) => { eprintln!("skipping H743 fmc: {why}"); return; }
+        Err(why) => {
+            eprintln!("skipping H743 fmc: {why}");
+            return;
+        }
     };
     let entry = *symbols.get("reset").unwrap();
     let mut m = Machine::armv7em(board::stm32h743());
@@ -4249,13 +4425,14 @@ void reset(void) {
     {
         let mem = m.core.mem();
         mem.write_word(board::FLASH, INIT_SP).unwrap();
-        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1)
+            .unwrap();
     }
     m.reset().unwrap();
     let err = m.run(50_000);
     assert_eq!(err, Err(HaltCause::NonThumbTarget));
     assert_eq!(m.core.mem().read_word(RAM).unwrap(), 1, "FMC SDRAM");
-    assert_eq!(m.core.mem().read_word(RAM+4).unwrap(), 1, "QSPI");
+    assert_eq!(m.core.mem().read_word(RAM + 4).unwrap(), 1, "QSPI");
 }
 
 #[test]
@@ -4277,7 +4454,10 @@ void reset(void) {
 "#;
     let (code, symbols) = match build_firmware_h7_with_includes(FW, &[]) {
         Ok(v) => v,
-        Err(why) => { eprintln!("skipping H743 fdcan: {why}"); return; }
+        Err(why) => {
+            eprintln!("skipping H743 fdcan: {why}");
+            return;
+        }
     };
     let entry = *symbols.get("reset").unwrap();
     let mut m = Machine::armv7em(board::stm32h743());
@@ -4285,13 +4465,14 @@ void reset(void) {
     {
         let mem = m.core.mem();
         mem.write_word(board::FLASH, INIT_SP).unwrap();
-        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1)
+            .unwrap();
     }
     m.reset().unwrap();
     let err = m.run(50_000);
     assert_eq!(err, Err(HaltCause::NonThumbTarget));
     assert_eq!(m.core.mem().read_word(RAM).unwrap(), 1, "FDCAN CCCR");
-    assert_eq!(m.core.mem().read_word(RAM+4).unwrap(), 1, "FDCAN HPMS");
+    assert_eq!(m.core.mem().read_word(RAM + 4).unwrap(), 1, "FDCAN HPMS");
 }
 
 #[test]
@@ -4311,7 +4492,10 @@ void reset(void) {
 "#;
     let (code, symbols) = match build_firmware_h7_with_includes(FW, &[]) {
         Ok(v) => v,
-        Err(why) => { eprintln!("skipping H743 usb: {why}"); return; }
+        Err(why) => {
+            eprintln!("skipping H743 usb: {why}");
+            return;
+        }
     };
     let entry = *symbols.get("reset").unwrap();
     let mut m = Machine::armv7em(board::stm32h743());
@@ -4319,7 +4503,8 @@ void reset(void) {
     {
         let mem = m.core.mem();
         mem.write_word(board::FLASH, INIT_SP).unwrap();
-        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1)
+            .unwrap();
     }
     m.reset().unwrap();
     let err = m.run(50_000);
@@ -4345,7 +4530,10 @@ void reset(void) {
 "#;
     let (code, symbols) = match build_firmware_h7_with_includes(FW, &[]) {
         Ok(v) => v,
-        Err(why) => { eprintln!("skipping H743 octospi2: {why}"); return; }
+        Err(why) => {
+            eprintln!("skipping H743 octospi2: {why}");
+            return;
+        }
     };
     let entry = *symbols.get("reset").unwrap();
     let mut m = Machine::armv7em(board::stm32h743());
@@ -4353,13 +4541,14 @@ void reset(void) {
     {
         let mem = m.core.mem();
         mem.write_word(board::FLASH, INIT_SP).unwrap();
-        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1)
+            .unwrap();
     }
     m.reset().unwrap();
     let err = m.run(50_000);
     assert_eq!(err, Err(HaltCause::NonThumbTarget));
     assert_eq!(m.core.mem().read_word(RAM).unwrap(), 1, "OCTOSPI2");
-    assert_eq!(m.core.mem().read_word(RAM+4).unwrap(), 1, "DMAMUX1");
+    assert_eq!(m.core.mem().read_word(RAM + 4).unwrap(), 1, "DMAMUX1");
 }
 
 #[test]
@@ -4380,7 +4569,10 @@ void reset(void) {
 "#;
     let (code, symbols) = match build_firmware_h7_with_includes(FW, &[]) {
         Ok(v) => v,
-        Err(why) => { eprintln!("skipping H743 ltdc: {why}"); return; }
+        Err(why) => {
+            eprintln!("skipping H743 ltdc: {why}");
+            return;
+        }
     };
     let entry = *symbols.get("reset").unwrap();
     let mut m = Machine::armv7em(board::stm32h743());
@@ -4388,13 +4580,14 @@ void reset(void) {
     {
         let mem = m.core.mem();
         mem.write_word(board::FLASH, INIT_SP).unwrap();
-        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1)
+            .unwrap();
     }
     m.reset().unwrap();
     let err = m.run(50_000);
     assert_eq!(err, Err(HaltCause::NonThumbTarget));
     assert_eq!(m.core.mem().read_word(RAM).unwrap(), 1, "LTDC");
-    assert_eq!(m.core.mem().read_word(RAM+4).unwrap(), 1, "DMA2D");
+    assert_eq!(m.core.mem().read_word(RAM + 4).unwrap(), 1, "DMA2D");
 }
 
 #[test]
@@ -4419,7 +4612,10 @@ void reset(void) {
 "#;
     let (code, symbols) = match build_firmware_h7_with_includes(FW, &[]) {
         Ok(v) => v,
-        Err(why) => { eprintln!("skipping H743 hse: {why}"); return; }
+        Err(why) => {
+            eprintln!("skipping H743 hse: {why}");
+            return;
+        }
     };
     let entry = *symbols.get("reset").unwrap();
     let mut m = Machine::armv7em(board::stm32h743());
@@ -4427,14 +4623,23 @@ void reset(void) {
     {
         let mem = m.core.mem();
         mem.write_word(board::FLASH, INIT_SP).unwrap();
-        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1)
+            .unwrap();
     }
     m.reset().unwrap();
     let err = m.run(50_000);
     assert_eq!(err, Err(HaltCause::NonThumbTarget));
-    assert_eq!(m.core.mem().read_word(RAM).unwrap(), 0xA5A5, "HSE loop terminated");
-    let cr = m.core.mem().read_word(RAM+4).unwrap();
-    assert_eq!(cr & ((1u32<<17)|(1u32<<25)), (1u32<<17)|(1u32<<25), "HSERDY|PLL1RDY");
+    assert_eq!(
+        m.core.mem().read_word(RAM).unwrap(),
+        0xA5A5,
+        "HSE loop terminated"
+    );
+    let cr = m.core.mem().read_word(RAM + 4).unwrap();
+    assert_eq!(
+        cr & ((1u32 << 17) | (1u32 << 25)),
+        (1u32 << 17) | (1u32 << 25),
+        "HSERDY|PLL1RDY"
+    );
 }
 
 #[test]
@@ -4455,7 +4660,10 @@ void reset(void) {
 "#;
     let (code, symbols) = match build_firmware_h7_with_includes(FW, &[]) {
         Ok(v) => v,
-        Err(why) => { eprintln!("skipping H743 pwr: {why}"); return; }
+        Err(why) => {
+            eprintln!("skipping H743 pwr: {why}");
+            return;
+        }
     };
     let entry = *symbols.get("reset").unwrap();
     let mut m = Machine::armv7em(board::stm32h743());
@@ -4463,12 +4671,12 @@ void reset(void) {
     {
         let mem = m.core.mem();
         mem.write_word(board::FLASH, INIT_SP).unwrap();
-        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1)
+            .unwrap();
     }
     m.reset().unwrap();
     let err = m.run(50_000);
     assert_eq!(err, Err(HaltCause::NonThumbTarget));
     assert_eq!(m.core.mem().read_word(RAM).unwrap(), 1, "PWR_CR3");
-    assert_eq!(m.core.mem().read_word(RAM+4).unwrap(), 1, "PWR_CR1");
+    assert_eq!(m.core.mem().read_word(RAM + 4).unwrap(), 1, "PWR_CR1");
 }
-

@@ -153,8 +153,7 @@ impl Peripheral for Nvic {
             // written bit sets or clears one line's target.
             ITNS..ITNS_END => {
                 let shift = shift(ITNS);
-                self.itns =
-                    (self.itns & !(0xFFu128 << shift)) | (u128::from(val) << shift);
+                self.itns = (self.itns & !(0xFFu128 << shift)) | (u128::from(val) << shift);
             }
             // IPR: one priority byte per line, low nibble significant on M3/M4.
             IPR..IPR_END => self.priority[(addr - IPR) as usize] = val,

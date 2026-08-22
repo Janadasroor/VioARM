@@ -116,7 +116,7 @@ impl Behavior for RtcBehavior {
                         new_flags &= !CRL_RSF;
                         crl &= !CRL_RSF;
                     }
-                    return (crl & ! (CRL_SECF | CRL_ALRF | CRL_OWF)) | new_flags | keep & CRL_RTOFF;
+                    return (crl & !(CRL_SECF | CRL_ALRF | CRL_OWF)) | new_flags | keep & CRL_RTOFF;
                 }
                 // Not CNF toggle: handle flag clears.
                 let mut new = cur;
@@ -302,7 +302,7 @@ mod tests {
         write_word(&mut rtc, 0x24, 0x0002); // ALRL=2
         write_word(&mut rtc, 0x00, 0x02); // CRH ALRIE
         write_word(&mut rtc, 0x04, 0x20); // CRL CNF=0, exit config -> RSF + RTOFF
-        // Tick: div 1 -> CNT increments every 2 ticks (1+ reload).
+                                          // Tick: div 1 -> CNT increments every 2 ticks (1+ reload).
         for _ in 0..5 {
             rtc.tick(1);
         }
@@ -326,6 +326,9 @@ mod tests {
         let mut r = Rtc::new_for::<Stm32f103>();
         write_word(&mut r, 0x00, 0x07);
         assert_eq!(read_word(&mut r, 0x00) & 0x07, 0x07);
-        assert!(matches!(r.read(BASE + 0x500), Err(crate::error::BusError::Reserved)));
+        assert!(matches!(
+            r.read(BASE + 0x500),
+            Err(crate::error::BusError::Reserved)
+        ));
     }
 }

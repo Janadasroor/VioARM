@@ -115,7 +115,9 @@ fn qemu_m0() -> Option<QemuMachine> {
 fn qemu_m33() -> Option<QemuMachine> {
     let mt = QemuMachine::detect_m33();
     if mt.is_none() {
-        eprintln!("skipping ARMv8-M baseline conformance tests: `qemu-system-arm` not found on PATH");
+        eprintln!(
+            "skipping ARMv8-M baseline conformance tests: `qemu-system-arm` not found on PATH"
+        );
     }
     mt
 }
@@ -185,11 +187,21 @@ fn conformance_v8m_at(name: &str, a: &mut Asm, halt: &str, sp: u32, mt: &QemuMac
 
 fn conformance_v7em(name: &str, a: &mut Asm, halt: &str, mt: &QemuMachine) {
     let img: Image = a.clone().finish(SP).expect("assemble");
-    let stop = img.addr(halt).unwrap_or_else(|| panic!("{name}: no label {halt:?}"));
+    let stop = img
+        .addr(halt)
+        .unwrap_or_else(|| panic!("{name}: no label {halt:?}"));
     let (vio, reached) = vio_run_v7em(&img.bytes, stop);
-    assert!(reached, "{name}: vioarm never reached halt @ {stop:#x} (last {})", snapshot_like(&vio));
+    assert!(
+        reached,
+        "{name}: vioarm never reached halt @ {stop:#x} (last {})",
+        snapshot_like(&vio)
+    );
     let qemu = qemu_run_retry(mt, &img.bytes, stop);
-    assert!(!qemu.is_empty() && qemu.last().expect("empty").r[15] & !1 == stop, "{name}: qemu never reached halt @ {stop:#x} (got {} states)", qemu.len());
+    assert!(
+        !qemu.is_empty() && qemu.last().expect("empty").r[15] & !1 == stop,
+        "{name}: qemu never reached halt @ {stop:#x} (got {} states)",
+        qemu.len()
+    );
     compare_traces(name, &vio, &qemu).expect("traces agree");
 }
 
@@ -3979,7 +3991,7 @@ fn mpu_data_violation_escalates_to_hardfault() {
     a.ldr_imm(5, 4, 8); // r5 = MMFSR
     a.ldr_imm(6, 4, 12); // r6 = HFSR
     a.ldr_imm(7, 4, 20); // r7 = MMFAR
-    // Patch the stacked PC past the faulting load and return.
+                         // Patch the stacked PC past the faulting load and return.
     a.mov_reg(1, 13); // frame base
     a.ldr_imm(2, 1, 24); // stacked PC (the faulting `ldr`)
     a.adds_imm8(2, 2); // skip it
@@ -4002,8 +4014,7 @@ fn mpu_data_violation_escalates_to_hardfault() {
          @ {stop:#x} (got {} states)",
         qemu.len()
     );
-    compare_traces("mpu_data_violation_escalates_to_hardfault", &vio, &qemu)
-        .expect("traces agree");
+    compare_traces("mpu_data_violation_escalates_to_hardfault", &vio, &qemu).expect("traces agree");
 }
 
 /// A denied data access with `SHCSR.MEMFAULTENA` set: the same MPU
@@ -4043,7 +4054,7 @@ fn mpu_data_violation_taken_as_memmanage() {
     a.mov_imm32(0, 0xE000_ED94);
     a.movs_imm8(1, 1);
     a.str_imm(1, 0, 0); // MPU_CTRL ENABLE
-    // Enable the distinct MemManage exception.
+                        // Enable the distinct MemManage exception.
     a.mov_imm32(0, 0xE000_ED24); // SHCSR
     a.mov_imm32(1, 0x0001_0000); // MEMFAULTENA
     a.str_imm(1, 0, 0);
@@ -4085,8 +4096,7 @@ fn mpu_data_violation_taken_as_memmanage() {
          @ {stop:#x} (got {} states)",
         qemu.len()
     );
-    compare_traces("mpu_data_violation_taken_as_memmanage", &vio, &qemu)
-        .expect("traces agree");
+    compare_traces("mpu_data_violation_taken_as_memmanage", &vio, &qemu).expect("traces agree");
 }
 
 /// A burst that straddles an MPU region boundary: `STMIA r0!, {r1-r4}`
@@ -4225,7 +4235,7 @@ fn m7_f64() {
     a.raw32(0xEE00_0A10); // vmov s0, r0
     a.mov_imm32(0, 0x40200000);
     a.raw32(0xEE01_0A10); // vmov s1, r0 (s1)
-    // Seed doubles d1=1.5, d2=2.5 via GPR pair -> D
+                          // Seed doubles d1=1.5, d2=2.5 via GPR pair -> D
     a.mov_imm32(0, 0x00000000);
     a.mov_imm32(1, 0x3FF80000);
     a.raw32(0xEC51_0B10); // vmov d1, r0, r1

@@ -322,7 +322,6 @@ fn frac_normalize(frac: &mut u64) -> i32 {
 // Canonicalize / uncanonicalize (QEMU `parts64_canonicalize`).
 // ---------------------------------------------------------------------------
 
-
 /// QEMU's `parts64_canonicalize`.
 fn parts_canonicalize(p: &mut Parts, status: &mut FloatStatus) {
     let w = status.width;
@@ -2631,7 +2630,10 @@ mod f64_tests {
     #[test]
     fn div_by_zero_raises_idz() {
         let mut s = FloatStatus::new(RoundMode::NearestEven);
-        assert!(eq_d(div_f64(f64(1.0), f64(0.0), &mut s), f64(f64::INFINITY)));
+        assert!(eq_d(
+            div_f64(f64(1.0), f64(0.0), &mut s),
+            f64(f64::INFINITY)
+        ));
         assert_eq!(s.take_flags(), FLAG_DIVBYZERO);
     }
 
@@ -2645,8 +2647,10 @@ mod f64_tests {
         );
         assert_eq!(s.take_flags(), 0);
         let r = sub_f64(f64(f64::INFINITY), f64(f64::INFINITY), &mut s);
-        assert!((r & 0x7ff0_0000_0000_0000) == 0x7ff0_0000_0000_0000
-            && (r & 0x000f_ffff_ffff_ffff) != 0);
+        assert!(
+            (r & 0x7ff0_0000_0000_0000) == 0x7ff0_0000_0000_0000
+                && (r & 0x000f_ffff_ffff_ffff) != 0
+        );
         assert_eq!(s.take_flags(), FLAG_INVALID | FLAG_INVALID_ISI);
     }
 
@@ -2703,18 +2707,17 @@ mod f64_tests {
         assert_eq!(s.take_flags(), FLAG_INEXACT);
 
         let mut s = FloatStatus::new(RoundMode::ToZero);
-        assert_eq!(
-            add_f64(f64(-1.0), f64(-2f64.powi(-53)), &mut s),
-            f64(-1.0)
-        );
+        assert_eq!(add_f64(f64(-1.0), f64(-2f64.powi(-53)), &mut s), f64(-1.0));
     }
 
     #[test]
     fn converts_int_round_trip() {
         let mut s = FloatStatus::new(RoundMode::NearestEven);
         assert_eq!(to_int32_f64(int32_to_f64(-12345, &mut s), &mut s), -12345);
-        assert_eq!(to_uint32_f64(uint32_to_f64(u32::MAX - 1, &mut s), &mut s),
-                   u32::MAX - 1);
+        assert_eq!(
+            to_uint32_f64(uint32_to_f64(u32::MAX - 1, &mut s), &mut s),
+            u32::MAX - 1
+        );
         // Out-of-range saturates with invalid.
         let big = int32_to_f64(i32::MAX, &mut s);
         let doubled = add_f64(big, big, &mut s);
@@ -2727,7 +2730,7 @@ mod f64_tests {
         let mut s = FloatStatus::new(RoundMode::NearestEven);
         let w = f32_to_f64((0.1f32).to_bits(), &mut s);
         assert_eq!(w, f64(0.1f32 as f64)); // exact widening
-        // Narrowing rounds: double 0.1 -> float 0.1 bits.
+                                           // Narrowing rounds: double 0.1 -> float 0.1 bits.
         let n = f64_to_f32(f64(0.1), &mut s);
         assert_eq!(n, (0.1f32).to_bits());
         // Overflowing narrow -> inf with OFC|IXC.

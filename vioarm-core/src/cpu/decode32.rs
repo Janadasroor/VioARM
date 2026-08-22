@@ -2554,7 +2554,12 @@ fn decode_vfp_dp_v7em(hi: u16, lo: u16, w: u32) -> Option<Result<Inst32, DecodeE
 
 /// Decode the VFP single-precision data-processing space
 /// (`bits[11:8] == 1010`).
-fn decode_vfp_sp(hi: u16, lo: u16, w: u32, allow_double: bool) -> Option<Result<Inst32, DecodeError>> {
+fn decode_vfp_sp(
+    hi: u16,
+    lo: u16,
+    w: u32,
+    allow_double: bool,
+) -> Option<Result<Inst32, DecodeError>> {
     let is_dp = (lo >> 8 & 0xF) == 0xB;
     // VMOV immediate: `1110 1110 1.11 imm4 Vd 1010 0000 imm4` (single) or
     // `1011` (double).
@@ -2610,91 +2615,91 @@ fn decode_vfp_sp(hi: u16, lo: u16, w: u32, allow_double: bool) -> Option<Result<
                 vd,
                 vn,
                 vm,
-            is_dp,
+                is_dp,
             })),
             1 => Some(Ok(Inst32::Vfp3 {
                 op: Vfp3Op::Vmls,
                 vd,
                 vn,
                 vm,
-            is_dp,
+                is_dp,
             })),
             2 => Some(Ok(Inst32::Vfp3 {
                 op: Vfp3Op::Vnmls,
                 vd,
                 vn,
                 vm,
-            is_dp,
+                is_dp,
             })),
             3 => Some(Ok(Inst32::Vfp3 {
                 op: Vfp3Op::Vnmla,
                 vd,
                 vn,
                 vm,
-            is_dp,
+                is_dp,
             })),
             4 => Some(Ok(Inst32::Vfp3 {
                 op: Vfp3Op::Vmul,
                 vd,
                 vn,
                 vm,
-            is_dp,
+                is_dp,
             })),
             5 => Some(Ok(Inst32::Vfp3 {
                 op: Vfp3Op::Vnmul,
                 vd,
                 vn,
                 vm,
-            is_dp,
+                is_dp,
             })),
             6 => Some(Ok(Inst32::Vfp3 {
                 op: Vfp3Op::Vadd,
                 vd,
                 vn,
                 vm,
-            is_dp,
+                is_dp,
             })),
             7 => Some(Ok(Inst32::Vfp3 {
                 op: Vfp3Op::Vsub,
                 vd,
                 vn,
                 vm,
-            is_dp,
+                is_dp,
             })),
             8 => Some(Ok(Inst32::Vfp3 {
                 op: Vfp3Op::Vdiv,
                 vd,
                 vn,
                 vm,
-            is_dp,
+                is_dp,
             })),
             10 => Some(Ok(Inst32::Vfp3 {
                 op: Vfp3Op::Vfnms,
                 vd,
                 vn,
                 vm,
-            is_dp,
+                is_dp,
             })),
             11 => Some(Ok(Inst32::Vfp3 {
                 op: Vfp3Op::Vfnma,
                 vd,
                 vn,
                 vm,
-            is_dp,
+                is_dp,
             })),
             12 => Some(Ok(Inst32::Vfp3 {
                 op: Vfp3Op::Vfma,
                 vd,
                 vn,
                 vm,
-            is_dp,
+                is_dp,
             })),
             13 => Some(Ok(Inst32::Vfp3 {
                 op: Vfp3Op::Vfms,
                 vd,
                 vn,
                 vm,
-            is_dp,
+                is_dp,
             })),
             // opcode 9 (VDIV with bit6 set) is unallocated.
             _ => Some(Err(err_for(hi))),
@@ -2722,15 +2727,15 @@ fn decode_vfp_sp(hi: u16, lo: u16, w: u32, allow_double: bool) -> Option<Result<
                     op: Vfp2Op::Vmov,
                     vd,
                     vm,
-                is_dp,
-            }))
+                    is_dp,
+                }))
             } else {
                 Some(Ok(Inst32::Vfp2 {
                     op: Vfp2Op::Vabs,
                     vd,
                     vm,
-                is_dp,
-            }))
+                    is_dp,
+                }))
             }
         }
         // 0001: VNEG / VSQRT, selected by bit7.
@@ -2743,15 +2748,15 @@ fn decode_vfp_sp(hi: u16, lo: u16, w: u32, allow_double: bool) -> Option<Result<
                     op: Vfp2Op::Vneg,
                     vd,
                     vm,
-                is_dp,
-            }))
+                    is_dp,
+                }))
             } else {
                 Some(Ok(Inst32::Vfp2 {
                     op: Vfp2Op::Vsqrt,
                     vd,
                     vm,
-                is_dp,
-            }))
+                    is_dp,
+                }))
             }
         }
         // 0010/0011: VCVT half/single (fp16), undefined on FPv4-SP.
@@ -2762,13 +2767,13 @@ fn decode_vfp_sp(hi: u16, lo: u16, w: u32, allow_double: bool) -> Option<Result<
                 return Some(Err(err_for(hi)));
             }
             Some(Ok(Inst32::VfpCmp {
-            vd,
-            vm,
-            e: bit7 == 1,
-            z: b19_16 & 1 == 1,
-        is_dp,
+                vd,
+                vm,
+                e: bit7 == 1,
+                z: b19_16 & 1 == 1,
+                is_dp,
             }))
-        },
+        }
         // 0110: VRINTR/VRINTZ, selected by bit7.
         0x6 => {
             if is_dp && !allow_double {
@@ -2868,7 +2873,12 @@ fn decode_vfp_sp(hi: u16, lo: u16, w: u32, allow_double: bool) -> Option<Result<
             let opc = ((((w >> 18) & 1) << 2) | ((b19_16 & 1) << 1) | bit7) as u8;
             let imm = (((w & 0xF) << 1) as u8) | ((w >> 5) & 1) as u8;
             let frac = if opc & 1 == 0 { 16 - imm } else { 32 - imm };
-            Some(Ok(Inst32::VfpCvtFix { opc, frac, vd, is_dp }))
+            Some(Ok(Inst32::VfpCvtFix {
+                opc,
+                frac,
+                vd,
+                is_dp,
+            }))
         }
         _ => Some(Err(err_for(hi))),
     }
@@ -3276,41 +3286,85 @@ mod tests {
     fn v8m_baseline_decodes_subset() {
         // The ARMv8-M baseline Thumb-2 subset decodes identically to ARMv7-M.
         // b.w +10.
-        assert_eq!(v8m_bytes([0x00, 0xf0, 0x05, 0xb8]), Ok(Inst32::BranchWide { off: 10 }));
+        assert_eq!(
+            v8m_bytes([0x00, 0xf0, 0x05, 0xb8]),
+            Ok(Inst32::BranchWide { off: 10 })
+        );
         // movw r9, #0x1234 / movt r9, #0xabcd.
         assert_eq!(
             v8m_bytes([0x41, 0xf2, 0x34, 0x29]),
-            Ok(Inst32::MovWide { rd: 9, imm: 0x1234, high: false })
+            Ok(Inst32::MovWide {
+                rd: 9,
+                imm: 0x1234,
+                high: false
+            })
         );
         assert_eq!(
             v8m_bytes([0xca, 0xf6, 0xcd, 0x39]),
-            Ok(Inst32::MovWide { rd: 9, imm: 0xABCD, high: true })
+            Ok(Inst32::MovWide {
+                rd: 9,
+                imm: 0xABCD,
+                high: true
+            })
         );
         // sdiv r0, r0, r1 / udiv r2, r4, r5.
         assert_eq!(
             v8m_bytes([0x90, 0xfb, 0xf1, 0xf0]),
-            Ok(Inst32::Div { signed: true, rd: 0, rn: 0, rm: 1 })
+            Ok(Inst32::Div {
+                signed: true,
+                rd: 0,
+                rn: 0,
+                rm: 1
+            })
         );
         assert_eq!(
             v8m_bytes([0xb4, 0xfb, 0xf5, 0xf2]),
-            Ok(Inst32::Div { signed: false, rd: 2, rn: 4, rm: 5 })
+            Ok(Inst32::Div {
+                signed: false,
+                rd: 2,
+                rn: 4,
+                rm: 5
+            })
         );
         // ldrex r0, [r2] / strex r1, r0, [r2] + byte/halfword forms.
         assert_eq!(
             v8m_bytes([0x52, 0xe8, 0x00, 0x0f]),
-            Ok(Inst32::Ldrex { rt: 0, rn: 2, size: ExSize::Word, off: 0 })
+            Ok(Inst32::Ldrex {
+                rt: 0,
+                rn: 2,
+                size: ExSize::Word,
+                off: 0
+            })
         );
         assert_eq!(
             v8m_bytes([0x42, 0xe8, 0x00, 0x01]),
-            Ok(Inst32::Strex { rd: 1, rt: 0, rn: 2, size: ExSize::Word, off: 0 })
+            Ok(Inst32::Strex {
+                rd: 1,
+                rt: 0,
+                rn: 2,
+                size: ExSize::Word,
+                off: 0
+            })
         );
         assert_eq!(
             v8m_bytes([0xc2, 0xe8, 0x41, 0x0f]),
-            Ok(Inst32::Strex { rd: 1, rt: 0, rn: 2, size: ExSize::Byte, off: 0 })
+            Ok(Inst32::Strex {
+                rd: 1,
+                rt: 0,
+                rn: 2,
+                size: ExSize::Byte,
+                off: 0
+            })
         );
         assert_eq!(
             v8m_bytes([0xc2, 0xe8, 0x51, 0x0f]),
-            Ok(Inst32::Strex { rd: 1, rt: 0, rn: 2, size: ExSize::Half, off: 0 })
+            Ok(Inst32::Strex {
+                rd: 1,
+                rt: 0,
+                rn: 2,
+                size: ExSize::Half,
+                off: 0
+            })
         );
         // clrex, barriers, bl, mrs.
         assert_eq!(v8m_bytes([0xbf, 0xf3, 0x2f, 0x8f]), Ok(Inst32::Clrex));
@@ -3322,7 +3376,10 @@ mod tests {
             v8m_bytes([0xff, 0xf7, 0xfe, 0xff]),
             Ok(Inst32::Bl { off: -4 })
         );
-        assert!(matches!(v8m_bytes([0xef, 0xf3, 0x7f, 0x80]), Ok(Inst32::Mrs { .. })));
+        assert!(matches!(
+            v8m_bytes([0xef, 0xf3, 0x7f, 0x80]),
+            Ok(Inst32::Mrs { .. })
+        ));
     }
 
     #[test]
@@ -3345,7 +3402,10 @@ mod tests {
                 v8m_bytes(b).is_err(),
                 "ARMv8-M baseline must reject {b:02x?}"
             );
-            assert!(v7m_bytes(b).is_ok(), "control: {b:02x?} must decode on v7-M");
+            assert!(
+                v7m_bytes(b).is_ok(),
+                "control: {b:02x?} must decode on v7-M"
+            );
         }
     }
 
@@ -3354,51 +3414,117 @@ mod tests {
         // The ARMv8-M acquire/release family decodes on the baseline...
         assert_eq!(
             v8m_bytes([0xd3, 0xe8, 0xaf, 0x0f]),
-            Ok(Inst32::Lda { rt: 0, rn: 3, size: ExSize::Word, exclusive: false })
+            Ok(Inst32::Lda {
+                rt: 0,
+                rn: 3,
+                size: ExSize::Word,
+                exclusive: false
+            })
         );
         assert_eq!(
             v8m_bytes([0xd3, 0xe8, 0x8f, 0x0f]),
-            Ok(Inst32::Lda { rt: 0, rn: 3, size: ExSize::Byte, exclusive: false })
+            Ok(Inst32::Lda {
+                rt: 0,
+                rn: 3,
+                size: ExSize::Byte,
+                exclusive: false
+            })
         );
         assert_eq!(
             v8m_bytes([0xd3, 0xe8, 0x9f, 0x0f]),
-            Ok(Inst32::Lda { rt: 0, rn: 3, size: ExSize::Half, exclusive: false })
+            Ok(Inst32::Lda {
+                rt: 0,
+                rn: 3,
+                size: ExSize::Half,
+                exclusive: false
+            })
         );
         assert_eq!(
             v8m_bytes([0xd3, 0xe8, 0xef, 0x0f]),
-            Ok(Inst32::Lda { rt: 0, rn: 3, size: ExSize::Word, exclusive: true })
+            Ok(Inst32::Lda {
+                rt: 0,
+                rn: 3,
+                size: ExSize::Word,
+                exclusive: true
+            })
         );
         assert_eq!(
             v8m_bytes([0xd3, 0xe8, 0xcf, 0x0f]),
-            Ok(Inst32::Lda { rt: 0, rn: 3, size: ExSize::Byte, exclusive: true })
+            Ok(Inst32::Lda {
+                rt: 0,
+                rn: 3,
+                size: ExSize::Byte,
+                exclusive: true
+            })
         );
         assert_eq!(
             v8m_bytes([0xd3, 0xe8, 0xdf, 0x0f]),
-            Ok(Inst32::Lda { rt: 0, rn: 3, size: ExSize::Half, exclusive: true })
+            Ok(Inst32::Lda {
+                rt: 0,
+                rn: 3,
+                size: ExSize::Half,
+                exclusive: true
+            })
         );
         assert_eq!(
             v8m_bytes([0xc3, 0xe8, 0xaf, 0x0f]),
-            Ok(Inst32::Stl { rd: 15, rt: 0, rn: 3, size: ExSize::Word, exclusive: false })
+            Ok(Inst32::Stl {
+                rd: 15,
+                rt: 0,
+                rn: 3,
+                size: ExSize::Word,
+                exclusive: false
+            })
         );
         assert_eq!(
             v8m_bytes([0xc3, 0xe8, 0x8f, 0x0f]),
-            Ok(Inst32::Stl { rd: 15, rt: 0, rn: 3, size: ExSize::Byte, exclusive: false })
+            Ok(Inst32::Stl {
+                rd: 15,
+                rt: 0,
+                rn: 3,
+                size: ExSize::Byte,
+                exclusive: false
+            })
         );
         assert_eq!(
             v8m_bytes([0xc3, 0xe8, 0x9f, 0x0f]),
-            Ok(Inst32::Stl { rd: 15, rt: 0, rn: 3, size: ExSize::Half, exclusive: false })
+            Ok(Inst32::Stl {
+                rd: 15,
+                rt: 0,
+                rn: 3,
+                size: ExSize::Half,
+                exclusive: false
+            })
         );
         assert_eq!(
             v8m_bytes([0xc3, 0xe8, 0xe5, 0x0f]),
-            Ok(Inst32::Stl { rd: 5, rt: 0, rn: 3, size: ExSize::Word, exclusive: true })
+            Ok(Inst32::Stl {
+                rd: 5,
+                rt: 0,
+                rn: 3,
+                size: ExSize::Word,
+                exclusive: true
+            })
         );
         assert_eq!(
             v8m_bytes([0xc3, 0xe8, 0xc5, 0x0f]),
-            Ok(Inst32::Stl { rd: 5, rt: 0, rn: 3, size: ExSize::Byte, exclusive: true })
+            Ok(Inst32::Stl {
+                rd: 5,
+                rt: 0,
+                rn: 3,
+                size: ExSize::Byte,
+                exclusive: true
+            })
         );
         assert_eq!(
             v8m_bytes([0xc3, 0xe8, 0xd5, 0x0f]),
-            Ok(Inst32::Stl { rd: 5, rt: 0, rn: 3, size: ExSize::Half, exclusive: true })
+            Ok(Inst32::Stl {
+                rd: 5,
+                rt: 0,
+                rn: 3,
+                size: ExSize::Half,
+                exclusive: true
+            })
         );
 
         // ...while ARMv7-M (and the boundary) rejects the whole family.
@@ -3408,7 +3534,10 @@ mod tests {
             [0xc3, 0xe8, 0xe5, 0x0f], // stlex r5, r0, [r3]
         ] {
             assert!(v7m_bytes(b).is_err(), "ARMv7-M must reject {b:02x?}");
-            assert!(v8m_bytes(b).is_ok(), "ARMv8-M baseline must decode {b:02x?}");
+            assert!(
+                v8m_bytes(b).is_ok(),
+                "ARMv8-M baseline must decode {b:02x?}"
+            );
         }
 
         // Malformed forms: PC as Rn/Rt/Rd, a stray low nibble on the loads,
@@ -3427,36 +3556,64 @@ mod tests {
         // and the variant from the second halfword's op field.
         assert_eq!(
             v8m_bytes([0x40, 0xe8, 0x00, 0xf4]),
-            Ok(Inst32::Tt { variant: TtVariant::Tt, rd: 4, rn: 0 })
+            Ok(Inst32::Tt {
+                variant: TtVariant::Tt,
+                rd: 4,
+                rn: 0
+            })
         );
         assert_eq!(
             v8m_bytes([0x40, 0xe8, 0x40, 0xf7]),
-            Ok(Inst32::Tt { variant: TtVariant::Tttt, rd: 7, rn: 0 })
+            Ok(Inst32::Tt {
+                variant: TtVariant::Tttt,
+                rd: 7,
+                rn: 0
+            })
         );
         assert_eq!(
             v8m_bytes([0x40, 0xe8, 0x80, 0xf5]),
-            Ok(Inst32::Tt { variant: TtVariant::Tta, rd: 5, rn: 0 })
+            Ok(Inst32::Tt {
+                variant: TtVariant::Tta,
+                rd: 5,
+                rn: 0
+            })
         );
         assert_eq!(
             v8m_bytes([0x40, 0xe8, 0xc0, 0xf6]),
-            Ok(Inst32::Tt { variant: TtVariant::Ttat, rd: 6, rn: 0 })
+            Ok(Inst32::Tt {
+                variant: TtVariant::Ttat,
+                rd: 6,
+                rn: 0
+            })
         );
         // A high `Rd` (8..=12) sets bit 11 of the second halfword; it must
         // still decode (the second-halfword prefix check only pins the top
         // nibble).
         assert_eq!(
             v8m_bytes([0x40, 0xe8, 0x80, 0xf8]),
-            Ok(Inst32::Tt { variant: TtVariant::Tta, rd: 8, rn: 0 })
+            Ok(Inst32::Tt {
+                variant: TtVariant::Tta,
+                rd: 8,
+                rn: 0
+            })
         );
         assert_eq!(
             v8m_bytes([0x44, 0xe8, 0x80, 0xfc]),
-            Ok(Inst32::Tt { variant: TtVariant::Tta, rd: 12, rn: 4 })
+            Ok(Inst32::Tt {
+                variant: TtVariant::Tta,
+                rd: 12,
+                rn: 4
+            })
         );
         // A non-zero `Rn` lives in the first halfword; the second halfword's
         // low bits stay reserved.
         assert_eq!(
             v8m_bytes([0x41, 0xe8, 0x00, 0xf4]),
-            Ok(Inst32::Tt { variant: TtVariant::Tt, rd: 4, rn: 1 })
+            Ok(Inst32::Tt {
+                variant: TtVariant::Tt,
+                rd: 4,
+                rn: 1
+            })
         );
 
         // ...while ARMv7-M (and the boundary) rejects the family.
@@ -3466,7 +3623,10 @@ mod tests {
             [0x40, 0xe8, 0x40, 0xf7], // tttt r7, r0
         ] {
             assert!(v7m_bytes(b).is_err(), "ARMv7-M must reject {b:02x?}");
-            assert!(v8m_bytes(b).is_ok(), "ARMv8-M baseline must decode {b:02x?}");
+            assert!(
+                v8m_bytes(b).is_ok(),
+                "ARMv8-M baseline must decode {b:02x?}"
+            );
         }
 
         // Constrained-unpredictable forms: Rd of 13/15, Rn of 15, and the
@@ -5274,7 +5434,7 @@ mod tests {
                 vd: 0,
                 vn: 1,
                 vm: 2,
-            is_dp: false,
+                is_dp: false,
             })
         );
         // `vfma.f32 s5, s6, s7`: Vd=5, Vn=6, Vm=7.
@@ -5285,7 +5445,7 @@ mod tests {
                 vd: 5,
                 vn: 6,
                 vm: 7,
-            is_dp: false,
+                is_dp: false,
             })
         );
         // `vmla.f32 s0, s0, s0` (0xEE00 0x0A00) must decode as VMLA, NOT as
@@ -5297,7 +5457,7 @@ mod tests {
                 vd: 0,
                 vn: 0,
                 vm: 0,
-            is_dp: false,
+                is_dp: false,
             })
         );
         // `vdiv.f32 s2, s6, s4`.
@@ -5308,7 +5468,7 @@ mod tests {
                 vd: 2,
                 vn: 6,
                 vm: 4,
-            is_dp: false,
+                is_dp: false,
             })
         );
         // VFMS: op = 1101 (bit6 set).
@@ -5319,7 +5479,7 @@ mod tests {
                 vd: 5,
                 vn: 6,
                 vm: 7,
-            is_dp: false,
+                is_dp: false,
             })
         );
         // VFNMA: op = 1011.
@@ -5330,7 +5490,7 @@ mod tests {
                 vd: 4,
                 vn: 6,
                 vm: 7,
-            is_dp: false,
+                is_dp: false,
             })
         );
     }
@@ -5344,7 +5504,7 @@ mod tests {
                 op: Vfp2Op::Vabs,
                 vd: 3,
                 vm: 4,
-            is_dp: false,
+                is_dp: false,
             })
         );
         // `vneg.f32 s3, s4`.
@@ -5354,7 +5514,7 @@ mod tests {
                 op: Vfp2Op::Vneg,
                 vd: 3,
                 vm: 4,
-            is_dp: false,
+                is_dp: false,
             })
         );
         // `vsqrt.f32 s3, s4`.
@@ -5364,7 +5524,7 @@ mod tests {
                 op: Vfp2Op::Vsqrt,
                 vd: 3,
                 vm: 4,
-            is_dp: false,
+                is_dp: false,
             })
         );
         // `vmov.f32 s3, s4` (bit7 clear).
@@ -5374,7 +5534,7 @@ mod tests {
                 op: Vfp2Op::Vmov,
                 vd: 3,
                 vm: 4,
-            is_dp: false,
+                is_dp: false,
             })
         );
     }
@@ -5389,7 +5549,7 @@ mod tests {
                 vm: 0,
                 e: false,
                 z: false,
-            is_dp: false,
+                is_dp: false,
             })
         );
         // `vcmpe.f32 s1, s3` (signaling, Vm odd).
@@ -5400,7 +5560,7 @@ mod tests {
                 vm: 3,
                 e: true,
                 z: false,
-            is_dp: false,
+                is_dp: false,
             })
         );
         // `vcvt.f32.s32 s1, s2` (int -> float, signed).

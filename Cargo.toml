@@ -3,10 +3,18 @@ resolver = "2"
 members = ["vioarm-core", "vioarm-cli", "vioarm-svd", "vioarm-gdb", "vioarm-qemu"]
 
 [workspace.package]
-version = "0.1.0"
+version = "1.6.1"
 edition = "2021"
 license = "MIT"
 rust-version = "1.75"
+description = "ARM Cortex-M ISS — ARMv6-M/ARMv7-M/ARMv7E-M/ARMv8-M baseline with FPv5-D16, validated against QEMU"
+repository = "https://github.com/Janadasroor/VioARM"
+homepage = "https://github.com/Janadasroor/VioARM"
+documentation = "https://docs.rs/vioarm-core"
+readme = "README.md"
+keywords = ["arm", "cortex-m", "emulator", "iss", "qemu"]
+categories = ["emulators", "embedded"]
+authors = ["Janadasroor"]
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -93,7 +93,8 @@ impl Behavior for DacBehavior {
             SWTRIGR => {
                 if word & (1 << 0) != 0 {
                     let cr = view.get(CR);
-                    if cr & CR_EN1 != 0 && cr & CR_TEN1 != 0 && ((cr >> CR_TSEL1_SHIFT) & 0x7) == 0 {
+                    if cr & CR_EN1 != 0 && cr & CR_TEN1 != 0 && ((cr >> CR_TSEL1_SHIFT) & 0x7) == 0
+                    {
                         if cr & CR_DMAEN1 != 0 {
                             self.assert_dma(3);
                         } else {
@@ -104,7 +105,8 @@ impl Behavior for DacBehavior {
                 }
                 if word & (1 << 1) != 0 {
                     let cr = view.get(CR);
-                    if cr & CR_EN2 != 0 && cr & CR_TEN2 != 0 && ((cr >> CR_TSEL2_SHIFT) & 0x7) == 0 {
+                    if cr & CR_EN2 != 0 && cr & CR_TEN2 != 0 && ((cr >> CR_TSEL2_SHIFT) & 0x7) == 0
+                    {
                         if cr & CR_DMAEN2 != 0 {
                             self.assert_dma(4);
                         } else if let Some(v) = view.try_get(DHR12R2) {

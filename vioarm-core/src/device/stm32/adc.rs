@@ -101,7 +101,7 @@ impl AdcBehavior {
     fn channel_at(&self, view: &Registers<&mut [u32]>, index: u32) -> u8 {
         let sqr1 = self.config.sqr1_off;
         let (reg, shift) = match index {
-            0..=5 => (sqr1 + 8, index * 5), // SQR3 = SQR1+8
+            0..=5 => (sqr1 + 8, index * 5),        // SQR3 = SQR1+8
             6..=11 => (sqr1 + 4, (index - 6) * 5), // SQR2 = SQR1+4
             _ => (sqr1, (index - 12) * 5),
         };
@@ -356,7 +356,10 @@ fn config_from(def: &'static PeripheralDef) -> AdcConfig {
         .find(|f| f.name == "EOC")
         .map(|f| 1u32 << f.offset)
         .unwrap_or(1 << 1);
-    let adon_field = cr.fields.iter().find(|f| f.name == "ADON" || f.name == "ADEN");
+    let adon_field = cr
+        .fields
+        .iter()
+        .find(|f| f.name == "ADON" || f.name == "ADEN");
     let adon_bit = adon_field.map(|f| 1u32 << f.offset).unwrap_or(1 << 0);
     // The F1 still routes the external trigger through `CR2.EXTTRIG`; the F4
     // replaced it with `EXTEN`. Where `EXTTRIG` exists, a second `ADON` write

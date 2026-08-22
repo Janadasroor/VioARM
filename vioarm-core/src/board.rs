@@ -12,37 +12,37 @@
 //! real peripheral map; a third, [`stm32f107`], models a connectivity-line
 //! STM32F107 on the shared `STM32F107xx.svd` tables.
 
+use crate::device::dwt::Dwt;
 use crate::device::gpio::Gpio;
 use crate::device::stm32::adc::Adc;
 use crate::device::stm32::afio::Afio;
-use crate::device::stm32::can::Can;
 use crate::device::stm32::bkp::Bkp;
+use crate::device::stm32::can::Can;
 use crate::device::stm32::crc::Crc;
 use crate::device::stm32::dac::Dac;
 use crate::device::stm32::dma::{DmaF1, DmaRequests};
-use crate::device::stm32::fdcan::Fdcan;
-use crate::device::stm32::fmc::{Dmamux, Dma2d, Fmc, Ltdc, Qspi};
-use crate::device::stm32::pwr::Pwr;
-use crate::device::stm32::rtc::Rtc;
-use crate::device::stm32::sdio::Sdio;
 use crate::device::stm32::dma_f4::DmaF4;
 use crate::device::stm32::eth::{Eth, EthH7, EthMailbox};
 use crate::device::stm32::exti::Exti;
+use crate::device::stm32::fdcan::Fdcan;
 use crate::device::stm32::flash::{FlashF1, FlashF4, FlashGate};
+use crate::device::stm32::fmc::{Dma2d, Dmamux, Fmc, Ltdc, Qspi};
 use crate::device::stm32::gpio::Gpio as StmGpio;
 use crate::device::stm32::gpio_f4::GpioF4;
 use crate::device::stm32::i2c::I2c;
+use crate::device::stm32::pwr::Pwr;
 use crate::device::stm32::rcc::Rcc;
+use crate::device::stm32::rtc::Rtc;
+use crate::device::stm32::sdio::Sdio;
 use crate::device::stm32::spi::Spi;
 use crate::device::stm32::syscfg::Syscfg;
 use crate::device::stm32::timer::Timer;
 use crate::device::stm32::usart::Usart;
 use crate::device::stm32::usb::Usb;
 use crate::device::stm32::watchdog::{Iwdg, Wwdg};
-use crate::device::dwt::Dwt;
-use crate::device::Peripheral;
 use crate::device::systick::SysTick;
 use crate::device::uart::UartTx;
+use crate::device::Peripheral;
 use crate::mem::bus::Region;
 use crate::mem::flat::FlatMemory;
 use crate::mem::system::SystemMemory;
@@ -128,14 +128,24 @@ pub fn stm32f103() -> BoardMemory {
     mem.set_flash_gate(gate.clone());
     mem.attach(Box::new(FlashF1::new(gate)));
     mem.attach(Box::new(Rcc::new()));
-    mem.attach(Box::new(Pwr::new_for::<crate::device::svd::stm32f103::Stm32f103>()));
-    mem.attach(Box::new(Crc::new_for::<crate::device::svd::stm32f103::Stm32f103>()));
+    mem.attach(Box::new(Pwr::new_for::<
+        crate::device::svd::stm32f103::Stm32f103,
+    >()));
+    mem.attach(Box::new(Crc::new_for::<
+        crate::device::svd::stm32f103::Stm32f103,
+    >()));
     mem.attach(Box::new(Dac::new_with_dma::<
         crate::device::svd::stm32f103::Stm32f103,
     >(dma_requests.clone())));
-    mem.attach(Box::new(Rtc::new_for::<crate::device::svd::stm32f103::Stm32f103>()));
-    mem.attach(Box::new(Bkp::new_for::<crate::device::svd::stm32f103::Stm32f103>()));
-    mem.attach(Box::new(Sdio::new_for::<crate::device::svd::stm32f103::Stm32f103>()));
+    mem.attach(Box::new(Rtc::new_for::<
+        crate::device::svd::stm32f103::Stm32f103,
+    >()));
+    mem.attach(Box::new(Bkp::new_for::<
+        crate::device::svd::stm32f103::Stm32f103,
+    >()));
+    mem.attach(Box::new(Sdio::new_for::<
+        crate::device::svd::stm32f103::Stm32f103,
+    >()));
     mem.attach(Box::new(StmGpio::at(stm32::GPIOA, "gpioa")));
     mem.attach(Box::new(StmGpio::at(stm32::GPIOB, "gpiob")));
     mem.attach(Box::new(StmGpio::at(stm32::GPIOC, "gpioc")));
@@ -386,7 +396,11 @@ pub fn stm32f072() -> BoardMemory {
     use crate::device::svd::stm32f072::Stm32f072;
     let backing = FlatMemory::with_layout(
         &[FLASH, STM32_MAIN_FLASH, RAM],
-        &[STM32_F072_FLASH_LEN, STM32_F072_FLASH_LEN, STM32_F072_RAM_LEN],
+        &[
+            STM32_F072_FLASH_LEN,
+            STM32_F072_FLASH_LEN,
+            STM32_F072_RAM_LEN,
+        ],
     );
     let gate = Arc::new(Mutex::new(FlashGate::new(
         Region::new(STM32_MAIN_FLASH, STM32_F072_FLASH_LEN),
@@ -512,7 +526,11 @@ pub fn stm32f303xe() -> BoardMemory {
     use crate::device::svd::stm32f303xe::Stm32f303xe;
     let backing = FlatMemory::with_layout(
         &[FLASH, STM32_MAIN_FLASH, RAM],
-        &[STM32_F303XE_FLASH_LEN, STM32_F303XE_FLASH_LEN, STM32_F303XE_RAM_LEN],
+        &[
+            STM32_F303XE_FLASH_LEN,
+            STM32_F303XE_FLASH_LEN,
+            STM32_F303XE_RAM_LEN,
+        ],
     );
     let gate = Arc::new(Mutex::new(FlashGate::new(
         Region::new(STM32_MAIN_FLASH, STM32_F303XE_FLASH_LEN),
@@ -608,9 +626,17 @@ pub fn stm32f303xe() -> BoardMemory {
         let dma_requests = Arc::new(Mutex::new(DmaRequests::new()));
         let dma = Arc::new(Mutex::new(Vec::new()));
         mem.set_dma_mailbox(dma.clone());
-        mem.attach(Box::new(DmaF1::dma_for::<Stm32f303xe>("DMA1", dma.clone(), dma_requests.clone())));
+        mem.attach(Box::new(DmaF1::dma_for::<Stm32f303xe>(
+            "DMA1",
+            dma.clone(),
+            dma_requests.clone(),
+        )));
         if <Stm32f303xe as crate::device::svd::Device>::peripheral("DMA2").is_some() {
-            mem.attach(Box::new(DmaF1::dma_for::<Stm32f303xe>("DMA2", dma, dma_requests)));
+            mem.attach(Box::new(DmaF1::dma_for::<Stm32f303xe>(
+                "DMA2",
+                dma,
+                dma_requests,
+            )));
         }
     }
     let watchdog = Arc::new(Mutex::new(false));
@@ -637,7 +663,11 @@ pub fn stm32l476() -> BoardMemory {
     use crate::device::svd::stm32l476::Stm32l476;
     let backing = FlatMemory::with_layout(
         &[FLASH, STM32_MAIN_FLASH, RAM],
-        &[STM32_L476_FLASH_LEN, STM32_L476_FLASH_LEN, STM32_L476_RAM_LEN],
+        &[
+            STM32_L476_FLASH_LEN,
+            STM32_L476_FLASH_LEN,
+            STM32_L476_RAM_LEN,
+        ],
     );
     let gate = Arc::new(Mutex::new(FlashGate::new(
         Region::new(STM32_MAIN_FLASH, STM32_L476_FLASH_LEN),
@@ -678,10 +708,7 @@ pub fn stm32l476() -> BoardMemory {
             mem.attach(Box::new(ctor()));
         }
     }
-    for ctor in [
-        Timer::tim2_for::<Stm32l476>,
-        Timer::tim6_for::<Stm32l476>,
-    ] {
+    for ctor in [Timer::tim2_for::<Stm32l476>, Timer::tim6_for::<Stm32l476>] {
         let base = ctor().ranges()[0].base;
         if <Stm32l476 as crate::device::svd::Device>::by_base(base).is_some() {
             mem.attach(Box::new(ctor()));
@@ -717,7 +744,11 @@ pub fn stm32g474xx() -> BoardMemory {
     use crate::device::svd::stm32g474xx::Stm32g474;
     let backing = FlatMemory::with_layout(
         &[FLASH, STM32_MAIN_FLASH, RAM],
-        &[STM32_G474_FLASH_LEN, STM32_G474_FLASH_LEN, STM32_G474_RAM_LEN],
+        &[
+            STM32_G474_FLASH_LEN,
+            STM32_G474_FLASH_LEN,
+            STM32_G474_RAM_LEN,
+        ],
     );
     let gate = Arc::new(Mutex::new(FlashGate::new(
         Region::new(STM32_MAIN_FLASH, STM32_G474_FLASH_LEN),
@@ -754,10 +785,7 @@ pub fn stm32g474xx() -> BoardMemory {
             mem.attach(Box::new(ctor()));
         }
     }
-    for ctor in [
-        Timer::tim2_for::<Stm32g474>,
-        Timer::tim6_for::<Stm32g474>,
-    ] {
+    for ctor in [Timer::tim2_for::<Stm32g474>, Timer::tim6_for::<Stm32g474>] {
         let base = ctor().ranges()[0].base;
         if <Stm32g474 as crate::device::svd::Device>::by_base(base).is_some() {
             mem.attach(Box::new(ctor()));
@@ -799,8 +827,26 @@ pub fn stm32h743() -> BoardMemory {
     const QSPI_BASE: u32 = 0x9000_0000;
     const QSPI_LEN: u32 = 0x0100_0000;
     let backing = FlatMemory::with_layout(
-        &[FLASH, STM32_MAIN_FLASH, DTCM_BASE, AXI_BASE, SRAM1_BASE, SRAM2_BASE, FMC_SDRAM_BASE, QSPI_BASE],
-        &[STM32_H743_FLASH_LEN, STM32_H743_FLASH_LEN, DTCM_LEN, AXI_LEN, SRAM1_LEN, SRAM2_LEN, FMC_SDRAM_LEN, QSPI_LEN],
+        &[
+            FLASH,
+            STM32_MAIN_FLASH,
+            DTCM_BASE,
+            AXI_BASE,
+            SRAM1_BASE,
+            SRAM2_BASE,
+            FMC_SDRAM_BASE,
+            QSPI_BASE,
+        ],
+        &[
+            STM32_H743_FLASH_LEN,
+            STM32_H743_FLASH_LEN,
+            DTCM_LEN,
+            AXI_LEN,
+            SRAM1_LEN,
+            SRAM2_LEN,
+            FMC_SDRAM_LEN,
+            QSPI_LEN,
+        ],
     );
     let gate = Arc::new(Mutex::new(FlashGate::new(
         Region::new(STM32_MAIN_FLASH, STM32_H743_FLASH_LEN),
@@ -838,7 +884,9 @@ pub fn stm32h743() -> BoardMemory {
     // }
     // DAC
     if <Stm32h743 as crate::device::svd::Device>::peripheral("DAC").is_some() {
-        mem.attach(Box::new(Dac::new_with_dma::<Stm32h743>(dma_requests.clone())));
+        mem.attach(Box::new(Dac::new_with_dma::<Stm32h743>(
+            dma_requests.clone(),
+        )));
     }
     // SDMMC1 (SDIO) - H743 uses SDMMC1 at 0x52007000, same offsets as SDIO
     if <Stm32h743 as crate::device::svd::Device>::peripheral("SDMMC1").is_some()
@@ -974,7 +1022,9 @@ pub fn stm32h743() -> BoardMemory {
             // Fallback: attach FS if found
             if <Stm32h743 as crate::device::svd::Device>::peripheral("OTG_FS").is_some() {
                 mem.attach(Box::new(Usb::otg_fs_for::<Stm32h743>()));
-            } else if <Stm32h743 as crate::device::svd::Device>::peripheral("OTG2_HS_GLOBAL").is_some() {
+            } else if <Stm32h743 as crate::device::svd::Device>::peripheral("OTG2_HS_GLOBAL")
+                .is_some()
+            {
                 // H743 second HS is at 0x40080000, reuse HS window but via FS helper's base is different?
                 // For now attach HS again which will find OTG1, so skip second to avoid duplicate base
             }

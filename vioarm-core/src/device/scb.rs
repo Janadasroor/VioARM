@@ -1,4 +1,4 @@
-﻿//! The ARMv7-M System Control Block (subset).
+//! The ARMv7-M System Control Block (subset).
 //!
 //! Models the `ICSR` `PendSV` set/clear bits, the `SHPR2`/`SHPR3` configurable
 //! exception priorities (`SVCall`, `PendSV`, `SysTick`), the `VTOR` vector
@@ -295,7 +295,8 @@ const fn ap_rw_prot(ap: u32, privileged: bool) -> u8 {
 /// The PMSAv8 (v8-M) MPU register file: the control bits and eight regions,
 /// banked per security state (index 0 = Non-secure, 1 = Secure).
 #[derive(Debug, Clone)]
-struct MpuV8 {    /// `MPU_CTRL` per security state (`ENABLE`/`HFNMIENA`/`PRIVDEFENA`).
+struct MpuV8 {
+    /// `MPU_CTRL` per security state (`ENABLE`/`HFNMIENA`/`PRIVDEFENA`).
     ctrl: [u32; 2],
     /// `MPU_RNR.REGION` per security state.
     rnr: [u32; 2],
@@ -325,7 +326,7 @@ impl Default for MpuV8 {
 pub struct Scb {
     ranges: [Region; 20],
     pendsv: bool,
-/// `SHPR1`: configurable priorities for the fault exceptions
+    /// `SHPR1`: configurable priorities for the fault exceptions
     /// (`MemManage` byte 0, `BusFault` byte 1, `UsageFault` byte 2).
     shpr1: u32,
     shpr2: u32,
@@ -950,13 +951,17 @@ impl Scb {
         }
     }
 
-/// The v8-M region index for `reg_off`: the base registers use the full
+    /// The v8-M region index for `reg_off`: the base registers use the full
     /// `MPU_RNR.REGION`; the `RBAR`/`RLAR` aliases `A1`..`A3` override the low
     /// two bits of the region number.
     const fn mpu_v8_region_index(&self, reg_off: u32, base: u32) -> usize {
         let rnr = self.mpu_v8.rnr[self.secure as usize];
         let alias = (reg_off - base) / 8;
-        let region = if alias == 0 { rnr } else { (rnr & !0x3) | alias };
+        let region = if alias == 0 {
+            rnr
+        } else {
+            (rnr & !0x3) | alias
+        };
         region as usize
     }
 
@@ -1039,7 +1044,9 @@ impl Scb {
                 // The read reports VECTKEYSTAT; the stored key bytes are never
                 // echoed back. `BFHFNMINS` (bit 1) is R/O from Non-secure
                 // state and stored from Secure writes, so it always echoes.
-                AIRCR => 0xFA05_0000 | (u32::from(self.prig()) << 8) | (u32::from(self.bfhfnmins()) << 1),
+                AIRCR => {
+                    0xFA05_0000 | (u32::from(self.prig()) << 8) | (u32::from(self.bfhfnmins()) << 1)
+                }
                 SCR => self.scr,
                 CCR => self.ccr,
                 SHPR1 => self.shpr1,
@@ -1443,7 +1450,11 @@ mod tests {
         write_word(&mut s, 0xE000_EF3C, 0x0000_1F00 | 0x0000_8000);
         assert_eq!(read_word(&mut s, 0xE000_EF3C), 0, "trap bits RAZ/WI");
         write_word(&mut s, 0xE000_EF3C, 0x00C0_0000 | 0x0000_1F00 | 0x0000_8000);
-        assert_eq!(read_word(&mut s, 0xE000_EF3C), 0x00C0_0000, "RMODE kept, traps dropped");
+        assert_eq!(
+            read_word(&mut s, 0xE000_EF3C),
+            0x00C0_0000,
+            "RMODE kept, traps dropped"
+        );
         // AHP/DN/FZ are writable; DN+FZ round-trips.
         write_word(&mut s, 0xE000_EF3C, 0x0300_0000);
         assert_eq!(read_word(&mut s, 0xE000_EF3C), 0x0300_0000);
@@ -1573,7 +1584,11 @@ mod tests {
         s.set_secure(false);
         write_word(&mut s, 0xE002_ED08, 0x2000_0000);
         write_word(&mut s, 0xE002_ED28, 0xFFFF_FFFF);
-        assert_eq!(read_word(&mut s, 0xE002_ED08), 0, "S_VTOR reads zero from NS");
+        assert_eq!(
+            read_word(&mut s, 0xE002_ED08),
+            0,
+            "S_VTOR reads zero from NS"
+        );
         assert_eq!(read_word(&mut s, 0xE002_ED28), 0, "SFSR reads zero from NS");
         // The stored values are preserved through the Non-secure accesses.
         s.set_secure(true);
@@ -1872,15 +1887,15 @@ mod tests {
         write_word(&mut s, 0xE000_EDD8, 0);
         write_word(&mut s, 0xE000_EDDC, 0x0000_0000);
         write_word(&mut s, 0xE000_EDE0, 0x0000_0001); // NS, ENABLE
-        // Region 1: NSC region covering 0x1000_0000..0x1000_001F.
+                                                      // Region 1: NSC region covering 0x1000_0000..0x1000_001F.
         write_word(&mut s, 0xE000_EDD8, 1);
         write_word(&mut s, 0xE000_EDDC, 0x1000_0000);
         write_word(&mut s, 0xE000_EDE0, 0x1000_0003); // NSC, ENABLE
-        // Region 2: NS region covering 0x8000_0000..0x8000_001F.
+                                                      // Region 2: NS region covering 0x8000_0000..0x8000_001F.
         write_word(&mut s, 0xE000_EDD8, 2);
         write_word(&mut s, 0xE000_EDDC, 0x8000_0000);
         write_word(&mut s, 0xE000_EDE0, 0x8000_0001); // NS, ENABLE
-        // Region 3: a disabled region (ignored).
+                                                      // Region 3: a disabled region (ignored).
         write_word(&mut s, 0xE000_EDD8, 3);
         write_word(&mut s, 0xE000_EDDC, 0x0000_0000);
         write_word(&mut s, 0xE000_EDE0, 0xFFFF_FF00); // ENABLE clear
@@ -1889,11 +1904,35 @@ mod tests {
         assert_eq!(s.sau_hit(0x8000_0000), SauHit::None);
         write_word(&mut s, 0xE000_EDD0, 0x1); // ENABLE
 
-        assert_eq!(s.sau_hit(0x8000_0000), SauHit::Region { index: 2, nsc: false });
-        assert_eq!(s.sau_hit(0x8000_001F), SauHit::Region { index: 2, nsc: false });
+        assert_eq!(
+            s.sau_hit(0x8000_0000),
+            SauHit::Region {
+                index: 2,
+                nsc: false
+            }
+        );
+        assert_eq!(
+            s.sau_hit(0x8000_001F),
+            SauHit::Region {
+                index: 2,
+                nsc: false
+            }
+        );
         assert_eq!(s.sau_hit(0x8000_0020), SauHit::None, "just past the limit");
-        assert_eq!(s.sau_hit(0x1000_0000), SauHit::Region { index: 1, nsc: true });
-        assert_eq!(s.sau_hit(0x0000_0000), SauHit::Region { index: 0, nsc: false });
+        assert_eq!(
+            s.sau_hit(0x1000_0000),
+            SauHit::Region {
+                index: 1,
+                nsc: true
+            }
+        );
+        assert_eq!(
+            s.sau_hit(0x0000_0000),
+            SauHit::Region {
+                index: 0,
+                nsc: false
+            }
+        );
         assert_eq!(s.sau_hit(0x2000_0000), SauHit::None, "outside every region");
         // A second enabled region overlapping region 0 collapses to Multiple.
         write_word(&mut s, 0xE000_EDD8, 4);
@@ -1957,7 +1996,7 @@ mod tests {
         write_word(&mut s, 0xE000_EDA8, 0x2000_003F | 1); // RLAR A1  -> region 1
         write_word(&mut s, 0xE000_EDB0, 0x2000_005F | 1); // RLAR A2  -> region 2
         write_word(&mut s, 0xE000_EDB8, 0x2000_007F | 1); // RLAR A3  -> region 3
-        // Read each back through its alias.
+                                                          // Read each back through its alias.
         write_word(&mut s, 0xE000_ED98, 0);
         assert_eq!(read_word(&mut s, 0xE000_ED9C), 0x2000_0000);
         assert_eq!(read_word(&mut s, 0xE000_EDA0), 0x2000_001F | 1);
@@ -1976,7 +2015,11 @@ mod tests {
         // indexes region 1, leaving region 3 untouched.
         write_word(&mut s, 0xE000_ED98, 2);
         write_word(&mut s, 0xE000_EDA4, 0x4000_0000); // A1 -> region 1
-        assert_eq!(read_word(&mut s, 0xE000_EDB4), 0x3000_0000, "region 3 stays");
+        assert_eq!(
+            read_word(&mut s, 0xE000_EDB4),
+            0x3000_0000,
+            "region 3 stays"
+        );
         write_word(&mut s, 0xE000_ED98, 1);
         assert_eq!(read_word(&mut s, 0xE000_EDA4), 0x4000_0000);
     }
@@ -2032,7 +2075,7 @@ mod tests {
         let mut s = Scb::new();
         s.set_pmsav8();
         write_word(&mut s, 0xE000_ED94, 0x1); // ENABLE
-        // Region 0: 0x2000_0000..0x2000_001F, AP=1 (read/write), no XN.
+                                              // Region 0: 0x2000_0000..0x2000_001F, AP=1 (read/write), no XN.
         write_word(&mut s, 0xE000_ED9C, 0x2000_0000 | 0x2);
         write_word(&mut s, 0xE000_EDA0, 0x2000_001F | 1);
         let lk = s.mpu_lookup_v8(0x2000_0000, true, true);
@@ -2068,7 +2111,7 @@ mod tests {
         let mut s = Scb::new();
         s.set_pmsav8();
         write_word(&mut s, 0xE000_ED94, 0x1); // ENABLE
-        // Region 1: 0x2000_0000..0x2000_001F, AP=1, XN set.
+                                              // Region 1: 0x2000_0000..0x2000_001F, AP=1, XN set.
         write_word(&mut s, 0xE000_EDA4, 0x2000_0000 | 0x2 | 0x1);
         write_word(&mut s, 0xE000_EDA8, 0x2000_001F | 1);
         let lk = s.mpu_lookup_v8(0x2000_0000, true, true);
@@ -2092,8 +2135,8 @@ mod tests {
         let mut s = Scb::new();
         s.set_pmsav8();
         write_word(&mut s, 0xE000_ED94, 0x1); // ENABLE
-        // The PPB (0xE000_0000..0xE00F_FFFF) bypasses the MPU even when a
-        // region covers it: the lookup reports the background map.
+                                              // The PPB (0xE000_0000..0xE00F_FFFF) bypasses the MPU even when a
+                                              // region covers it: the lookup reports the background map.
         write_word(&mut s, 0xE000_ED9C, 0xE000_0000 | 0x2);
         write_word(&mut s, 0xE000_EDA0, 0xE00F_FFFF | 1);
         assert_eq!(
@@ -2111,7 +2154,10 @@ mod tests {
         write_word(&mut s, 0xE000_EDB8, 0x2000_001F | 1);
         assert_eq!(
             s.mpu_lookup_v8(0x2000_0000, true, true),
-            MpuLookup { prot: 0, region: None },
+            MpuLookup {
+                prot: 0,
+                region: None
+            },
         );
         assert!(!s.mpu_check(0x2000_0000, MpuAccess::Read, true, 0));
     }
@@ -2121,8 +2167,8 @@ mod tests {
         let mut s = Scb::new();
         s.set_pmsav8();
         write_word(&mut s, 0xE000_ED94, 0x5); // ENABLE | PRIVDEFENA
-        // No region covers 0x3000_0000: privileged gets the background map,
-        // unprivileged gets nothing.
+                                              // No region covers 0x3000_0000: privileged gets the background map,
+                                              // unprivileged gets nothing.
         assert_eq!(
             s.mpu_lookup_v8(0x3000_0000, true, true),
             MpuLookup {

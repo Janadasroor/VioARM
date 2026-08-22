@@ -75,6 +75,9 @@ mod tests {
         let mut p = Pwr::new_for::<Stm32f103>();
         write_word(&mut p, 0x00, 0x0000_0100); // CR DBP
         assert_eq!(read_word(&mut p, 0x00) & 0x100, 0x100);
-        assert!(matches!(p.read(BASE + 0x500), Err(crate::error::BusError::Reserved)));
+        assert!(matches!(
+            p.read(BASE + 0x500),
+            Err(crate::error::BusError::Reserved)
+        ));
     }
 }

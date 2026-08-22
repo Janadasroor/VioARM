@@ -1016,17 +1016,26 @@ impl Asm {
     /// `STLEX Rd, Rt, [Rn]` (word exclusive store-release); `Rd` receives the
     /// success bit.
     pub fn stlex(&mut self, rd: u8, rt: u8, rn: u8) {
-        self.raw32(u32::from(0xE8C0 | u16::from(rn)) | (u32::from(rt) << 12 | 0x0FE0 | u32::from(rd)) << 16);
+        self.raw32(
+            u32::from(0xE8C0 | u16::from(rn))
+                | (u32::from(rt) << 12 | 0x0FE0 | u32::from(rd)) << 16,
+        );
     }
     /// `STLEXB Rd, Rt, [Rn]` (byte exclusive store-release); `Rd` receives the
     /// success bit.
     pub fn stlexb(&mut self, rd: u8, rt: u8, rn: u8) {
-        self.raw32(u32::from(0xE8C0 | u16::from(rn)) | (u32::from(rt) << 12 | 0x0FC0 | u32::from(rd)) << 16);
+        self.raw32(
+            u32::from(0xE8C0 | u16::from(rn))
+                | (u32::from(rt) << 12 | 0x0FC0 | u32::from(rd)) << 16,
+        );
     }
     /// `STLEXH Rd, Rt, [Rn]` (halfword exclusive store-release); `Rd` receives
     /// the success bit.
     pub fn stlexh(&mut self, rd: u8, rt: u8, rn: u8) {
-        self.raw32(u32::from(0xE8C0 | u16::from(rn)) | (u32::from(rt) << 12 | 0x0FD0 | u32::from(rd)) << 16);
+        self.raw32(
+            u32::from(0xE8C0 | u16::from(rn))
+                | (u32::from(rt) << 12 | 0x0FD0 | u32::from(rd)) << 16,
+        );
     }
 
     // ------------------------------ exclusive ------------------------------
