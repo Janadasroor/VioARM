@@ -17,6 +17,6 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
-vioarm-core = { path = "../vioarm-core", version = "1.8" }
-vioarm-gdb = { path = "../vioarm-gdb", version = "1.8" }
+vioarm-core = { path = "../vioarm-core", version = "1.9" }
+vioarm-gdb = { path = "../vioarm-gdb", version = "1.9" }
 clap = { version = "4", features = ["derive"] }

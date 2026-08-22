@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.0] - 2026-08-22
+### Added
+- Timer `PWM` `CCMR1/2 0x18/0x1C` `CCER 0x20` `CCR1-4 0x34..40` `CNT==CCR→CCxIF` gated `OCxM+CCxE` `DIER CCxIE` `pending` `TIM 60→85%` `162a121`.
+- CAN `filter 0x40006600 0x200` inside `bxCAN` `can.rs:514` `HAL_CAN_ConfigFilter` not `HardFault` `80→90%`.
+- `TIM` `PWM` `CCx` `e2e` still `48` `64` `real_firmware` `green`.
+
 ## [1.8.0] - 2026-08-22
 ### Added
 - H743 `HRTIM` `Master 0x40017400` + `TIMA 0x40017480` + `TIMB/C/D/E 0x40017500-0x40017680` + `Common 0x40017780` `SAI4 0x58005400` `DFSDM 0x40017000` `MDMA 0x52000000` `BDMA 0x58025400` `OTG2_HS 0x40080000` `CanFilter 0x40006600` latch-only `H743 45->57` windows.
