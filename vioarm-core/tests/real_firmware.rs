@@ -4437,3 +4437,38 @@ void reset(void) {
     assert_eq!(cr & ((1u32<<17)|(1u32<<25)), (1u32<<17)|(1u32<<25), "HSERDY|PLL1RDY");
 }
 
+#[test]
+fn stm32h743_pwr() {
+    const FW: &str = r#"
+#define PWR_CR1 0x58024800u
+#define PWR_CR3 0x5802480Cu
+#define OUT 0x20000000u
+void reset(void) {
+    *(volatile unsigned *)PWR_CR3 = 0x1234u;
+    *(volatile unsigned *)PWR_CR1 = 0x5678u;
+    unsigned a = *(volatile unsigned *)PWR_CR3;
+    unsigned b = *(volatile unsigned *)PWR_CR1;
+    *(volatile unsigned *)OUT = (a == 0x1234u) ? 1u : 0u;
+    *(volatile unsigned *)(OUT+4) = (b == 0x5678u) ? 1u : 0u;
+    __asm__ volatile("bkpt #0");
+}
+"#;
+    let (code, symbols) = match build_firmware_h7_with_includes(FW, &[]) {
+        Ok(v) => v,
+        Err(why) => { eprintln!("skipping H743 pwr: {why}"); return; }
+    };
+    let entry = *symbols.get("reset").unwrap();
+    let mut m = Machine::armv7em(board::stm32h743());
+    m.load_image(&load_flat(CODE_BASE, &code));
+    {
+        let mem = m.core.mem();
+        mem.write_word(board::FLASH, INIT_SP).unwrap();
+        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+    }
+    m.reset().unwrap();
+    let err = m.run(50_000);
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
+    assert_eq!(m.core.mem().read_word(RAM).unwrap(), 1, "PWR_CR3");
+    assert_eq!(m.core.mem().read_word(RAM+4).unwrap(), 1, "PWR_CR1");
+}
+
