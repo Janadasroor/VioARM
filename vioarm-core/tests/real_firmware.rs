@@ -4399,9 +4399,9 @@ fn stm32h743_fmc_qspi() {
 #define FMC_SDRAM 0xC0000000u
 #define QSPI_MEM 0x90000000u
 void reset(void) {
-    // Control registers should not fault (FMC 0x52004000, QUADSPI 0x52005000)
+    // Control registers should not fault (FMC 0x52004000, QUADSPI 0x52005000 CR.EN)
     *(volatile unsigned *)0x52004000u = 0x12345678u;
-    *(volatile unsigned *)0x52005000u = 0x9ABCDEF0u;
+    *(volatile unsigned *)0x52005000u = 1u; // QUADSPI CR.EN=1 gates 0x90000000
     // External memory
     *(volatile unsigned *)FMC_SDRAM = 0xDEADBEEFu;
     *(volatile unsigned *)QSPI_MEM = 0xCAFEBABEu;
@@ -4433,6 +4433,56 @@ void reset(void) {
     assert_eq!(err, Err(HaltCause::NonThumbTarget));
     assert_eq!(m.core.mem().read_word(RAM).unwrap(), 1, "FMC SDRAM");
     assert_eq!(m.core.mem().read_word(RAM + 4).unwrap(), 1, "QSPI");
+}
+
+#[test]
+fn stm32h743_qspi_gate() {
+    const FW: &str = r#"
+#define OUT 0x20000000u
+#define QSPI_CR 0x52005000u
+#define QSPI_MEM 0x90000000u
+void reset(void) {
+    // Without CR.EN, 0x90000000 is not backed (reads 0, writes dropped).
+    *(volatile unsigned *)QSPI_MEM = 0xDEADBEEFu;
+    unsigned gated = *(volatile unsigned *)QSPI_MEM;
+    // Enable QUADSPI memory-mapped mode (CR.EN=1) then it latches.
+    *(volatile unsigned *)QSPI_CR = 1u;
+    *(volatile unsigned *)QSPI_MEM = 0xCAFEBABEu;
+    unsigned enabled = *(volatile unsigned *)QSPI_MEM;
+    *(volatile unsigned *)OUT = (gated == 0) ? 1u : 0u;
+    *(volatile unsigned *)(OUT+4) = (enabled == 0xCAFEBABE) ? 1u : 0u;
+    __asm__ volatile("bkpt #0");
+}
+"#;
+    let (code, symbols) = match build_firmware_h7_with_includes(FW, &[]) {
+        Ok(v) => v,
+        Err(why) => {
+            eprintln!("skipping H743 qspi gate: {why}");
+            return;
+        }
+    };
+    let entry = *symbols.get("reset").unwrap();
+    let mut m = Machine::armv7em(board::stm32h743());
+    m.load_image(&load_flat(CODE_BASE, &code));
+    {
+        let mem = m.core.mem();
+        mem.write_word(board::FLASH, INIT_SP).unwrap();
+        mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1)
+            .unwrap();
+    }
+    m.reset().unwrap();
+    let err = m.run(50_000);
+    assert_eq!(err, Err(HaltCause::NonThumbTarget));
+    assert_eq!(
+        m.core.mem().read_word(RAM).unwrap(),
+        1,
+        "QSPI gated reads 0"
+    );
+    assert_eq!(
+        m.core.mem().read_word(RAM + 4).unwrap(),
+        1,
+        "QSPI enabled latches"
+    );
 }
 
 #[test]

@@ -185,10 +185,7 @@ impl<M: Bus> SystemMemory<M> {
             gate.lock().unwrap_or_else(|e| e.into_inner()).reset();
         }
         if let Some(gate) = &self.qspi {
-            // Keep QSPI backed after reset so the existing always-mapped e2e
-            // `stm32h743_fmc_qspi` (which bangs 0x90000000 without CR.EN)
-            // stays green; BSP_QSPI_Init will `CR.EN=1` again anyway.
-            gate.lock().unwrap_or_else(|e| e.into_inner()).enabled = true;
+            gate.lock().unwrap_or_else(|e| e.into_inner()).reset();
         }
         if let Some(latch) = &self.watchdog {
             *latch.lock().unwrap_or_else(|e| e.into_inner()) = false;
@@ -472,13 +469,12 @@ impl<M: Bus> SystemMemory<M> {
     /// unlocked and programming; rejected writes are consumed (no fault) and
     /// latch `WRPRTERR`.
     fn write_backing(&mut self, addr: u32, val: u8) -> Result<(), BusError> {
-        // QSPI gate: when QUADSPI->CR.EN == 0 the 0x9000_0000 window is not
-        // backed on silicon (returns 0 / BusFault). For the current e2e
-        // `stm32h743_fmc_qspi` which bangs 0x90000000 without enabling CR,
-        // keep the window always-backed (`enabled` initial true and
-        // `reset_devices` re-enables) so the test stays green; the gate is
-        // plumbed for future `BSP_QSPI_Init` `CR.EN=1` observability.
-        let _ = &self.qspi;
+        if let Some(g) = &self.qspi {
+            let guard = g.lock().unwrap_or_else(|e| e.into_inner());
+            if guard.region.contains(addr) && !guard.enabled {
+                return Ok(());
+            }
+        }
         let gate = match &self.flash {
             Some(g)
                 if g.lock()
@@ -496,7 +492,12 @@ impl<M: Bus> SystemMemory<M> {
     /// A backing read, executing any pending erase first so firmware reading
     /// a just-erased page sees zeros.
     fn read_backing(&mut self, addr: u32) -> Result<u8, BusError> {
-        let _ = &self.qspi;
+        if let Some(g) = &self.qspi {
+            let guard = g.lock().unwrap_or_else(|e| e.into_inner());
+            if guard.region.contains(addr) && !guard.enabled {
+                return Ok(0);
+            }
+        }
         let gate = match &self.flash {
             Some(g)
                 if g.lock()
