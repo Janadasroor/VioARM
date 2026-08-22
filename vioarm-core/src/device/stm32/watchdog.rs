@@ -111,7 +111,7 @@ impl Behavior for IwdgBehavior {
         }
         if steps > 0 {
             // The counter hit zero: the watchdog underflows and resets the MCU.
-            *self.reset.lock().unwrap() = true;
+            *self.reset.lock().unwrap_or_else(|e| e.into_inner()) = true;
             cnt = view.get(RLR) & 0x0FFF;
         }
         self.counter = cnt;
@@ -183,7 +183,7 @@ impl Behavior for WwdgBehavior {
                         // A refresh above the window is an immediate reset.
                         let window = view.get(CFR) & 0x7F;
                         if u32::from(self.counter) & 0x7F > window {
-                            *self.reset.lock().unwrap() = true;
+                            *self.reset.lock().unwrap_or_else(|e| e.into_inner()) = true;
                         }
                     }
                     self.counter = 0x7F;
@@ -212,7 +212,7 @@ impl Behavior for WwdgBehavior {
                 view.set(WSR, view.get(WSR) | EWIF);
             } else if self.counter == 0x3F {
                 // Underflow past the window: reset the MCU.
-                *self.reset.lock().unwrap() = true;
+                *self.reset.lock().unwrap_or_else(|e| e.into_inner()) = true;
                 self.counter = 0x7F;
             }
         }
@@ -387,10 +387,13 @@ mod tests {
         // RLR ticks bring the counter to zero; the next tick underflows.
         for _ in 0..0x100 {
             i.tick(1);
-            assert!(!*reset.lock().unwrap());
+            assert!(!*reset.lock().unwrap_or_else(|e| e.into_inner()));
         }
         i.tick(1);
-        assert!(*reset.lock().unwrap(), "underflow latches the reset");
+        assert!(
+            *reset.lock().unwrap_or_else(|e| e.into_inner()),
+            "underflow latches the reset"
+        );
     }
 
     #[test]
@@ -405,10 +408,13 @@ mod tests {
         // next tick underflows.
         for _ in 0..0x100 {
             i.tick(1);
-            assert!(!*reset.lock().unwrap());
+            assert!(!*reset.lock().unwrap_or_else(|e| e.into_inner()));
         }
         i.tick(1);
-        assert!(*reset.lock().unwrap(), "resets after the reloaded period");
+        assert!(
+            *reset.lock().unwrap_or_else(|e| e.into_inner()),
+            "resets after the reloaded period"
+        );
     }
 
     #[test]
@@ -439,10 +445,13 @@ mod tests {
         // 2 * RLR cycles brings the counter to zero without underflowing.
         for _ in 0..0x20 {
             i.tick(1);
-            assert!(!*reset.lock().unwrap());
+            assert!(!*reset.lock().unwrap_or_else(|e| e.into_inner()));
         }
         i.tick(2);
-        assert!(*reset.lock().unwrap(), "underflows at 2 cycles per count");
+        assert!(
+            *reset.lock().unwrap_or_else(|e| e.into_inner()),
+            "underflows at 2 cycles per count"
+        );
     }
 
     #[test]
@@ -454,13 +463,13 @@ mod tests {
         // Counter 0x41 -> 0x40: EWIF + interrupt; 0x40 -> 0x3F: reset.
         for _ in 0..0x3E {
             w.tick(1);
-            assert!(!*reset.lock().unwrap());
+            assert!(!*reset.lock().unwrap_or_else(|e| e.into_inner()));
             assert_eq!(w.pending(), 0);
         }
         w.tick(1); // reaches 0x40
         assert_eq!(w.pending(), 0, "EWI is not yet enabled");
         w.tick(1); // 0x40 -> 0x3F: reset
-        assert!(*reset.lock().unwrap());
+        assert!(*reset.lock().unwrap_or_else(|e| e.into_inner()));
     }
 
     #[test]
@@ -474,13 +483,13 @@ mod tests {
         }
         w.tick(1); // reaches 0x40
         assert_eq!(w.pending(), 1, "EWIF set and EWI enabled");
-        assert!(!*reset.lock().unwrap());
+        assert!(!*reset.lock().unwrap_or_else(|e| e.into_inner()));
         // Writing SR clears EWIF and drops the interrupt.
         w.write(WWDG_BASE + 0x08, 0).unwrap();
         assert_eq!(w.pending(), 0);
         // The next step still resets.
         w.tick(1);
-        assert!(*reset.lock().unwrap());
+        assert!(*reset.lock().unwrap_or_else(|e| e.into_inner()));
     }
 
     #[test]
@@ -491,7 +500,7 @@ mod tests {
         write_word(&mut w, WWDG_BASE, 0x80 | 0x7F);
         for _ in 0..0x20 {
             w.tick(1);
-            assert!(!*reset.lock().unwrap());
+            assert!(!*reset.lock().unwrap_or_else(|e| e.into_inner()));
             // Refresh on the same counter value each iteration.
             write_word(&mut w, WWDG_BASE, 0x7F);
         }
@@ -506,7 +515,7 @@ mod tests {
         write_word(&mut w, WWDG_BASE, 0x80 | 0x7F);
         // Counter is 0x7F, well above the window 0x10: a refresh resets.
         write_word(&mut w, WWDG_BASE, 0x7F);
-        assert!(*reset.lock().unwrap());
+        assert!(*reset.lock().unwrap_or_else(|e| e.into_inner()));
     }
 
     #[test]

@@ -1871,14 +1871,17 @@ impl<B: PeripheralBus> Core<B> {
     /// 2. If `FPCCR.ASPEN` is set and `CONTROL.FPCA` is clear, create a new FP
     ///    context: set `FPCA` and load FPSCR from `FPDSCR`.
     fn fp_context(&mut self) -> Result<(), HaltCause> {
-        let ctx = *self.fpu_ctx.lock().unwrap();
+        let ctx = *self.fpu_ctx.lock().unwrap_or_else(|e| e.into_inner());
         if ctx.lspact {
             for i in 0..16u32 {
                 let v = self.vfp.read_s(i as u8);
                 self.write_word_halt(ctx.fpcar.wrapping_add(i * 4), v)?;
             }
             self.write_word_halt(ctx.fpcar.wrapping_add(0x40), self.vfp.fpscr)?;
-            self.fpu_ctx.lock().unwrap().lspact = false;
+            self.fpu_ctx
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .lspact = false;
         }
         if ctx.aspen && self.control & CONTROL_FPCA == 0 {
             self.control |= CONTROL_FPCA;
@@ -4568,7 +4571,7 @@ impl<B: PeripheralBus> Core<B> {
         // goes to FPCAR and LSPACT is set); otherwise it is stored now and the
         // handler starts with the FP state cleared.
         let fpu_active = self.control & CONTROL_FPCA != 0;
-        let fpu_ctx = *self.fpu_ctx.lock().unwrap();
+        let fpu_ctx = *self.fpu_ctx.lock().unwrap_or_else(|e| e.into_inner());
         let framesize = if fpu_active {
             EXTENDED_FRAME_BYTES
         } else {
@@ -4611,7 +4614,7 @@ impl<B: PeripheralBus> Core<B> {
             if fpu_ctx.lspen {
                 // Lazy stacking: reserve the FP block for the first FP
                 // instruction the handler runs.
-                let mut ctx = self.fpu_ctx.lock().unwrap();
+                let mut ctx = self.fpu_ctx.lock().unwrap_or_else(|e| e.into_inner());
                 ctx.fpcar = frame.wrapping_add(0x20) & !7;
                 ctx.lspact = true;
             } else {
@@ -4853,9 +4856,12 @@ impl<B: PeripheralBus> Core<B> {
         // entry, unless lazy stacking left it reserved (LSPACT): then the FPU
         // still holds the pre-exception values and we just clear LSPACT.
         if !ftype {
-            let ctx = *self.fpu_ctx.lock().unwrap();
+            let ctx = *self.fpu_ctx.lock().unwrap_or_else(|e| e.into_inner());
             if ctx.lspact {
-                self.fpu_ctx.lock().unwrap().lspact = false;
+                self.fpu_ctx
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .lspact = false;
             } else {
                 for i in 0..16u32 {
                     let v = self.read_word_halt(frame.wrapping_add(0x20).wrapping_add(i * 4))?;
@@ -8792,8 +8798,8 @@ mod tests {
         c.regs.pc = 0x2000_0000;
         // A prior exception left a lazy frame reserved (LSPACT at FPCAR); the
         // first FP instruction must write S0-S15 + FPSCR there and clear it.
-        fpu_ctx.lock().unwrap().lspact = true;
-        fpu_ctx.lock().unwrap().fpcar = 0x2000_0800;
+        fpu_ctx.lock().unwrap_or_else(|e| e.into_inner()).lspact = true;
+        fpu_ctx.lock().unwrap_or_else(|e| e.into_inner()).fpcar = 0x2000_0800;
         c.vfp.write_s(0, 0x3F80_0000); // s0 = 1.0
         c.vfp.write_s(1, 0x4000_0000); // s1 = 2.0
         c.vfp.write_s(2, 0x4040_0000); // s2 = 3.0
@@ -8802,7 +8808,7 @@ mod tests {
         load_inst(&mut c, 0x2000_0000, &[0x30, 0xee, 0x81, 0x0a]); // vadd.f32 s0, s1, s2
         c.step().unwrap();
         assert_eq!(c.vfp.read_s(0), 0x40A0_0000); // 2.0 + 3.0 = 5.0
-        assert!(!fpu_ctx.lock().unwrap().lspact);
+        assert!(!fpu_ctx.lock().unwrap_or_else(|e| e.into_inner()).lspact);
         // The pre-instruction bank and FPSCR were preserved into the frame.
         assert_eq!(c.mem().read_word(0x2000_0800).unwrap(), 0x3F80_0000);
         assert_eq!(c.mem().read_word(0x2000_0804).unwrap(), 0x4000_0000);
@@ -8846,7 +8852,7 @@ mod tests {
         assert_eq!(c.regs.pc, SVC_HANDLER);
         assert_eq!(c.regs.lr, EXC_RETURN_THREAD_MSP_FP);
         assert_eq!(c.control & CONTROL_FPCA, 0); // handler starts context-less
-        let ctx = *fpu_ctx.lock().unwrap();
+        let ctx = *fpu_ctx.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(ctx.fpcar, SP - EXTENDED_FRAME_BYTES + 0x20);
         assert!(ctx.lspact);
         // Lazy: the registers were not touched.
@@ -8867,7 +8873,7 @@ mod tests {
         c.vfp.write_s(0, 0x3F80_0000);
         c.vfp.write_s(15, 0x40A0_0000);
         c.vfp.fpscr = 0x0000_0001;
-        fpu_ctx.lock().unwrap().lspen = false;
+        fpu_ctx.lock().unwrap_or_else(|e| e.into_inner()).lspen = false;
         c.take_exception(Exception::SvCall, 0x2000_0102).unwrap();
         let frame = SP - EXTENDED_FRAME_BYTES;
         assert_eq!(c.regs.sp, frame);
@@ -8880,7 +8886,7 @@ mod tests {
         assert_eq!(c.vfp.read_s(0), 0);
         assert_eq!(c.vfp.read_s(15), 0);
         assert_eq!(c.vfp.fpscr, 0);
-        let ctx = *fpu_ctx.lock().unwrap();
+        let ctx = *fpu_ctx.lock().unwrap_or_else(|e| e.into_inner());
         assert!(!ctx.lspact);
         assert_eq!(ctx.fpcar, 0);
     }
@@ -8937,14 +8943,14 @@ mod tests {
         c.vfp.write_s(0, 0x40A0_0000);
         c.vfp.fpscr = 0x0000_0001;
         {
-            let mut ctx = fpu_ctx.lock().unwrap();
+            let mut ctx = fpu_ctx.lock().unwrap_or_else(|e| e.into_inner());
             ctx.lspact = true;
             ctx.fpcar = frame + 0x20;
         }
         c.exception_return(EXC_RETURN_THREAD_MSP_FP).unwrap();
         // The lazy frame is abandoned: LSPACT cleared, the FPU still holds the
         // pre-exception values, and the returning thread re-owns the context.
-        assert!(!fpu_ctx.lock().unwrap().lspact);
+        assert!(!fpu_ctx.lock().unwrap_or_else(|e| e.into_inner()).lspact);
         assert_eq!(c.vfp.read_s(0), 0x40A0_0000);
         assert_eq!(c.vfp.fpscr, 0x0000_0001);
         assert_ne!(c.control & CONTROL_FPCA, 0);

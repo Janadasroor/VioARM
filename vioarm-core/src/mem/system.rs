@@ -167,10 +167,10 @@ impl<M: Bus> SystemMemory<M> {
             device.reset();
         }
         if let Some(gate) = &self.flash {
-            gate.lock().unwrap().reset();
+            gate.lock().unwrap_or_else(|e| e.into_inner()).reset();
         }
         if let Some(latch) = &self.watchdog {
-            *latch.lock().unwrap() = false;
+            *latch.lock().unwrap_or_else(|e| e.into_inner()) = false;
         }
     }
 
@@ -183,7 +183,7 @@ impl<M: Bus> SystemMemory<M> {
             || self
                 .watchdog
                 .as_ref()
-                .is_some_and(|latch| *latch.lock().unwrap())
+                .is_some_and(|latch| *latch.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
     /// Advance every un-gated device by exactly `delta` cycles, then latch any
@@ -211,7 +211,7 @@ impl<M: Bus> SystemMemory<M> {
         let Some(mailbox) = &self.dma_mailbox else {
             return;
         };
-        let units = core::mem::take(&mut *mailbox.lock().unwrap());
+        let units = core::mem::take(&mut *mailbox.lock().unwrap_or_else(|e| e.into_inner()));
         for (src, dst, len) in units {
             for i in 0..len {
                 let Some(byte) = self.read(src.wrapping_add(u32::from(i))).ok() else {
@@ -231,7 +231,7 @@ impl<M: Bus> SystemMemory<M> {
         let Some(mailbox) = self.eth_mailbox.clone() else {
             return;
         };
-        let ops = core::mem::take(&mut mailbox.lock().unwrap().ops);
+        let ops = core::mem::take(&mut mailbox.lock().unwrap_or_else(|e| e.into_inner()).ops);
         for op in ops {
             match op {
                 EthMemOp::Read { addr, len } => {
@@ -242,7 +242,11 @@ impl<M: Bus> SystemMemory<M> {
                         };
                         bytes.push(byte);
                     }
-                    mailbox.lock().unwrap().results.push_back(bytes);
+                    mailbox
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .results
+                        .push_back(bytes);
                 }
                 EthMemOp::Write { addr, bytes } => {
                     for (i, byte) in bytes.iter().enumerate() {
@@ -448,7 +452,14 @@ impl<M: Bus> SystemMemory<M> {
     /// latch `WRPRTERR`.
     fn write_backing(&mut self, addr: u32, val: u8) -> Result<(), BusError> {
         let gate = match &self.flash {
-            Some(g) if g.lock().unwrap().region.contains(addr) => g.clone(),
+            Some(g)
+                if g.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .region
+                    .contains(addr) =>
+            {
+                g.clone()
+            }
             _ => return self.backing.write(addr, val),
         };
         self.flash_region_write(&gate, addr, val)
@@ -458,7 +469,14 @@ impl<M: Bus> SystemMemory<M> {
     /// a just-erased page sees zeros.
     fn read_backing(&mut self, addr: u32) -> Result<u8, BusError> {
         let gate = match &self.flash {
-            Some(g) if g.lock().unwrap().region.contains(addr) => g.clone(),
+            Some(g)
+                if g.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .region
+                    .contains(addr) =>
+            {
+                g.clone()
+            }
             _ => return self.backing.read(addr),
         };
         self.flash_region_read(&gate, addr)
@@ -471,18 +489,18 @@ impl<M: Bus> SystemMemory<M> {
         addr: u32,
         val: u8,
     ) -> Result<(), BusError> {
-        let mut guard = gate.lock().unwrap();
+        let mut guard = gate.lock().unwrap_or_else(|e| e.into_inner());
         // A pending erase (`CR.STRT`) lands before the access that triggered it.
         if let Some(erase) = guard.erase.take() {
             let (region, page) = (guard.region, guard.page_size);
             drop(guard);
             self.perform_erase(erase, region, page);
-            guard = gate.lock().unwrap();
+            guard = gate.lock().unwrap_or_else(|e| e.into_inner());
         }
         if guard.unlocked && guard.program {
             drop(guard);
             let result = self.backing.write(addr, val);
-            gate.lock().unwrap().eop = true;
+            gate.lock().unwrap_or_else(|e| e.into_inner()).eop = true;
             result
         } else {
             guard.wrprterr = true;
@@ -497,7 +515,7 @@ impl<M: Bus> SystemMemory<M> {
         gate: &Arc<Mutex<FlashGate>>,
         addr: u32,
     ) -> Result<u8, BusError> {
-        let mut guard = gate.lock().unwrap();
+        let mut guard = gate.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(erase) = guard.erase.take() {
             let (region, page) = (guard.region, guard.page_size);
             drop(guard);
@@ -1212,20 +1230,26 @@ mod tests {
             0,
             "locked flash writes are consumed, not stored"
         );
-        assert!(gate.lock().unwrap().wrprterr, "WRPRTERR latches");
+        assert!(
+            gate.lock().unwrap_or_else(|e| e.into_inner()).wrprterr,
+            "WRPRTERR latches"
+        );
     }
 
     #[test]
     fn flash_writes_land_when_unlocked_and_programming() {
         let (mut sys, gate) = gated_system();
         {
-            let mut g = gate.lock().unwrap();
+            let mut g = gate.lock().unwrap_or_else(|e| e.into_inner());
             g.unlocked = true;
             g.program = true;
         }
         sys.write_word(MAIN_FLASH, 0xDEAD_BEEF).unwrap();
         assert_eq!(sys.read_word(MAIN_FLASH).unwrap(), 0xDEAD_BEEF);
-        assert!(gate.lock().unwrap().eop, "EOP latches after a program");
+        assert!(
+            gate.lock().unwrap_or_else(|e| e.into_inner()).eop,
+            "EOP latches after a program"
+        );
     }
 
     #[test]
@@ -1233,13 +1257,13 @@ mod tests {
         use crate::device::stm32::flash::FlashErase;
         let (mut sys, gate) = gated_system();
         {
-            let mut g = gate.lock().unwrap();
+            let mut g = gate.lock().unwrap_or_else(|e| e.into_inner());
             g.unlocked = true;
             g.program = true;
         }
         sys.write_word(MAIN_FLASH, 0xAAAA_AAAA).unwrap();
         sys.write_word(MAIN_FLASH + 0x400, 0xBBBB_BBBB).unwrap();
-        gate.lock().unwrap().erase = Some(FlashErase::Page(MAIN_FLASH));
+        gate.lock().unwrap_or_else(|e| e.into_inner()).erase = Some(FlashErase::Page(MAIN_FLASH));
         // The next access to the region runs the pending erase first.
         assert_eq!(sys.read_word(MAIN_FLASH).unwrap(), 0);
         assert_eq!(sys.read_word(MAIN_FLASH + 0x400).unwrap(), 0xBBBB_BBBB);
@@ -1250,14 +1274,14 @@ mod tests {
         use crate::device::stm32::flash::FlashErase;
         let (mut sys, gate) = gated_system();
         {
-            let mut g = gate.lock().unwrap();
+            let mut g = gate.lock().unwrap_or_else(|e| e.into_inner());
             g.unlocked = true;
             g.program = true;
         }
         sys.write_word(MAIN_FLASH, 0x1111_1111).unwrap();
         sys.write_word(MAIN_FLASH + MAIN_FLASH_LEN - 4, 0x2222_2222)
             .unwrap();
-        gate.lock().unwrap().erase = Some(FlashErase::Mass);
+        gate.lock().unwrap_or_else(|e| e.into_inner()).erase = Some(FlashErase::Mass);
         assert_eq!(sys.read_word(MAIN_FLASH).unwrap(), 0);
         assert_eq!(sys.read_word(MAIN_FLASH + MAIN_FLASH_LEN - 4).unwrap(), 0);
     }

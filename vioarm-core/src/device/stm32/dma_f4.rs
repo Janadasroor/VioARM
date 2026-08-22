@@ -194,7 +194,10 @@ impl Behavior for DmaF4Behavior {
                     dst = dst.wrapping_add(u32::from(dst_step));
                 }
             }
-            self.mailbox.lock().unwrap().extend(units);
+            self.mailbox
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .extend(units);
             // Optimistic completion: the whole transfer lands this cycle.
             view.set(cr + SNDTR, 0);
             view.set(cr, cr_word & !EN);
@@ -385,17 +388,17 @@ mod tests {
         write_word(&mut d, D1 + s_cr(1), EN | TCIE | (1 << 10) | (2 << 6));
         d.tick(1);
         assert_eq!(
-            m.lock().unwrap().len(),
+            m.lock().unwrap_or_else(|e| e.into_inner()).len(),
             16,
             "the whole M2M transfer is queued"
         );
         assert_eq!(
-            m.lock().unwrap()[0],
+            m.lock().unwrap_or_else(|e| e.into_inner())[0],
             (0x1000, 0x2000, 1),
             "M2M reads PAR, writes M0AR"
         );
         assert_eq!(
-            m.lock().unwrap()[15],
+            m.lock().unwrap_or_else(|e| e.into_inner())[15],
             (0x1000, 0x200F, 1),
             "MINC advanced the memory side"
         );
@@ -415,7 +418,7 @@ mod tests {
         write_word(&mut d, D1 + s_ndtr(0), 16);
         write_word(&mut d, D1 + s_cr(0), 2 << 6); // M2M, no EN
         d.tick(1);
-        assert!(m.lock().unwrap().is_empty());
+        assert!(m.lock().unwrap_or_else(|e| e.into_inner()).is_empty());
         assert_eq!(read_word(&mut d, D1 + s_ndtr(0)), 16);
     }
 
@@ -429,9 +432,15 @@ mod tests {
         write_word(&mut d, D1 + s_ndtr(2), 2);
         write_word(&mut d, D1 + s_cr(2), (EN | TCIE | (1 << 9) | (1 << 10)));
         d.tick(1);
-        assert_eq!(m.lock().unwrap().len(), 2);
-        assert_eq!(m.lock().unwrap()[0], (0x4000_0400, 0x2000_1000, 1));
-        assert_eq!(m.lock().unwrap()[1], (0x4000_0401, 0x2000_1001, 1));
+        assert_eq!(m.lock().unwrap_or_else(|e| e.into_inner()).len(), 2);
+        assert_eq!(
+            m.lock().unwrap_or_else(|e| e.into_inner())[0],
+            (0x4000_0400, 0x2000_1000, 1)
+        );
+        assert_eq!(
+            m.lock().unwrap_or_else(|e| e.into_inner())[1],
+            (0x4000_0401, 0x2000_1001, 1)
+        );
         assert_eq!(read_word(&mut d, D1 + s_ndtr(2)), 0);
         assert_eq!(read_word(&mut d, D1 + s_cr(2)) & EN, 0);
         // DIR 01 memory→peripheral: 1 unit, MINC set, PINC clear.
@@ -442,7 +451,10 @@ mod tests {
         write_word(&mut d2, D1 + s_ndtr(3), 1);
         write_word(&mut d2, D1 + s_cr(3), EN | (1 << 10) | (1 << 6));
         d2.tick(1);
-        assert_eq!(*m2.lock().unwrap(), vec![(0x2000_2000, 0x4000_0400, 1)]);
+        assert_eq!(
+            *m2.lock().unwrap_or_else(|e| e.into_inner()),
+            vec![(0x2000_2000, 0x4000_0400, 1)]
+        );
         assert_eq!(read_word(&mut d2, D1 + s_ndtr(3)), 0);
     }
 
@@ -518,7 +530,7 @@ mod tests {
         write_word(&mut d, D1 + s_cr(1), EN | (3 << 16) | (2 << 6)); // PL 3
         d.tick(1);
         assert_eq!(
-            *m.lock().unwrap(),
+            *m.lock().unwrap_or_else(|e| e.into_inner()),
             vec![(0x3000, 0x4000, 1), (0x1000, 0x2000, 1)]
         );
     }

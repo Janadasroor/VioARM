@@ -137,7 +137,7 @@ impl FlashBehavior {
         match (self.key_step, word) {
             (0, KEY1) => self.key_step = 1,
             (1, KEY2) => {
-                self.gate.lock().unwrap().unlocked = true;
+                self.gate.lock().unwrap_or_else(|e| e.into_inner()).unlocked = true;
                 self.key_step = 0;
             }
             _ => self.key_step = 0,
@@ -168,7 +168,7 @@ impl Behavior for FlashBehavior {
                 // Write-1-to-clear on the synthesized status flags: the stored
                 // word is the read value, and the one-shot bits drop from the
                 // gate (a plain byte-lane merge would re-arm stale bits).
-                let mut gate = self.gate.lock().unwrap();
+                let mut gate = self.gate.lock().unwrap_or_else(|e| e.into_inner());
                 let mask = u32::from(val) << shift;
                 if mask & SR_EOP != 0 {
                     gate.eop = false;
@@ -182,7 +182,7 @@ impl Behavior for FlashBehavior {
             }
             CR => {
                 let word = view.merged(CR, val, shift);
-                let mut gate = self.gate.lock().unwrap();
+                let mut gate = self.gate.lock().unwrap_or_else(|e| e.into_inner());
                 if !gate.unlocked {
                     // Locked controllers ignore `CR` writes entirely.
                     let stored = view.get(CR);
@@ -215,7 +215,7 @@ impl Behavior for FlashBehavior {
     }
 
     fn on_read(&mut self, _view: &mut Registers<&mut [u32]>, offset: u32, value: u32) -> u32 {
-        let gate = self.gate.lock().unwrap();
+        let gate = self.gate.lock().unwrap_or_else(|e| e.into_inner());
         let synth = match offset {
             SR => {
                 value
@@ -235,7 +235,7 @@ impl Behavior for FlashBehavior {
 
     fn pending(&self, view: &Registers<&[u32]>) -> u32 {
         let cr = view.get(CR);
-        let gate = self.gate.lock().unwrap();
+        let gate = self.gate.lock().unwrap_or_else(|e| e.into_inner());
         let error = gate.wrprterr && cr & CR_ERRIE != 0;
         let done = gate.eop && cr & CR_EOPIE != 0;
         drop(gate);
@@ -243,7 +243,7 @@ impl Behavior for FlashBehavior {
     }
 
     fn reset(&mut self) {
-        self.gate.lock().unwrap().reset();
+        self.gate.lock().unwrap_or_else(|e| e.into_inner()).reset();
         self.key_word = 0;
         self.key_step = 0;
     }
@@ -382,7 +382,7 @@ impl FlashF4Behavior {
                 false
             }
             (1, KEY2) => {
-                self.gate.lock().unwrap().unlocked = true;
+                self.gate.lock().unwrap_or_else(|e| e.into_inner()).unlocked = true;
                 self.key_step = 0;
                 true
             }
@@ -419,7 +419,7 @@ impl Behavior for FlashF4Behavior {
             }
             SR4 => {
                 // Write-1-to-clear on the synthesized status flags.
-                let mut gate = self.gate.lock().unwrap();
+                let mut gate = self.gate.lock().unwrap_or_else(|e| e.into_inner());
                 let mask = u32::from(val) << shift;
                 if mask & SR4_EOP != 0 {
                     gate.eop = false;
@@ -433,7 +433,7 @@ impl Behavior for FlashF4Behavior {
             }
             CR4 => {
                 let word = view.merged(CR4, val, shift);
-                let mut gate = self.gate.lock().unwrap();
+                let mut gate = self.gate.lock().unwrap_or_else(|e| e.into_inner());
                 if !gate.unlocked {
                     // Locked controllers ignore `CR` writes entirely.
                     let stored = view.get(CR4);
@@ -471,7 +471,7 @@ impl Behavior for FlashF4Behavior {
     }
 
     fn on_read(&mut self, _view: &mut Registers<&mut [u32]>, offset: u32, value: u32) -> u32 {
-        let gate = self.gate.lock().unwrap();
+        let gate = self.gate.lock().unwrap_or_else(|e| e.into_inner());
         let synth = match offset {
             SR4 => {
                 value
@@ -490,7 +490,7 @@ impl Behavior for FlashF4Behavior {
 
     fn pending(&self, view: &Registers<&[u32]>) -> u32 {
         let cr = view.get(CR4);
-        let gate = self.gate.lock().unwrap();
+        let gate = self.gate.lock().unwrap_or_else(|e| e.into_inner());
         let error = gate.wrprterr && cr & CR4_ERRIE != 0;
         let done = gate.eop && cr & CR4_EOPIE != 0;
         drop(gate);
@@ -498,7 +498,7 @@ impl Behavior for FlashF4Behavior {
     }
 
     fn reset(&mut self) {
-        self.gate.lock().unwrap().reset();
+        self.gate.lock().unwrap_or_else(|e| e.into_inner()).reset();
         self.key_word = 0;
         self.key_step = 0;
     }
@@ -619,8 +619,8 @@ mod f4_tests {
         assert_eq!(read_word(&mut f, BASE + CR), LOCK, "LOCK set at reset");
         write_word(&mut f, BASE + CR, PG);
         assert_eq!(read_word(&mut f, BASE + CR), LOCK, "locked writes ignored");
-        assert!(!g.lock().unwrap().unlocked);
-        assert!(!g.lock().unwrap().program);
+        assert!(!g.lock().unwrap_or_else(|e| e.into_inner()).unlocked);
+        assert!(!g.lock().unwrap_or_else(|e| e.into_inner()).program);
     }
 
     #[test]
@@ -630,7 +630,7 @@ mod f4_tests {
         write_word(&mut f, BASE + KEYR, KEY1);
         assert_eq!(read_word(&mut f, BASE + CR), LOCK, "one key is not enough");
         write_word(&mut f, BASE + KEYR, KEY2);
-        assert!(g.lock().unwrap().unlocked);
+        assert!(g.lock().unwrap_or_else(|e| e.into_inner()).unlocked);
         assert_eq!(read_word(&mut f, BASE + CR), 0, "CR.LOCK reads back clear");
     }
 
@@ -641,11 +641,11 @@ mod f4_tests {
         unlock(&mut f);
         write_word(&mut f, BASE + CR, SER | SNB | STRT);
         assert_eq!(
-            g.lock().unwrap().erase,
+            g.lock().unwrap_or_else(|e| e.into_inner()).erase,
             Some(FlashErase::Range(0x0802_0000, 0x0002_0000)),
             "sector 5 spans 0x20000..=0x3FFFF"
         );
-        assert!(g.lock().unwrap().eop);
+        assert!(g.lock().unwrap_or_else(|e| e.into_inner()).eop);
         assert_eq!(read_word(&mut f, BASE + CR) & STRT, 0, "STRT self-clears");
     }
 
@@ -655,7 +655,10 @@ mod f4_tests {
         let mut f = device(g.clone());
         unlock(&mut f);
         write_word(&mut f, BASE + CR, MER | STRT);
-        assert_eq!(g.lock().unwrap().erase, Some(FlashErase::Mass));
+        assert_eq!(
+            g.lock().unwrap_or_else(|e| e.into_inner()).erase,
+            Some(FlashErase::Mass)
+        );
     }
 
     #[test]
@@ -668,7 +671,7 @@ mod f4_tests {
         assert_eq!(read_word(&mut f, BASE + SR) & EOP, EOP, "EOP after erase");
         write_word(&mut f, BASE + SR, EOP);
         assert_eq!(read_word(&mut f, BASE + SR) & EOP, 0);
-        assert!(!g.lock().unwrap().eop);
+        assert!(!g.lock().unwrap_or_else(|e| e.into_inner()).eop);
     }
 
     #[test]
@@ -761,8 +764,8 @@ mod tests {
             0x80,
             "locked CR writes are ignored"
         );
-        assert!(!g.lock().unwrap().unlocked);
-        assert!(!g.lock().unwrap().program);
+        assert!(!g.lock().unwrap_or_else(|e| e.into_inner()).unlocked);
+        assert!(!g.lock().unwrap_or_else(|e| e.into_inner()).program);
     }
 
     #[test]
@@ -776,7 +779,7 @@ mod tests {
             "a single key does not unlock"
         );
         write_word(&mut f, BASE + KEYR, KEY2);
-        assert!(g.lock().unwrap().unlocked);
+        assert!(g.lock().unwrap_or_else(|e| e.into_inner()).unlocked);
         assert_eq!(
             read_word(&mut f, BASE + CR),
             0,
@@ -791,7 +794,7 @@ mod tests {
         write_word(&mut f, BASE + KEYR, KEY1);
         write_word(&mut f, BASE + KEYR, 0xDEAD_BEEF);
         write_word(&mut f, BASE + KEYR, KEY2);
-        assert!(!g.lock().unwrap().unlocked);
+        assert!(!g.lock().unwrap_or_else(|e| e.into_inner()).unlocked);
     }
 
     #[test]
@@ -800,7 +803,7 @@ mod tests {
         let mut f = device(g.clone());
         unlock(&mut f);
         write_word(&mut f, BASE + CR, CR_PG);
-        assert!(g.lock().unwrap().program);
+        assert!(g.lock().unwrap_or_else(|e| e.into_inner()).program);
         assert_eq!(read_word(&mut f, BASE + CR), CR_PG);
     }
 
@@ -810,10 +813,13 @@ mod tests {
         let mut f = device(g.clone());
         unlock(&mut f);
         write_word(&mut f, BASE + CR, 0x80);
-        assert!(!g.lock().unwrap().unlocked);
+        assert!(!g.lock().unwrap_or_else(|e| e.into_inner()).unlocked);
         assert_eq!(read_word(&mut f, BASE + CR), 0x80);
         write_word(&mut f, BASE + CR, CR_PG);
-        assert!(!g.lock().unwrap().program, "relocked CR ignores writes");
+        assert!(
+            !g.lock().unwrap_or_else(|e| e.into_inner()).program,
+            "relocked CR ignores writes"
+        );
     }
 
     #[test]
@@ -824,11 +830,11 @@ mod tests {
         write_word(&mut f, BASE + AR, 0x0800_0100);
         write_word(&mut f, BASE + CR, CR_PER | CR_STRT);
         assert_eq!(
-            g.lock().unwrap().erase,
+            g.lock().unwrap_or_else(|e| e.into_inner()).erase,
             Some(FlashErase::Page(0x0800_0100)),
             "page erase targets AR"
         );
-        assert!(g.lock().unwrap().eop);
+        assert!(g.lock().unwrap_or_else(|e| e.into_inner()).eop);
         assert_eq!(
             read_word(&mut f, BASE + CR) & CR_STRT,
             0,
@@ -842,7 +848,10 @@ mod tests {
         let mut f = device(g.clone());
         unlock(&mut f);
         write_word(&mut f, BASE + CR, CR_MER | CR_STRT);
-        assert_eq!(g.lock().unwrap().erase, Some(FlashErase::Mass));
+        assert_eq!(
+            g.lock().unwrap_or_else(|e| e.into_inner()).erase,
+            Some(FlashErase::Mass)
+        );
     }
 
     #[test]
@@ -860,14 +869,14 @@ mod tests {
         // Write-1-to-clear: writing EOP drops it.
         write_word(&mut f, BASE + SR, SR_EOP);
         assert_eq!(read_word(&mut f, BASE + SR) & SR_EOP, 0);
-        assert!(!g.lock().unwrap().eop);
+        assert!(!g.lock().unwrap_or_else(|e| e.into_inner()).eop);
     }
 
     #[test]
     fn rejected_writes_latch_wrprterr() {
         let g = gate();
         let mut f = device(g.clone());
-        g.lock().unwrap().wrprterr = true;
+        g.lock().unwrap_or_else(|e| e.into_inner()).wrprterr = true;
         assert_eq!(
             read_word(&mut f, BASE + SR) & SR_WRPRTERR,
             SR_WRPRTERR,
@@ -904,9 +913,9 @@ mod tests {
         unlock(&mut f);
         write_word(&mut f, BASE + CR, CR_MER | CR_STRT);
         f.reset();
-        assert!(!g.lock().unwrap().unlocked);
-        assert!(!g.lock().unwrap().eop);
-        assert_eq!(g.lock().unwrap().erase, None);
+        assert!(!g.lock().unwrap_or_else(|e| e.into_inner()).unlocked);
+        assert!(!g.lock().unwrap_or_else(|e| e.into_inner()).eop);
+        assert_eq!(g.lock().unwrap_or_else(|e| e.into_inner()).erase, None);
         assert_eq!(read_word(&mut f, BASE + CR), 0x80);
     }
 }

@@ -267,7 +267,10 @@ impl Behavior for DmaBehavior {
                         dst = dst.wrapping_add(u32::from(step));
                     }
                 }
-                self.mailbox.lock().unwrap().extend(units);
+                self.mailbox
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .extend(units);
                 // Optimistic completion: the whole transfer lands this cycle.
                 view.set(CNDTR_CH + base, 0);
                 view.set(CCR_CH + base, ccr & !EN);
@@ -277,7 +280,7 @@ impl Behavior for DmaBehavior {
                 // The request lines are keyed by the hardware channel number.
                 let bit = DmaRequests::bit(self.controller, ch + 1);
                 let (src, dst) = {
-                    let mut req = self.requests.lock().unwrap();
+                    let mut req = self.requests.lock().unwrap_or_else(|e| e.into_inner());
                     if req.to_periph & bit != 0 {
                         // Memory → peripheral (e.g. USART TX into `DR`).
                         req.to_periph &= !bit;
@@ -290,7 +293,10 @@ impl Behavior for DmaBehavior {
                         continue;
                     }
                 };
-                self.mailbox.lock().unwrap().push((src, dst, unit));
+                self.mailbox
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push((src, dst, unit));
                 // The incrementing side advances; the peripheral side is fixed.
                 if pinc {
                     view.set(CPAR_CH + base, cpar.wrapping_add(u32::from(unit)));
@@ -466,7 +472,7 @@ mod tests {
         write_word(&mut d, BASE + CCR1, EN | MEM2MEM | MINC | PINC);
         d.tick(1);
         assert_eq!(
-            *m.lock().unwrap(),
+            *m.lock().unwrap_or_else(|e| e.into_inner()),
             vec![
                 (0x1000, 0x2000, 1),
                 (0x1001, 0x2001, 1),
@@ -496,7 +502,7 @@ mod tests {
         );
         d.tick(1);
         assert_eq!(
-            *m.lock().unwrap(),
+            *m.lock().unwrap_or_else(|e| e.into_inner()),
             vec![(0x1000, 0x2000, 4), (0x1004, 0x2004, 4)]
         );
     }
@@ -590,21 +596,31 @@ mod tests {
         write_word(&mut d, BASE + CNDTR1, 5);
         write_word(&mut d, BASE + CCR1, EN | MINC);
         d.tick(1);
-        assert!(m.lock().unwrap().is_empty(), "no request, no unit");
+        assert!(
+            m.lock().unwrap_or_else(|e| e.into_inner()).is_empty(),
+            "no request, no unit"
+        );
         assert_eq!(read_word(&mut d, BASE + CNDTR1), 5);
         assert_eq!(read_word(&mut d, BASE + ISR1), 0, "nothing completed");
         // A peripheral→memory request transfers one unit and is consumed.
-        req.lock().unwrap().request(0, 1, false);
+        req.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .request(0, 1, false);
         d.tick(1);
-        assert_eq!(*m.lock().unwrap(), vec![(0x1000, 0x2000, 1)]);
+        assert_eq!(
+            *m.lock().unwrap_or_else(|e| e.into_inner()),
+            vec![(0x1000, 0x2000, 1)]
+        );
         assert_eq!(read_word(&mut d, BASE + CNDTR1), 4);
         assert_eq!(read_word(&mut d, BASE + CMAR1), 0x2001, "MINC advanced");
         assert_eq!(read_word(&mut d, BASE + CPAR1), 0x1000, "peripheral fixed");
         // A memory→peripheral request reads memory and writes the peripheral.
-        req.lock().unwrap().request(0, 1, true);
+        req.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .request(0, 1, true);
         d.tick(1);
         assert_eq!(
-            *m.lock().unwrap(),
+            *m.lock().unwrap_or_else(|e| e.into_inner()),
             vec![(0x1000, 0x2000, 1), (0x2001, 0x1000, 1)]
         );
     }
@@ -618,7 +634,9 @@ mod tests {
         write_word(&mut d, BASE + CMAR1, 0x2000);
         write_word(&mut d, BASE + CNDTR1, 1);
         write_word(&mut d, BASE + CCR1, EN | 0x2); // TCIE on
-        req.lock().unwrap().request(0, 1, true);
+        req.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .request(0, 1, true);
         d.tick(1);
         assert_eq!(read_word(&mut d, BASE + CNDTR1), 0, "CNDTR exhausted");
         assert_eq!(read_word(&mut d, BASE + CCR1) & EN, 0, "EN self-clears");
@@ -635,7 +653,7 @@ mod tests {
         write_word(&mut d, BASE + CNDTR1, 5);
         write_word(&mut d, BASE + CCR1, MEM2MEM);
         d.tick(1);
-        assert!(m.lock().unwrap().is_empty());
+        assert!(m.lock().unwrap_or_else(|e| e.into_inner()).is_empty());
         assert_eq!(read_word(&mut d, BASE + CNDTR1), 5);
     }
 
@@ -650,7 +668,10 @@ mod tests {
         write_word(&mut d, D2 + 0x0C + 4 * 0x14, 1); // CNDTR5
         write_word(&mut d, D2 + 0x08 + 4 * 0x14, EN | MEM2MEM); // CCR5
         d.tick(1);
-        assert_eq!(*m.lock().unwrap(), vec![(0x3000, 0x4000, 1)]);
+        assert_eq!(
+            *m.lock().unwrap_or_else(|e| e.into_inner()),
+            vec![(0x3000, 0x4000, 1)]
+        );
     }
 
     #[test]
@@ -665,9 +686,14 @@ mod tests {
         write_word(&mut d, D2 + 0x14 + 4 * 0x14, 0x4000); // CMAR5
         write_word(&mut d, D2 + 0x0C + 4 * 0x14, 1); // CNDTR5
         write_word(&mut d, D2 + 0x08 + 4 * 0x14, EN); // CCR5, peripheral mode
-        req.lock().unwrap().request(1, 5, true);
+        req.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .request(1, 5, true);
         d.tick(1);
-        assert_eq!(*m.lock().unwrap(), vec![(0x4000, 0x3000, 1)]);
+        assert_eq!(
+            *m.lock().unwrap_or_else(|e| e.into_inner()),
+            vec![(0x4000, 0x3000, 1)]
+        );
         assert_eq!(
             read_word(&mut d, D2 + 0x0C + 4 * 0x14),
             0,
@@ -700,7 +726,7 @@ mod tests {
         d.tick(1);
         // Higher PL (ch2) queued first.
         assert_eq!(
-            *m.lock().unwrap(),
+            *m.lock().unwrap_or_else(|e| e.into_inner()),
             vec![(0x3000, 0x4000, 1), (0x1000, 0x2000, 1)]
         );
         assert_eq!(ch2, 1);

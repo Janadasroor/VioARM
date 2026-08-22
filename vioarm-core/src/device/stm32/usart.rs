@@ -182,7 +182,7 @@ impl Behavior for UsartBehavior {
         let (Some(requests), Some((controller, tx_channel, rx_channel))) = (requests, dma) else {
             return;
         };
-        let mut req = requests.lock().unwrap();
+        let mut req = requests.lock().unwrap_or_else(|e| e.into_inner());
         let cr1 = view.try_get(self.cr1_off).unwrap_or(0);
         // The TX line is high whenever the transmitter can take a byte.
         if cr1 & (self.ue_bit | self.te_bit) == (self.ue_bit | self.te_bit) {
@@ -720,20 +720,50 @@ mod tests {
         let mut u = Usart::with_dma(requests.clone());
         // Disabled: no TX request yet.
         u.tick(1);
-        assert_eq!(requests.lock().unwrap().to_periph(), 0);
+        assert_eq!(
+            requests
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .to_periph(),
+            0
+        );
         // UE + TE: the TX line asserts on DMA1 channel 4.
         write_word(&mut u, 0x4001_3800 + CR1, UE | TE);
         u.tick(1);
-        assert_eq!(requests.lock().unwrap().to_periph(), 1 << 4);
+        assert_eq!(
+            requests
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .to_periph(),
+            1 << 4
+        );
         // A received byte asserts the RX line on DMA1 channel 5.
         u.drive_inputs(0x5A);
         u.tick(1);
-        assert_eq!(requests.lock().unwrap().from_periph(), 1 << 5);
+        assert_eq!(
+            requests
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .from_periph(),
+            1 << 5
+        );
         // Reading DR drains the byte and drops the RX request.
         let _ = read_word(&mut u, 0x4001_3800 + DR);
-        assert_eq!(requests.lock().unwrap().from_periph(), 0);
+        assert_eq!(
+            requests
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .from_periph(),
+            0
+        );
         // The TX line stays asserted while the transmitter is enabled.
-        assert_eq!(requests.lock().unwrap().to_periph(), 1 << 4);
+        assert_eq!(
+            requests
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .to_periph(),
+            1 << 4
+        );
     }
 
     #[test]
@@ -790,23 +820,56 @@ mod tests {
         write_word(&mut u2, 0x4000_4400 + CR1, UE | TE);
         u2.drive_inputs(0x5A);
         u2.tick(1);
-        assert_eq!(requests.lock().unwrap().to_periph(), 1 << 7);
-        assert_eq!(requests.lock().unwrap().from_periph(), 1 << 6);
+        assert_eq!(
+            requests
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .to_periph(),
+            1 << 7
+        );
+        assert_eq!(
+            requests
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .from_periph(),
+            1 << 6
+        );
 
         let mut u3 = Usart::usart3_for_device_with_dma::<Stm32f107>(requests.clone());
         write_word(&mut u3, 0x4000_4800 + CR1, UE | TE);
         u3.drive_inputs(0x5A);
         u3.tick(1);
-        assert_eq!(requests.lock().unwrap().to_periph(), 1 << 7 | 1 << 2);
-        assert_eq!(requests.lock().unwrap().from_periph(), 1 << 6 | 1 << 3);
+        assert_eq!(
+            requests
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .to_periph(),
+            1 << 7 | 1 << 2
+        );
+        assert_eq!(
+            requests
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .from_periph(),
+            1 << 6 | 1 << 3
+        );
 
         let mut u5 = Usart::uart5_for_device_with_dma::<Stm32f107>(requests.clone());
         write_word(&mut u5, 0x4000_5000 + CR1, UE | TE);
         u5.drive_inputs(0x5A);
         u5.tick(1);
-        assert_eq!(requests.lock().unwrap().to_periph(), 1 << 7 | 1 << 2);
         assert_eq!(
-            requests.lock().unwrap().from_periph(),
+            requests
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .to_periph(),
+            1 << 7 | 1 << 2
+        );
+        assert_eq!(
+            requests
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .from_periph(),
             1 << 6 | 1 << 3 | 1 << 4
         );
     }

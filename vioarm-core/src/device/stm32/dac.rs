@@ -67,7 +67,9 @@ impl DacBehavior {
     fn assert_dma(&self, ch: u8) {
         if let Some(req) = &self.requests {
             // DAC1 -> DMA1 Ch3, DAC2 -> DMA1 Ch4, memory→periph.
-            req.lock().unwrap().request(0, ch, true);
+            req.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .request(0, ch, true);
         }
     }
 }

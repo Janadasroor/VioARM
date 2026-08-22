@@ -488,7 +488,11 @@ impl Eth {
 
     /// Pop the one result expected by the phase machine, if it has arrived.
     fn pop_result(&self) -> Option<Vec<u8>> {
-        self.mailbox.lock().unwrap().results.pop_front()
+        self.mailbox
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .results
+            .pop_front()
     }
 
     /// Advance the RX ring one frame: store the pending host frame into the
@@ -758,7 +762,7 @@ impl Eth {
         self.ptp.reload_reset();
         self.dma.reload_reset();
         self.state = EthState::default();
-        let mut mailbox = self.mailbox.lock().unwrap();
+        let mut mailbox = self.mailbox.lock().unwrap_or_else(|e| e.into_inner());
         mailbox.ops.clear();
         mailbox.results.clear();
     }

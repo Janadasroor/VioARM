@@ -1056,9 +1056,18 @@ impl Scb {
                     16 => self.sau_rlar[self.sau_region_index()],
                     _ => 0,
                 },
-                FPCCR => self.fpu_ctx.lock().unwrap().fpccr(),
-                FPCAR => self.fpu_ctx.lock().unwrap().fpcar,
-                FPDSCR => self.fpu_ctx.lock().unwrap().fpdscr,
+                FPCCR => self
+                    .fpu_ctx
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .fpccr(),
+                FPCAR => self.fpu_ctx.lock().unwrap_or_else(|e| e.into_inner()).fpcar,
+                FPDSCR => {
+                    self.fpu_ctx
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .fpdscr
+                }
                 _ => 0,
             }
         };
@@ -1163,18 +1172,18 @@ impl Scb {
                 // are software-writable; the ready bits and LSPACT are
                 // read-only.
                 if offset == 3 {
-                    let mut ctx = self.fpu_ctx.lock().unwrap();
+                    let mut ctx = self.fpu_ctx.lock().unwrap_or_else(|e| e.into_inner());
                     ctx.write_fpccr(u32::from(val) << 24);
                 }
             }
             FPCAR => {
                 let shift = 8 * offset;
-                let mut ctx = self.fpu_ctx.lock().unwrap();
+                let mut ctx = self.fpu_ctx.lock().unwrap_or_else(|e| e.into_inner());
                 ctx.fpcar = (ctx.fpcar & !(0xFF << shift)) | (u32::from(val) << shift) & !0x7;
             }
             FPDSCR => {
                 let shift = 8 * offset;
-                let mut ctx = self.fpu_ctx.lock().unwrap();
+                let mut ctx = self.fpu_ctx.lock().unwrap_or_else(|e| e.into_inner());
                 let raw = (ctx.fpdscr & !(0xFF << shift)) | (u32::from(val) << shift);
                 // FPDSCR trap-enable bits (FPSCR bits [12:8] and [15]) are RAZ/WI
                 // on the Cortex-M4's FPv4-SP (VFPv3/VFPv4, not U); only AHP/DN/FZ/
@@ -1245,7 +1254,7 @@ impl Peripheral for Scb {
         self.sau_rnr = 0;
         self.sau_rbar = [0; 8];
         self.sau_rlar = [0; 8];
-        *self.fpu_ctx.lock().unwrap() = FpuCtx::new();
+        *self.fpu_ctx.lock().unwrap_or_else(|e| e.into_inner()) = FpuCtx::new();
     }
 
     fn name(&self) -> &'static str {
@@ -1442,15 +1451,15 @@ mod tests {
         s.set_fpu_ctx(fpu_ctx.clone());
         // Firmware clears LSPEN through the FPCCR window; the core sees it.
         write_word(&mut s, 0xE000_EF34, 0x8780_0004);
-        assert!(!fpu_ctx.lock().unwrap().lspen);
-        assert!(fpu_ctx.lock().unwrap().aspen);
+        assert!(!fpu_ctx.lock().unwrap_or_else(|e| e.into_inner()).lspen);
+        assert!(fpu_ctx.lock().unwrap_or_else(|e| e.into_inner()).aspen);
         // Hardware sets LSPACT; the FPCCR read reflects it.
-        fpu_ctx.lock().unwrap().lspact = true;
+        fpu_ctx.lock().unwrap_or_else(|e| e.into_inner()).lspact = true;
         assert_eq!(read_word(&mut s, 0xE000_EF34), 0x8780_0005);
         // And the FPCCR write survives reset only until `reset()`.
         s.reset();
         assert_eq!(read_word(&mut s, 0xE000_EF34), 0xC780_0004);
-        assert!(fpu_ctx.lock().unwrap().lspen);
+        assert!(fpu_ctx.lock().unwrap_or_else(|e| e.into_inner()).lspen);
     }
 
     #[test]
