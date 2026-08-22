@@ -513,10 +513,13 @@ impl Behavior for CanBehavior {
 
 /// A `bxCAN` controller, table-driven from the SVD: base address, register set,
 /// and the four interrupt lines (`TX`, `RX0`, `RX1`, `SCE`) all come from `D`'s
-/// generated tables.
+/// generated tables. Filter bank `0x40006600` `0x200` is handled as latch
+/// inside `Can` (SVD has no filter registers) so `HAL_CAN_ConfigFilter` not
+/// `HardFault`; filtering still always `FIFO0`.
 #[derive(Debug)]
 pub struct Can {
     inner: RegisterFile<CanBehavior>,
+    filter: Box<[u32; 0x80]>,
     name: &'static str,
 }
 
@@ -546,6 +549,7 @@ impl Can {
             .unwrap_or_else(|| panic!("generated tables contain {peripheral}"));
         Self {
             inner: RegisterFile::new(def, CanBehavior::default()),
+            filter: Box::new([0u32; 0x80]),
             name,
         }
     }
@@ -553,19 +557,46 @@ impl Can {
 
 impl Peripheral for Can {
     fn ranges(&self) -> &[Region] {
+        // Advertise filter window as well so 0x40006600 not Reserved.
+        const EXTRA: Region = Region::new(0x4000_6600, 0x200);
+        // SAFETY: leak to static is fine for const range.
+        const R: &[Region] = &[EXTRA];
+        // Merge inner + filter: SystemMemory linear scan picks first hit,
+        // so we claim filter first; inner's 0x40006400/0x400 window covers
+        // 0x40006400-0x400067FF but filter will be checked first via early
+        // return in read/write.
+        // To keep one slice, return inner's ranges if addr not in filter;
+        // filter is handled in read/write early return, so we return inner.
+        // But we need to advertise filter: return a static that includes it.
+        // The simplest is to return a leaked Vec's slice, but we instead
+        // handle filter in read/write and let inner's Reserved be overridden
+        // by checking filter first in read/write.
         self.inner.ranges()
     }
 
     fn read(&mut self, addr: u32) -> Result<u8, BusError> {
+        if (0x4000_6600..0x4000_6800).contains(&addr) {
+            let off = (addr - 0x4000_6600) as usize;
+            let word = self.filter[off / 4];
+            return Ok(((word >> (8 * (off % 4))) & 0xFF) as u8);
+        }
         self.inner.read(addr)
     }
 
     fn write(&mut self, addr: u32, val: u8) -> Result<(), BusError> {
+        if (0x4000_6600..0x4000_6800).contains(&addr) {
+            let off = (addr - 0x4000_6600) as usize;
+            let idx = off / 4;
+            let shift = 8 * (off % 4);
+            self.filter[idx] = (self.filter[idx] & !(0xFF << shift)) | (u32::from(val) << shift);
+            return Ok(());
+        }
         self.inner.write(addr, val)
     }
 
     fn reset(&mut self) {
         self.inner.reset();
+        *self.filter = [0u32; 0x80];
     }
 
     fn tick(&mut self, delta: u64) {
