@@ -607,6 +607,70 @@ impl InterruptSource for Can {
     }
 }
 
+/// CAN filter bank window `0x4000_6600` `0x200` — latch-only so
+/// `HAL_CAN_ConfigFilter` (`FMR/FM1R/FS1R/FFA1R/FA1R/FxR1/2`) not
+/// `HardFault`; filtering still always `FIFO0` (see `can.rs:9`).
+#[derive(Debug)]
+pub struct CanFilter {
+    mem: Box<[u32; 0x80]>,
+}
+
+impl CanFilter {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            mem: Box::new([0u32; 0x80]),
+        }
+    }
+}
+
+impl Default for CanFilter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Peripheral for CanFilter {
+    fn ranges(&self) -> &[Region] {
+        const R: [Region; 1] = [Region::new(0x4000_6600, 0x200)];
+        &R
+    }
+    fn read(&mut self, addr: u32) -> Result<u8, BusError> {
+        let off = (addr - 0x4000_6600) as usize;
+        if off >= 0x200 {
+            return Err(BusError::Reserved);
+        }
+        let word = self.mem[off / 4];
+        Ok(((word >> (8 * (off % 4))) & 0xFF) as u8)
+    }
+    fn write(&mut self, addr: u32, val: u8) -> Result<(), BusError> {
+        let off = (addr - 0x4000_6600) as usize;
+        if off >= 0x200 {
+            return Err(BusError::Reserved);
+        }
+        let idx = off / 4;
+        let shift = 8 * (off % 4);
+        self.mem[idx] = (self.mem[idx] & !(0xFF << shift)) | (u32::from(val) << shift);
+        Ok(())
+    }
+    fn reset(&mut self) {
+        *self.mem = [0u32; 0x80];
+    }
+    fn name(&self) -> &'static str {
+        "canfilter"
+    }
+}
+
+impl InterruptSource for CanFilter {
+    fn exception_number(&self) -> Option<u8> {
+        None
+    }
+    fn pending(&self) -> u32 {
+        0
+    }
+    fn acknowledge(&mut self, _lines: u32) {}
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Can, DLC, FMPIE0, INAK, INRQ, RQCP0, TMEIE, TXOK0, TXRQ};
