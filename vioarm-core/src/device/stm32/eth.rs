@@ -30,7 +30,7 @@
 //! `[CMD_RX, len_lo, len_hi, payload...]`; output: `[EVT_TX, len_lo, len_hi,
 //! payload...]`.
 
-use crate::device::svd::{Access, Device, PeripheralDef, RegisterDef};
+use crate::device::svd::{Access, Device, NoBehavior, PeripheralDef, RegisterDef, RegisterFile};
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
 use crate::mem::bus::Region;
@@ -762,6 +762,54 @@ impl Eth {
         mailbox.ops.clear();
         mailbox.results.clear();
     }
+}
+
+/// H7 single-window Ethernet (MAC at 0x40028000, window 0x0BDF) — stub that
+/// round-trips writes so HAL probing does not HardFault. Real H7 DMA/MTL
+/// are not modeled; use this for H743 board bringup.
+#[derive(Debug)]
+pub struct EthH7 {
+    inner: RegisterFile<NoBehavior>,
+}
+
+impl EthH7 {
+    #[must_use]
+    pub fn new_for<D: Device>() -> Self {
+        let def = D::peripheral("Ethernet_MAC")
+            .or_else(|| D::peripheral("ETH"))
+            .expect("generated tables contain Ethernet_MAC");
+        Self {
+            inner: RegisterFile::new(def, NoBehavior),
+        }
+    }
+}
+
+impl Peripheral for EthH7 {
+    fn ranges(&self) -> &[Region] {
+        self.inner.ranges()
+    }
+    fn read(&mut self, addr: u32) -> Result<u8, BusError> {
+        self.inner.read(addr)
+    }
+    fn write(&mut self, addr: u32, val: u8) -> Result<(), BusError> {
+        self.inner.write(addr, val)
+    }
+    fn reset(&mut self) {
+        self.inner.reset();
+    }
+    fn name(&self) -> &'static str {
+        "eth"
+    }
+}
+
+impl InterruptSource for EthH7 {
+    fn exception_number(&self) -> Option<u8> {
+        self.inner.exception_number()
+    }
+    fn pending(&self) -> u32 {
+        0
+    }
+    fn acknowledge(&mut self, _lines: u32) {}
 }
 
 #[cfg(test)]

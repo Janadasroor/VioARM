@@ -26,7 +26,7 @@ use crate::device::stm32::pwr::Pwr;
 use crate::device::stm32::rtc::Rtc;
 use crate::device::stm32::sdio::Sdio;
 use crate::device::stm32::dma_f4::DmaF4;
-use crate::device::stm32::eth::{Eth, EthMailbox};
+use crate::device::stm32::eth::{Eth, EthH7, EthMailbox};
 use crate::device::stm32::exti::Exti;
 use crate::device::stm32::flash::{FlashF1, FlashF4, FlashGate};
 use crate::device::stm32::gpio::Gpio as StmGpio;
@@ -938,12 +938,13 @@ pub fn stm32h743() -> BoardMemory {
     if <Stm32h743 as crate::device::svd::Device>::peripheral("DMA2D").is_some() {
         mem.attach(Box::new(Dma2d::new_for::<Stm32h743>()));
     }
-    // ETH - H743 uses different DMA/MTL registers (DMAMR vs DMASR), skip (would need EthH7)
-    // if <Stm32h743 as crate::device::svd::Device>::peripheral("Ethernet_MAC").is_some() {
-    //     let eth_mailbox = Arc::new(Mutex::new(EthMailbox::default()));
-    //     mem.set_eth_mailbox(eth_mailbox.clone());
-    //     mem.attach(Box::new(Eth::for_device::<Stm32h743>(eth_mailbox)));
-    // }
+    // ETH - H743 single-window MAC at 0x40028000 (no MMC/PTP split) via EthH7 stub
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("Ethernet_MAC").is_some()
+        || <Stm32h743 as crate::device::svd::Device>::peripheral("ETH").is_some()
+    {
+        // Use EthH7 stub (NoBehavior) so HAL probing (MACCR etc.) does not fault
+        mem.attach(Box::new(EthH7::new_for::<Stm32h743>()));
+    }
     // FDCAN
     if <Stm32h743 as crate::device::svd::Device>::peripheral("FDCAN1").is_some() {
         mem.attach(Box::new(Fdcan::fdcan1_for::<Stm32h743>()));
