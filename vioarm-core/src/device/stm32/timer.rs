@@ -25,9 +25,16 @@ const CR1: u32 = 0x00;
 const DIER: u32 = 0x0C;
 const SR: u32 = 0x10;
 const EGR: u32 = 0x14;
+const CCMR1: u32 = 0x18;
+const CCMR2: u32 = 0x1C;
+const CCER: u32 = 0x20;
 const CNT: u32 = 0x24;
 const PSC: u32 = 0x28;
 const ARR: u32 = 0x2C;
+const CCR1: u32 = 0x34;
+const CCR2: u32 = 0x38;
+const CCR3: u32 = 0x3C;
+const CCR4: u32 = 0x40;
 
 /// `CEN` bit in `CR1`.
 const CEN: u32 = 1 << 0;
@@ -35,6 +42,14 @@ const CEN: u32 = 1 << 0;
 const UIF: u32 = 1 << 0;
 const UIE: u32 = 1 << 0;
 const UG: u32 = 1 << 0;
+const CC1IE: u32 = 1 << 1;
+const CC2IE: u32 = 1 << 2;
+const CC3IE: u32 = 1 << 3;
+const CC4IE: u32 = 1 << 4;
+const CC1IF: u32 = 1 << 1;
+const CC2IF: u32 = 1 << 2;
+const CC3IF: u32 = 1 << 3;
+const CC4IF: u32 = 1 << 4;
 
 /// The counting core the SVD cannot express.
 #[derive(Clone, Copy, Debug)]
@@ -89,24 +104,59 @@ impl Behavior for TimerBehavior {
         let arr = u64::from(view.get(ARR));
         for _ in 0..delta {
             self.psc_phase += 1;
-            // The counter advances once every `PSC + 1` clock edges. Compare on
-            // the unmasked count so the 16-bit wrap past `0xFFFF` reads as an
-            // overflow (a masked `0` would never exceed `ARR`).
             if self.psc_phase >= div {
                 self.psc_phase = 0;
                 let cnt = u64::from(view.get(CNT)) + 1;
+                let next = if cnt > arr { 0 } else { cnt as u32 };
                 if cnt > arr {
-                    view.set(CNT, 0);
                     view.set(SR, view.get(SR) | UIF);
-                } else {
-                    view.set(CNT, cnt as u32);
+                }
+                view.set(CNT, next);
+                if let (Some(ccr), Some(ccmr1), Some(ccer)) =
+                    (view.try_get(CCR1), view.try_get(CCMR1), view.try_get(CCER))
+                {
+                    let ocm = (ccmr1 >> 4) & 0x7;
+                    if ocm != 0 && ccer & 1 != 0 && next == ccr & self.width_mask {
+                        view.set(SR, view.get(SR) | CC1IF);
+                    }
+                }
+                if let (Some(ccr), Some(ccmr1), Some(ccer)) =
+                    (view.try_get(CCR2), view.try_get(CCMR1), view.try_get(CCER))
+                {
+                    let ocm = (ccmr1 >> 12) & 0x7;
+                    if ocm != 0 && ccer & (1 << 4) != 0 && next == ccr & self.width_mask {
+                        view.set(SR, view.get(SR) | CC2IF);
+                    }
+                }
+                if let (Some(ccr), Some(ccmr2), Some(ccer)) =
+                    (view.try_get(CCR3), view.try_get(CCMR2), view.try_get(CCER))
+                {
+                    let ocm = (ccmr2 >> 4) & 0x7;
+                    if ocm != 0 && ccer & (1 << 8) != 0 && next == ccr & self.width_mask {
+                        view.set(SR, view.get(SR) | CC3IF);
+                    }
+                }
+                if let (Some(ccr), Some(ccmr2), Some(ccer)) =
+                    (view.try_get(CCR4), view.try_get(CCMR2), view.try_get(CCER))
+                {
+                    let ocm = (ccmr2 >> 12) & 0x7;
+                    if ocm != 0 && ccer & (1 << 12) != 0 && next == ccr & self.width_mask {
+                        view.set(SR, view.get(SR) | CC4IF);
+                    }
                 }
             }
         }
     }
 
     fn pending(&self, view: &Registers<&[u32]>) -> u32 {
-        u32::from(view.get(SR) & UIF != 0 && view.get(DIER) & UIE != 0)
+        let sr = view.get(SR);
+        let dier = view.get(DIER);
+        let uie = sr & UIF != 0 && dier & UIE != 0;
+        let cc1 = sr & CC1IF != 0 && dier & CC1IE != 0;
+        let cc2 = sr & CC2IF != 0 && dier & CC2IE != 0;
+        let cc3 = sr & CC3IF != 0 && dier & CC3IE != 0;
+        let cc4 = sr & CC4IF != 0 && dier & CC4IE != 0;
+        u32::from(uie || cc1 || cc2 || cc3 || cc4)
     }
 }
 
