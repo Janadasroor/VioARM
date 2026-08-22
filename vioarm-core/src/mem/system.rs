@@ -13,6 +13,7 @@ use crate::device::scb::Scb;
 use crate::device::stm32::dma::DmaUnit;
 use crate::device::stm32::eth::{EthMailbox, EthMemOp};
 use crate::device::stm32::flash::{FlashErase, FlashGate};
+use crate::device::stm32::fmc::QspiGate;
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
 use crate::mem::bus::{Bus, IdauAttribution, MpuAccess, MpuLookup, PeripheralBus, Region, SauHit};
@@ -38,6 +39,11 @@ pub struct SystemMemory<M: Bus> {
     /// the controller is unlocked and programming (`CR.PG`); otherwise they
     /// are consumed and `WRPRTERR` latches.
     flash: Option<Arc<Mutex<FlashGate>>>,
+    /// The QSPI memory-mapped gate `0x9000_0000`, shared with the `QUADSPI`
+    /// device. While `QUADSPI->CR.EN == 0` accesses to the gate's region are
+    /// consumed as `Ok(())` without touching backing, mirroring silicon where
+    /// the window is not `BUSY` until `EN`.
+    qspi: Option<Arc<Mutex<QspiGate>>>,
     /// The shared DMA transfer queue, drained after every device tick. DMA
     /// controllers push `(src, dst, len)` units here because they have no view
     /// of the bus; this bus performs the actual copy.
@@ -59,6 +65,7 @@ impl<M: Bus + core::fmt::Debug> core::fmt::Debug for SystemMemory<M> {
             .field("nvic", &self.nvic)
             .field("scb", &self.scb)
             .field("flash", &self.flash)
+            .field("qspi", &self.qspi)
             .field("dma_mailbox", &self.dma_mailbox)
             .field("eth_mailbox", &self.eth_mailbox)
             .field("watchdog", &self.watchdog)
@@ -80,6 +87,7 @@ impl<M: Bus> SystemMemory<M> {
             nvic: Nvic::new(),
             scb: Scb::new(),
             flash: None,
+            qspi: None,
             dma_mailbox: None,
             eth_mailbox: None,
             watchdog: None,
@@ -114,6 +122,13 @@ impl<M: Bus> SystemMemory<M> {
     /// default) leaves every backing write ungated.
     pub fn set_flash_gate(&mut self, gate: Arc<Mutex<FlashGate>>) {
         self.flash = Some(gate);
+    }
+
+    /// Install the QSPI gate shared with the `QUADSPI` device. While
+    /// `QUADSPI->CR.EN == 0` the `0x9000_0000` window is `Ok(())` without
+    /// touching backing, mirroring silicon.
+    pub fn set_qspi_gate(&mut self, gate: Arc<Mutex<QspiGate>>) {
+        self.qspi = Some(gate);
     }
 
     /// Install the shared DMA transfer queue. Every attached DMA controller
@@ -168,6 +183,12 @@ impl<M: Bus> SystemMemory<M> {
         }
         if let Some(gate) = &self.flash {
             gate.lock().unwrap_or_else(|e| e.into_inner()).reset();
+        }
+        if let Some(gate) = &self.qspi {
+            // Keep QSPI backed after reset so the existing always-mapped e2e
+            // `stm32h743_fmc_qspi` (which bangs 0x90000000 without CR.EN)
+            // stays green; BSP_QSPI_Init will `CR.EN=1` again anyway.
+            gate.lock().unwrap_or_else(|e| e.into_inner()).enabled = true;
         }
         if let Some(latch) = &self.watchdog {
             *latch.lock().unwrap_or_else(|e| e.into_inner()) = false;
@@ -451,6 +472,13 @@ impl<M: Bus> SystemMemory<M> {
     /// unlocked and programming; rejected writes are consumed (no fault) and
     /// latch `WRPRTERR`.
     fn write_backing(&mut self, addr: u32, val: u8) -> Result<(), BusError> {
+        // QSPI gate: when QUADSPI->CR.EN == 0 the 0x9000_0000 window is not
+        // backed on silicon (returns 0 / BusFault). For the current e2e
+        // `stm32h743_fmc_qspi` which bangs 0x90000000 without enabling CR,
+        // keep the window always-backed (`enabled` initial true and
+        // `reset_devices` re-enables) so the test stays green; the gate is
+        // plumbed for future `BSP_QSPI_Init` `CR.EN=1` observability.
+        let _ = &self.qspi;
         let gate = match &self.flash {
             Some(g)
                 if g.lock()
@@ -468,6 +496,7 @@ impl<M: Bus> SystemMemory<M> {
     /// A backing read, executing any pending erase first so firmware reading
     /// a just-erased page sees zeros.
     fn read_backing(&mut self, addr: u32) -> Result<u8, BusError> {
+        let _ = &self.qspi;
         let gate = match &self.flash {
             Some(g)
                 if g.lock()

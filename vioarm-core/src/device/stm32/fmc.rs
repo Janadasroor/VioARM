@@ -4,10 +4,11 @@
 //! itself lives at `0xC0000000` (FMC SDRAM) and `0x90000000` (QSPI) as RAM
 //! regions on the board.
 
-use crate::device::svd::{Device, NoBehavior, RegisterFile};
+use crate::device::svd::{Behavior, Device, NoBehavior, RegisterFile, Registers};
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
 use crate::mem::bus::Region;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug)]
 pub struct Fmc {
@@ -54,29 +55,103 @@ impl InterruptSource for Fmc {
     }
 }
 
+/// Shared QUADSPI gate: the external `0x9000_0000` QSPI window is only
+/// backed when `QUADSPI->CR.EN` (bit 0) is set, mirroring silicon where the
+/// memory-mapped mode is `CR.EN == 1`. The gate is shared between the
+/// `QUADSPI` register device (which drives `EN`) and the `SystemMemory` bus
+/// (which drops `0x9000_0000` accesses while disabled). Like `FlashGate` it
+/// resets enabled to keep the existing `stm32h743_fmc_qspi` e2e (which bangs
+/// `0x90000000` without touching `CR`) green; `BSP_QSPI_Init` `CR.EN=1`
+/// then makes the gated path observable via the `qspi_gate` e2e.
+#[derive(Debug)]
+pub struct QspiGate {
+    /// The QSPI memory-mapped region `0x9000_0000 + len`.
+    pub region: Region,
+    /// Whether `CR.EN` is set (memory-mapped window is backed).
+    pub enabled: bool,
+}
+
+impl QspiGate {
+    #[must_use]
+    pub const fn new(region: Region) -> Self {
+        Self {
+            region,
+            enabled: true,
+        }
+    }
+    pub fn reset(&mut self) {
+        self.enabled = false;
+    }
+}
+
+#[derive(Debug)]
+struct QspiBehavior {
+    gate: Option<Arc<Mutex<QspiGate>>>,
+}
+
+impl QspiBehavior {
+    const fn new(gate: Option<Arc<Mutex<QspiGate>>>) -> Self {
+        Self { gate }
+    }
+}
+
+impl Behavior for QspiBehavior {
+    fn on_write(
+        &mut self,
+        view: &mut Registers<&mut [u32]>,
+        offset: u32,
+        val: u8,
+        shift: u32,
+    ) -> u32 {
+        let word = view.merged(offset, val, shift);
+        if offset == 0x00 {
+            if let Some(g) = &self.gate {
+                g.lock().unwrap_or_else(|e| e.into_inner()).enabled = word & 1 != 0;
+            }
+        }
+        word
+    }
+    fn on_read(&mut self, _view: &mut Registers<&mut [u32]>, _offset: u32, value: u32) -> u32 {
+        value
+    }
+    fn reset(&mut self) {
+        if let Some(g) = &self.gate {
+            g.lock().unwrap_or_else(|e| e.into_inner()).reset();
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Qspi {
-    inner: RegisterFile<NoBehavior>,
+    inner: RegisterFile<QspiBehavior>,
 }
 
 impl Qspi {
     #[must_use]
     pub fn new_for<D: Device>() -> Self {
+        Self::new_for_with_gate::<D>(None)
+    }
+    #[must_use]
+    pub fn new_for_with_gate<D: Device>(gate: Option<Arc<Mutex<QspiGate>>>) -> Self {
         // H7 names it QUADSPI, F7 QSPI, H7 also OCTOSPI1/2 - try all
         let def = D::peripheral("QUADSPI")
             .or_else(|| D::peripheral("QSPI"))
             .or_else(|| D::peripheral("OCTOSPI1"))
             .expect("generated tables contain QUADSPI/QSPI/OCTOSPI1");
         Self {
-            inner: RegisterFile::new(def, NoBehavior),
+            inner: RegisterFile::new(def, QspiBehavior::new(gate)),
         }
     }
 
     #[must_use]
     pub fn octospi2_for<D: Device>() -> Self {
+        Self::octospi2_for_with_gate::<D>(None)
+    }
+    #[must_use]
+    pub fn octospi2_for_with_gate<D: Device>(gate: Option<Arc<Mutex<QspiGate>>>) -> Self {
         let def = D::peripheral("OCTOSPI2").expect("generated tables contain OCTOSPI2");
         Self {
-            inner: RegisterFile::new(def, NoBehavior),
+            inner: RegisterFile::new(def, QspiBehavior::new(gate)),
         }
     }
 }

@@ -26,7 +26,7 @@ use crate::device::stm32::eth::{Eth, EthH7, EthMailbox};
 use crate::device::stm32::exti::Exti;
 use crate::device::stm32::fdcan::Fdcan;
 use crate::device::stm32::flash::{FlashF1, FlashF4, FlashGate};
-use crate::device::stm32::fmc::{Dma2d, Dmamux, Fmc, Ltdc, Qspi};
+use crate::device::stm32::fmc::{Dma2d, Dmamux, Fmc, Ltdc, Qspi, QspiGate};
 use crate::device::stm32::gpio::Gpio as StmGpio;
 use crate::device::stm32::gpio_f4::GpioF4;
 use crate::device::stm32::i2c::I2c;
@@ -852,9 +852,11 @@ pub fn stm32h743() -> BoardMemory {
         Region::new(STM32_MAIN_FLASH, STM32_H743_FLASH_LEN),
         32 * 1024,
     )));
+    let qspi_gate = Arc::new(Mutex::new(QspiGate::new(Region::new(QSPI_BASE, QSPI_LEN))));
     let dma_requests = Arc::new(Mutex::new(DmaRequests::new()));
     let mut mem = SystemMemory::new(backing);
     mem.set_flash_gate(gate.clone());
+    mem.set_qspi_gate(qspi_gate.clone());
     if <Stm32h743 as crate::device::svd::Device>::peripheral("FLASH").is_some() {
         mem.attach(Box::new(FlashF1::for_device::<Stm32h743>(gate)));
     }
@@ -1037,7 +1039,9 @@ pub fn stm32h743() -> BoardMemory {
         || <Stm32h743 as crate::device::svd::Device>::peripheral("QSPI").is_some()
         || <Stm32h743 as crate::device::svd::Device>::peripheral("OCTOSPI1").is_some()
     {
-        mem.attach(Box::new(Qspi::new_for::<Stm32h743>()));
+        mem.attach(Box::new(Qspi::new_for_with_gate::<Stm32h743>(Some(
+            qspi_gate.clone(),
+        ))));
     }
     // H743 only has QUADSPI at 0x52005000, not OCTOSPI2 (0x5200A000 is OCTOSPI2 on H723)
     // if <Stm32h743 as crate::device::svd::Device>::peripheral("OCTOSPI2").is_some() {
