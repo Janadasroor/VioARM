@@ -21,7 +21,7 @@ use crate::device::stm32::crc::Crc;
 use crate::device::stm32::dac::Dac;
 use crate::device::stm32::dma::{DmaF1, DmaRequests};
 use crate::device::stm32::fdcan::Fdcan;
-use crate::device::stm32::fmc::{Dmamux, Fmc, Qspi};
+use crate::device::stm32::fmc::{Dmamux, Dma2d, Fmc, Ltdc, Qspi};
 use crate::device::stm32::pwr::Pwr;
 use crate::device::stm32::rtc::Rtc;
 use crate::device::stm32::sdio::Sdio;
@@ -931,6 +931,12 @@ pub fn stm32h743() -> BoardMemory {
     }
     if <Stm32h743 as crate::device::svd::Device>::peripheral("DMAMUX2").is_some() {
         mem.attach(Box::new(Dmamux::dmamux2_for::<Stm32h743>()));
+    }
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("LTDC").is_some() {
+        mem.attach(Box::new(Ltdc::new_for::<Stm32h743>()));
+    }
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("DMA2D").is_some() {
+        mem.attach(Box::new(Dma2d::new_for::<Stm32h743>()));
     }
     // ETH - H743 uses different DMA/MTL registers (DMAMR vs DMASR), skip (would need EthH7)
     // if <Stm32h743 as crate::device::svd::Device>::peripheral("Ethernet_MAC").is_some() {
