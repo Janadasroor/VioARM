@@ -453,6 +453,12 @@ impl Usb {
         Self::for_device::<D>("OTG_HS")
     }
 
+    /// The second HS controller at `0x4008_0000` on H7 (`OTG2_HS`).
+    #[must_use]
+    pub fn otg2_hs_for<D: Device>() -> Self {
+        Self::for_device::<D>("OTG2_HS")
+    }
+
     fn for_device<D: Device>(irq: &'static str) -> Self {
         let gdef = win_def::<D>(irq, "GLOBAL");
         let base = gdef.base;
@@ -495,7 +501,8 @@ fn win_def<D: Device>(irq: &str, which: &str) -> &'static PeripheralDef {
 
 fn usb_prefixes(irq: &str) -> &'static [&'static str] {
     match irq {
-        "OTG_HS" => &["OTG_HS", "OTG1_HS", "OTG2_HS"],
+        "OTG_HS" => &["OTG_HS", "OTG1_HS"],
+        "OTG2_HS" => &["OTG2_HS"],
         "OTG_FS" => &["USB_OTG", "OTG_FS", "OTG1_HS", "OTG2_HS"],
         _ => &["USB_OTG", "OTG_FS", "OTG_HS", "OTG1_HS", "OTG2_HS"],
     }

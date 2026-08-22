@@ -1006,31 +1006,15 @@ pub fn stm32h743() -> BoardMemory {
     // USB - H743 has OTG1_HS at 0x40040000 and OTG2_HS at 0x40080000 (FS via HS)
     if <Stm32h743 as crate::device::svd::Device>::peripheral("OTG1_HS_GLOBAL").is_some()
         || <Stm32h743 as crate::device::svd::Device>::peripheral("OTG_HS").is_some()
-        || <Stm32h743 as crate::device::svd::Device>::peripheral("USB_OTG_FS").is_some()
     {
-        // Try OTG_HS (which will find OTG1_HS_GLOBAL via prefix), fallback to FS
-        if <Stm32h743 as crate::device::svd::Device>::peripheral("OTG_HS").is_some()
-            || <Stm32h743 as crate::device::svd::Device>::peripheral("OTG1_HS_GLOBAL").is_some()
-        {
-            mem.attach(Box::new(Usb::otg_hs_for::<Stm32h743>()));
-        }
-        if <Stm32h743 as crate::device::svd::Device>::peripheral("OTG_FS").is_some()
-            || <Stm32h743 as crate::device::svd::Device>::peripheral("OTG2_HS_GLOBAL").is_some()
-        {
-            // OTG_FS on H7 is actually OTG2_HS at 0x40080000, reuse HS driver
-            // Try to attach FS as well if present (will find OTG2)
-            // Use HS driver again for second controller
-            // We attach as FS for second instance to get distinct IRQ
-            // Fallback: attach FS if found
-            if <Stm32h743 as crate::device::svd::Device>::peripheral("OTG_FS").is_some() {
-                mem.attach(Box::new(Usb::otg_fs_for::<Stm32h743>()));
-            } else if <Stm32h743 as crate::device::svd::Device>::peripheral("OTG2_HS_GLOBAL")
-                .is_some()
-            {
-                // H743 second HS is at 0x40080000, reuse HS window but via FS helper's base is different?
-                // For now attach HS again which will find OTG1, so skip second to avoid duplicate base
-            }
-        }
+        mem.attach(Box::new(Usb::otg_hs_for::<Stm32h743>()));
+    }
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("OTG2_HS_GLOBAL").is_some() {
+        mem.attach(Box::new(Usb::otg2_hs_for::<Stm32h743>()));
+    } else if <Stm32h743 as crate::device::svd::Device>::peripheral("USB_OTG_FS").is_some()
+        || <Stm32h743 as crate::device::svd::Device>::peripheral("OTG_FS").is_some()
+    {
+        mem.attach(Box::new(Usb::otg_fs_for::<Stm32h743>()));
     }
     if <Stm32h743 as crate::device::svd::Device>::peripheral("FMC").is_some() {
         mem.attach(Box::new(Fmc::new_for::<Stm32h743>()));
