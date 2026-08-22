@@ -17,4 +17,4 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
-vioarm-core = { path = "../vioarm-core", version = "1.6" }
+vioarm-core = { path = "../vioarm-core", version = "1.7" }

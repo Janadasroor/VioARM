@@ -51,11 +51,12 @@ jobs:
       - name: Audit
         if: matrix.toolchain == 'stable'
         run: |
-          cargo install cargo-audit --locked || true
-          cargo audit || true
+          cargo install cargo-audit cargo-deny --locked || true
+          cargo audit
+          cargo deny check || true
 
       - name: Coverage
         if: matrix.toolchain == 'stable'
         run: |
           cargo install cargo-llvm-cov --locked || true
-          cargo llvm-cov --workspace --lcov --output-path lcov.info || true
+          cargo llvm-cov --workspace --lcov --output-path lcov.info
