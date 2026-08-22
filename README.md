@@ -100,22 +100,11 @@ cargo test -p vioarm-qemu --test conformance
 
 ## Known limitations
 
-- No cycle-accurate timing: one cycle per retired instruction, and WFI/WFE
-  are no-ops. Time-sensitive firmware does not reproduce silicon behavior.
-- CPACR is stored but does not gate FP access; the FPU is always enabled.
-- No MPU.
-- `AIRCR`/`SCR`/`CCR` are modeled (PRIGROUP, SYSRESETREQ, SLEEPONEXIT,
-  STKALIGN, DIV_0_TRP), as are `VTOR`, `SHCSR`, and `CFSR`/`HFSR`. To match
-  the QEMU oracle, `HFSR.FORCED` is reported at bit 30 and the `SHCSR`
-  active-status bits read zero.
-- STM32F107 Ethernet/USB/CAN and STM32F407 CCM RAM are not modeled. The
-  STM32F1 main flash at `0x0800_0000` is a separate gated store (the boot-time
-  alias at `0x0000_0000` is ungated), and the F407 flash controller is not
-  modeled. The F1 DMA controllers model memory-to-memory transfers only (each
-  controller raises a single combined IRQ line); peripheral-request transfers
-  and the stream-based F407 DMA are not modeled.
-- Double-precision arithmetic is not implemented (D registers alias S pairs
-  for moves and loads only).
+- Cycle timing: `DWT_CYCCNT` counts TRM `cyccnt` (per-opcode CPI + `FLASH_ACR` `LATENCY` `WS`), `WFI`/`WFE`/`SEV` sleep/event modeled; `cycles` stays `1c/insn` for compat.
+- `HFSR.FORCED` at bit 30 and `SHCSR` `*ACT` zero to match QEMU oracle.
+- STM32H743 (Cortex-M7 `FPv5-D16`): `RCC` `HSEON→HSERDY`/`PLL1-3`, `FLASH` `ACR` `LATENCY`, `PWR` `CR1/CR3` synthesize; `FMC`/`QUADSPI` (`0x52004000`/`0x52005000`) + `FDCAN1/2` + `LTDC`/`DMA2D` + `DMAMUX1/2` + `SDMMC1` (via `SDIO`) are register-window stubs `NoBehavior` with ext `SDRAM 0xC0000000`/`QSPI 0x90000000` always-mapped (QSPI not yet `CR.EN` gated, `EthH7` `0x40028000` single-window MAC stub, `OCTOSPI2` is `H723`-only).
+- STM32F107 Ethernet/USB/CAN and STM32F407 CCM RAM are modeled (see `Implemented`); F1 main flash `0x0800_0000` is a gated store (`0x0000_0000` alias ungated), F407 flash at `0x40023C00` shares the gate. DMA `PL` arbitration and `PSIZE`/`MSIZE` `PINC`/`MINC` are modeled; burst/FIFO and timer/ADC/SPI request lines (beyond USART) are not.
+- Double-precision `UNDEFINED` on `FPv4-SP` (M4F) except `D↔S` alias moves/loads; full `FPv5-D16` arithmetic on `M7/H743` only.
 
 See `roadmap.md` for the full inventory and the development plan.
 

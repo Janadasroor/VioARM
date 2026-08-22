@@ -103,7 +103,7 @@ System model:
   down-counters with their key/refresh protocols) share a reset latch with the
   bus: an un-refreshed underflow, a refresh above the WWDG window, or the
   window edge on either latches a request the machine folds into a full reset,
-  re-booting firmware from the reset vector table. On the `H743` (M7, `FPv5-D16`) the board adds `QUADSPI 0x52005000` + `FMC 0x52004000` + `FDCAN1/2 0x4000A000` (stub), `LTDC 0x50001000` + `DMA2D 0x52001000`, `DMAMUX1/2 0x40020800`, `SDMMC1 0x52007000` (via `SDIO` alias), `ADC1-3` (generic `ISR`/`CR` for `H7` `ADEN`/`ADSTART`), plus ext `SDRAM 0xC0000000`/`QSPI 0x90000000` and `DTCM`/`AXI`/`SRAM1/2`. Timer and GPIO interrupts
+  re-booting firmware from the reset vector table. On the `H743` (M7, `FPv5-D16`) the board adds `QUADSPI 0x52005000` + `FMC 0x52004000` + `FDCAN1/2 0x4000A000` (register-window stubs `NoBehavior`), `LTDC 0x50001000` + `DMA2D 0x52001000`, `DMAMUX1/2 0x40020800`, `SDMMC1 0x52007000` (via `SDIO` alias), `ADC1-3` (generic `ISR`/`CR` for `H7` `ADEN`/`ADSTART`), plus ext `SDRAM 0xC0000000`/`QSPI 0x90000000` always-mapped as RAM (QSPI not yet `CR.EN` gated; gated `QspiGate` like `FlashGate` `mem/system.rs:451` is next) and `DTCM`/`AXI`/`SRAM1/2`; `EthH7 0x40028000` is a single-window MAC stub (`NoBehavior` `eth.rs:771`) and `OCTOSPI2 0x5200A000` is `H723`-only (H743 has `QUADSPI`). Timer and GPIO interrupts
   reach the core through a deterministic peek/consume protocol.
 
 Tooling:
