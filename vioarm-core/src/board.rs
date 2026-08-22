@@ -21,7 +21,7 @@ use crate::device::stm32::crc::Crc;
 use crate::device::stm32::dac::Dac;
 use crate::device::stm32::dma::{DmaF1, DmaRequests};
 use crate::device::stm32::fdcan::Fdcan;
-use crate::device::stm32::fmc::{Fmc, Qspi};
+use crate::device::stm32::fmc::{Dmamux, Fmc, Qspi};
 use crate::device::stm32::pwr::Pwr;
 use crate::device::stm32::rtc::Rtc;
 use crate::device::stm32::sdio::Sdio;
@@ -926,6 +926,12 @@ pub fn stm32h743() -> BoardMemory {
     if <Stm32h743 as crate::device::svd::Device>::peripheral("DMA2").is_some() {
         mem.attach(Box::new(DmaF4::dma2_for::<Stm32h743>(dma)));
     }
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("DMAMUX1").is_some() {
+        mem.attach(Box::new(Dmamux::new_for::<Stm32h743>()));
+    }
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("DMAMUX2").is_some() {
+        mem.attach(Box::new(Dmamux::dmamux2_for::<Stm32h743>()));
+    }
     // ETH - H743 uses different DMA/MTL registers (DMAMR vs DMASR), skip (would need EthH7)
     // if <Stm32h743 as crate::device::svd::Device>::peripheral("Ethernet_MAC").is_some() {
     //     let eth_mailbox = Arc::new(Mutex::new(EthMailbox::default()));
@@ -976,6 +982,10 @@ pub fn stm32h743() -> BoardMemory {
     {
         mem.attach(Box::new(Qspi::new_for::<Stm32h743>()));
     }
+    // H743 only has QUADSPI at 0x52005000, not OCTOSPI2 (0x5200A000 is OCTOSPI2 on H723)
+    // if <Stm32h743 as crate::device::svd::Device>::peripheral("OCTOSPI2").is_some() {
+    //     mem.attach(Box::new(Qspi::octospi2_for::<Stm32h743>()));
+    // }
     // EXTI/SYSCFG if present
     if <Stm32h743 as crate::device::svd::Device>::peripheral("EXTI").is_some() {
         mem.attach(Box::new(Exti::for_device::<Stm32h743>()));
