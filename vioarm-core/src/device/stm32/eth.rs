@@ -280,14 +280,26 @@ impl Eth {
 
 /// The generated name of the Ethernet controller's `which` window: the F1
 /// tables use `ETHERNET_`, the F4 tables `Ethernet_`. Each chip has exactly
-/// one controller, so the name lookup is unambiguous.
+/// one controller, so the name lookup is unambiguous. H7 uses `Ethernet_MAC`
+/// at 0x40028000 with `Ethernet_MTL`/`Ethernet_DMA` (no `MMC`/`PTP`), so fall
+/// back to a dummy window when a table is missing.
 fn eth_def<D: Device>(which: &str) -> &'static PeripheralDef {
     for prefix in ["ETHERNET", "Ethernet"] {
         if let Some(def) = D::peripheral(&format!("{prefix}_{which}")) {
             return def;
         }
     }
-    panic!("generated tables contain Ethernet {which}");
+    // H7: MMC/PTP are part of MAC or absent; use a dummy 0-window so the
+    // controller still constructs (reads/writes there will be Reserved, which
+    // the generic latch path tolerates).
+    static DUMMY: PeripheralDef = PeripheralDef {
+        name: "Ethernet_DUMMY",
+        base: 0,
+        window: 0,
+        irqs: &[],
+        registers: &[],
+    };
+    &DUMMY
 }
 
 /// The exception number of a named interrupt in a peripheral's table.
