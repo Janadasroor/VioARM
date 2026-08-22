@@ -287,7 +287,7 @@ mod tests {
         let base = spi.ranges()[0].base;
         let mut word = 0;
         for i in 0..4 {
-            let byte = spi.read(base + u32::from(off) + i).unwrap();
+            let byte = spi.read(base + off + i).unwrap();
             word |= u32::from(byte) << (8 * i);
         }
         word
@@ -296,7 +296,7 @@ mod tests {
     fn write_word(spi: &mut Spi, off: u32, val: u32) {
         let base = spi.ranges()[0].base;
         for i in 0..4 {
-            spi.write(base + u32::from(off) + i, ((val >> (8 * i)) & 0xFF) as u8)
+            spi.write(base + off + i, ((val >> (8 * i)) & 0xFF) as u8)
                 .unwrap();
         }
     }

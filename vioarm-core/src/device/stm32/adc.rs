@@ -441,7 +441,7 @@ mod tests {
         let base = adc.ranges()[0].base;
         let mut word = 0;
         for i in 0..4 {
-            let byte = adc.read(base + u32::from(off) + i).unwrap();
+            let byte = adc.read(base + off + i).unwrap();
             word |= u32::from(byte) << (8 * i);
         }
         word
@@ -450,7 +450,7 @@ mod tests {
     fn write_word(adc: &mut Adc, off: u32, val: u32) {
         let base = adc.ranges()[0].base;
         for i in 0..4 {
-            adc.write(base + u32::from(off) + i, ((val >> (8 * i)) & 0xFF) as u8)
+            adc.write(base + off + i, ((val >> (8 * i)) & 0xFF) as u8)
                 .unwrap();
         }
     }

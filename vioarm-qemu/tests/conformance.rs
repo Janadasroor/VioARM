@@ -210,8 +210,8 @@ fn conformance_v7em(name: &str, a: &mut Asm, halt: &str, mt: &QemuMachine) {
 /// assembly, when the address is only known once labels are resolved.
 fn patch_movw(bytes: &mut [u8], addr: usize, rd: u8, imm: u16) {
     let base: u16 = 0xF240;
-    let hi = base | (u16::from((imm >> 11) & 1)) << 10 | (imm >> 12);
-    let lo = (u16::from((imm >> 8) & 7)) << 12 | (u16::from(rd) << 8) | (imm & 0xFF);
+    let hi = base | ((imm >> 11) & 1) << 10 | (imm >> 12);
+    let lo = ((imm >> 8) & 7) << 12 | (u16::from(rd) << 8) | (imm & 0xFF);
     let raw = hi as u32 | (lo as u32) << 16;
     bytes[addr..addr + 4].copy_from_slice(&raw.to_le_bytes());
 }
@@ -1467,10 +1467,10 @@ fn tables() {
     // distinct value and branches on to the next section's *entry* label, so
     // the next branch gets its index re-loaded.
     for i in 0..4u8 {
-        a.label(&format!("tbb{i}_in")); // entry: re-load the index
+        a.label(format!("tbb{i}_in")); // entry: re-load the index
         a.movs_imm8(0, i);
         a.align4();
-        a.label(&format!("tbb{i}"));
+        a.label(format!("tbb{i}"));
         a.tb(15, 0);
         a.dc_u32(0); // patched below
         let next = if i == 3 {
@@ -1479,7 +1479,7 @@ fn tables() {
             &format!("tbb{}_in", i + 1)
         };
         for (k, v) in [(0u8, 0x10u8), (1, 0x20), (2, 0x30), (3, 0x40)] {
-            a.label(&format!("tbb{i}_c{k}"));
+            a.label(format!("tbb{i}_c{k}"));
             a.movs_imm8(1, v);
             a.b(next);
         }
@@ -1487,10 +1487,10 @@ fn tables() {
 
     // ---- PC-relative `TBH` (halfword table): index in r0 ----
     for i in 0..4u8 {
-        a.label(&format!("tbh{i}_in"));
+        a.label(format!("tbh{i}_in"));
         a.movs_imm8(0, i);
         a.align4();
-        a.label(&format!("tbh{i}"));
+        a.label(format!("tbh{i}"));
         a.tbh(15, 0);
         a.dc_u32(0); // patched below (four halfword entries)
         a.dc_u32(0);
@@ -1500,7 +1500,7 @@ fn tables() {
             &format!("tbh{}_in", i + 1)
         };
         for (k, v) in [(0u8, 0xA0u8), (1, 0xB0), (2, 0xC0), (3, 0xD0)] {
-            a.label(&format!("tbh{i}_c{k}"));
+            a.label(format!("tbh{i}_c{k}"));
             a.movs_imm8(1, v);
             a.b(next);
         }
@@ -1515,7 +1515,7 @@ fn tables() {
     a.label("rtbb");
     a.tb(5, 0);
     for (k, v) in [(0u8, 0x51u8), (1, 0x52), (2, 0x53), (3, 0x54)] {
-        a.label(&format!("rtbb_c{k}"));
+        a.label(format!("rtbb_c{k}"));
         a.movs_imm8(3, v);
         a.b("rtbh_in");
     }
@@ -1532,7 +1532,7 @@ fn tables() {
     a.label("rtbh");
     a.tbh(5, 0);
     for (k, v) in [(0u8, 0x61u8), (1, 0x62), (2, 0x63), (3, 0x64)] {
-        a.label(&format!("rtbh_c{k}"));
+        a.label(format!("rtbh_c{k}"));
         a.movs_imm8(4, v);
         a.b("halt");
     }
@@ -1577,7 +1577,7 @@ fn tables() {
         for (k, c) in [(0u8, '0'), (1, '1'), (2, '2'), (3, '3')] {
             let target = img.addr(&format!("rtbb_c{c}")).expect("case");
             let entry = (target - bs) / 2;
-            word |= u32::from(entry) << (8 * u32::from(k));
+            word |= entry << (8 * u32::from(k));
         }
         let mvw = img.addr("rtbb_base").expect("base") as usize;
         patch_movw(&mut img.bytes[..], mvw, 5, tab as u16);

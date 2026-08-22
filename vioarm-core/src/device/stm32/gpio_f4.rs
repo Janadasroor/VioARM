@@ -210,29 +210,25 @@ mod tests {
     /// `MODER` 2-bit mode for pin `p`.
     fn set_mode(g: &mut GpioF4, p: u32, mode: u32) {
         let shift = 2 * p;
-        let v = read_word(g, BASE + u32::from(MODER));
-        write_word(
-            g,
-            BASE + u32::from(MODER),
-            (v & !(3 << shift)) | (mode << shift),
-        );
+        let v = read_word(g, BASE + MODER);
+        write_word(g, BASE + MODER, (v & !(3 << shift)) | (mode << shift));
     }
 
     #[test]
     fn bsrr_sets_and_resets_in_one_write() {
         let mut g = new_port();
-        write_word(&mut g, BASE + u32::from(BSRR), 0x0000_000F); // set pins 0..3
+        write_word(&mut g, BASE + BSRR, 0x0000_000F); // set pins 0..3
         assert_eq!(g.output() & 0xF, 0xF);
-        write_word(&mut g, BASE + u32::from(BSRR), 1 << 16); // reset pin 0
+        write_word(&mut g, BASE + BSRR, 1 << 16); // reset pin 0
         assert_eq!(g.output() & 0xF, 0xE);
     }
 
     #[test]
     fn no_brr_register() {
         let mut g = new_port();
-        write_word(&mut g, BASE + u32::from(BSRR), 0x0000_00FF);
+        write_word(&mut g, BASE + BSRR, 0x0000_00FF);
         // On F1 the `BRR` slot resets pins; on F4 that slot is `ODR`, a latch.
-        write_word(&mut g, BASE + u32::from(ODR), 0x0000_0000);
+        write_word(&mut g, BASE + ODR, 0x0000_0000);
         assert_eq!(g.output(), 0);
     }
 
@@ -241,9 +237,9 @@ mod tests {
         let mut g = new_port();
         set_mode(&mut g, 0, 1); // PA0 general output
         set_mode(&mut g, 1, 0); // PA1 input
-        write_word(&mut g, BASE + u32::from(BSRR), 1); // PA0 high
+        write_word(&mut g, BASE + BSRR, 1); // PA0 high
         g.drive_inputs(1 << 1); // PA1 held high by host
-        assert_eq!(read_word(&mut g, BASE + u32::from(IDR)) & 3, 3);
+        assert_eq!(read_word(&mut g, BASE + IDR) & 3, 3);
     }
 
     #[test]
@@ -251,27 +247,27 @@ mod tests {
         let mut g = new_port();
         set_mode(&mut g, 0, 3); // PA0 analog
         set_mode(&mut g, 1, 1); // PA1 output
-        write_word(&mut g, BASE + u32::from(BSRR), 0x0000_0003);
+        write_word(&mut g, BASE + BSRR, 0x0000_0003);
         g.drive_inputs(0xFFFF);
-        assert_eq!(read_word(&mut g, BASE + u32::from(IDR)) & 3, 2);
+        assert_eq!(read_word(&mut g, BASE + IDR) & 3, 2);
     }
 
     #[test]
     fn firmware_writes_to_idr_are_ignored() {
         let mut g = new_port();
-        write_word(&mut g, BASE + u32::from(IDR), 0xFFFF_FFFF);
-        assert_eq!(read_word(&mut g, BASE + u32::from(IDR)), 0);
+        write_word(&mut g, BASE + IDR, 0xFFFF_FFFF);
+        assert_eq!(read_word(&mut g, BASE + IDR), 0);
     }
 
     #[test]
     fn reset_clears_all_registers() {
         let mut g = new_port();
-        write_word(&mut g, BASE + u32::from(BSRR), 0xFFFF_FFFF);
-        write_word(&mut g, BASE + u32::from(ODR), 0xFFFF_FFFF);
+        write_word(&mut g, BASE + BSRR, 0xFFFF_FFFF);
+        write_word(&mut g, BASE + ODR, 0xFFFF_FFFF);
         g.drive_inputs(0xFFFF_FFFF);
         g.reset();
-        assert_eq!(read_word(&mut g, BASE + u32::from(ODR)), 0);
-        assert_eq!(read_word(&mut g, BASE + u32::from(IDR)), 0);
+        assert_eq!(read_word(&mut g, BASE + ODR), 0);
+        assert_eq!(read_word(&mut g, BASE + IDR), 0);
     }
 
     #[test]

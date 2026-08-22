@@ -670,7 +670,7 @@ impl<B: PeripheralBus> Core<B> {
                         } else {
                             let abs = if signed { (d as i32).unsigned_abs() } else { d };
                             let lz = abs.leading_zeros() as u64;
-                            2 + ((32 - lz) * 10 + 31) / 32
+                            2 + ((32 - lz) * 10).div_ceil(32)
                         }
                     }
                     Inst32::Mul { op, .. } => match op {
@@ -1408,7 +1408,7 @@ impl<B: PeripheralBus> Core<B> {
     /// first when `m_swap`), each as a signed 32-bit value. A 16-by-16 signed
     /// product always fits, so no overflow is possible.
     const fn smul_dual(&self, n: u32, m: u32, m_swap: bool) -> (i32, i32) {
-        let ms = if m_swap { (m >> 16) | (m << 16) } else { m };
+        let ms = if m_swap { m.rotate_left(16) } else { m };
         let p_lo = self
             .half_signed(n, false)
             .wrapping_mul(self.half_signed(ms, false));
@@ -4145,14 +4145,8 @@ impl<B: PeripheralBus> Core<B> {
         } else {
             self.other_ss_msp
         };
-        let newpc = match self.read_word_halt(frameptr) {
-            Ok(v) => v,
-            Err(e) => return Err(e),
-        };
-        let newpsr = match self.read_word_halt(frameptr.wrapping_add(4)) {
-            Ok(v) => v,
-            Err(e) => return Err(e),
-        };
+        let newpc = self.read_word_halt(frameptr)?;
+        let newpsr = self.read_word_halt(frameptr.wrapping_add(4))?;
         // Consistency check on the new IPSR: returning from thread with a
         // nonzero stacked IPSR (or from the BLXNS dummy handler with a zero
         // one) is an INVPC UsageFault (QEMU's check in
@@ -4238,10 +4232,7 @@ impl<B: PeripheralBus> Core<B> {
         let mut frame = [0u32; 8];
         for (i, slot) in frame.iter_mut().enumerate() {
             let addr = frameptr.wrapping_add((i as u32) * 4);
-            *slot = match self.read_word_halt(addr) {
-                Ok(v) => v,
-                Err(e) => return Err(e),
-            };
+            *slot = self.read_word_halt(addr)?;
         }
         let xpsr = frame[7];
         // The stacked xPSR exception field must agree with `EXC_RETURN.MODE`
@@ -4433,7 +4424,7 @@ impl<B: PeripheralBus> Core<B> {
     ///
     /// ARMv6-M (Cortex-M0/M0+) has no `BusFault` exception at all: the fold to
     /// `HardFault` is unconditional there.
-    fn data_fault(&mut self, addr: u32, pc: u32) -> Result<Next, HaltCause> {
+    fn data_fault(&mut self, _addr: u32, pc: u32) -> Result<Next, HaltCause> {
         let enabled = matches!(self.isa, Isa::Armv7M | Isa::Armv7EM)
             && self.mem.read_word(SHCSR_ADDR).unwrap_or(0) & SHCSR_BUSFAULTENA != 0;
         let current = if self.faultmask {
@@ -8900,7 +8891,7 @@ mod tests {
         const SP: u32 = 0x2000_0800;
         let frame = SP - EXTENDED_FRAME_BYTES;
         // A pre-stacked extended frame with FP contents.
-        c.mem().write_word(frame + 0x00, 0x1111_1111).unwrap();
+        c.mem().write_word(frame, 0x1111_1111).unwrap();
         c.mem().write_word(frame + 0x04, 0x2222_2222).unwrap();
         c.mem().write_word(frame + 0x08, 0x3333_3333).unwrap();
         c.mem().write_word(frame + 0x0c, 0x4444_4444).unwrap();

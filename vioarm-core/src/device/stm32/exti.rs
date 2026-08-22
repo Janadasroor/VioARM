@@ -173,44 +173,44 @@ mod tests {
     #[test]
     fn rising_and_falling_edges() {
         let mut e = Exti::new();
-        write_word(&mut e, BASE + u32::from(RTSR), 0b101); // rising on 0, 2
-        write_word(&mut e, BASE + u32::from(FTSR), 0b010); // falling on 1
-                                                           // The first sample only establishes the reference level.
+        write_word(&mut e, BASE + RTSR, 0b101); // rising on 0, 2
+        write_word(&mut e, BASE + FTSR, 0b010); // falling on 1
+                                                // The first sample only establishes the reference level.
         e.drive_inputs(0);
-        assert_eq!(read_word(&mut e, BASE + u32::from(PR)) & 0b111, 0);
+        assert_eq!(read_word(&mut e, BASE + PR) & 0b111, 0);
         // Rising on lines 0 and 2 (both configured) sets pending.
         e.drive_inputs(0b101);
-        assert_eq!(read_word(&mut e, BASE + u32::from(PR)) & 0b111, 0b101);
+        assert_eq!(read_word(&mut e, BASE + PR) & 0b111, 0b101);
         // Falling on 0,2 and rising on 1 are not configured: no change.
         e.drive_inputs(0b010);
-        assert_eq!(read_word(&mut e, BASE + u32::from(PR)) & 0b111, 0b101);
+        assert_eq!(read_word(&mut e, BASE + PR) & 0b111, 0b101);
         // Falling on line 1 (configured) now sets its bit.
         e.drive_inputs(0);
-        assert_eq!(read_word(&mut e, BASE + u32::from(PR)) & 0b111, 0b111);
+        assert_eq!(read_word(&mut e, BASE + PR) & 0b111, 0b111);
     }
 
     #[test]
     fn pending_requires_imr_and_line_zero() {
         let mut e = Exti::new();
-        write_word(&mut e, BASE + u32::from(RTSR), 1);
-        write_word(&mut e, BASE + u32::from(SWIER), 1); // software self-trigger line 0
+        write_word(&mut e, BASE + RTSR, 1);
+        write_word(&mut e, BASE + SWIER, 1); // software self-trigger line 0
         assert_eq!(e.pending(), 0); // not masked
-        write_word(&mut e, BASE + u32::from(IMR), 1);
+        write_word(&mut e, BASE + IMR, 1);
         assert_eq!(e.pending(), 1);
         // Clearing PR (write 1) drops the request.
-        write_word(&mut e, BASE + u32::from(PR), 1);
+        write_word(&mut e, BASE + PR, 1);
         assert_eq!(e.pending(), 0);
     }
 
     #[test]
     fn pr_is_write_one_to_clear() {
         let mut e = Exti::new();
-        write_word(&mut e, BASE + u32::from(RTSR), 1);
+        write_word(&mut e, BASE + RTSR, 1);
         e.drive_inputs(0); // establish reference level
         e.drive_inputs(1);
-        assert_eq!(read_word(&mut e, BASE + u32::from(PR)) & 1, 1);
-        write_word(&mut e, BASE + u32::from(PR), 0xFFFF_FFFF);
-        assert_eq!(read_word(&mut e, BASE + u32::from(PR)), 0);
+        assert_eq!(read_word(&mut e, BASE + PR) & 1, 1);
+        write_word(&mut e, BASE + PR, 0xFFFF_FFFF);
+        assert_eq!(read_word(&mut e, BASE + PR), 0);
     }
 
     #[test]

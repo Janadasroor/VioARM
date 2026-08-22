@@ -183,9 +183,9 @@ impl Win {
             .iter()
             .find(|r| {
                 let len = u32::from(r.width) / 8;
-                off >= u32::from(r.offset) && off < u32::from(r.offset) + len
+                off >= r.offset && off < r.offset + len
             })
-            .map(|r| (r, 8 * (off - u32::from(r.offset))))
+            .map(|r| (r, 8 * (off - r.offset)))
             .ok_or(BusError::Reserved)
     }
 
@@ -313,8 +313,8 @@ fn irq_number(win: &Win, name: &str) -> Option<u8> {
 
 /// The byte lane of `off` inside a four-byte register starting at `reg`.
 fn lane(off: u32, reg: u32) -> Option<u32> {
-    if off >= u32::from(reg) && off < u32::from(reg) + 4 {
-        Some(off - u32::from(reg))
+    if off >= reg && off < reg + 4 {
+        Some(off - reg)
     } else {
         None
     }
@@ -864,7 +864,7 @@ mod tests {
     }
 
     fn enable_rx(sys: &mut SystemMemory<FlatMemory>) {
-        write_word(sys, MAC + u32::from(MACCR), RE);
+        write_word(sys, MAC + MACCR, RE);
         write_word(sys, DMA + 0x18, 1 << 1); // DMAOMR SR
         write_word(sys, DMA + 0x1c, (1 << 16) | (1 << 6)); // DMAIER NISE|RIE
     }
@@ -941,7 +941,7 @@ mod tests {
     #[test]
     fn tx_frame_walks_descriptor_and_drains() {
         let (mut mem, _mailbox) = sys();
-        write_word(&mut mem, MAC + u32::from(MACCR), TE);
+        write_word(&mut mem, MAC + MACCR, TE);
         write_word(&mut mem, DMA + 0x18, 1 << 13); // DMAOMR ST
         write_word(&mut mem, DMA + 0x1c, (1 << 16) | 1); // DMAIER NISE|TIE
         write_word(&mut mem, RAM + 0x100, OWN | 0x3000_0000); // TDES0 OWN|LS|FS
@@ -974,9 +974,9 @@ mod tests {
     fn magic_packet_wakes_the_wkup_line() {
         let (mut mem, _mailbox) = sys();
         enable_rx(&mut mem);
-        write_word(&mut mem, MAC + u32::from(MACA0HR), 0x0102);
-        write_word(&mut mem, MAC + u32::from(MACA0LR), 0x0304_0506);
-        write_word(&mut mem, MAC + u32::from(MACPMTCSR), 1 << 1); // MPE
+        write_word(&mut mem, MAC + MACA0HR, 0x0102);
+        write_word(&mut mem, MAC + MACA0LR, 0x0304_0506);
+        write_word(&mut mem, MAC + MACPMTCSR, 1 << 1); // MPE
         rx_ring(&mut mem, RAM + 0x400);
         let mut frame = Vec::new();
         frame.extend([0xFF; 6]);
@@ -989,7 +989,7 @@ mod tests {
         assert_eq!(mem.devices()[0].pending() & 0b10, 0b10, "ETH_WKUP line");
         // The ISR reads MACPMTCSR to clear the wakeup.
         assert_eq!(
-            read_word(&mut mem, MAC + u32::from(MACPMTCSR)) & (1 << 5),
+            read_word(&mut mem, MAC + MACPMTCSR) & (1 << 5),
             1 << 5,
             "MPR"
         );
@@ -997,7 +997,7 @@ mod tests {
         // A non-magic frame never wakes.
         let (mut mem2, _mailbox2) = sys();
         enable_rx(&mut mem2);
-        write_word(&mut mem2, MAC + u32::from(MACPMTCSR), 1 << 1);
+        write_word(&mut mem2, MAC + MACPMTCSR, 1 << 1);
         rx_ring(&mut mem2, RAM + 0x400);
         inject_frame(&mut mem2, &[0xAA, 0xBB, 0xCC]);
         cycle(&mut mem2);
@@ -1008,7 +1008,7 @@ mod tests {
     #[test]
     fn interrupts_gated_by_masks() {
         let (mut mem, _mailbox) = sys();
-        write_word(&mut mem, MAC + u32::from(MACCR), RE);
+        write_word(&mut mem, MAC + MACCR, RE);
         write_word(&mut mem, DMA + 0x18, 1 << 1);
         // No NISE: the RX latch must not assert the line.
         write_word(&mut mem, DMA + 0x1c, 0);

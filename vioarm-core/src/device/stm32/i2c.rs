@@ -464,17 +464,17 @@ mod tests {
 
     fn enabled() -> I2c {
         let mut i = I2c::new();
-        write_word(&mut i, BASE + u32::from(CR1), PE);
+        write_word(&mut i, BASE + CR1, PE);
         i
     }
 
     fn start(i: &mut I2c) {
-        write_word(i, BASE + u32::from(CR1), PE | START);
+        write_word(i, BASE + CR1, PE | START);
         i.tick(START_CYCLES);
     }
 
     fn send_addr(i: &mut I2c, addr: u8) {
-        write_word(i, BASE + u32::from(DR), u32::from(addr));
+        write_word(i, BASE + DR, u32::from(addr));
         i.tick(BYTE_CYCLES);
     }
 
@@ -483,27 +483,21 @@ mod tests {
         let mut i = enabled();
         i.drive_inputs(0xA5);
         start(&mut i);
-        assert_eq!(read_word(&mut i, BASE + u32::from(SR1)) & SB, SB);
+        assert_eq!(read_word(&mut i, BASE + SR1) & SB, SB);
         // START self-cleared, bus claimed.
-        assert_eq!(read_word(&mut i, BASE + u32::from(CR1)) & START, 0);
-        assert_eq!(
-            read_word(&mut i, BASE + u32::from(SR2)) & (BUSY | MSL),
-            BUSY | MSL
-        );
+        assert_eq!(read_word(&mut i, BASE + CR1) & START, 0);
+        assert_eq!(read_word(&mut i, BASE + SR2) & (BUSY | MSL), BUSY | MSL);
         // Address byte: ADDR + TXE, direction = transmit.
         send_addr(&mut i, 0xA0);
-        assert_eq!(
-            read_word(&mut i, BASE + u32::from(SR1)) & (ADDR | TXE),
-            ADDR | TXE
-        );
-        assert_eq!(read_word(&mut i, BASE + u32::from(SR2)) & TRA, TRA);
+        assert_eq!(read_word(&mut i, BASE + SR1) & (ADDR | TXE), ADDR | TXE);
+        assert_eq!(read_word(&mut i, BASE + SR2) & TRA, TRA);
         // Clear ADDR, then send data bytes.
-        let _ = read_word(&mut i, BASE + u32::from(SR2));
+        let _ = read_word(&mut i, BASE + SR2);
         for byte in [0x11u32, 0x22, 0x33] {
-            write_word(&mut i, BASE + u32::from(DR), byte);
-            assert_eq!(read_word(&mut i, BASE + u32::from(SR1)) & TXE, 0);
+            write_word(&mut i, BASE + DR, byte);
+            assert_eq!(read_word(&mut i, BASE + SR1) & TXE, 0);
             i.tick(BYTE_CYCLES);
-            assert_eq!(read_word(&mut i, BASE + u32::from(SR1)) & TXE, TXE);
+            assert_eq!(read_word(&mut i, BASE + SR1) & TXE, TXE);
         }
         assert_eq!(i.drain_output(), [0xA0, 0x11, 0x22, 0x33]);
     }
@@ -514,17 +508,17 @@ mod tests {
         i.drive_inputs(0xA5);
         start(&mut i);
         send_addr(&mut i, 0xA1); // address | read
-        assert_eq!(read_word(&mut i, BASE + u32::from(SR2)) & TRA, 0);
+        assert_eq!(read_word(&mut i, BASE + SR2) & TRA, 0);
         // Clearing ADDR streams in the slave's byte.
-        let _ = read_word(&mut i, BASE + u32::from(SR2));
-        assert_eq!(read_word(&mut i, BASE + u32::from(SR1)) & RXNE, 0);
+        let _ = read_word(&mut i, BASE + SR2);
+        assert_eq!(read_word(&mut i, BASE + SR1) & RXNE, 0);
         i.tick(BYTE_CYCLES);
-        assert_eq!(read_word(&mut i, BASE + u32::from(SR1)) & RXNE, RXNE);
-        assert_eq!(read_word(&mut i, BASE + u32::from(DR)) & 0xFF, 0xA5);
-        assert_eq!(read_word(&mut i, BASE + u32::from(SR1)) & RXNE, 0);
+        assert_eq!(read_word(&mut i, BASE + SR1) & RXNE, RXNE);
+        assert_eq!(read_word(&mut i, BASE + DR) & 0xFF, 0xA5);
+        assert_eq!(read_word(&mut i, BASE + SR1) & RXNE, 0);
         // ACK is clear: the master NACKs and no further byte arrives.
         i.tick(BYTE_CYCLES);
-        assert_eq!(read_word(&mut i, BASE + u32::from(SR1)) & RXNE, 0);
+        assert_eq!(read_word(&mut i, BASE + SR1) & RXNE, 0);
     }
 
     #[test]
@@ -533,12 +527,12 @@ mod tests {
         i.drive_inputs(0x5A);
         start(&mut i);
         send_addr(&mut i, 0xA1);
-        write_word(&mut i, BASE + u32::from(CR1), PE | ACK);
-        let _ = read_word(&mut i, BASE + u32::from(SR2));
+        write_word(&mut i, BASE + CR1, PE | ACK);
+        let _ = read_word(&mut i, BASE + SR2);
         for _ in 0..3 {
             i.tick(BYTE_CYCLES);
-            assert_eq!(read_word(&mut i, BASE + u32::from(SR1)) & RXNE, RXNE);
-            assert_eq!(read_word(&mut i, BASE + u32::from(DR)) & 0xFF, 0x5A);
+            assert_eq!(read_word(&mut i, BASE + SR1) & RXNE, RXNE);
+            assert_eq!(read_word(&mut i, BASE + DR) & 0xFF, 0x5A);
         }
     }
 
@@ -548,16 +542,16 @@ mod tests {
         i.drive_inputs(0xA5);
         start(&mut i);
         send_addr(&mut i, 0xA0);
-        let _ = read_word(&mut i, BASE + u32::from(SR2));
-        write_word(&mut i, BASE + u32::from(CR1), PE | STOP);
-        assert_eq!(read_word(&mut i, BASE + u32::from(SR2)) & BUSY, BUSY);
+        let _ = read_word(&mut i, BASE + SR2);
+        write_word(&mut i, BASE + CR1, PE | STOP);
+        assert_eq!(read_word(&mut i, BASE + SR2) & BUSY, BUSY);
         i.tick(BYTE_CYCLES);
-        assert_eq!(read_word(&mut i, BASE + u32::from(CR1)) & (START | STOP), 0);
-        assert_eq!(read_word(&mut i, BASE + u32::from(SR2)) & BUSY, 0);
+        assert_eq!(read_word(&mut i, BASE + CR1) & (START | STOP), 0);
+        assert_eq!(read_word(&mut i, BASE + SR2) & BUSY, 0);
         // A fresh start is accepted after the stop.
-        write_word(&mut i, BASE + u32::from(CR1), PE | START);
+        write_word(&mut i, BASE + CR1, PE | START);
         i.tick(START_CYCLES);
-        assert_eq!(read_word(&mut i, BASE + u32::from(SR1)) & SB, SB);
+        assert_eq!(read_word(&mut i, BASE + SR1) & SB, SB);
     }
 
     #[test]
@@ -566,7 +560,7 @@ mod tests {
         i.drive_inputs(0); // no slave on the bus
         start(&mut i);
         send_addr(&mut i, 0xA0);
-        assert_eq!(read_word(&mut i, BASE + u32::from(SR1)) & (ADDR | AF), AF);
+        assert_eq!(read_word(&mut i, BASE + SR1) & (ADDR | AF), AF);
     }
 
     #[test]
@@ -575,13 +569,10 @@ mod tests {
         i.drive_inputs(0xA5);
         start(&mut i);
         send_addr(&mut i, 0xA0);
-        assert_eq!(
-            read_word(&mut i, BASE + u32::from(SR1)) & (ADDR | TXE),
-            ADDR | TXE
-        );
+        assert_eq!(read_word(&mut i, BASE + SR1) & (ADDR | TXE), ADDR | TXE);
         // A write-zero-to-clear over the whole register keeps TXE/RXNE.
-        write_word(&mut i, BASE + u32::from(SR1), 0);
-        assert_eq!(read_word(&mut i, BASE + u32::from(SR1)) & (ADDR | TXE), TXE);
+        write_word(&mut i, BASE + SR1, 0);
+        assert_eq!(read_word(&mut i, BASE + SR1) & (ADDR | TXE), TXE);
     }
 
     #[test]
@@ -590,12 +581,12 @@ mod tests {
         i.drive_inputs(0xA5);
         assert_eq!(i.pending(), 0);
         // Data-ready flags need ITEVTEN | ITBUFEN.
-        write_word(&mut i, BASE + u32::from(CR2), ITEVTEN | ITBUFEN);
+        write_word(&mut i, BASE + CR2, ITEVTEN | ITBUFEN);
         start(&mut i);
         send_addr(&mut i, 0xA0);
         assert_ne!(i.pending() & 1, 0);
         // Draining DR/TXE isn't enough: the flags must clear.
-        let _ = read_word(&mut i, BASE + u32::from(SR2));
+        let _ = read_word(&mut i, BASE + SR2);
         i.reset();
         assert_eq!(i.pending(), 0);
     }
@@ -604,12 +595,12 @@ mod tests {
     fn error_interrupt_tracks_an_absent_slave() {
         let mut i = enabled();
         i.drive_inputs(0);
-        write_word(&mut i, BASE + u32::from(CR2), ITEVTEN | ITBUFEN | ITERREN);
+        write_word(&mut i, BASE + CR2, ITEVTEN | ITBUFEN | ITERREN);
         start(&mut i);
         send_addr(&mut i, 0xA0);
         assert_eq!(i.pending() & 2, 2);
         // A write-zero-to-clear of AF drops the line.
-        write_word(&mut i, BASE + u32::from(SR1), 0);
+        write_word(&mut i, BASE + SR1, 0);
         assert_eq!(i.pending(), 0);
     }
 
@@ -619,9 +610,9 @@ mod tests {
         i.drive_inputs(0xA5);
         start(&mut i);
         send_addr(&mut i, 0xA0);
-        let _ = read_word(&mut i, BASE + u32::from(SR2));
-        write_word(&mut i, BASE + u32::from(CR1), PE | SWRST);
-        assert_eq!(read_word(&mut i, BASE + u32::from(SR2)) & BUSY, 0);
+        let _ = read_word(&mut i, BASE + SR2);
+        write_word(&mut i, BASE + CR1, PE | SWRST);
+        assert_eq!(read_word(&mut i, BASE + SR2) & BUSY, 0);
         assert_eq!(i.drain_output(), b"");
     }
 

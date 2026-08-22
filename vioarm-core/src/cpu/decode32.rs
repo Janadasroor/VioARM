@@ -2564,7 +2564,7 @@ fn decode_vfp_sp(
     // VMOV immediate: `1110 1110 1.11 imm4 Vd 1010 0000 imm4` (single) or
     // `1011` (double).
     if hi & 0x00B0 == 0x00B0 && (lo & 0x0FF0 == 0x0A00 || lo & 0x0FF0 == 0x0B00) {
-        let imm8 = (((w >> 16) & 0xF) << 4) as u32 | (w & 0xF) as u32;
+        let imm8 = (((w >> 16) & 0xF) << 4) | (w & 0xF);
         if is_dp {
             if !allow_double {
                 return Some(Err(err_for(hi)));
@@ -2889,7 +2889,7 @@ fn decode_vfp_sp(
 /// `f = (bit7 ? 0x8000 : 0) | (bit6 ? 0x3e00 : 0x4000) | (imm8 & 0x3f) << 3`,
 /// placed in the high halfword. The value is the ARM `VFPExpandImm` result.
 const fn vfp_expand_imm(imm8: u32) -> u32 {
-    let f = ((imm8 >> 7) & 1) * 0x8000
+    let f = (((imm8 >> 7) & 1) * 0x8000)
         | (((imm8 >> 6) & 1) * 0x3E00)
         | (((imm8 >> 6) & 1 ^ 1) * 0x4000)
         | ((imm8 & 0x3F) << 3);
@@ -2899,7 +2899,7 @@ const fn vfp_expand_imm(imm8: u32) -> u32 {
 /// Expand a VFP `imm8` into the float bits of `VMOV.F64 Dd, #imm`, following
 /// qemu's `vfp_expand_imm(MO_64, imm8)`.
 const fn vfp_expand_imm_64(imm8: u32) -> u64 {
-    let f = ((imm8 >> 7) & 1) * 0x8000
+    let f = (((imm8 >> 7) & 1) * 0x8000)
         | (((imm8 >> 6) & 1) * 0x3FC0)
         | (((imm8 >> 6) & 1 ^ 1) * 0x4000)
         | (imm8 & 0x3F);

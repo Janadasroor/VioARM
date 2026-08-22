@@ -167,9 +167,9 @@ impl Win {
             .iter()
             .find(|r| {
                 let len = u32::from(r.width) / 8;
-                off >= u32::from(r.offset) && off < u32::from(r.offset) + len
+                off >= r.offset && off < r.offset + len
             })
-            .map(|r| (r, 8 * (off - u32::from(r.offset))))
+            .map(|r| (r, 8 * (off - r.offset)))
             .ok_or(BusError::Reserved)
     }
 
@@ -503,8 +503,8 @@ fn usb_prefixes(irq: &str) -> &'static [&'static str] {
 
 /// The byte lane of `off` inside a four-byte register starting at `reg`.
 fn lane(off: u32, reg: u32) -> Option<u32> {
-    if off >= u32::from(reg) && off < u32::from(reg) + 4 {
-        Some(off - u32::from(reg))
+    if off >= reg && off < reg + 4 {
+        Some(off - reg)
     } else {
         None
     }
@@ -684,7 +684,7 @@ impl Usb {
             let word = self.state.daint();
             return Ok(((word >> (8 * l)) & 0xFF) as u8);
         }
-        if off >= u32::from(DIEPCTL0) && off < u32::from(DIEPCTL0) + 4 * 0x20 {
+        if (DIEPCTL0..DIEPCTL0 + 4 * 0x20).contains(&off) {
             let (ep, sub, l) = ep_block(off, DIEPCTL0);
             let word = if sub < 8 {
                 self.state.diepctl(&self.d, ep)
@@ -698,7 +698,7 @@ impl Usb {
             };
             return Ok(((word >> (8 * l)) & 0xFF) as u8);
         }
-        if off >= u32::from(DOEPCTL0) && off < u32::from(DOEPCTL0) + 4 * 0x20 {
+        if (DOEPCTL0..DOEPCTL0 + 4 * 0x20).contains(&off) {
             let (ep, sub, l) = ep_block(off, DOEPCTL0);
             let word = if sub < 8 {
                 self.state.doepctl(&self.d, ep)
@@ -766,7 +766,7 @@ impl Usb {
     }
 
     fn write_device(&mut self, off: u32, val: u8) -> Result<(), BusError> {
-        if off >= u32::from(DIEPCTL0) && off < u32::from(DIEPCTL0) + 4 * 0x20 {
+        if (DIEPCTL0..DIEPCTL0 + 4 * 0x20).contains(&off) {
             let (ep, sub, l) = ep_block(off, DIEPCTL0);
             if sub < 8 {
                 self.write_diepctl(ep, l, val);
@@ -779,7 +779,7 @@ impl Usb {
             }
             return write_latch(&mut self.d, off, val);
         }
-        if off >= u32::from(DOEPCTL0) && off < u32::from(DOEPCTL0) + 4 * 0x20 {
+        if (DOEPCTL0..DOEPCTL0 + 4 * 0x20).contains(&off) {
             let (ep, sub, l) = ep_block(off, DOEPCTL0);
             if sub < 8 {
                 self.write_doepctl(ep, l, val);
@@ -846,7 +846,7 @@ impl Usb {
 /// Decompose an endpoint-block byte offset: the endpoint index, the byte
 /// within its 0x20 block, and the byte lane within the register.
 fn ep_block(off: u32, base: u32) -> (usize, u32, u32) {
-    let rel = off - u32::from(base);
+    let rel = off - base;
     let ep = usize::try_from(rel / 0x20).unwrap_or(0);
     let sub = rel % 0x20;
     let l = rel % 4;

@@ -704,10 +704,7 @@ mod tests {
             return false;
         };
         let addr = listener.local_addr().unwrap();
-        match std::net::TcpStream::connect(addr) {
-            Ok(_) => true,
-            Err(_) => false,
-        }
+        std::net::TcpStream::connect(addr).is_ok()
     }
 
     fn write_half(machine: &mut Machine<FlatMemory>, addr: u32, op: u16) {

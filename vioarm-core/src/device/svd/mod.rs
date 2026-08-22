@@ -388,14 +388,14 @@ impl<B: Behavior> RegisterFile<B> {
             .iter()
             .position(|r| {
                 let len = u32::from(r.width) / 8;
-                off >= u32::from(r.offset) && off < u32::from(r.offset) + len
+                off >= r.offset && off < r.offset + len
             })
             .ok_or(BusError::Reserved)?;
         Ok((&self.def.registers[idx], idx))
     }
 
     fn byte_shift(reg: &RegisterDef, off: u32) -> u32 {
-        8 * (off - u32::from(reg.offset))
+        8 * (off - reg.offset)
     }
 }
 
@@ -1230,7 +1230,7 @@ mod tests {
         for p in tables.into_iter().flatten() {
             let mut spans: Vec<(u32, u32)> = Vec::new();
             for r in p.registers {
-                let start = u32::from(r.offset);
+                let start = r.offset;
                 let end = start + u32::from(r.width) / 8;
                 assert!(
                     end <= p.window,

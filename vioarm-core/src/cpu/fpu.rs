@@ -265,13 +265,13 @@ fn frac_neg(frac: &mut u64) {
 
 fn frac_shl(frac: &mut u64, c: i32) {
     if c != 0 {
-        *frac = *frac << c;
+        *frac <<= c;
     }
 }
 
 fn frac_shr(frac: &mut u64, c: i32) {
     if c != 0 {
-        *frac = *frac >> c;
+        *frac >>= c;
     }
 }
 
@@ -576,11 +576,11 @@ fn sel_cls(sel: u32, a: &Parts, b: &Parts, c: &Parts) -> FloatClass {
 
 /// QEMU's `parts64_pick_nan_muladd` with the ARM `s_cab` rule and
 /// `dnan_if_qnan` for `inf*0 + qnan`.
-fn parts_pick_nan_muladd<'p, 's>(
+fn parts_pick_nan_muladd<'p>(
     a: &'p mut Parts,
     b: &'p mut Parts,
     c: &'p mut Parts,
-    status: &'s mut FloatStatus,
+    status: &mut FloatStatus,
     ab_mask: u32,
     abc_mask: u32,
 ) -> &'p mut Parts {
@@ -617,7 +617,7 @@ fn parts_pick_nan_muladd<'p, 's>(
 
     // float_3nan_prop_s_cab = PROPRULE(2, 0, 1) | R_3NAN_SNAN_MASK.
     // Selection order: c (2), then a (0), then b (1).
-    let mut rule = (2) | (0 << 2) | (1 << 4) | (1 << 6);
+    let mut rule = (2) | (1 << 4) | (1 << 6);
     let sel: u32 = if have_snan && (rule & (1 << 6) != 0) {
         loop {
             let chosen = rule & 3;
@@ -700,10 +700,10 @@ fn parts_sub_normal(a: &mut Parts, b: &mut Parts) -> bool {
 }
 
 /// QEMU's `parts64_addsub` for float32.
-fn parts_addsub<'p, 's>(
+fn parts_addsub<'p>(
     a: &'p mut Parts,
     b: &'p mut Parts,
-    status: &'s mut FloatStatus,
+    status: &mut FloatStatus,
     subtract: bool,
 ) -> &'p mut Parts {
     let b_sign = b.sign ^ subtract;
@@ -786,11 +786,7 @@ fn parts_addsub<'p, 's>(
 // ---------------------------------------------------------------------------
 
 /// QEMU's `parts64_mul` for float32.
-fn parts_mul<'p, 's>(
-    a: &'p mut Parts,
-    b: &'p mut Parts,
-    status: &'s mut FloatStatus,
-) -> &'p mut Parts {
+fn parts_mul<'p>(a: &'p mut Parts, b: &'p mut Parts, status: &mut FloatStatus) -> &'p mut Parts {
     let ab_mask = cmask(a.cls) | cmask(b.cls);
     let sign = a.sign != b.sign;
 
@@ -922,13 +918,13 @@ fn wide_sub_normal(a: &mut WideParts, b: &mut WideParts) -> bool {
 }
 
 /// QEMU's `parts64_muladd_scalbn` for float32.
-fn parts_muladd_scalbn<'p, 's>(
+fn parts_muladd_scalbn<'p>(
     a: &'p mut Parts,
     b: &'p mut Parts,
     c: &'p mut Parts,
     scale: i32,
     flags: u32,
-    status: &'s mut FloatStatus,
+    status: &mut FloatStatus,
 ) -> &'p mut Parts {
     let ab_mask = cmask(a.cls) | cmask(b.cls);
     let abc_mask = cmask(c.cls) | ab_mask;
@@ -1046,11 +1042,7 @@ fn parts_muladd_scalbn<'p, 's>(
 // ---------------------------------------------------------------------------
 
 /// QEMU's `parts64_div` for float32.
-fn parts_div<'p, 's>(
-    a: &'p mut Parts,
-    b: &'p mut Parts,
-    status: &'s mut FloatStatus,
-) -> &'p mut Parts {
+fn parts_div<'p>(a: &'p mut Parts, b: &'p mut Parts, status: &mut FloatStatus) -> &'p mut Parts {
     let ab_mask = cmask(a.cls) | cmask(b.cls);
     let sign = a.sign != b.sign;
 
@@ -1196,19 +1188,19 @@ fn parts_sqrt(a: &mut Parts, status: &mut FloatStatus) {
     let m32 = (m64_full >> 32) as u32;
 
     let mut r32 = (RSQRT_TAB[index] as u32) << 16;
-    let mut s32 = ((m32 as u64) * r32 as u64 >> 32) as u32;
-    let mut d32 = ((s32 as u64) * r32 as u64 >> 32) as u32;
+    let mut s32 = (((m32 as u64) * r32 as u64) >> 32) as u32;
+    let mut d32 = (((s32 as u64) * r32 as u64) >> 32) as u32;
     let mut u32_ = THREE32.wrapping_sub(d32);
 
     // N == 64 path (float64 or smaller).
-    r32 = ((r32 as u64) * u32_ as u64 >> 31) as u32;
-    s32 = ((m32 as u64) * r32 as u64 >> 32) as u32;
-    d32 = ((s32 as u64) * r32 as u64 >> 32) as u32;
+    r32 = (((r32 as u64) * u32_ as u64) >> 31) as u32;
+    s32 = (((m32 as u64) * r32 as u64) >> 32) as u32;
+    d32 = (((s32 as u64) * r32 as u64) >> 32) as u32;
     u32_ = THREE32.wrapping_sub(d32);
 
     if status.width == Width::Single {
         // float32 or smaller.
-        s32 = ((s32 as u64) * u32_ as u64 >> 32) as u32; // 3.29
+        s32 = (((s32 as u64) * u32_ as u64) >> 32) as u32; // 3.29
         s32 = (s32.wrapping_sub(1)) >> 6; // 9.23
 
         let d0 = (m32 << 16).wrapping_sub(s32.wrapping_mul(s32));
@@ -1224,10 +1216,10 @@ fn parts_sqrt(a: &mut Parts, status: &mut FloatStatus) {
     } else {
         // float64: two more 32-bit iterations, then a 64-bit Newton-Raphson
         // step and a final nearest-round correction (QEMU `partsN(sqrt)`).
-        r32 = (u64::from(r32) * u64::from(u32_) >> 31) as u32;
+        r32 = ((u64::from(r32) * u64::from(u32_)) >> 31) as u32;
 
-        s32 = ((m32 as u64) * r32 as u64 >> 32) as u32;
-        d32 = ((s32 as u64) * r32 as u64 >> 32) as u32;
+        s32 = (((m32 as u64) * r32 as u64) >> 32) as u32;
+        d32 = (((s32 as u64) * r32 as u64) >> 32) as u32;
         u32_ = THREE32.wrapping_sub(d32);
 
         // |r*sqrt(m) - 1| < 0x1.37p-29; convert to 64-bit arithmetic.
@@ -1248,7 +1240,7 @@ fn parts_sqrt(a: &mut Parts, status: &mut FloatStatus) {
         let d0 = (m64 << 42).wrapping_sub(s64.wrapping_mul(s64));
         let d1 = s64.wrapping_sub(d0);
         let d2 = d1.wrapping_add(s64).wrapping_add(1);
-        let s64 = s64.wrapping_add((d1 >> 63) as u64);
+        let s64 = s64.wrapping_add(d1 >> 63);
         a.frac = s64 << (64 - 54);
 
         // Increment or decrement for inexact.
@@ -1413,7 +1405,7 @@ fn parts_float_to_sint(
                 r = u64::MAX;
             }
             if p.sign {
-                if r <= (min as i64).unsigned_abs() {
+                if r <= min.unsigned_abs() {
                     r = (r as i64).wrapping_neg() as u64;
                 } else {
                     flags = FLAG_INVALID | FLAG_INVALID_CVTI;
@@ -2025,7 +2017,7 @@ pub fn sqrt_f64(a: u64, status: &mut FloatStatus) -> u64 {
     // Classify via softfloat Parts so NaN/denormal handling and flags
     // match the QEMU model exactly; the arithmetic itself uses the
     // host's correctly-rounded sqrt.
-    let mut p = unpack_canonical_bits_d(a, status);
+    let p = unpack_canonical_bits_d(a, status);
     match p.cls {
         FloatClass::QNaN | FloatClass::SNaN => {
             // Reuse the shared NaN-return logic (raises INVALID|SNAN,

@@ -158,16 +158,10 @@ const HFSR_FORCED: u32 = 0x4000_0000;
 /// wrote them. The base is kept in `RBAR` bits [31:5] (firmware's `REGION`/
 /// `VALID` bits are consumed on the word write); the region size, subregion
 /// disable, and access permissions decode from `RASR`.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 struct MpuRegion {
     rbar: u32,
     rasr: u32,
-}
-
-impl Default for MpuRegion {
-    fn default() -> Self {
-        Self { rbar: 0, rasr: 0 }
-    }
 }
 
 impl MpuRegion {
@@ -248,7 +242,7 @@ impl MpuRegion {
 
 /// The MPU configuration: control bits, the region-number register, and the
 /// eight unified regions.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct Mpu {
     /// `MPU_CTRL`: `ENABLE` (0), `HFNMIENA` (1), `PRIVDEFENA` (2).
     ctrl: u32,
@@ -256,16 +250,6 @@ struct Mpu {
     /// masked to the three bits the eight regions need.
     rnr: u32,
     regions: [MpuRegion; 8],
-}
-
-impl Default for Mpu {
-    fn default() -> Self {
-        Self {
-            ctrl: 0,
-            rnr: 0,
-            regions: [MpuRegion::default(); 8],
-        }
-    }
 }
 
 /// The PMSAv8 `AP` permission matrix (QEMU's `simple_ap_to_rw_prot`): the raw
@@ -294,7 +278,7 @@ const fn ap_rw_prot(ap: u32, privileged: bool) -> u8 {
 
 /// The PMSAv8 (v8-M) MPU register file: the control bits and eight regions,
 /// banked per security state (index 0 = Non-secure, 1 = Secure).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct MpuV8 {
     /// `MPU_CTRL` per security state (`ENABLE`/`HFNMIENA`/`PRIVDEFENA`).
     ctrl: [u32; 2],
@@ -306,17 +290,6 @@ struct MpuV8 {
     /// `MPU_RLAR` per security state: `ENABLE` (bit 0) and the inclusive
     /// limit in bits [31:5] (32-byte granularity).
     rlar: [[u32; 8]; 2],
-}
-
-impl Default for MpuV8 {
-    fn default() -> Self {
-        Self {
-            ctrl: [0; 2],
-            rnr: [0; 2],
-            rbar: [[0; 8]; 2],
-            rlar: [[0; 8]; 2],
-        }
-    }
 }
 
 /// The System Control Block: interrupt control state, exception priorities,
@@ -2091,7 +2064,7 @@ mod tests {
         );
         assert!(!s.mpu_check(0x2000_0020, MpuAccess::Read, true, 0));
         // AP=0: read/write for privileged, nothing for unprivileged.
-        write_word(&mut s, 0xE000_ED9C, 0x2000_0000 | 0x0);
+        write_word(&mut s, 0xE000_ED9C, 0x2000_0000);
         assert_eq!(s.mpu_lookup_v8(0x2000_0000, true, true).prot, 0x7);
         assert_eq!(s.mpu_lookup_v8(0x2000_0000, true, false).prot, 0x0);
         assert!(s.mpu_check(0x2000_0000, MpuAccess::Read, true, 0));

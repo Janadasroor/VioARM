@@ -178,8 +178,8 @@ impl Asm {
     }
 
     fn movwide(&mut self, base: u16, rd: u8, imm: u16) {
-        let hi = base | (u16::from((imm >> 11) & 1)) << 10 | (imm >> 12);
-        let lo = (u16::from((imm >> 8) & 7)) << 12 | (u16::from(rd) << 8) | (imm & 0xFF);
+        let hi = base | ((imm >> 11) & 1) << 10 | (imm >> 12);
+        let lo = ((imm >> 8) & 7) << 12 | (u16::from(rd) << 8) | (imm & 0xFF);
         self.raw32(hi as u32 | (lo as u32) << 16);
     }
 
@@ -251,8 +251,8 @@ impl Asm {
     }
 
     fn dp_plain(&mut self, op: u16, rd: u8, rn: u8, imm12: u16, set_flags: bool) {
-        let i = u16::from((imm12 >> 11) & 1);
-        let imm3 = u16::from((imm12 >> 8) & 7);
+        let i = (imm12 >> 11) & 1;
+        let imm3 = (imm12 >> 8) & 7;
         let imm8 = imm12 & 0xFF;
         let hi = 0xF200 | i << 10 | op << 5 | (u16::from(set_flags)) << 4 | u16::from(rn);
         let lo = imm3 << 12 | u16::from(rd) << 8 | imm8;
@@ -336,9 +336,7 @@ impl Asm {
     // ------------------------------- shifts -------------------------------
 
     pub fn lsls_imm(&mut self, rd: u8, rm: u8, amount: u8) {
-        self.raw(
-            0x0000 | (u16::from(amount) & 0x1F) << 6 | (u16::from(rm) & 7) << 3 | u16::from(rd) & 7,
-        );
+        self.raw(((u16::from(amount) & 0x1F) << 6) | (u16::from(rm) & 7) << 3 | u16::from(rd) & 7);
     }
 
     pub fn lsrs_imm(&mut self, rd: u8, rm: u8, amount: u8) {
@@ -1082,7 +1080,7 @@ impl Asm {
     /// `MRS Rd, <sysreg>` (`sys` is the `SYSm` 8-bit field, see `SysReg`).
     pub fn mrs(&mut self, rd: u8, sys: u8) {
         let lo = 0x8000 | u16::from(rd) << 8 | u16::from(sys);
-        self.raw32(0xF3EF as u32 | (lo as u32) << 16);
+        self.raw32(0xF3EF_u32 | (lo as u32) << 16);
     }
     /// `MSR <sysreg>, Rn`.
     pub fn msr(&mut self, sys: u8, rn: u8) {
@@ -2046,7 +2044,7 @@ impl Asm {
                         .copied()
                         .ok_or_else(|| format!("undefined label {target:?}"))?;
                     let off = i64::from(t) - i64::from(cur + 4);
-                    if off < -2048 || off > 2046 || off % 2 != 0 {
+                    if !(-2048..=2046).contains(&off) || off % 2 != 0 {
                         return Err(format!("16-bit branch to {target:?} out of Â±2 KiB range"));
                     }
                     let imm11 = ((off >> 1) as i16) as u16 & 0x7FF;
@@ -2058,7 +2056,7 @@ impl Asm {
                         .copied()
                         .ok_or_else(|| format!("undefined label {target:?}"))?;
                     let off = i64::from(t) - i64::from(cur + 4);
-                    if off < -256 || off > 254 || off % 2 != 0 {
+                    if !(-256..=254).contains(&off) || off % 2 != 0 {
                         return Err(format!(
                             "conditional branch to {target:?} out of Â±256-byte range"
                         ));
@@ -2075,7 +2073,7 @@ impl Asm {
                         .copied()
                         .ok_or_else(|| format!("undefined label {target:?}"))?;
                     let off = i64::from(t) - i64::from(cur + 4);
-                    if off < -(1 << 20) || off > (1 << 20) - 2 || off % 2 != 0 {
+                    if !(-(1 << 20)..=(1 << 20) - 2).contains(&off) || off % 2 != 0 {
                         return Err(format!(
                             "conditional wide branch to {target:?} out of Â±1 MB range"
                         ));
@@ -2102,7 +2100,7 @@ impl Asm {
                         .copied()
                         .ok_or_else(|| format!("undefined label {target:?}"))?;
                     let off = i64::from(t) - i64::from(cur + 4);
-                    if off < 2 || off > 126 || off % 2 != 0 {
+                    if !(2..=126).contains(&off) || off % 2 != 0 {
                         return Err(format!("cbz/cbnz to {target:?} out of +2..126-byte range"));
                     }
                     let b = (off >> 1) as u16; // 1..=63
@@ -2119,7 +2117,7 @@ impl Asm {
                         .ok_or_else(|| format!("undefined label {target:?}"))?;
                     let base = (cur + 4) & !3;
                     let off = i64::from(t) - i64::from(base);
-                    if off < 0 || off > 1020 || off % 4 != 0 {
+                    if !(0..=1020).contains(&off) || off % 4 != 0 {
                         return Err(format!("ldr literal to {target:?} out of range"));
                     }
                     let hw = 0x4800 | (u16::from(*rt) & 7) << 8 | (off / 4) as u16;
@@ -2132,7 +2130,7 @@ impl Asm {
                         .ok_or_else(|| format!("undefined label {target:?}"))?;
                     let base = (cur + 4) & !3;
                     let off = i64::from(t) - i64::from(base);
-                    if off < 0 || off > 1020 || off % 4 != 0 {
+                    if !(0..=1020).contains(&off) || off % 4 != 0 {
                         return Err(format!("ldrd literal to {target:?} out of range"));
                     }
                     let hi = 0xE9DF; // LDRD Rt,Rt2,[pc,#imm], P=1 U=1 L=1 W=0, rn=15
@@ -2209,8 +2207,8 @@ fn encode_branch(off_bytes: i64, lo_prefix: u16) -> (u16, u16) {
     // The instruction XORs in `S` before the inverted bit is stored.
     let j1 = (1 - (i1 ^ s)) as u16;
     let j2 = (1 - (i2 ^ s)) as u16;
-    let hi = (0xF000 | ((s << 10) as u16) | imm10) as u16;
-    let lo = (lo_prefix | (j1 << 13) | (j2 << 11) | imm11) as u16;
+    let hi = 0xF000 | ((s << 10) as u16) | imm10;
+    let lo = lo_prefix | (j1 << 13) | (j2 << 11) | imm11;
     (hi, lo)
 }
 

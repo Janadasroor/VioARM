@@ -218,16 +218,16 @@ mod tests {
     #[test]
     fn bsrr_sets_and_resets_in_one_write() {
         let mut g = Gpio::at(BASE, "gpioa");
-        write_word(&mut g, BASE + u32::from(BSRR), 0x0000_000F); // set pins 0..3
+        write_word(&mut g, BASE + BSRR, 0x0000_000F); // set pins 0..3
         assert_eq!(g.output() & 0xF, 0xF);
-        write_word(&mut g, BASE + u32::from(BSRR), 0x0000_0001 << 16); // reset pin 0
+        write_word(&mut g, BASE + BSRR, 0x0000_0001 << 16); // reset pin 0
         assert_eq!(g.output() & 0xF, 0xE);
     }
 
     #[test]
     fn brr_resets_outputs() {
         let mut g = Gpio::at(BASE, "gpioa");
-        write_word(&mut g, BASE + u32::from(BSRR), 0x0000_00FF);
+        write_word(&mut g, BASE + BSRR, 0x0000_00FF);
         write_word(&mut g, BASE + 0x14, 0x0000_0081); // BRR pins 0, 7
         assert_eq!(g.output() & 0xFF, 0x7E);
     }
@@ -238,27 +238,27 @@ mod tests {
         // Pin 0 output push-pull, pin 1 input float.
         crh_set(&mut g, 8, 0b0011); // PA8 output
         crh_set(&mut g, 9, 0b0100); // PA9 input float
-        write_word(&mut g, BASE + u32::from(BSRR), 1 << 8); // PA8 high
+        write_word(&mut g, BASE + BSRR, 1 << 8); // PA8 high
         g.drive_inputs(1 << 9); // PA9 held high by host
-        assert_eq!(read_word(&mut g, BASE + u32::from(IDR)) & 0x0300, 0x0300);
+        assert_eq!(read_word(&mut g, BASE + IDR) & 0x0300, 0x0300);
     }
 
     #[test]
     fn firmware_writes_to_idr_are_ignored() {
         let mut g = Gpio::at(BASE, "gpioa");
-        write_word(&mut g, BASE + u32::from(IDR), 0xFFFF_FFFF);
-        assert_eq!(read_word(&mut g, BASE + u32::from(IDR)), 0);
+        write_word(&mut g, BASE + IDR, 0xFFFF_FFFF);
+        assert_eq!(read_word(&mut g, BASE + IDR), 0);
     }
 
     #[test]
     fn reset_clears_all_registers() {
         let mut g = Gpio::at(BASE, "gpioa");
-        write_word(&mut g, BASE + u32::from(BSRR), 0xFFFF_FFFF);
-        write_word(&mut g, BASE + u32::from(ODR), 0xFFFF_FFFF);
+        write_word(&mut g, BASE + BSRR, 0xFFFF_FFFF);
+        write_word(&mut g, BASE + ODR, 0xFFFF_FFFF);
         g.drive_inputs(0xFFFF_FFFF);
         g.reset();
-        assert_eq!(read_word(&mut g, BASE + u32::from(ODR)), 0);
-        assert_eq!(read_word(&mut g, BASE + u32::from(IDR)), 0);
+        assert_eq!(read_word(&mut g, BASE + ODR), 0);
+        assert_eq!(read_word(&mut g, BASE + IDR), 0);
     }
 
     #[test]

@@ -148,7 +148,7 @@ impl Behavior for SdioBehavior {
                 let sta = view.get(STA) | STA_TXDAVL;
                 view.set(STA, sta);
                 // FIFO is not a stored word; keep the register word as 0.
-                return 0;
+                0
             }
             ICR => {
                 // W1C into STA.
@@ -160,7 +160,7 @@ impl Behavior for SdioBehavior {
                         self.fifo.clear();
                     }
                 }
-                return 0;
+                0
             }
             _ => word,
         }
@@ -272,8 +272,8 @@ mod tests {
     fn sdio_registers_do_not_fault() {
         let base = Stm32f103::peripheral("SDIO").unwrap().base;
         let mut s = Sdio::new_for::<Stm32f103>();
-        write_word(&mut s, base + 0x00, 0x03); // POWER
-        assert_eq!(read_word(&mut s, base + 0x00) & 0x03, 0x03);
+        write_word(&mut s, base, 0x03); // POWER
+        assert_eq!(read_word(&mut s, base) & 0x03, 0x03);
         assert!(matches!(
             s.read(base + 0x500),
             Err(crate::error::BusError::Reserved)

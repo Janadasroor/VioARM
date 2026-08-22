@@ -375,9 +375,9 @@ mod tests {
     fn armed() -> (Iwdg, Arc<Mutex<bool>>) {
         let reset = latch();
         let mut i = Iwdg::new(reset.clone());
-        write_word(&mut i, IWDG_BASE + 0x00, 0x5555); // unlock
+        write_word(&mut i, IWDG_BASE, 0x5555); // unlock
         write_word(&mut i, IWDG_BASE + 0x08, 0x0100); // RLR = 0x100
-        write_word(&mut i, IWDG_BASE + 0x00, 0xCCCC); // start
+        write_word(&mut i, IWDG_BASE, 0xCCCC); // start
         (i, reset)
     }
 
@@ -400,7 +400,7 @@ mod tests {
         for _ in 0..0x80 {
             i.tick(1);
         }
-        write_word(&mut i, IWDG_BASE + 0x00, 0xAAAA);
+        write_word(&mut i, IWDG_BASE, 0xAAAA);
         // A full RLR period (0x100 ticks) brings the counter to zero; the
         // next tick underflows.
         for _ in 0..0x100 {
@@ -419,11 +419,11 @@ mod tests {
         write_word(&mut i, IWDG_BASE + 0x08, 0x0FFF);
         assert_eq!(read_word(&mut i, IWDG_BASE + 0x04), 0);
         assert_eq!(read_word(&mut i, IWDG_BASE + 0x08), 0x0FFF); // reset value
-        write_word(&mut i, IWDG_BASE + 0x00, 0x5555);
+        write_word(&mut i, IWDG_BASE, 0x5555);
         write_word(&mut i, IWDG_BASE + 0x04, 0x7);
         assert_eq!(read_word(&mut i, IWDG_BASE + 0x04), 0x7);
         // The access key is one-shot: after a start key it closes again.
-        write_word(&mut i, IWDG_BASE + 0x00, 0xCCCC);
+        write_word(&mut i, IWDG_BASE, 0xCCCC);
         write_word(&mut i, IWDG_BASE + 0x04, 0x0);
         assert_eq!(read_word(&mut i, IWDG_BASE + 0x04), 0x7);
     }
@@ -432,10 +432,10 @@ mod tests {
     fn prescaler_divides_the_count() {
         let reset = latch();
         let mut i = Iwdg::new(reset.clone());
-        write_word(&mut i, IWDG_BASE + 0x00, 0x5555);
+        write_word(&mut i, IWDG_BASE, 0x5555);
         write_word(&mut i, IWDG_BASE + 0x04, 0x1); // PR: divide by 2
         write_word(&mut i, IWDG_BASE + 0x08, 0x0010); // RLR = 0x10
-        write_word(&mut i, IWDG_BASE + 0x00, 0xCCCC);
+        write_word(&mut i, IWDG_BASE, 0xCCCC);
         // 2 * RLR cycles brings the counter to zero without underflowing.
         for _ in 0..0x20 {
             i.tick(1);
@@ -450,7 +450,7 @@ mod tests {
         let reset = latch();
         let mut w = Wwdg::new(reset.clone());
         // CR = WDGA | T=0x7F starts it; the counter runs down from 0x7F.
-        write_word(&mut w, WWDG_BASE + 0x00, 0x80 | 0x7F);
+        write_word(&mut w, WWDG_BASE, 0x80 | 0x7F);
         // Counter 0x41 -> 0x40: EWIF + interrupt; 0x40 -> 0x3F: reset.
         for _ in 0..0x3E {
             w.tick(1);
@@ -468,7 +468,7 @@ mod tests {
         let reset = latch();
         let mut w = Wwdg::new(reset.clone());
         write_word(&mut w, WWDG_BASE + 0x04, 0x0200 | 0x7F); // CFR: EWI | W=0x7F
-        write_word(&mut w, WWDG_BASE + 0x00, 0x80 | 0x7F); // WDGA | T
+        write_word(&mut w, WWDG_BASE, 0x80 | 0x7F); // WDGA | T
         for _ in 0..0x3E {
             w.tick(1);
         }
@@ -488,18 +488,14 @@ mod tests {
         let reset = latch();
         let mut w = Wwdg::new(reset.clone());
         write_word(&mut w, WWDG_BASE + 0x04, 0x7F); // CFR: W = 0x7F (whole window)
-        write_word(&mut w, WWDG_BASE + 0x00, 0x80 | 0x7F);
+        write_word(&mut w, WWDG_BASE, 0x80 | 0x7F);
         for _ in 0..0x20 {
             w.tick(1);
             assert!(!*reset.lock().unwrap());
             // Refresh on the same counter value each iteration.
-            write_word(&mut w, WWDG_BASE + 0x00, 0x7F);
+            write_word(&mut w, WWDG_BASE, 0x7F);
         }
-        assert_eq!(
-            read_word(&mut w, WWDG_BASE + 0x00) & 0x80,
-            0x80,
-            "WDGA latches"
-        );
+        assert_eq!(read_word(&mut w, WWDG_BASE) & 0x80, 0x80, "WDGA latches");
     }
 
     #[test]
@@ -507,9 +503,9 @@ mod tests {
         let reset = latch();
         let mut w = Wwdg::new(reset.clone());
         write_word(&mut w, WWDG_BASE + 0x04, 0x10); // CFR: W = 0x10
-        write_word(&mut w, WWDG_BASE + 0x00, 0x80 | 0x7F);
+        write_word(&mut w, WWDG_BASE, 0x80 | 0x7F);
         // Counter is 0x7F, well above the window 0x10: a refresh resets.
-        write_word(&mut w, WWDG_BASE + 0x00, 0x7F);
+        write_word(&mut w, WWDG_BASE, 0x7F);
         assert!(*reset.lock().unwrap());
     }
 

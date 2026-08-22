@@ -365,7 +365,7 @@ mod tests {
         // S0CR at 0x10, stride 0x18: S7CR at 0xB8.
         for s in 0..8u32 {
             assert_eq!(
-                d.ranges()[0].base + u32::from(S0CR) + s * u32::from(STREAM_STRIDE),
+                d.ranges()[0].base + S0CR + s * STREAM_STRIDE,
                 D1 + 0x10 + s * 0x18,
                 "S{s}CR offset"
             );
@@ -402,7 +402,7 @@ mod tests {
         // NDTR exhausted, EN self-cleared, TCIF1 latched in LISR (stream 1).
         assert_eq!(read_word(&mut d, D1 + s_ndtr(1)), 0);
         assert_eq!(read_word(&mut d, D1 + s_cr(1)) & EN, 0);
-        assert_eq!(read_word(&mut d, D1 + u32::from(LISR)) & (1 << 11), 1 << 11);
+        assert_eq!(read_word(&mut d, D1 + LISR) & (1 << 11), 1 << 11);
         assert_eq!(d.pending(), 1 << 1, "stream-1 line latched");
     }
 
@@ -427,11 +427,7 @@ mod tests {
         write_word(&mut d, D1 + s_par(2), 0x4000_0400); // USART DR
         write_word(&mut d, D1 + s_m0ar(2), 0x2000_1000);
         write_word(&mut d, D1 + s_ndtr(2), 2);
-        write_word(
-            &mut d,
-            D1 + s_cr(2),
-            EN | TCIE | (1 << 9) | (1 << 10) | (0 << 6),
-        );
+        write_word(&mut d, D1 + s_cr(2), (EN | TCIE | (1 << 9) | (1 << 10)));
         d.tick(1);
         assert_eq!(m.lock().unwrap().len(), 2);
         assert_eq!(m.lock().unwrap()[0], (0x4000_0400, 0x2000_1000, 1));
@@ -463,14 +459,14 @@ mod tests {
         }
         d.tick(1);
         assert_eq!(
-            read_word(&mut d, D1 + u32::from(LISR)),
+            read_word(&mut d, D1 + LISR),
             (1 << 5) | (1 << 27),
             "TCIF0 and TCIF3 set"
         );
         // Write-1-to-clear TCIF0 only.
         write_word(&mut d, D1 + 0x08, 1 << 5);
         assert_eq!(
-            read_word(&mut d, D1 + u32::from(LISR)),
+            read_word(&mut d, D1 + LISR),
             1 << 27,
             "TCIF0 cleared, TCIF3 kept"
         );

@@ -34,15 +34,9 @@ const CR_TEN2: u32 = 1 << 18;
 const CR_TSEL2_SHIFT: u32 = 19;
 const CR_DMAEN2: u32 = 1 << 28;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct DacBehavior {
     requests: Option<Arc<Mutex<DmaRequests>>>,
-}
-
-impl Default for DacBehavior {
-    fn default() -> Self {
-        Self { requests: None }
-    }
 }
 
 impl DacBehavior {
@@ -88,7 +82,8 @@ impl Behavior for DacBehavior {
     ) -> u32 {
         let cur = view.get(offset);
         let word = (cur & !(0xFF << shift)) | (u32::from(val) << shift);
-        let ret = match offset {
+
+        match offset {
             CR => word,
             SWTRIGR => {
                 if word & (1 << 0) != 0 {
@@ -116,7 +111,7 @@ impl Behavior for DacBehavior {
                     }
                 }
                 // SWTRIGR is W1, self-clears.
-                return 0;
+                0
             }
             DHR12R1 => {
                 let v = word & 0xFFF;
@@ -171,8 +166,7 @@ impl Behavior for DacBehavior {
             }
             DOR1 | DOR2 => cur, // read-only
             _ => word,
-        };
-        ret
+        }
     }
 }
 

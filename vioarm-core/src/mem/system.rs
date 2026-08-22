@@ -293,7 +293,7 @@ impl<M: Bus> SystemMemory<M> {
             // HardFault is priority -1: encoded as the highest possible
             // (lowest numeric) priority, so nothing preempts it.
             3 => 0,
-            4 | 5 | 6 => self.scb.priority(ipsr),
+            4..=6 => self.scb.priority(ipsr),
             11 | 14 | 15 => self.scb.priority(ipsr),
             n => self.nvic.priority(u32::from(n - 16)),
         }

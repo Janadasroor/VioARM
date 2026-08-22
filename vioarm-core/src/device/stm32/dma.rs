@@ -426,11 +426,11 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     const BASE: u32 = 0x4002_0000;
-    const CCR1: u32 = CCR_CH as u32;
-    const CNDTR1: u32 = CNDTR_CH as u32;
-    const CPAR1: u32 = CPAR_CH as u32;
-    const CMAR1: u32 = CMAR_CH as u32;
-    const ISR1: u32 = ISR as u32;
+    const CCR1: u32 = CCR_CH;
+    const CNDTR1: u32 = CNDTR_CH;
+    const CPAR1: u32 = CPAR_CH;
+    const CMAR1: u32 = CMAR_CH;
+    const ISR1: u32 = ISR;
 
     fn mailbox() -> Arc<Mutex<Vec<DmaUnit>>> {
         Arc::new(Mutex::new(Vec::new()))
