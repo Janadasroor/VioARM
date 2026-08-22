@@ -500,6 +500,41 @@ impl Hrtim {
             inner: RegisterFile::new(def, NoBehavior),
         }
     }
+    #[must_use]
+    pub fn timb_for<D: Device>() -> Self {
+        let def = D::peripheral("HRTIM_TIMB").expect("generated tables contain HRTIM_TIMB");
+        Self {
+            inner: RegisterFile::new(def, NoBehavior),
+        }
+    }
+    #[must_use]
+    pub fn timc_for<D: Device>() -> Self {
+        let def = D::peripheral("HRTIM_TIMC").expect("generated tables contain HRTIM_TIMC");
+        Self {
+            inner: RegisterFile::new(def, NoBehavior),
+        }
+    }
+    #[must_use]
+    pub fn timd_for<D: Device>() -> Self {
+        let def = D::peripheral("HRTIM_TIMD").expect("generated tables contain HRTIM_TIMD");
+        Self {
+            inner: RegisterFile::new(def, NoBehavior),
+        }
+    }
+    #[must_use]
+    pub fn time_for<D: Device>() -> Self {
+        let def = D::peripheral("HRTIM_TIME").expect("generated tables contain HRTIM_TIME");
+        Self {
+            inner: RegisterFile::new(def, NoBehavior),
+        }
+    }
+    #[must_use]
+    pub fn common_for<D: Device>() -> Self {
+        let def = D::peripheral("HRTIM_Common").expect("generated tables contain HRTIM_Common");
+        Self {
+            inner: RegisterFile::new(def, NoBehavior),
+        }
+    }
 }
 
 impl Peripheral for Hrtim {

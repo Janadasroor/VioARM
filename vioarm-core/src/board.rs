@@ -1008,6 +1008,21 @@ pub fn stm32h743() -> BoardMemory {
     if <Stm32h743 as crate::device::svd::Device>::peripheral("HRTIM_TIMA").is_some() {
         mem.attach(Box::new(Hrtim::tima_for::<Stm32h743>()));
     }
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("HRTIM_TIMB").is_some() {
+        mem.attach(Box::new(Hrtim::timb_for::<Stm32h743>()));
+    }
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("HRTIM_TIMC").is_some() {
+        mem.attach(Box::new(Hrtim::timc_for::<Stm32h743>()));
+    }
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("HRTIM_TIMD").is_some() {
+        mem.attach(Box::new(Hrtim::timd_for::<Stm32h743>()));
+    }
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("HRTIM_TIME").is_some() {
+        mem.attach(Box::new(Hrtim::time_for::<Stm32h743>()));
+    }
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("HRTIM_Common").is_some() {
+        mem.attach(Box::new(Hrtim::common_for::<Stm32h743>()));
+    }
     // ETH - H743 single-window MAC at 0x40028000 (no MMC/PTP split) via EthH7 stub
     if <Stm32h743 as crate::device::svd::Device>::peripheral("Ethernet_MAC").is_some()
         || <Stm32h743 as crate::device::svd::Device>::peripheral("ETH").is_some()
