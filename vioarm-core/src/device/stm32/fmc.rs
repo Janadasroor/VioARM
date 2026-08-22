@@ -300,6 +300,51 @@ impl Dma2d {
     }
 }
 
+#[derive(Debug)]
+pub struct Bdma {
+    inner: RegisterFile<NoBehavior>,
+}
+
+impl Bdma {
+    #[must_use]
+    pub fn new_for<D: Device>() -> Self {
+        let def = D::peripheral("BDMA").expect("generated tables contain BDMA");
+        Self {
+            inner: RegisterFile::new(def, NoBehavior),
+        }
+    }
+}
+
+impl Peripheral for Bdma {
+    fn ranges(&self) -> &[Region] {
+        self.inner.ranges()
+    }
+    fn read(&mut self, addr: u32) -> Result<u8, BusError> {
+        self.inner.read(addr)
+    }
+    fn write(&mut self, addr: u32, val: u8) -> Result<(), BusError> {
+        self.inner.write(addr, val)
+    }
+    fn reset(&mut self) {
+        self.inner.reset();
+    }
+    fn name(&self) -> &'static str {
+        "bdma"
+    }
+}
+
+impl InterruptSource for Bdma {
+    fn exception_number(&self) -> Option<u8> {
+        self.inner.exception_number()
+    }
+    fn pending(&self) -> u32 {
+        self.inner.pending()
+    }
+    fn acknowledge(&mut self, lines: u32) {
+        self.inner.acknowledge(lines);
+    }
+}
+
 impl Peripheral for Dma2d {
     fn ranges(&self) -> &[Region] {
         self.inner.ranges()
