@@ -10,8 +10,11 @@ env:
 
 jobs:
   build:
-    name: Build, test, and lint
+    name: Build, test, and lint (${{ matrix.toolchain }})
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        toolchain: ["1.75", "stable"]
     steps:
       - uses: actions/checkout@v4
 
@@ -19,8 +22,9 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y qemu-system-arm
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ matrix.toolchain }}
           components: rustfmt, clippy
 
       - name: Cache cargo registry
