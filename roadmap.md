@@ -128,7 +128,38 @@ Tooling:
 The instruction core is done and QEMU-verified; what separates the project from
 a faithful STM32 SoC simulator is the checklist below, in priority order.
 "Real firmware" means code that runs on silicon: HAL/Standard-Peripheral
-projects, RTOSes, and bare-metal drivers.
+projects, RTOSes, and bare-metal drivers. Measured `2026-08-22` `df266a7`
+`v1.7.0` `64` `real_firmware` `550` `lib` `29` clippy:
+
+| Domain | Silicon `denom` | Modeled `num` | Reach | File |
+|---|---|---|---|---|
+| Core ISA `Armv6M/7M/7EM/8M-baseline` `Thumb-2+DSP+FPv5-D16` | `QEMU m0/3/4/33/7` `73` `conformance` | `≈95%` | `cpu/mod.rs:41` `decode32.rs:991` |
+| System `NVIC/SCB/MPU/TrustZone` `DWT cyccnt` `FLASH WS` | `M3` `HFSR bit30` | `≈85%` | `cpu/mod.rs:714` `scb.rs:1059` |
+| Clock/Power `HSE/HSI/CSI/PLL1-3` `PWR CR1/CR3` | `Cube HAL SystemClock 25MHz` | `≈30%` | `rcc.rs:43` `pwr.rs:13` `d238b56` |
+| GPIO `CRL/CRH→MODER/BSRR` | `HAL GPIO_Init` | `≈90%` Full | `gpio.rs:28` `gpio_f4.rs:28` |
+| USART/UART `1-3+4/5/6` `TXE/RXNE` `DMA ch` | `USART1 92 regs` | `≈85%` Full | `usart.rs:67` `board.rs:914` |
+| TIM1..7 `PSC/ARR/UIF` `TIM5 32b` | `HAL_TIM` | `≈60%` up-counter | `timer.rs` |
+| DMA `F1 ch / F4 streams+DMAMUX` `MEM2MEM` `FIFO/burst` | `Cube BURST` | `≈40%` `1-unit/tick` `USART` only | `dma.rs:139` `dma_f4.rs:139` |
+| FLASH `KEYR/PG/PER/MER` `F1/F4` sector | `HAL FLASH_Program` | `≈80%` | `flash.rs:17` |
+| ADC/SPI/I2C `SQR/BR/START` | `HAL_ADC` | `≈75%` | `adc.rs` `spi.rs` `i2c.rs` |
+| CAN/RTC/CRC/DAC/IWDG/SDIO | `SDIO CMD0/2/3/7` stub `0xFF` | `≈80%` | `sdio.rs:34` |
+| USB `FS/HS` ETH `MAC/DMA` `RDES/TDES` | `HAL USB ETH` | `≈60%` `EthH7` stub `eth.rs:771` | `fmc.rs:13` |
+| H7 `QUADSPI/FMC/LTDC/DMA2D/FDCAN` `BDMA/MDMA` | `119 H743 SVD →45 38%` | `≈38%` `QspiGate dd60d89` gated | `board.rs:817` `fmc.rs:57` |
+
+Overall `weighted` `≈58-62%` to `HAL/RTOS no-mod` (`F103 66%→75% HAL`, `F107 100% windows 80% HAL`, `F407 51%→55%`, `H743 38%→35%` H7 `SystemClock HSE CR.EN 1` now `1`).
+
+### Path to 100% — `58% → 100%` (priority, `effort`, `target %`)
+
+1. **H7 `QSPI XIP` + `FMC SDRAM` init** `FMC SDCR/SDTR` `QUADSPI CCR/DLR` `1d` `H743 38→55%`.
+2. **DMA `burst/FIFO` + `DMAMUX` routing + `timer/ADC/SPI` request lines** `1w` `DMA 40→85%` `TIM` `60→85%`.
+3. **Clock tree `PLLSRC/DIVM/DIVN/DIVP/Q/R` `RCC 0x58024428` `PLLCFGR` `CFGR/D1CFGR`** `3d` `Clock 30→80%` `HSE 25MHz →480MHz` `SystemClock` `WS 5`.
+4. **TIM `PWM/OC/IC` `CCMR/CCR` `DMA burst` `ADC triggered`** `1w` `TIM 60→90%`.
+5. **CAN `filter-bank 28×` `29-bit ext` `FIFO0/1` `RFLM`** `3d` `CAN 80→95%`.
+6. **USB `endpoints 1-3` `IN/OUT` `FIFO` `OTG HS2 0x40080000`** `1w` `USB 60→90%` `eth.rs:771` `EthH7` `DMAMR` `1w` `ETH 60→90%`.
+7. **H7 `LTDC layer/PFC` `DMA2D PFC` `BDMA 0x58025400` `MDMA` `SAI4` `DFSDM`** `2w` `H7 55→75%`.
+8. **Quality `llvm-cov 90%` + `cargo fuzz` decoder + `cargo audit/deny` strict** already `ci.yml:51` `1d` `R2-4` `prod` gate.
+9. **`no_std` + `benches/cyccnt`** `R1/R6` `3d` reuse.
+10. **Tag `v1.8-v2.0` per domain `CHANGELOG` `crates.io` `cargo publish`** `1d` `100%` when `HAL` `CubeMX` `RTOS` boots unmodified (`≈6-8w` total).
 
 1. **Distinct UsageFault.** **Done.** A real exception with its own vector,
    `UFSR` fault-status recording, `SHCSR.USGFAULTENA` gating, and escalation
