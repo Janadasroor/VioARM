@@ -27,7 +27,7 @@ use crate::device::stm32::exti::Exti;
 use crate::device::stm32::fdcan::Fdcan;
 use crate::device::stm32::flash::{FlashF1, FlashF4, FlashGate};
 use crate::device::stm32::fmc::{
-    Bdma, Dfsdm, Dma2d, Dmamux, Fmc, Ltdc, Mdma, Qspi, QspiGate, Sai4,
+    Bdma, Dfsdm, Dma2d, Dmamux, Fmc, Hrtim, Ltdc, Mdma, Qspi, QspiGate, Sai4,
 };
 use crate::device::stm32::gpio::Gpio as StmGpio;
 use crate::device::stm32::gpio_f4::GpioF4;
@@ -1001,6 +1001,12 @@ pub fn stm32h743() -> BoardMemory {
     }
     if <Stm32h743 as crate::device::svd::Device>::peripheral("DFSDM").is_some() {
         mem.attach(Box::new(Dfsdm::new_for::<Stm32h743>()));
+    }
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("HRTIM_Master").is_some() {
+        mem.attach(Box::new(Hrtim::master_for::<Stm32h743>()));
+    }
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("HRTIM_TIMA").is_some() {
+        mem.attach(Box::new(Hrtim::tima_for::<Stm32h743>()));
     }
     // ETH - H743 single-window MAC at 0x40028000 (no MMC/PTP split) via EthH7 stub
     if <Stm32h743 as crate::device::svd::Device>::peripheral("Ethernet_MAC").is_some()
