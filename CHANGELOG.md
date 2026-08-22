@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] - 2026-08-22
+### Added
+- H743 `HRTIM` `Master 0x40017400` + `TIMA 0x40017480` + `TIMB/C/D/E 0x40017500-0x40017680` + `Common 0x40017780` `SAI4 0x58005400` `DFSDM 0x40017000` `MDMA 0x52000000` `BDMA 0x58025400` `OTG2_HS 0x40080000` `CanFilter 0x40006600` latch-only `H743 45->57` windows.
+- `QspiGate` `0x90000000` `CR.EN` gated enforced + `qspi_gate` e2e.
+
 ## [1.7.0] - 2026-08-22
 ### Added
 - QspiGate `QUADSPI 0x52005000 CR.EN` gated `0x90000000 16M` (`fmc.rs`/`mem/system.rs`/`board.rs` plumbed then enforced) with `stm32h743_qspi_gate` gated-vs-enabled e2e; `stm32h743_fmc_qspi` now `CR.EN=1`.
