@@ -390,6 +390,51 @@ impl InterruptSource for Mdma {
     }
 }
 
+#[derive(Debug)]
+pub struct Sai4 {
+    inner: RegisterFile<NoBehavior>,
+}
+
+impl Sai4 {
+    #[must_use]
+    pub fn new_for<D: Device>() -> Self {
+        let def = D::peripheral("SAI4").expect("generated tables contain SAI4");
+        Self {
+            inner: RegisterFile::new(def, NoBehavior),
+        }
+    }
+}
+
+impl Peripheral for Sai4 {
+    fn ranges(&self) -> &[Region] {
+        self.inner.ranges()
+    }
+    fn read(&mut self, addr: u32) -> Result<u8, BusError> {
+        self.inner.read(addr)
+    }
+    fn write(&mut self, addr: u32, val: u8) -> Result<(), BusError> {
+        self.inner.write(addr, val)
+    }
+    fn reset(&mut self) {
+        self.inner.reset();
+    }
+    fn name(&self) -> &'static str {
+        "sai4"
+    }
+}
+
+impl InterruptSource for Sai4 {
+    fn exception_number(&self) -> Option<u8> {
+        self.inner.exception_number()
+    }
+    fn pending(&self) -> u32 {
+        self.inner.pending()
+    }
+    fn acknowledge(&mut self, lines: u32) {
+        self.inner.acknowledge(lines);
+    }
+}
+
 impl Peripheral for Dma2d {
     fn ranges(&self) -> &[Region] {
         self.inner.ranges()
