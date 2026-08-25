@@ -185,10 +185,34 @@ impl InterruptSource for Qspi {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-struct DmamuxBehavior;
+#[derive(Debug, Default)]
+struct DmamuxBehavior {
+    req_id: [u8; 16],
+}
 
-impl Behavior for DmamuxBehavior {}
+impl Behavior for DmamuxBehavior {
+    fn on_write(
+        &mut self,
+        view: &mut Registers<&mut [u32]>,
+        offset: u32,
+        val: u8,
+        shift: u32,
+    ) -> u32 {
+        let word = view.merged(offset, val, shift);
+        // CCR register at 0x00 + 4*ch: DMAREQ_ID is bits 0:6
+        let ch = (offset / 4) as usize;
+        if ch < 16 {
+            self.req_id[ch] = (word & 0x7F) as u8;
+        }
+        word
+    }
+
+    fn on_read(&mut self, view: &mut Registers<&mut [u32]>, offset: u32, value: u32) -> u32 {
+        let _ = view;
+        let _ = offset;
+        value
+    }
+}
 
 pub struct Dmamux {
     inner: RegisterFile<DmamuxBehavior>,
@@ -201,14 +225,14 @@ impl Dmamux {
             .or_else(|| D::peripheral("DMAMUX"))
             .expect("generated tables contain DMAMUX1");
         Self {
-            inner: RegisterFile::new(def, DmamuxBehavior),
+            inner: RegisterFile::new(def, DmamuxBehavior::default()),
         }
     }
     #[must_use]
     pub fn dmamux2_for<D: Device>() -> Self {
         let def = D::peripheral("DMAMUX2").expect("generated tables contain DMAMUX2");
         Self {
-            inner: RegisterFile::new(def, DmamuxBehavior),
+            inner: RegisterFile::new(def, DmamuxBehavior::default()),
         }
     }
 }
