@@ -34,7 +34,7 @@ use vioarm_qemu::{compare_traces, CpuState};
 /// spawn failure, never a legitimate result.
 fn qemu_run_retry(mt: &QemuMachine, bin: &[u8], stop: u32) -> Vec<CpuState> {
     for attempt in 0..3 {
-        let states = qemu_run(mt, bin, stop, Duration::from_secs(60));
+        let states = qemu_run(mt, bin, stop, Duration::from_secs(20));
         if !states.is_empty() {
             return states;
         }

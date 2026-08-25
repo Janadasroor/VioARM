@@ -60,12 +60,52 @@ fn reap_stale_runs(dir: &Path) {
             };
             let alive = procfs && Path::new("/proc").join(pid.to_string()).exists();
             if !alive || stale(&entry) {
+                // The owning test process is gone, but its QEMU children may
+                // still be running (a SIGKILLed cargo leaves them no chance to
+                // clean up). Kill every recorded child whose /proc cmdline is
+                // still a qemu-system binary — the cmdline check guards
+                // against killing an unrelated process that recycled the pid.
+                for record in std::fs::read_dir(&path).into_iter().flatten() {
+                    let record = match record {
+                        Ok(r) => r,
+                        Err(_) => continue,
+                    };
+                    if record.path().extension().is_none_or(|e| e != "qemu") {
+                        continue;
+                    }
+                    let Ok(child) = std::fs::read_to_string(record.path()) else {
+                        continue;
+                    };
+                    let Ok(child_pid) = child.trim().parse::<u32>() else {
+                        continue;
+                    };
+                    if procfs && is_qemu_process(child_pid) {
+                        let _ = std::process::Command::new("/bin/kill")
+                            .arg("-9")
+                            .arg(child_pid.to_string())
+                            .status();
+                    }
+                    let _ = std::fs::remove_file(record.path());
+                }
                 let _ = std::fs::remove_dir_all(&path);
             }
         } else if stale(&entry) {
             let _ = std::fs::remove_file(&path);
         }
     }
+}
+
+/// Whether `/proc/<pid>` exists and its executable is a `qemu-system-*`.
+fn is_qemu_process(pid: u32) -> bool {
+    use std::io::Read;
+    let mut cmdline = String::new();
+    if std::fs::File::open(format!("/proc/{pid}/cmdline"))
+        .and_then(|mut f| f.read_to_string(&mut cmdline))
+        .is_err()
+    {
+        return false;
+    }
+    cmdline.contains("qemu-system")
 }
 
 /// Candidate `qemu-system-arm` locations, in priority order.
@@ -185,84 +225,126 @@ impl QemuMachine {
 /// too; otherwise `vfp` is `None`.
 #[must_use]
 pub fn parse_log(text: &str) -> Vec<CpuState> {
-    let lines: Vec<&str> = text.lines().collect();
-    let mut states = Vec::new();
-    let mut i = 0;
-    while i < lines.len() {
-        if !lines[i].starts_with("R00=") {
-            i += 1;
-            continue;
-        }
-        // A QEMU killed mid-write can truncate the log between this header and
-        // the rest of its state block; stop parsing instead of running past
-        // EOF (every access below stays within `i ..= i+4`).
-        if i + 5 > lines.len() {
-            break;
-        }
-        let mut good = true;
-        for (row, expect) in [(1, "R04="), (2, "R08="), (3, "R12=")] {
-            if !lines[i + row].starts_with(expect) {
-                good = false;
-                break;
+    let mut feeder = LogFeeder::default();
+    for line in text.lines() {
+        feeder.feed(line);
+    }
+    // A log truncated right after its `XPSR=` row still yields that state
+    // (minus VFP); anything shorter is discarded.
+    if !feeder.pending.is_empty() {
+        feeder.finish_block();
+    }
+    feeder.states
+}
+
+/// Incremental `-d cpu` state-block parser. [`LogFeeder::feed`] consumes one
+/// complete line at a time and appends finished [`CpuState`]s to
+/// [`LogFeeder::states`], so a poller can follow a growing log by feeding only
+/// the newly appended lines instead of re-parsing the whole file every tick.
+///
+/// A block is a `R00=` header, its `R04=`/`R08=`/`R12=` rows and an `XPSR=`
+/// line; when the log was produced with the `fpu` item the XPSR line is
+/// followed by 16 `sXX=` rows and an `FPSCR:` line, all consumed as part of
+/// the same block. Lines that do not fit a block under construction resync at
+/// the next `R00=` (live QEMU logs are well-formed, so this only matters for
+/// hand-written tests, which use [`parse_log`]).
+#[derive(Default)]
+pub struct LogFeeder {
+    /// States parsed so far, consecutive-identical runs collapsed exactly like
+    /// the whole-text parser.
+    pub states: Vec<CpuState>,
+    pending: Vec<String>,
+}
+
+impl LogFeeder {
+    /// Feed one complete line (no trailing newline).
+    pub fn feed(&mut self, line: &str) {
+        if self.pending.is_empty() {
+            if !line.starts_with("R00=") {
+                return;
             }
+        } else if self.pending.len() == 5 {
+            // After a valid `XPSR=` row: an `s00=` row opens the FPU block.
+            if !line.starts_with("s00=") {
+                self.finish_block();
+            }
+        } else if self.pending.len() == 22 {
+            self.finish_block();
         }
-        if !good {
-            i += 1;
-            continue;
+        self.pending.push(line.to_owned());
+        if self.pending.len() == 22 {
+            self.finish_block();
+        }
+    }
+
+    /// Validate and emit the accumulated block, or drop it on mismatch.
+    fn finish_block(&mut self) {
+        let p = &self.pending;
+        let ok = p.len() >= 5 && {
+            let mut good = p[0].starts_with("R00=");
+            for (row, expect) in [(1, "R04="), (2, "R08="), (3, "R12=")] {
+                good &= p[row].starts_with(expect);
+            }
+            good && p[4].starts_with("XPSR=")
+        };
+        if !ok {
+            // Resync: retry from the second line of the rejected block, which
+            // may itself start a new one.
+            if p.len() > 1 {
+                let rest: Vec<String> = p[1..].to_vec();
+                self.pending.clear();
+                for line in rest {
+                    self.feed(&line);
+                }
+            } else {
+                self.pending.clear();
+            }
+            return;
         }
         let mut r = [0u32; 16];
         let mut parse_ok = true;
-        for row in 0..4 {
-            for (token, idx) in lines[i + row].split_whitespace().zip(row * 4..row * 4 + 4) {
+        for (row, line) in p.iter().enumerate().take(4) {
+            for (token, idx) in line.split_whitespace().zip(row * 4..row * 4 + 4) {
                 match token.split_once('=') {
-                    Some((_, hex)) => {
-                        if let Ok(v) = u32::from_str_radix(hex, 16) {
-                            r[idx] = v;
-                        } else {
-                            parse_ok = false;
-                        }
-                    }
+                    Some((_, hex)) => match u32::from_str_radix(hex, 16) {
+                        Ok(v) => r[idx] = v,
+                        Err(_) => parse_ok = false,
+                    },
                     None => parse_ok = false,
                 }
             }
         }
-        // The truncation guard above bounds `i + 4` inside the log.
-        let xpsr = lines[i + 4]
+        let xpsr = p[4]
             .strip_prefix("XPSR=")
             .and_then(|rest| rest.split_whitespace().next())
             .and_then(|hex| u32::from_str_radix(hex, 16).ok());
-        match xpsr {
-            Some(x) if parse_ok => {
-                let vfp = parse_vfp_block(&lines, i + 5);
-                let state = CpuState { r, xpsr: x, vfp };
-                // QEMU dumps the reset state once per core (re)initialization,
-                // which can repeat identical frames for a multi-phase board
-                // reset. A real program can never produce two consecutive
-                // identical states (the PC advances with every instruction), so
-                // collapsing them is exact and keeps the trace aligned with the
-                // per-instruction stream VioARM records.
-                if states.last() != Some(&state) {
-                    states.push(state);
-                }
-                // Advance past the FPU block (17 lines) when it was parsed.
-                i += if vfp.is_some() { 22 } else { 5 };
+        if let (Some(x), true) = (xpsr, parse_ok) {
+            let vfp = if p.len() >= 22 {
+                parse_vfp_lines(&p[5..21], &p[21])
+            } else {
+                None
+            };
+            let state = CpuState { r, xpsr: x, vfp };
+            // Consecutive identical frames collapse exactly like the
+            // whole-text parser keeps traces aligned with QEMU's own dumps.
+            if self.states.last() != Some(&state) {
+                self.states.push(state);
             }
-            _ => i += 1,
         }
+        self.pending.clear();
     }
-    states
 }
 
-/// Parse the FPU block that follows the `XPSR=` line: 16 lines of
-/// `s{2n}=xxxxxxxx s{2n+1}=xxxxxxxx d{n}=xxxxxxxxxxxxxxxx` and a
-/// `FPSCR: xxxxxxxx` line. Returns `None` when the block is absent.
-fn parse_vfp_block(lines: &[&str], start: usize) -> Option<VfpState> {
-    if start + 16 >= lines.len() || !lines[start].starts_with("s00=") {
+/// Parse the FPU block that follows the `XPSR=` line: the 16
+/// `s{2n}=xxxxxxxx s{2n+1}=xxxxxxxx d{n}=xxxxxxxxxxxxxxxx` rows and the
+/// `FPSCR: xxxxxxxx` line. Returns `None` when the block is absent or
+/// malformed.
+fn parse_vfp_lines(rows: &[String], fpscr_line: &str) -> Option<VfpState> {
+    if rows.len() != 16 || !rows[0].starts_with("s00=") {
         return None;
     }
     let mut s = [0u32; 32];
-    for row in 0..16 {
-        let line = lines[start + row];
+    for (row, line) in rows.iter().enumerate() {
         let mut ok = true;
         for (token, idx) in line.split_whitespace().zip([row * 2, row * 2 + 1]) {
             if let Some((_, hex)) = token.split_once('=') {
@@ -279,9 +361,8 @@ fn parse_vfp_block(lines: &[&str], start: usize) -> Option<VfpState> {
             return None;
         }
     }
-    let fpscr = lines
-        .get(start + 16)
-        .and_then(|l| l.strip_prefix("FPSCR:"))
+    let fpscr = fpscr_line
+        .strip_prefix("FPSCR:")
         .and_then(|rest| rest.split_whitespace().next())
         .and_then(|hex| u32::from_str_radix(hex, 16).ok())?;
     Some(VfpState { s, fpscr })
@@ -321,7 +402,8 @@ pub fn run_until_pc(
         bin_path.to_string_lossy(),
         mt.load_addr
     );
-    let mut child = Command::new(&mt.exe)
+    let mut command = Command::new(&mt.exe);
+    command
         .arg("-machine")
         .arg(&mt.machine)
         .arg("-cpu")
@@ -337,31 +419,77 @@ pub fn run_until_pc(
         .arg("-device")
         .arg(&device)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn qemu-system-arm");
+        .stderr(Stdio::null());
+    let mut child = command.spawn().expect("spawn qemu-system-arm");
+    // Record the child so a later reaper can kill it if this test process
+    // dies without running cleanup (SIGKILL/OOM leaves no chance to run code).
+    let _ = std::fs::write(
+        run_dir.join(format!("{}.qemu", nano)),
+        child.id().to_string(),
+    );
 
     let deadline = Instant::now() + timeout;
-    let mut states = Vec::new();
+    let spawned = Instant::now();
+    let mut feeder = LogFeeder::default();
+    let mut consumed: u64 = 0;
+    let mut carry = String::new();
+    let max_log_bytes: u64 = std::env::var("VIOARM_MAX_LOG_MB")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1024)
+        * 1024
+        * 1024;
     let mut stall = Instant::now();
-    loop {
+    let mut seen_states = 0usize;
+    'poll: loop {
         std::thread::sleep(Duration::from_millis(15));
-        if let Ok(text) = std::fs::read_to_string(&log_path) {
-            let parsed = parse_log(&text);
-            if let Some(idx) = parsed.iter().position(|s| s.r[15] & !1 == stop_pc) {
-                states = parsed[..=idx].to_vec();
-                break;
-            }
-            if parsed.len() != states.len() {
-                states = parsed;
-                stall = Instant::now();
+        // Runaway-trace guard: a diverged core that never reaches the stop
+        // would otherwise write `-d cpu` at disk speed until the deadline.
+        // One capped trace beats a filled disk; the caller sees a short trace
+        // and a visible assertion failure.
+        if std::fs::metadata(&log_path).is_ok_and(|m| m.len() > max_log_bytes) {
+            break;
+        }
+        if let Ok(mut f) = std::fs::File::open(&log_path) {
+            use std::io::{Read, Seek, SeekFrom};
+            if f.seek(SeekFrom::Start(consumed)).is_ok() {
+                let mut chunk = String::new();
+                if f.read_to_string(&mut chunk).is_ok() {
+                    consumed += chunk.len() as u64;
+                    carry.push_str(&chunk);
+                    // Only complete lines feed the parser; the trailing
+                    // partial line waits for the next poll.
+                    if let Some((complete, _)) = carry.rsplit_once('\n') {
+                        for line in complete.split('\n') {
+                            feeder.feed(line);
+                        }
+                        carry.clear();
+                        if feeder.states.len() > seen_states {
+                            // Trace progressed; quiet-detection restarts.
+                            seen_states = feeder.states.len();
+                            stall = Instant::now();
+                            if feeder
+                                .states
+                                .last()
+                                .is_some_and(|s| s.r[15] & !1 == stop_pc)
+                            {
+                                break 'poll;
+                            }
+                        }
+                    }
+                }
             }
         }
         // A locked-up core (double fault) stops emitting state dumps entirely;
         // once the trace goes quiet past the boot preamble, give up early
         // instead of holding the QEMU process until the deadline — under
-        // parallel load a resident QEMU starves the other test spawns.
-        if states.len() > 1 && Instant::now().duration_since(stall) > Duration::from_millis(300) {
+        // parallel load a resident QEMU starves the other test spawns. A core
+        // that stalls inside the boot preamble gets the same treatment after
+        // a grace window so a wedged board cannot hold the full timeout.
+        if seen_states > 1 && Instant::now().duration_since(stall) > Duration::from_millis(300) {
+            break;
+        }
+        if seen_states <= 1 && spawned.elapsed() > Duration::from_secs(5) {
             break;
         }
         if Instant::now() > deadline {
@@ -370,6 +498,9 @@ pub fn run_until_pc(
     }
     let _ = child.kill();
     let _ = child.wait();
+    // Normal completion: the recorded pid is stale the moment we reaped it.
+    let _ = std::fs::remove_file(run_dir.join(format!("{}.qemu", nano)));
+    let states = std::mem::take(&mut feeder.states);
     if std::env::var_os("VIOARM_KEEP_LOGS").is_none() {
         let _ = std::fs::remove_file(&bin_path);
         let _ = std::fs::remove_file(&log_path);
