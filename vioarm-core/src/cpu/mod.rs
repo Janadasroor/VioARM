@@ -358,9 +358,10 @@ const UFSR_UNDEFINSTR: u32 = 0x0001_0000; // UFSR bit 0 -> combined bit 16
 const UFSR_NOCP: u32 = 0x0002_0000; // UFSR bit 1 -> combined bit 17
 const UFSR_DIVBYZERO: u32 = 0x0200_0000; // UFSR bit 9 -> combined bit 25
 const UFSR_INVPC: u32 = 0x0008_0000; // UFSR bit 3 -> combined bit 19
-const BFSR_PRECISERR: u32 = 0x0000_0100; // BFSR bit 0 -> combined bit 8
-                                         // `SFSR` (v8-M `SecureFault`) causes the core records on the exception-return
-                                         // failure paths, written through `PeripheralBus::record_secure_fault`.
+                                     // The data-bus-error status (`BFSR.PRECISERR` + `BFARVALID`, `BFAR` latched)
+                                     // is recorded through `PeripheralBus::record_bus_fault`.
+                                     // `SFSR` (v8-M `SecureFault`) causes the core records on the exception-return
+                                     // failure paths, written through `PeripheralBus::record_secure_fault`.
 const SFSR_INVIS: u32 = 0x0000_0002; // callee-saves integrity signature mismatch
 const SFSR_INVER: u32 = 0x0000_0004; // invalid Non-secure exception return (ES/DCRS)
                                      // QEMU reports HFSR.FORCED at bit 30 (0x4000_0000) rather than the ARMv7-M
@@ -4427,7 +4428,7 @@ impl<B: PeripheralBus> Core<B> {
     ///
     /// ARMv6-M (Cortex-M0/M0+) has no `BusFault` exception at all: the fold to
     /// `HardFault` is unconditional there.
-    fn data_fault(&mut self, _addr: u32, pc: u32) -> Result<Next, HaltCause> {
+    fn data_fault(&mut self, addr: u32, pc: u32) -> Result<Next, HaltCause> {
         let enabled = matches!(self.isa, Isa::Armv7M | Isa::Armv7EM)
             && self.mem.read_word(SHCSR_ADDR).unwrap_or(0) & SHCSR_BUSFAULTENA != 0;
         let current = if self.faultmask {
@@ -4436,10 +4437,10 @@ impl<B: PeripheralBus> Core<B> {
             self.current_priority()
         };
         if enabled && self.priority_byte(5) < current {
-            self.mem.record_fault(BFSR_PRECISERR, 0);
+            self.mem.record_bus_fault(addr, 0);
             self.take_exception(Exception::BusFault, pc)?;
         } else {
-            self.mem.record_fault(BFSR_PRECISERR, HFSR_FORCED);
+            self.mem.record_bus_fault(addr, HFSR_FORCED);
             let targets_secure = self.hardfault_target_secure();
             self.take_exception_target(Exception::HardFault, pc, targets_secure)?;
         }
@@ -9203,7 +9204,8 @@ mod tests {
         c.step().unwrap();
         assert_eq!(c.ipsr, 5, "bus fault with BUSFAULTENA must take BusFault");
         assert_eq!(c.regs.pc, BF_HANDLER);
-        assert_eq!(c.mem().read_word(0xE000_ED28).unwrap() & 0xFF00, 0x0100); // BFSR PRECISERR
+        assert_eq!(c.mem().read_word(0xE000_ED28).unwrap() & 0xFF00, 0x8200); // BFSR PRECISERR+BFARVALID
+        assert_eq!(c.mem().read_word(0xE000_ED38).unwrap(), 0x9000_0000); // BFAR
         assert_eq!(c.mem().read_word(0xE000_ED2C).unwrap(), 0); // no FORCED
     }
 

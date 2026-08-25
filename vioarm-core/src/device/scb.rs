@@ -58,6 +58,7 @@ const SHCSR: u32 = 0xE000_ED24;
 const CFSR: u32 = 0xE000_ED28;
 const HFSR: u32 = 0xE000_ED2C;
 const MMFAR: u32 = 0xE000_ED34;
+const BFAR: u32 = 0xE000_ED38;
 const CPACR: u32 = 0xE000_ED88;
 const FPCCR: u32 = 0xE000_EF34;
 const FPCAR: u32 = 0xE000_EF38;
@@ -106,6 +107,11 @@ const MPU: u32 = 0xE000_ED90;
 const MMFSR_IACCVIOL: u32 = 0x0000_0001;
 const MMFSR_DACCVIOL: u32 = 0x0000_0002;
 const MMFSR_MMARVALID: u32 = 0x0000_0080;
+
+// BFSR fault-status bits (CFSR bits 15:8). `PRECISERR` marks a precise
+// data bus error; `BFARVALID` marks `BFAR` as holding the faulting address.
+const BFSR_PRECISERR: u32 = 0x0000_0200;
+const BFSR_BFARVALID: u32 = 0x0000_8000;
 
 const PENDSVSET: u8 = 0x10; // ICSR byte 3, bit 28: write 1 to pend.
 const PENDSVCLR: u8 = 0x08; // ICSR byte 3, bit 27: write 1 to clear.
@@ -297,7 +303,7 @@ struct MpuV8 {
 /// access-control register, and the FP context control.
 #[derive(Debug, Clone)]
 pub struct Scb {
-    ranges: [Region; 20],
+    ranges: [Region; 21],
     pendsv: bool,
     /// `SHPR1`: configurable priorities for the fault exceptions
     /// (`MemManage` byte 0, `BusFault` byte 1, `UsageFault` byte 2).
@@ -323,6 +329,9 @@ pub struct Scb {
     /// `MMFAR`: the faulting address latched by an MPU access violation. The
     /// core writes it through [`Scb::record_mpu_fault`]; firmware reads it.
     mmfar: u32,
+    /// `BFAR`: the faulting address latched by a precise data bus error. The
+    /// core writes it through [`Scb::record_bus_fault`]; firmware reads it.
+    bfar: u32,
     /// The MPU configuration and region registers.
     mpu: Mpu,
     /// The PMSAv8 (v8-M) MPU register file, banked per security state.
@@ -382,6 +391,7 @@ impl Scb {
                 Region::new(CFSR, 4),
                 Region::new(HFSR, 4),
                 Region::new(MMFAR, 4),
+                Region::new(BFAR, 4),
                 Region::new(CPACR, 4),
                 Region::new(MPU, 0x2C),
                 Region::new(SAU, 0x18),
@@ -403,6 +413,7 @@ impl Scb {
             cfsr: 0,
             hfsr: 0,
             mmfar: 0,
+            bfar: 0,
             mpu: Mpu::default(),
             mpu_v8: MpuV8::default(),
             pmsav8: false,
@@ -632,6 +643,16 @@ impl Scb {
         };
         self.cfsr |= cfsr_bits & CFSR_MASK;
         self.mmfar = addr;
+    }
+
+    /// Record a precise data bus fault at `addr`: latch `BFSR.PRECISERR` +
+    /// `BFARVALID`, store `addr` in `BFAR`, and OR `hfsr_bits` into `HFSR`
+    /// (`HFSR.FORCED` when the fault folds into `HardFault`). The core calls
+    /// this on the data-access bus-error escalation paths.
+    pub fn record_bus_fault(&mut self, addr: u32, hfsr_bits: u32) {
+        self.cfsr |= (BFSR_PRECISERR | BFSR_BFARVALID) & CFSR_MASK;
+        self.hfsr |= hfsr_bits & HFSR_MASK;
+        self.bfar = addr;
     }
 
     /// Whether the MPU permits the core's `access` to `addr` in the given
@@ -1029,6 +1050,7 @@ impl Scb {
                 CFSR => self.cfsr,
                 HFSR => self.hfsr,
                 MMFAR => self.mmfar,
+                BFAR => self.bfar,
                 CPACR => self.cpacr,
                 // `S_VTOR`/`SFSR` live in the Secure system window: reads from
                 // Non-secure state are RAZ.

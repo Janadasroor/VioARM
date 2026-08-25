@@ -237,6 +237,11 @@ pub trait PeripheralBus: Bus {
     /// firmware can read the cause back. Default: no recording (plain memory).
     fn record_fault(&mut self, _cfsr_bits: u32, _hfsr_bits: u32) {}
 
+    /// Record a precise data bus fault at `addr` (`BFSR.PRECISERR` +
+    /// `BFARVALID`, `BFAR = addr`, plus the given `HFSR` bits). Default: no
+    /// recording (plain memory).
+    fn record_bus_fault(&mut self, _addr: u32, _hfsr_bits: u32) {}
+
     /// Record a `SecureFault` `SFSR` cause (`INVIS`/`INVER`, v8-M): a Secure
     /// exception return failed its integrity signature or `ES`/`DCRS`
     /// validity check. Default: no recording (plain memory, no `SecureFault`).

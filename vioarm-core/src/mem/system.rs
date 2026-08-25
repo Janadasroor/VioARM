@@ -649,6 +649,10 @@ impl<M: Bus> PeripheralBus for SystemMemory<M> {
         self.scb.record_fault(cfsr_bits, hfsr_bits);
     }
 
+    fn record_bus_fault(&mut self, addr: u32, hfsr_bits: u32) {
+        self.scb.record_bus_fault(addr, hfsr_bits);
+    }
+
     fn record_secure_fault(&mut self, bits: u32) {
         self.scb.record_secure_fault(bits);
     }
