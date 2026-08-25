@@ -23,7 +23,9 @@ fn log_base() -> PathBuf {
         return PathBuf::from(dir);
     }
     if let Ok(exe) = std::env::current_exe() {
-        let target = exe.ancestors().find(|p| p.file_name().is_some_and(|n| n == "target"));
+        let target = exe
+            .ancestors()
+            .find(|p| p.file_name().is_some_and(|n| n == "target"));
         if let Some(target) = target {
             return target.join("vioarm-qemu-logs");
         }
@@ -191,10 +193,17 @@ pub fn parse_log(text: &str) -> Vec<CpuState> {
             i += 1;
             continue;
         }
-        let mut good = i + 4 < lines.len();
+        // A QEMU killed mid-write can truncate the log between this header and
+        // the rest of its state block; stop parsing instead of running past
+        // EOF (every access below stays within `i ..= i+4`).
+        if i + 5 > lines.len() {
+            break;
+        }
+        let mut good = true;
         for (row, expect) in [(1, "R04="), (2, "R08="), (3, "R12=")] {
             if !lines[i + row].starts_with(expect) {
                 good = false;
+                break;
             }
         }
         if !good {
@@ -217,6 +226,7 @@ pub fn parse_log(text: &str) -> Vec<CpuState> {
                 }
             }
         }
+        // The truncation guard above bounds `i + 4` inside the log.
         let xpsr = lines[i + 4]
             .strip_prefix("XPSR=")
             .and_then(|rest| rest.split_whitespace().next())

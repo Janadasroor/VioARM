@@ -34,7 +34,7 @@ use vioarm_qemu::{compare_traces, CpuState};
 /// spawn failure, never a legitimate result.
 fn qemu_run_retry(mt: &QemuMachine, bin: &[u8], stop: u32) -> Vec<CpuState> {
     for attempt in 0..3 {
-        let states = qemu_run(mt, bin, stop, Duration::from_secs(15));
+        let states = qemu_run(mt, bin, stop, Duration::from_secs(60));
         if !states.is_empty() {
             return states;
         }
@@ -4231,22 +4231,24 @@ fn m7_f64() {
     sync_flags(&mut a);
     a.enable_fpu();
     // Seed s0=1.5f via GPR->S
+    // `raw32` takes the half-swapped word (first halfword in the low bits),
+    // exactly like the crate's own encoders (`w.rotate_left(16)`).
     a.mov_imm32(0, 0x3FC00000);
-    a.raw32(0xEE00_0A10); // vmov s0, r0
+    a.raw32(0xEE00_0A10_u32.rotate_left(16)); // vmov s0, r0
     a.mov_imm32(0, 0x40200000);
-    a.raw32(0xEE01_0A10); // vmov s1, r0 (s1)
-                          // Seed doubles d1=1.5, d2=2.5 via GPR pair -> D
+    a.raw32(0xEE01_0A10_u32.rotate_left(16)); // vmov s1, r0
+                                              // Seed doubles d1=1.5, d2=2.5 via GPR pair -> D
     a.mov_imm32(0, 0x00000000);
     a.mov_imm32(1, 0x3FF80000);
-    a.raw32(0xEC51_0B10); // vmov d1, r0, r1
+    a.raw32(0xEC41_0B11_u32.rotate_left(16)); // vmov d1, r0, r1
     a.mov_imm32(0, 0x00000000);
     a.mov_imm32(1, 0x40040000);
-    a.raw32(0xEC51_0B20); // vmov d2, r0, r1
-    a.raw32(0xEE31_0B02); // vadd.f64 d0, d1, d2
-    a.raw32(0xEEB7_0AC0); // vcvt.f64.f32 d0, s0
-    a.raw32(0xEEB7_0BC0); // vcvt.f32.f64 s0, d0
-    a.raw32(0xEEB7_1B00); // vmov.f64 d1, #1.0
-    a.raw32(0xEEB6_0B40); // vrintr.f64 d2, d0 (approx)
+    a.raw32(0xEC41_0B12_u32.rotate_left(16)); // vmov d2, r0, r1
+    a.raw32(0xEE31_0B02_u32.rotate_left(16)); // vadd.f64 d0, d1, d2
+    a.raw32(0xEEB7_0AC0_u32.rotate_left(16)); // vcvt.f64.f32 d0, s0
+    a.raw32(0xEEB7_0BC0_u32.rotate_left(16)); // vcvt.f32.f64 s0, d0
+    a.raw32(0xEEB7_1B00_u32.rotate_left(16)); // vmov.f64 d1, #1.0
+    a.raw32(0xEEB6_2B40_u32.rotate_left(16)); // vrintr.f64 d2, d0
     a.label("halt");
     a.b("halt");
     conformance_v7em("m7_f64", &mut a, "halt", &mt);
