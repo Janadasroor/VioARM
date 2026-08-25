@@ -2,12 +2,15 @@
 //! register tables.
 //!
 //! The SVD describes the register words; this behavior runs the parts it
-//! cannot: the init handshake (`MCR.INRQ` â†” `MSR.INAK`), the transmit path (a
+//! cannot: the init handshake (`MCR.INRQ` ↔ `MSR.INAK`), the transmit path (a
 //! mailbox loaded with an identifier and data, then `TXRQ`, is sent after
 //! `BTR`-derived bit timing and latches `RQCP`/`TXOK`/`TME`), the receive
 //! FIFOs (`FMP`/`FULL`/`FOVR`, released by `RFOM`), and the four interrupt
-//! lines (TX, RX0, RX1, SCE). The filter-bank data registers are not in this
-//! SVD, so received frames always land in FIFO 0.
+//! lines (TX, RX0, RX1, SCE). Filter banks at `CAN1+0x200` (`0x40006600`,
+//! `0x200` window) implement `FMR`/`FM1R`/`FS1R`/`FFA1R`/`FA1R` control and
+//! `FR1`/`FR2` per bank with `CAN2SB` sharing; received frames are matched
+//! against active banks and routed to `FIFO0`/`FIFO1` per `FFA1R` (drop on
+//! no match, accept-all when no filter active for backward compat).
 //!
 //! The controller raises four NVIC lines. The SVD lists them in order `TX`,
 //! `RX0`, `RX1`, `SCE`, so the device-local lines 0..3 map to exceptions
@@ -83,6 +86,16 @@ const LEC: u32 = 0b111 << 4;
 const TXRQ: u32 = 1 << 0;
 const IDE: u32 = 1 << 2;
 const DLC: u32 = 0b1111;
+
+// Filter window layout (RM0008 §24.7, RM0090 §41.7). Offsets relative to
+// filter base 0x200: FMR 0x00, FM1R 0x04, FS1R 0x0C, FFA1R 0x14, FA1R 0x1C,
+// banks at 0x40 + 8*n (FR1, FR2). Indexes in the 0x80-word window.
+const FMR_IDX: usize = 0x00 / 4;
+const FM1R_IDX: usize = 0x04 / 4;
+const FS1R_IDX: usize = 0x0C / 4;
+const FFA1R_IDX: usize = 0x14 / 4;
+const FA1R_IDX: usize = 0x1C / 4;
+const BANK_BASE_IDX: usize = 0x40 / 4;
 
 /// One captured frame: the four mailbox words exactly as firmware wrote them
 /// (or as they will be read from the FIFO). Transmissions and injected frames
@@ -189,7 +202,7 @@ const fn fovr_bit(fifo: u8) -> u32 {
 
 /// The CAN core the SVD cannot express: init handshake, TX mailboxes, and the
 /// two receive FIFOs, all with their level-triggered interrupt lines.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct CanBehavior {
     fifo0: Vec<Frame>,
     fifo1: Vec<Frame>,
@@ -199,6 +212,25 @@ struct CanBehavior {
     tx_timer: u64,
     rx_buffer: Vec<u8>,
     output: Vec<u8>,
+    filter: Box<[u32; 0x80]>,
+    is_can2: bool,
+}
+
+impl Default for CanBehavior {
+    fn default() -> Self {
+        Self {
+            fifo0: Vec::new(),
+            fifo1: Vec::new(),
+            tx_queue: Vec::new(),
+            busy: [false; 3],
+            in_flight: None,
+            tx_timer: 0,
+            rx_buffer: Vec::new(),
+            output: Vec::new(),
+            filter: Box::new([0u32; 0x80]),
+            is_can2: false,
+        }
+    }
 }
 
 impl CanBehavior {
@@ -339,6 +371,82 @@ impl CanBehavior {
         } else {
             self.fifo1.first()
         }
+    }
+
+    /// Determine the target FIFO for `frame` via the filter banks, or `None`
+    /// to drop (filter mismatch). When no filter is active, accept to FIFO0
+    /// for backward compat (existing tests inject without configuring filters).
+    fn filter_fifo(&self, frame: &Frame) -> Option<u8> {
+        let fmr = self.filter[FMR_IDX];
+        let can2sb = ((fmr >> 8) & 0x3F) as usize;
+        let fa1r = self.filter[FA1R_IDX];
+        if fa1r == 0 {
+            return Some(0);
+        }
+        let fm1r = self.filter[FM1R_IDX];
+        let fs1r = self.filter[FS1R_IDX];
+        let ffa1r = self.filter[FFA1R_IDX];
+
+        // Number of banks: 28 for F4, 14 for F1; use 28 max and active mask decides.
+        let num_banks = 28usize;
+        let (start, end) = if self.is_can2 {
+            (can2sb.min(num_banks), num_banks)
+        } else if can2sb == 0 {
+            (0, num_banks)
+        } else {
+            (0, can2sb.min(num_banks))
+        };
+
+        for bank in start..end {
+            if (fa1r >> bank) & 1 == 0 {
+                continue;
+            }
+            let fifo = if (ffa1r >> bank) & 1 != 0 { 1 } else { 0 };
+            let scale_32 = (fs1r >> bank) & 1 != 0;
+            let mode_list = (fm1r >> bank) & 1 != 0;
+            let fr1 = self.filter[BANK_BASE_IDX + 2 * bank];
+            let fr2 = self.filter[BANK_BASE_IDX + 2 * bank + 1];
+
+            if scale_32 {
+                if !mode_list {
+                    // Mask mode: (ID & mask) == (filter & mask) on whole TI word.
+                    if (frame.ti & fr2) == (fr1 & fr2) {
+                        return Some(fifo);
+                    }
+                } else {
+                    // List mode: exact match against either FR.
+                    if frame.ti == fr1 || frame.ti == fr2 {
+                        return Some(fifo);
+                    }
+                }
+            } else {
+                // 16-bit scale: each FR holds two 16-bit entries.
+                let id_low = frame.ti & 0xFFFF;
+                let fr1_low = fr1 & 0xFFFF;
+                let fr1_high = (fr1 >> 16) & 0xFFFF;
+                let fr2_low = fr2 & 0xFFFF;
+                let fr2_high = (fr2 >> 16) & 0xFFFF;
+                if !mode_list {
+                    // Two mask pairs: (ID & mask) == (filter & mask) per half.
+                    if (id_low & fr2_low) == (fr1_low & fr2_low) {
+                        return Some(fifo);
+                    }
+                    if (id_low & fr2_high) == (fr1_high & fr2_high) {
+                        return Some(fifo);
+                    }
+                } else {
+                    // List mode: 4 IDs.
+                    if id_low == fr1_low
+                        || id_low == fr1_high
+                        || id_low == fr2_low
+                        || id_low == fr2_high
+                    {
+                        return Some(fifo);
+                    }
+                }
+            }
+        }
+        None
     }
 }
 
@@ -494,7 +602,13 @@ impl Behavior for CanBehavior {
     }
 
     fn reset(&mut self) {
-        *self = Self::default();
+        *self = Self {
+            filter: Box::new([0u32; 0x80]),
+            is_can2: self.is_can2,
+            ..Self::default()
+        };
+        // Preserve is_can2 across reset, but clear filter.
+        self.is_can2 = self.is_can2;
     }
 
     fn drive_inputs(&mut self, view: &mut Registers<&mut [u32]>, value: u32) {
@@ -502,7 +616,9 @@ impl Behavior for CanBehavior {
         if self.rx_buffer.len() == 16 {
             let frame = Frame::from_bytes(&self.rx_buffer);
             self.rx_buffer.clear();
-            self.enqueue(view, frame, 0);
+            if let Some(fifo) = self.filter_fifo(&frame) {
+                self.enqueue(view, frame, fifo);
+            }
         }
     }
 
@@ -513,13 +629,12 @@ impl Behavior for CanBehavior {
 
 /// A `bxCAN` controller, table-driven from the SVD: base address, register set,
 /// and the four interrupt lines (`TX`, `RX0`, `RX1`, `SCE`) all come from `D`'s
-/// generated tables. Filter bank `0x40006600` `0x200` is handled as latch
-/// inside `Can` (SVD has no filter registers) so `HAL_CAN_ConfigFilter` not
-/// `HardFault`; filtering still always `FIFO0`.
+/// generated tables. Filter banks at `0x40006600` (`CAN1+0x200`) are handled
+/// via the latch in `CanBehavior` so `HAL_CAN_ConfigFilter` does not
+/// `HardFault`; frames are filtered per `FMR`/`FM1R`/`FS1R`/`FFA1R`/`FA1R`.
 #[derive(Debug)]
 pub struct Can {
     inner: RegisterFile<CanBehavior>,
-    filter: Box<[u32; 0x80]>,
     name: &'static str,
 }
 
@@ -531,7 +646,7 @@ impl Can {
     /// Panics if `D`'s generated tables do not contain the `CAN1` peripheral.
     #[must_use]
     pub fn can1_for<D: Device>() -> Self {
-        Self::for_device::<D>("CAN1", "can1")
+        Self::for_device::<D>("CAN1", "can1", false)
     }
 
     /// A `CAN2` on another chip's device tables (base `0x4000_6800`, IRQ
@@ -541,15 +656,16 @@ impl Can {
     /// Panics if `D`'s generated tables do not contain the `CAN2` peripheral.
     #[must_use]
     pub fn can2_for<D: Device>() -> Self {
-        Self::for_device::<D>("CAN2", "can2")
+        Self::for_device::<D>("CAN2", "can2", true)
     }
 
-    fn for_device<D: Device>(peripheral: &str, name: &'static str) -> Self {
+    fn for_device<D: Device>(peripheral: &str, name: &'static str, is_can2: bool) -> Self {
         let def = D::peripheral(peripheral)
             .unwrap_or_else(|| panic!("generated tables contain {peripheral}"));
+        let mut beh = CanBehavior::default();
+        beh.is_can2 = is_can2;
         Self {
-            inner: RegisterFile::new(def, CanBehavior::default()),
-            filter: Box::new([0u32; 0x80]),
+            inner: RegisterFile::new(def, beh),
             name,
         }
     }
@@ -567,7 +683,7 @@ impl Peripheral for Can {
     fn read(&mut self, addr: u32) -> Result<u8, BusError> {
         if (0x4000_6600..0x4000_6800).contains(&addr) {
             let off = (addr - 0x4000_6600) as usize;
-            let word = self.filter[off / 4];
+            let word = self.inner.behavior().filter[off / 4];
             return Ok(((word >> (8 * (off % 4))) & 0xFF) as u8);
         }
         self.inner.read(addr)
@@ -578,7 +694,8 @@ impl Peripheral for Can {
             let off = (addr - 0x4000_6600) as usize;
             let idx = off / 4;
             let shift = 8 * (off % 4);
-            self.filter[idx] = (self.filter[idx] & !(0xFF << shift)) | (u32::from(val) << shift);
+            let beh = self.inner.behavior_mut();
+            beh.filter[idx] = (beh.filter[idx] & !(0xFF << shift)) | (u32::from(val) << shift);
             return Ok(());
         }
         self.inner.write(addr, val)
@@ -586,7 +703,6 @@ impl Peripheral for Can {
 
     fn reset(&mut self) {
         self.inner.reset();
-        *self.filter = [0u32; 0x80];
     }
 
     fn tick(&mut self, delta: u64) {
@@ -694,11 +810,12 @@ impl InterruptSource for CanFilter {
 
 #[cfg(test)]
 mod tests {
-    use super::{Can, DLC, FMPIE0, INAK, INRQ, RQCP0, TMEIE, TXOK0, TXRQ};
+    use super::{Can, DLC, FMPIE0, FMPIE1, INAK, INRQ, RQCP0, TMEIE, TXOK0, TXRQ};
     use crate::device::{InterruptSource, Peripheral};
     use crate::error::BusError;
 
     const BASE: u32 = 0x4000_6400;
+    const FILTER_BASE: u32 = 0x4000_6600;
 
     #[allow(clippy::cast_possible_truncation)]
     fn write_word(c: &mut Can, addr: u32, val: u32) {
@@ -897,5 +1014,150 @@ mod tests {
         let mut c = can();
         assert!(matches!(c.read(BASE + 0x400), Err(BusError::Reserved)));
         assert!(matches!(c.write(BASE - 1, 0), Err(BusError::Reserved)));
+    }
+
+    // --- Filter tests (WP-A1) ---
+
+    fn configure_mask_filter(c: &mut Can, bank: usize, id: u32, mask: u32, fifo: u8) {
+        // FINIT=1 to allow config, then set bank.
+        write_word(c, FILTER_BASE + 0x00, 1); // FMR FINIT
+        write_word(c, FILTER_BASE + 0x1C, 1 << bank); // FA1R active
+                                                      // Keep default 32-bit scale and mask mode (FS1R=1, FM1R=0)
+        let mut fs1r = read_word(c, FILTER_BASE + 0x0C);
+        fs1r |= 1 << bank;
+        write_word(c, FILTER_BASE + 0x0C, fs1r);
+        let mut fm1r = read_word(c, FILTER_BASE + 0x04);
+        fm1r &= !(1 << bank);
+        write_word(c, FILTER_BASE + 0x04, fm1r);
+        if fifo == 1 {
+            let mut ffa = read_word(c, FILTER_BASE + 0x14);
+            ffa |= 1 << bank;
+            write_word(c, FILTER_BASE + 0x14, ffa);
+        }
+        let fr1_addr = FILTER_BASE + 0x40 + (bank as u32) * 8;
+        write_word(c, fr1_addr, id);
+        write_word(c, fr1_addr + 4, mask);
+        write_word(c, FILTER_BASE + 0x00, 0); // FINIT=0
+    }
+
+    fn configure_list_filter(c: &mut Can, bank: usize, id1: u32, id2: u32, fifo: u8) {
+        write_word(c, FILTER_BASE + 0x00, 1);
+        write_word(c, FILTER_BASE + 0x1C, 1 << bank);
+        let mut fs1r = read_word(c, FILTER_BASE + 0x0C);
+        fs1r |= 1 << bank;
+        write_word(c, FILTER_BASE + 0x0C, fs1r);
+        let mut fm1r = read_word(c, FILTER_BASE + 0x04);
+        fm1r |= 1 << bank;
+        write_word(c, FILTER_BASE + 0x04, fm1r);
+        if fifo == 1 {
+            let mut ffa = read_word(c, FILTER_BASE + 0x14);
+            ffa |= 1 << bank;
+            write_word(c, FILTER_BASE + 0x14, ffa);
+        }
+        let fr1_addr = FILTER_BASE + 0x40 + (bank as u32) * 8;
+        write_word(c, fr1_addr, id1);
+        write_word(c, fr1_addr + 4, id2);
+        write_word(c, FILTER_BASE + 0x00, 0);
+    }
+
+    #[test]
+    fn filter_mask_hit_routes_to_fifo0() {
+        let mut c = can();
+        configure_mask_filter(&mut c, 0, 0x123, 0xFFFF_FFFF, 0);
+        write_word(&mut c, BASE + 0x14, FMPIE0);
+        inject(&mut c, 0x123, 1, &[0xAA]);
+        assert_eq!(read_word(&mut c, BASE + 0x0C) & 0b11, 1, "FMP0 hit");
+        assert_eq!(read_word(&mut c, BASE + 0x1B0), 0x123);
+    }
+
+    #[test]
+    fn filter_mask_miss_drops_frame() {
+        let mut c = can();
+        configure_mask_filter(&mut c, 0, 0x123, 0xFFFF_FFFF, 0);
+        write_word(&mut c, BASE + 0x14, FMPIE0);
+        inject(&mut c, 0x456, 1, &[0xBB]);
+        assert_eq!(
+            read_word(&mut c, BASE + 0x0C) & 0b11,
+            0,
+            "FMP0 miss -> drop"
+        );
+        assert_eq!(c.pending() & 0b10, 0);
+    }
+
+    #[test]
+    fn filter_list_hit() {
+        let mut c = can();
+        configure_list_filter(&mut c, 1, 0x111, 0x222, 0);
+        write_word(&mut c, BASE + 0x14, FMPIE0);
+        inject(&mut c, 0x222, 1, &[0xCC]);
+        assert_eq!(read_word(&mut c, BASE + 0x0C) & 0b11, 1, "list hit 0x222");
+        inject(&mut c, 0x333, 1, &[0xDD]);
+        assert_eq!(
+            read_word(&mut c, BASE + 0x0C) & 0b11,
+            1,
+            "still 1, second not added"
+        );
+    }
+
+    #[test]
+    fn filter_fifo_assignment() {
+        let mut c = can();
+        configure_mask_filter(&mut c, 0, 0x123, 0xFFFF_FFFF, 1);
+        write_word(&mut c, BASE + 0x14, FMPIE1);
+        inject(&mut c, 0x123, 1, &[0x11]);
+        assert_eq!(read_word(&mut c, BASE + 0x0C) & 0b11, 0, "FIFO0 empty");
+        assert_eq!(read_word(&mut c, BASE + 0x10) & 0b11, 1, "FIFO1 has frame");
+        assert_eq!(c.pending() & 0b100, 0b100, "RX1 line");
+        assert_eq!(read_word(&mut c, BASE + 0x1C0), 0x123, "RI1R");
+    }
+
+    #[test]
+    fn filter_drop_on_no_match() {
+        let mut c = can();
+        configure_mask_filter(&mut c, 0, 0x123, 0xFFFF_FFFF, 0);
+        // Also bank1 with different ID
+        configure_mask_filter(&mut c, 1, 0x456, 0xFFFF_FFFF, 0);
+        inject(&mut c, 0x999, 1, &[0xEE]);
+        assert_eq!(read_word(&mut c, BASE + 0x0C) & 0b11, 0);
+        assert_eq!(read_word(&mut c, BASE + 0x10) & 0b11, 0);
+    }
+
+    #[test]
+    fn filter_can2sb_split() {
+        // CAN2 should only see banks >= CAN2SB
+        let mut c2 = Can::can2_for::<crate::device::svd::stm32f107::Stm32f107>();
+        c2.reset();
+        // Configure bank0 for ID 0x111 (belongs to CAN1) and bank7 for 0x222 (belongs to CAN2)
+        // Set CAN2SB=7
+        write_word(&mut c2, FILTER_BASE + 0x00, (7 << 8) | 1); // FMR CAN2SB=7 FINIT
+                                                               // Bank0
+        write_word(&mut c2, FILTER_BASE + 0x1C, 1 << 0); // FA1R bank0 active initially
+        let mut fs1r = read_word(&mut c2, FILTER_BASE + 0x0C);
+        fs1r |= 1 << 0 | 1 << 7;
+        write_word(&mut c2, FILTER_BASE + 0x0C, fs1r);
+        let mut fa1r = read_word(&mut c2, FILTER_BASE + 0x1C);
+        fa1r |= 1 << 7;
+        write_word(&mut c2, FILTER_BASE + 0x1C, fa1r);
+        write_word(&mut c2, FILTER_BASE + 0x40 + 0 * 8, 0x111);
+        write_word(&mut c2, FILTER_BASE + 0x40 + 0 * 8 + 4, 0xFFFF_FFFF);
+        write_word(&mut c2, FILTER_BASE + 0x40 + 7 * 8, 0x222);
+        write_word(&mut c2, FILTER_BASE + 0x40 + 7 * 8 + 4, 0xFFFF_FFFF);
+        write_word(&mut c2, FILTER_BASE + 0x00, 7 << 8); // FINIT=0 keep CAN2SB
+
+        write_word(&mut c2, 0x4000_6800 + 0x14, FMPIE0);
+        // Frame matching bank0 should be dropped (belongs to CAN1)
+        inject(&mut c2, 0x111, 1, &[0x11]);
+        let base2 = 0x4000_6800;
+        assert_eq!(
+            read_word(&mut c2, base2 + 0x0C) & 0b11,
+            0,
+            "bank0 belongs to CAN1, CAN2 drops"
+        );
+        inject(&mut c2, 0x222, 1, &[0x22]);
+        assert_eq!(
+            read_word(&mut c2, base2 + 0x0C) & 0b11,
+            1,
+            "bank7 belongs to CAN2"
+        );
     }
 }

@@ -250,6 +250,19 @@ impl<B: Behavior> RegisterFile<B> {
             behavior,
         }
     }
+
+    /// Mutable access to the inner behavior, for peripherals that keep
+    /// filter or gate state outside the register file.
+    #[must_use]
+    pub fn behavior_mut(&mut self) -> &mut B {
+        &mut self.behavior
+    }
+
+    /// Immutable access to the inner behavior.
+    #[must_use]
+    pub fn behavior(&self) -> &B {
+        &self.behavior
+    }
 }
 
 impl<B: Behavior> Peripheral for RegisterFile<B> {
