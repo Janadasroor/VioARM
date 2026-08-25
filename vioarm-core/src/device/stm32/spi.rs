@@ -17,11 +17,13 @@
 //! firmware completes with its final data-register write; `CR1.BR` scales the
 //! transfer latency like the baud-rate prescaler it is.
 
+use crate::device::stm32::dma::DmaRequests;
 use crate::device::svd::stm32f103;
 use crate::device::svd::{Behavior, Device, RegisterFile, Registers};
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
 use crate::mem::bus::Region;
+use std::sync::{Arc, Mutex};
 
 /// Register offsets within the SPI, per the SVD.
 const CR1: u32 = 0x00;
@@ -37,6 +39,8 @@ const DFF: u32 = 1 << 11;
 /// `CR2` bits.
 const TXEIE: u32 = 1 << 7;
 const RXNEIE: u32 = 1 << 6;
+const RXDMAEN: u32 = 1 << 0;
+const TXDMAEN: u32 = 1 << 1;
 
 /// `SR` bits.
 const RXNE: u32 = 1 << 0;
@@ -52,7 +56,7 @@ struct SpiTransfer {
 
 /// The shift register the SVD cannot express: a master transfer that shifts a
 /// byte out while sampling one from the slave.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct SpiBehavior {
     /// The byte a connected slave will present on the next frame.
     rx_byte: u8,
@@ -60,6 +64,20 @@ struct SpiBehavior {
     transfer: Option<SpiTransfer>,
     /// Bytes the master shifted out, for host draining.
     mosi: Vec<u8>,
+    dma_tx: Option<(Arc<Mutex<DmaRequests>>, u8, u8)>,
+    dma_rx: Option<(Arc<Mutex<DmaRequests>>, u8, u8)>,
+}
+
+impl Default for SpiBehavior {
+    fn default() -> Self {
+        Self {
+            rx_byte: 0,
+            transfer: None,
+            mosi: Vec::new(),
+            dma_tx: None,
+            dma_rx: None,
+        }
+    }
 }
 
 impl SpiBehavior {
@@ -128,6 +146,24 @@ impl Behavior for SpiBehavior {
         view.set(DR, u32::from(self.rx_byte));
         view.set(SR, (view.get(SR) & !BSY) | RXNE | TXE);
         self.mosi.push(transfer.tx_byte);
+        // DMA requests for TXE/RXNE
+        let cr2 = view.get(CR2);
+        if cr2 & TXDMAEN != 0 {
+            if let Some((reqs, ctrl, ch)) = self.dma_tx.as_ref() {
+                let reqs = Arc::clone(reqs);
+                reqs.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .request(*ctrl, *ch, true);
+            }
+        }
+        if cr2 & RXDMAEN != 0 {
+            if let Some((reqs, ctrl, ch)) = self.dma_rx.as_ref() {
+                let reqs = Arc::clone(reqs);
+                reqs.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .request(*ctrl, *ch, false);
+            }
+        }
     }
 
     fn pending(&self, view: &Registers<&[u32]>) -> u32 {
@@ -227,6 +263,18 @@ impl Spi {
             inner: RegisterFile::new(def, SpiBehavior::default()),
             name,
         }
+    }
+
+    /// Attach DMA TX/RX lines.
+    #[must_use]
+    pub fn with_dma(
+        mut self,
+        tx: Option<(Arc<Mutex<DmaRequests>>, u8, u8)>,
+        rx: Option<(Arc<Mutex<DmaRequests>>, u8, u8)>,
+    ) -> Self {
+        self.inner.behavior_mut().dma_tx = tx;
+        self.inner.behavior_mut().dma_rx = rx;
+        self
     }
 }
 
