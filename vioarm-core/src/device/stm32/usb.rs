@@ -1096,10 +1096,11 @@ mod tests {
     #[test]
     fn addresses_outside_the_windows_are_reserved() {
         let mut u = usb_fs();
-        assert!(matches!(u.read(FS + 0x2000), Err(BusError::Reserved)));
+        assert!(matches!(u.read(FS + 0x5000), Err(BusError::Reserved)));
         assert!(matches!(u.write(FS - 1, 0), Err(BusError::Reserved)));
         assert!(u.read(FS + 0x400).is_ok(), "HOST window");
         assert!(u.read(FS + 0x1000).is_ok(), "FIFO window");
+        assert!(u.read(FS + 0x2000).is_ok(), "EP1 FIFO");
     }
 
     #[test]
