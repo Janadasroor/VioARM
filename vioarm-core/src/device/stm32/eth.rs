@@ -75,6 +75,11 @@ const TE: u32 = 1 << 3; // transmitter enable
 // "completes" (there is no PHY behind the model), so firmware's poll loop
 // `while (ETH->MACMIIAR & MB)` can exit.
 const MIIAR_MB: u32 = 1 << 0;
+const MIIAR_MW: u32 = 1 << 1;
+const PHY_BMCR: usize = 0;
+const PHY_BMSR: usize = 1;
+const PHY_ID1: usize = 2;
+const PHY_ID2: usize = 3;
 
 // MACPMTCSR / MACSR / MACIMR bits for the magic-packet wakeup line.
 const PMTCSR_MPE: u32 = 1 << 1; // magic packet enable
@@ -243,6 +248,7 @@ pub struct Eth {
     exception: Option<u8>,
     exception_wkup: Option<u8>,
     name: &'static str,
+    phy: [u16; 32],
 }
 
 impl Eth {
@@ -258,6 +264,11 @@ impl Eth {
         let mac = Win::new(eth_def::<D>("MAC"));
         let exception = irq_number(&mac, "ETH");
         let exception_wkup = irq_number(&mac, "ETH_WKUP");
+        let mut phy = [0u16; 32];
+        phy[PHY_BMCR] = 0x1000; // autoneg enable
+        phy[PHY_BMSR] = 0x7809; // link up, autoneg complete, capable
+        phy[PHY_ID1] = 0x0007;
+        phy[PHY_ID2] = 0xC0F1;
         Self {
             ranges: [
                 Region::new(mac.def.base, mac.def.window),
@@ -274,6 +285,7 @@ impl Eth {
             exception,
             exception_wkup,
             name: "eth",
+            phy,
         }
     }
 }
@@ -359,9 +371,24 @@ impl Eth {
 
     fn write_mac(&mut self, off: u32, val: u8) -> Result<(), BusError> {
         if let Some(l) = lane(off, MACMIIAR) {
-            // No PHY is modeled; complete every MII transaction immediately by
-            // clearing the busy bit so firmware's poll loop can proceed.
             let merged = self.mac.merged(MACMIIAR, val, 8 * l);
+            // MII transaction: if MB set, emulate PHY access via MACMIIDR.
+            if merged & MIIAR_MB != 0 {
+                let mw = merged & MIIAR_MW != 0;
+                let mr = ((merged >> 6) & 0x1F) as usize;
+                // PA is bits 11:15, ignored (single PHY at 0).
+                if mr < 32 {
+                    if mw {
+                        // Write: latch low 16 bits from MACMIIDR into PHY.
+                        let data = (self.mac.get(MACMIIDR) & 0xFFFF) as u16;
+                        self.phy[mr] = data;
+                    } else {
+                        // Read: load PHY register into MACMIIDR.
+                        let data = self.phy[mr];
+                        self.mac.set(MACMIIDR, u32::from(data));
+                    }
+                }
+            }
             self.mac.set(MACMIIAR, merged & !MIIAR_MB);
             return Ok(());
         }
