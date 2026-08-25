@@ -3744,9 +3744,17 @@ fn ns_irq_handler_bytes() -> Vec<u8> {
 /// `0x8000_0000` (the only Non-secure-executable memory on the AN505 oracle),
 /// and the Non-secure `VTOR` is pointed there by a `BLXNS` round-trip before
 /// the interrupt is software-pended.
+///
+/// This scenario cannot be diffed against current `qemu-system-arm`
+/// (10.2.x, `mps2-an505`): there the board delivers external interrupts
+/// Secure-targeted regardless of `NVIC_ITNS` programming — the entry builds a
+/// basic frame (`EXC_RETURN` `0xFFFFFFF9`) and vectors through `VTOR_S`, so
+/// the Secure-to-Non-secure entry this test exercises never happens on the
+/// oracle side. The full round trip is therefore locked VioARM-only below,
+/// asserting every register the cross-state return must restore: caller-saved
+/// from the basic frame, callee-saved `r4-r11` from the integrity block.
 #[test]
 fn m33_baseline_secure_irq_returns_nonsecure() {
-    let Some(mt) = qemu_m33() else { return };
     let mut a = Asm::new();
     sync_flags(&mut a);
 
@@ -3791,10 +3799,14 @@ fn m33_baseline_secure_irq_returns_nonsecure() {
     a.mov_imm32(10, 0x4000_400A);
     a.mov_imm32(11, 0x4000_400B);
 
-    // Enable and software-pend IRQ0. The ARMSSE-default `ITNS` targets every
-    // external interrupt Non-secure, so taking it from this Secure thread is a
-    // Secure-to-Non-secure entry: both simulators stack the callee-saves block
-    // on the Secure stack and run the handler Non-secure with `r0-r12` cleared.
+    // Enable and software-pend IRQ0, pinning its targeting Non-secure first
+    // (`NVIC_ITNS0` bit set; the reset value is implementation defined).
+    // Taking it from this Secure thread is then a Secure-to-Non-secure entry:
+    // the callee-saves block is stacked on the Secure stack and the handler
+    // runs Non-secure with `r0-r12` cleared.
+    a.mov_imm32(1, 0xE000_E380); // NVIC_ITNS0
+    a.movs_imm8(0, 1);
+    a.str_imm(0, 1, 0);
     a.mov_imm32(1, 0xE000_E100); // ISER0
     a.movs_imm8(0, 1);
     a.str_imm(0, 1, 0);
@@ -3804,8 +3816,8 @@ fn m33_baseline_secure_irq_returns_nonsecure() {
 
     // The Non-secure handler ran and returned; execution resumes here (the
     // instruction after the pend) in the Secure state with `r0-r3`/`r12` and
-    // `r4-r11` restored from the two stack blocks -- the trace diff onwards is
-    // the direct check of the return-path restore.
+    // `r4-r11` restored from the two stack blocks -- checked register-for-
+    // register below.
     a.b("halt");
 
     a.label("h_hardfault");
@@ -3815,13 +3827,33 @@ fn m33_baseline_secure_irq_returns_nonsecure() {
     a.b("halt");
     a.vec(3, "h_hardfault");
 
-    conformance_v8m_at(
-        "m33_baseline_secure_irq_returns_nonsecure",
-        &mut a,
-        "halt",
-        SP,
-        &mt,
+    let img: Image = a.finish_at(V8M_NS_SP, 0x1000_0000).expect("assemble");
+    let stop = img.addr("halt").expect("halt label");
+    let (vio, reached) = vio_run_v8m(&img.bytes, stop);
+    assert!(
+        reached,
+        "vioarm never reached halt @ {stop:#x} (last {})",
+        snapshot_like(&vio)
     );
+    let s = vio.last().expect("trace states");
+    assert_eq!(s.r[15] & !1, stop);
+    assert_eq!(s.r[13], V8M_NS_SP, "thread SP restored");
+    assert_eq!(s.r[14], 0xFEFF_FFFF, "thread LR restored");
+    // r0/r1 were re-used by the ITNS/ISER/ISPR stores after priming; the
+    // values at pend time are what the return must restore.
+    for (reg, want) in [
+        (0, 0x0000_0001),
+        (1, 0xE000_E200),
+        (2, 0x3333_3333),
+        (3, 0x4444_4444),
+        (12, 0xCCCC_CCCC),
+    ] {
+        assert_eq!(s.r[reg], want, "basic-frame r{reg} restored");
+    }
+    for (i, reg) in (4..=11).enumerate() {
+        let want = 0x4000_4004 + i as u32;
+        assert_eq!(s.r[reg], want, "callee-block r{reg} restored");
+    }
 }
 
 /// The Non-secure routine executed via a `BXNS` jump: an `udf`. With

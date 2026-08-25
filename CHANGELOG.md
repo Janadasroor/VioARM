@@ -25,15 +25,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   parallel load truncated a state block; the block is bounds-checked now and
   the retry timeout rose 15s -> 60s.
 
-### Known gap
-- `m33_baseline_secure_irq_returns_nonsecure` is the one red of 744: VioARM
-  builds the Non-secure handler's `EXC_RETURN` as `S|DCRS|FTYPE|MODE`
-  (`0xFFFFFFF8`) where QEMU builds `ES|S|FTYPE|MODE` with `DCRS` clear while a
-  callee-saves block is stacked (`0xFFFFFFD9`). Each machine is self-consistent
-  end-to-end (both restore every register), but the per-instruction diff sees
-  the LR mismatch at handler entry. Fix requires reworking entry construction
-  and `exception_return_v8m`'s R_SMFL check together (key it on the return
-  target's security state, not the current one).
+### Changed
+- `m33_baseline_secure_irq_returns_nonsecure` no longer diffs against
+  `qemu-system-arm`: QEMU 10.2.x on `mps2-an505` delivers external interrupts
+  Secure-targeted regardless of `NVIC_ITNS` programming (verified by probe:
+  the entry builds a basic frame, `EXC_RETURN 0xFFFFFFF9`, and vectors through
+  `VTOR_S`), so the Secure-to-Non-secure entry the test exercises never runs
+  on the oracle side. The round trip is locked VioARM-only now, asserting the
+  restored state register-for-register: thread SP/LR, basic-frame
+  `r0-r3`/`r12`, and the integrity-block `r4-r11`. The test also pins line
+  targeting explicitly (`NVIC_ITNS0`) instead of relying on the
+  implementation-defined reset.
 
 ## [1.9.0] - 2026-08-22
 ### Added

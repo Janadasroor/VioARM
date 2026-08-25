@@ -34,10 +34,8 @@ The ARMv7-M integer core, the DSP extension, and the FPv4-SP floating-point
 unit are implemented and verified per-instruction against `qemu-system-arm`
 (Cortex-M3 and Cortex-M4 board models) by a differential conformance suite.
 The ARMv6-M and ARMv8-M baseline cores are verified against the `Cortex-M0`
-micro:bit and `Cortex-M33` (`mps2-an505`) references. 743 of 744 workspace
-tests pass; the one red (`m33_baseline_secure_irq_returns_nonsecure`) is a
-known, root-caused `EXC_RETURN` construction gap — see "Known limitations".
-See "Implemented" for the full inventory.
+micro:bit and `Cortex-M33` (`mps2-an505`) references. All 744 workspace
+tests pass. See "Implemented" for the full inventory.
 
 ### Implemented
 
@@ -367,10 +365,11 @@ lda_stl, splim, tt/sau_tt/mpu_tt, alu_thumb1, sg, blxns/bxns,
       nonsecure_udf_returns_through_secure_handler),
       plus the v6-m
       suite against `cortex-m0`.
-     `secure_irq_returns_nonsecure` is the suite's one open item: both
-     simulators complete the Secure-to-Non-secure round trip with a correct
-     register restore, but they build the handler's `EXC_RETURN` differently
-     (see "Known limitations"), so the per-instruction diff flags it.
+     `secure_irq_returns_nonsecure` is locked VioARM-only: QEMU 10.2.x on
+     `mps2-an505` delivers external interrupts Secure-targeted regardless of
+     `NVIC_ITNS` programming, so the oracle never performs the
+     Secure-to-Non-secure entry; the test asserts the full register restore
+     of the round trip directly instead (see "Known limitations").
    - Unit tests pinning the *boundary*: `v8m_baseline_rejects_v7m_only` proves
      the full Thumb-2 DSP/bitfield/saturate/VFP zones, wide data-processing,
      conditional branches, `blx` immediate, `tbb`/`tbh`, `ldm`, and VFP
@@ -382,20 +381,22 @@ lda_stl, splim, tt/sau_tt/mpu_tt, alu_thumb1, sg, blxns/bxns,
 
 ## Known limitations
 
-- v8-M `EXC_RETURN` construction for a Secure-to-Non-secure interrupt entry
-  (`m33_baseline_secure_irq_returns_nonsecure`, the suite's one red): VioARM
-  builds `S|DCRS|FTYPE|MODE` (`0xFFFFFFF8`) while QEMU `v7m_exception_taken`
-  builds `ES|S|FTYPE|MODE` with `DCRS` clear because the callee-saves block is
-  stacked (`0xFFFFFFD9`). Each machine completes its own round trip with an
-  exact register restore; the per-instruction diff flags the handler-entry LR.
-  The fix must change entry construction (clear `DCRS` when `callee_block`,
-  set `ES` from the target state) and `exception_return_v8m` together: its
-  R_SMFL check currently keys on the current security state, where QEMU keys
-  on the return target's, and flipping `ES` without that pairing would fault
-  every legitimate cross-state return. Note also that under QEMU 10.2.1 the
-  test must pin the line's targeting explicitly (`NVIC_ITNS0` bit set =
-  Non-secure); the ITNS reset value is implementation defined and this board
-  no longer defaults the line to Non-secure.
+- v8-M Secure-to-Non-secure interrupt delivery is not differentially tested
+  against current `qemu-system-arm`: on QEMU 10.2.x (`mps2-an505`) external
+  interrupts arrive Secure-targeted regardless of `NVIC_ITNS` programming
+  (the entry builds a basic frame with `EXC_RETURN 0xFFFFFFF9` and vectors
+  through `VTOR_S`, landing in whatever the Secure table holds), so
+  `m33_baseline_secure_irq_returns_nonsecure` locks the scenario VioARM-only.
+  The cross-state round trip itself — callee-saves stacking with integrity
+  signature, Non-secure handler execution with `r0-r12` cleared, and the
+  full restore of both stack blocks on return — is asserted
+  register-for-register. Note also that the ITNS reset value is
+  implementation defined, so firmware must pin targeting explicitly rather
+  than assume the ARMSSE all-Non-secure default. The bit-level `EXC_RETURN`
+  construction difference versus QEMU (VioARM builds
+  `S|DCRS|FTYPE|MODE`, QEMU built `ES|S|FTYPE|MODE` with clear `DCRS` for
+  this entry in the version where delivery still worked) remains
+  unexercised until an oracle that delivers the scenario is available.
 - Cycle timing: `cycles` is still 1c/insn (and 1c/sleep) for compat; `DWT_CYCCNT` (`0xE000_1004`, `CTRL.CYCCNTENA`) counts `cyccnt` (`1c` data, `2c` `LDR/STR`, `n+1` `LDM/STM`, `3c` taken branch, `4c` `BL`, plus `FLASH_ACR` `LATENCY` `WS` when `pc < 0x2000_0000`). `WFI`/`WFE` sleep and `SEV` latch are modeled. See item 6 hardening.
 - UsageFault is a distinct exception gated by `SHCSR.USGFAULTENA`, FP access
   is gated by `CPACR` (`NOCP` when denied), and the MPU enforces eight
