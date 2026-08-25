@@ -10,9 +10,61 @@
 //! and stop the instant the target PC appears.
 
 use crate::{CpuState, VfpState};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
+
+/// Where QEMU input binaries and `-d cpu` logs live. Prefers the disk-backed
+/// Cargo `target` directory over tmpfs: an orphaned QEMU writing here consumes
+/// disk, never the RAM a desktop session needs.
+#[must_use]
+fn log_base() -> PathBuf {
+    if let Some(dir) = std::env::var_os("VIOARM_LOG_DIR") {
+        return PathBuf::from(dir);
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        let target = exe.ancestors().find(|p| p.file_name().is_some_and(|n| n == "target"));
+        if let Some(target) = target {
+            return target.join("vioarm-qemu-logs");
+        }
+    }
+    std::env::temp_dir()
+}
+
+/// Remove run artifacts left behind by dead runs (an interrupted `cargo test`
+/// orphans its QEMU children, whose `-d cpu` logs grow by gigabytes).
+fn reap_stale_runs(dir: &Path) {
+    const STALE: Duration = Duration::from_secs(3600);
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let procfs = Path::new("/proc").is_dir();
+    let stale = |entry: &std::fs::DirEntry| {
+        entry
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > STALE)
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let Ok(pid) = name.parse::<u32>() else {
+                continue;
+            };
+            let alive = procfs && Path::new("/proc").join(pid.to_string()).exists();
+            if !alive || stale(&entry) {
+                let _ = std::fs::remove_dir_all(&path);
+            }
+        } else if stale(&entry) {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
 
 /// Candidate `qemu-system-arm` locations, in priority order.
 fn qemu_candidates() -> Vec<PathBuf> {
@@ -239,14 +291,18 @@ pub fn run_until_pc(
     stop_pc: u32,
     timeout: Duration,
 ) -> Vec<CpuState> {
-    let dir = std::env::temp_dir().join("vioarm-qemu");
-    let _ = std::fs::create_dir_all(&dir);
+    // Prefer the disk-backed Cargo target directory over tmpfs: an orphaned
+    // QEMU writing here can consume disk, never the RAM the session lives in.
+    let dir = log_base().join("vioarm-qemu");
+    reap_stale_runs(&dir);
+    let run_dir = dir.join(std::process::id().to_string());
+    let _ = std::fs::create_dir_all(&run_dir);
     let nano = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("clock before epoch")
         .as_nanos();
-    let bin_path = dir.join(format!("{}_{}.bin", std::process::id(), nano));
-    let log_path = dir.join(format!("{}_{}.log", std::process::id(), nano));
+    let bin_path = run_dir.join(format!("{}.bin", nano));
+    let log_path = run_dir.join(format!("{}.log", nano));
     std::fs::write(&bin_path, bin).expect("write qemu input binary");
     let _ = std::fs::remove_file(&log_path);
 
@@ -307,6 +363,7 @@ pub fn run_until_pc(
     if std::env::var_os("VIOARM_KEEP_LOGS").is_none() {
         let _ = std::fs::remove_file(&bin_path);
         let _ = std::fs::remove_file(&log_path);
+        let _ = std::fs::remove_dir(&run_dir);
     }
     states
 }
