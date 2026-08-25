@@ -121,9 +121,11 @@ Tooling:
 
 ### In progress
 
-- **M2 — Peripheral depth** done (B1 TIM/ADC DMA, B3 EP1-3, B4 PHY, B5 card
-  image, B6 H7 descoped; B2 DMAMUX scaffold). **M3 — Verification gates**
-  next: C1 done, C2/C3/C4 in flight. See "Plan to production" below.
+- **Done — v2.0 production** (2026-08-25): M1-M5 closed. M1 A1-A3 (CAN filter,
+  hygiene, timer IC/PWM/OPM), M2 B1-B6 (TIM/ADC DMA, DMAMUX scaffold, USB
+  EP1-3, ETH PHY, SDIO card image, H7 descoped), M3 C1-C4 (CI hardened,
+  fuzz targets, determinism), M4 bench baseline, M5 provenance/xtask.
+  See "Plan to production" below (all WPs marked DONE).
 
 ## Plan to production — `v1.9.1 → v2.0`
 

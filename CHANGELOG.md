@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — v2.0 production
+### Added
+- `CAN` bxCAN filter: `FMR/CAN2SB` `FM1R` `FS1R` `FFA1R` `FA1R` `FR1/2` 28 banks, 32-bit mask/list + 16-bit, FIFO routing, drop-on-miss (564 lib).
+- `TIM` IC/PWM/OPM: `OCxM` state machine + `output_level()` pin, `EGR.CCxG`, `CR1.OPM` one-pulse, `inject_capture()` latch, `URE` etc. (17 timer tests).
+- `DMA` `TIM` `ADC` request lines: `TIM` `DIER.UDE`→`DmaRequests`, `ADC` `CR2.DMA`→`DmaRequests`, `with_dma()` helpers.
+- `USB` EP1-3 bulk: `FIFO_LEN` 0x400→0x4000, `DIEPTSIZ`/`DOEPTSIZ` per-EP, EP1 bulk test.
+- `ETH` PHY: `MACMIIAR/MACMIIDR` MDIO with `BMCR/BMSR/ID` 0x7809 link-up, `MIIAR_MB` busy clear.
+- `SDIO` card image: 1 MiB `card` vec, CMD17/24 block R/W via `ARG` block, `DCTRL`/`DLEN` FIFO prime.
+- `DMAMUX` behavior scaffold, `RCC` per-family `HSIRDY`, `QspiGate` gated-at-reset.
+- Verification: `CI` hardened (`deny` strict, `llvm-cov --fail-under-lines 85`, `clippy -D warnings`, QEMU 10.2.1 pinned, `ORACLE_VERSION`), `fuzz` crate (elf/hex/decode/rsp), `determinism` twice-run test.
+- Bench `benches/mips.rs` baseline, `packs/PROVENANCE.md` + `xtask` fetch/verify.
+### Changed
+- `QspiGate` now gated at reset, `RCC` `HSIRDY` per-family, `CAN` dead code removed.
+- `USB` FIFO window enlarged, `SDIO` data path uses card image, `H7` LTDC/DMA2D etc. descoped to latch-only (B6).
+### Fixed
+- `USB` `FS+0x2000` reserved test now expects EP1 FIFO.
+
 ## [1.9.1] - 2026-08-25
 ### Fixed
 - `SCB`: a data-access bus error recorded `BFSR.IBUSERR` (CFSR bit 8) where the
