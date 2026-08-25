@@ -121,264 +121,376 @@ Tooling:
 
 ### In progress
 
-- None. Cycle-accurate timing hardening (item 6) is complete.
+- **M1 — Correctness debt** (next up): WP-A1 bxCAN acceptance filtering +
+  per-instance filter window, WP-A2 hygiene sweep (QspiGate reset polarity,
+  RCC HSIRDY per family, dead code), WP-A3 timer input capture + observable
+  output state. See "Plan to production" below.
 
-### Gaps to a real STM32 simulator
+## Plan to production — `v1.9.1 → v2.0`
 
-The instruction core is done and QEMU-verified; what separates the project from
-a faithful STM32 SoC simulator is the checklist below, in priority order.
-"Real firmware" means code that runs on silicon: HAL/Standard-Peripheral
-projects, RTOSes, and bare-metal drivers. Measured `2026-08-22` `df266a7`
-`v1.7.0` `64` `real_firmware` `550` `lib` `29` clippy:
+This is the execution plan from the current baseline to a production-grade,
+enterprise-usable release. It is written for autonomous execution: every work
+package (WP) states its goal, exact files, register-level specification with
+reference-manual citations, acceptance criteria, and an effort estimate in
+agent-hours (`ah`). Work top-to-bottom inside a milestone; milestones are
+ordered by dependency. Never skip an acceptance criterion.
 
-| Domain | Silicon `denom` | Modeled `num` | Reach | File |
-|---|---|---|---|---|
-| Core ISA `Armv6M/7M/7EM/8M-baseline` `Thumb-2+DSP+FPv5-D16` | `QEMU m0/3/4/33/7` `73` `conformance` | `≈95%` | `cpu/mod.rs:41` `decode32.rs:991` |
-| System `NVIC/SCB/MPU/TrustZone` `DWT cyccnt` `FLASH WS` | `M3` `HFSR bit30` | `≈85%` | `cpu/mod.rs:714` `scb.rs:1059` |
-| Clock/Power `HSE/HSI/CSI/PLL1-3` `PWR CR1/CR3` | `Cube HAL SystemClock 25MHz` | `≈30%` | `rcc.rs:43` `pwr.rs:13` `d238b56` |
-| GPIO `CRL/CRH→MODER/BSRR` | `HAL GPIO_Init` | `≈90%` Full | `gpio.rs:28` `gpio_f4.rs:28` |
-| USART/UART `1-3+4/5/6` `TXE/RXNE` `DMA ch` | `USART1 92 regs` | `≈85%` Full | `usart.rs:67` `board.rs:914` |
-| TIM1..7 `PSC/ARR/UIF` `TIM5 32b` | `HAL_TIM` | `≈60%` up-counter | `timer.rs` |
-| DMA `F1 ch / F4 streams+DMAMUX` `MEM2MEM` `FIFO/burst` | `Cube BURST` | `≈40%` `1-unit/tick` `USART` only | `dma.rs:139` `dma_f4.rs:139` |
-| FLASH `KEYR/PG/PER/MER` `F1/F4` sector | `HAL FLASH_Program` | `≈80%` | `flash.rs:17` |
-| ADC/SPI/I2C `SQR/BR/START` | `HAL_ADC` | `≈75%` | `adc.rs` `spi.rs` `i2c.rs` |
-| CAN/RTC/CRC/DAC/IWDG/SDIO | `SDIO CMD0/2/3/7` stub `0xFF` | `≈80%` | `sdio.rs:34` |
-| USB `FS/HS` ETH `MAC/DMA` `RDES/TDES` | `HAL USB ETH` | `≈60%` `EthH7` stub `eth.rs:771` | `fmc.rs:13` |
-| H7 `QUADSPI/FMC/LTDC/DMA2D/FDCAN` `BDMA/MDMA` | `119 H743 SVD →45 38%` | `≈38%` `QspiGate dd60d89` gated | `board.rs:817` `fmc.rs:57` |
+### Agent protocol — how to work here
 
-Overall `weighted` `≈58-62%` to `HAL/RTOS no-mod` (`F103 66%→75% HAL`, `F107 100% windows 80% HAL`, `F407 51%→55%`, `H743 38%→35%` H7 `SystemClock HSE CR.EN 1` now `1`).
+1. Read this file and `CHANGELOG.md` first. `Status`/`Implemented` below
+   describe reality as of `2aba440`; do not re-derive it.
+2. One WP per branch/commit-series; one logical change per commit. Commit
+   message style: `domain: what changed (effect)` like existing history.
+3. Before every commit: `cargo fmt --all && cargo clippy --workspace
+   --all-targets && cargo test --workspace` must be green (744+ tests).
+4. **Never commit a red suite.** If a test fails, triage it immediately:
+   root-cause, then fix the *model* if the model is wrong, fix the *test* only
+   if the test encodes something invalid, or gate the scenario behind a
+   documented oracle limitation. "Host drift" is not a diagnosis — three real
+   defects hid behind that label once already (`d349667` was one of them).
+5. Update `CHANGELOG.md` under an `Unreleased` heading for user-visible work;
+   update the `Known limitations` section when a scope decision is made.
+6. Accuracy rule: when implementing a peripheral, verify every offset and bit
+   against BOTH the pack SVD in `packs/` AND the reference manual chapter cited
+   in the WP. If pack and RM disagree, follow the CMSIS header in the pack's
+   `Device/Include/` (that is what firmware compiles against) and record the
+   divergence in the WP notes.
+7. No `unsafe` (workspace forbids it). No new dependencies without stating the
+   justification in the WP.
+8. The QEMU oracle limitations are documented in `Known limitations`. Do not
+   try to force a differential test through them; lock semantics VioARM-only
+   instead (pattern: `m33_baseline_secure_irq_returns_nonsecure`).
 
-### Path to 100% — `58% → 100%` (priority, `effort`, `target %`)
+### Baseline snapshot (`2aba440`, v1.9.1)
 
-1. **H7 `QSPI XIP` + `FMC SDRAM` init** `FMC SDCR/SDTR` `QUADSPI CCR/DLR` `1d` `H743 38→55%`.
-2. **DMA `burst/FIFO` + `DMAMUX` routing + `timer/ADC/SPI` request lines** `1w` `DMA 40→85%` `TIM` `60→85%`.
-3. **Clock tree `PLLSRC/DIVM/DIVN/DIVP/Q/R` `RCC 0x58024428` `PLLCFGR` `CFGR/D1CFGR`** `3d` `Clock 30→80%` `HSE 25MHz →480MHz` `SystemClock` `WS 5`.
-4. **TIM `PWM/OC/IC` `CCMR/CCR` `DMA burst` `ADC triggered`** `1w` `TIM 60→90%`.
-5. **CAN `filter-bank 28×` `29-bit ext` `FIFO0/1` `RFLM`** `3d` `CAN 80→95%`.
-6. **USB `endpoints 1-3` `IN/OUT` `FIFO` `OTG HS2 0x40080000`** `1w` `USB 60→90%` `eth.rs:771` `EthH7` `DMAMR` `1w` `ETH 60→90%`.
-7. **H7 `LTDC layer/PFC` `DMA2D PFC` `BDMA 0x58025400` `MDMA` `SAI4` `DFSDM`** `2w` `H7 55→75%`.
-8. **Quality `llvm-cov 90%` + `cargo fuzz` decoder + `cargo audit/deny` strict** already `ci.yml:51` `1d` `R2-4` `prod` gate.
-9. **`no_std` + `benches/cyccnt`** `R1/R6` `3d` reuse.
-10. **Tag `v1.8-v2.0` per domain `CHANGELOG` `crates.io` `cargo publish`** `1d` `100%` when `HAL` `CubeMX` `RTOS` boots unmodified (`≈6-8w` total).
+- 744/744 tests green: 550 lib + 48 machine e2e + 64 compiled-firmware e2e +
+  73 conformance (72 diffed vs QEMU M0/M3/M4/M7/M33) + gdb/cli/svd.
+- Behavioral peripherals: NVIC, SCB (faults/MPU v7+v8/TrustZone), DWT cyccnt,
+  GPIO F1/F4, USART family + F1 DMA request lines, TIM1..7 up-counter + UIF +
+  compare-match IRQs, flash F1/F4 program/erase with write-gate, IWDG/WWDG,
+  RTC/PWR/BKP/CRC/DAC, ADC F1 sequences, SPI masters, I2C F1 masters, bxCAN
+  mailboxes/FIFOs, USB OTG FS device EP0, ETH descriptor rings (F107/F407),
+  SDIO command path, H743 CPU (FPv5-D16 diffed) + board bring-up.
+- Latch-only stubs (register round-trip, no behavior): H743 DMAMUX1/2, LTDC,
+  DMA2D, BDMA, MDMA, SAI4, DFSDM, HRTIM (5 windows), OTG2_HS, EthH7, CanFilter
+  window (in-Can latch).
+- Known defects tracked as WP-A2/A3 below.
 
-1. **Distinct UsageFault.** **Done.** A real exception with its own vector,
-   `UFSR` fault-status recording, `SHCSR.USGFAULTENA` gating, and escalation
-   to HardFault when disabled or un-preemptable (locked with QEMU conformance).
-2. **CPACR gating of VFP.** **Done.** FPU access checks CP10/CP11; a disabled
-   coprocessor raises `UFSR.NOCP` UsageFault (locked with QEMU conformance).
-3. **MPU.** **Done.** `MPU_TYPE`/`MPU_CTRL`/`MPU_RNR`/`MPU_RBAR`/`MPU_RASR`
-   (with the v7M `_A1`/`_A2`/`_A3` aliases indexing `RNR`, matching the QEMU
-   oracle), eight unified regions with subregions, the `PRIVDEFENA` background,
-   and AP/XN permission checks on every fetch and data access. Violations
-   escalate to HardFault with `MMFSR.IACCVIOL`/`DACCVIOL`/`MMARVALID` and the
-   address in `MMFAR`; the NMI/HardFault bypass and `HFNMIENA` are honored.
-   Locked in with unit tests and a compiled-firmware e2e.
-4. **Peripheral-request DMA.** **Done.** F1 DMA now handles request-driven
-   transfers: the USART asserts TX/RX request lines (keyed by controller and
-   hardware channel, TX on `DMA1` ch4, RX on ch5) and each enabled channel
-   transfers one unit per assertion, counting down `CNDTR`, self-clearing
-   `EN`, and latching `TCIF`. Per-channel NVIC lines replace the single
-   combined line. Locked in with unit tests and CMSIS firmware that transmits
-   and receives over `DMA1` under per-channel interrupts.
-5. **F407 target completeness.** **Done.** The F407 flash controller
-   (`0x4002_3C00`) is modeled with KEYR unlock, `PG`/`SER`/`MER`/`SNB`/`STRT`
-   programming and sector erase (sharing the main-flash write gate), and
-   `EOP`/`WRPERR` status plus `EOPIE`/`ERRIE` interrupts. The stream-based DMA
-   (`DMA1`/`DMA2` with `SxCR`/`SxNDTR`/`SxPAR`/`SxM0AR`/`SxM1AR`/`SxFCR`)
-   runs memory-to-memory transfers with per-stream NVIC lines routed through
-   the SVD IRQ table (including the scattered `DMA1_Stream7` IRQ 47), and the
-   64 KiB CCM RAM at `0x1000_0000` is mapped. All three are locked in with
-   CMSIS firmware compiled in test.
-6. **Cycle/timing policy.** **Done.** One cycle per retired instruction (or per
-   sleeping cycle), and `WFI`/`WFE` now actually sleep the core: the machine
-   keeps ticking peripherals and peeking for pending exceptions while asleep,
-   so `SysTick` fires, wakes the core through exception entry, and the thread
-   resumes the instruction after the `WFI`. `SEV`/`WFE` implement the 1-bit
-   event latch (an interrupt is itself a wakeup event; `WFE` consumes a pending
-   event without sleeping), and the machine's cycle counter stays monotonic
-   across sleep. **TRM-accurate hardening done:** `DWT_CYCCNT` (`0xE000_1000`,
-   `CTRL.CYCCNTENA`) counts `Core::cyccnt` with per-opcode CPI (data `1c`,
-   `LDR/STR 2c`, `LDM/STM n+1`, taken branch `3c`, `BL 4c`, variable `DIV`
-   `2-12c` via divisor leading zeros, `MUL 1c`/`MLA 2c`/long `3c`) plus
-   `FLASH_ACR LATENCY` wait-states on fetch (`0x4002_2000` F1 /
-   `0x4002_3C00` F4); the machine ticks peripherals by the instruction's
-   cycle delta. Locked in with CPU unit tests, machine e2e tests, CMSIS
-   firmware that `WFI`-loops until `SysTick` wakes it, and the e2e flash-wait
-   lock (`cyccnt_incudes_flash_wait_states`).
-7. **Peripheral breadth.** Only GPIO, USART1, TIM2/3, EXTI, RCC, FLASH, DMA are
-    behaviorally modeled. **IWDG/WWDG watchdog done:** the 12-bit/7-bit
-    down-counters implement their key/refresh protocols, prescalers, the WWDG
-    window, `EWIF`/early-wakeup interrupt, and a shared reset latch that
-    reboots the whole machine on underflow (locked in with unit tests and CMSIS
-    firmware that lets the watchdog reset it). **ADC done:** ADC1/2/3 with
-    software-start sequence conversion, fixed 14-cycle latency, `EOC`/`OVR`
-    interrupts, `CONT`/`SCAN` re-arm, 12-bit `ALIGN`, per-channel analog input
-    drive, and the F1 second-`ADON` restart quirk (locked in with unit tests, a
-    machine e2e interrupt dispatch, and CMSIS firmware sampling channels 0/1).
-    **SPI done:** SPI1/2/3 master shift registers with 8/16-bit `DFF` frames,
-    `BR` prescaler-timed transfers, `TXE`/`RXNE` level interrupts, host-driven
-    slave byte input and `MOSI` capture (locked in with unit tests, a machine
-    e2e interrupt dispatch, and CMSIS firmware running polled and
-    interrupt-driven frames). **I2C done:** I2C1/2 (F103/F107) and I2C3 (F407)
-    master transfers — `START`/`STOP`/`SWRST`, 7-bit addressing with `ADD10`,
-    polled and EV/ER level interrupts (address, buffer, and error events), and
-    a host-driven slave byte that NACKs an absent address (locked in with unit
-    tests, a machine e2e interrupt dispatch, and CMSIS firmware running polled
-    and interrupt-driven master reads). This also fixed a machine modeling gap:
-    an exception return now guarantees the restored instruction executes before
-    a still-pending level-sensitive line re-enters the handler, so a hot line
-    no longer starves the thread. **USART done:** the single USART1 model is
-    generalized to the whole USART/UART family — USART2/USART3 on every line,
-    UART4/UART5 on the connectivity and F4 lines, and USART6 on the F4 — each
-    table-driven (base + IRQ) with the byte-oriented `TXE`/`TC`/`RXNE`
-    behavior and the F1 DMA request routing per instance (USART1 ch4/ch5,
-    USART2 ch7/ch6, USART3 ch2/ch3, UART4 ch5/ch6, UART5 ch7/ch4; locked in
-    with unit tests, a machine e2e interrupt dispatch for USART2, and CMSIS
-    firmware transmitting and interrupt-receiving over USART2 at its real
-    `0x4000_4400` registers). **Timers done:** the TIM2/TIM3 counter model is
-    generalized to the whole TIM1..TIM7 family — TIM4/TIM6/TIM7 (16-bit) and
-    TIM5 (32-bit) on every line, plus the advanced TIM1, whose SVD table lists
-    the break interrupt first so the update event routes through the *second*
-    table line (`TIM1_UP`, IRQ 25) via a per-instance IRQ index; the boards
-    stay faithful to real silicon (the F103 keeps its TIM1/2/3/4/6/7, the
-    F107/F407 add TIM5). This also fixed a counter-model bug: the overflow
-    comparison now reads the *unmasked* count, so a 16-bit wrap past
-    `0xFFFF` still raises `UIF` instead of silently resetting to zero
-    (locked in with a full-range regression test). Locked in with unit tests,
-    an SVD-layout conformance test, a machine e2e dispatch through TIM1's UP
-    line, and CMSIS firmware arming the basic TIM6 at its real `0x4000_1000`
-    registers. **CAN done:** the STM32 `bxCAN` controllers (`CAN1`/`CAN2` on
-    the connectivity and F4 lines, base `0x4000_6400`/`0x4000_6800`) with the
-    init handshake (`INRQ`↔`INAK`), three transmit mailboxes with
-    write-one-to-clear status, abort, and `BTR`-derived wire latency, and two
-    receive FIFOs with `FMP`/`FULL`/`FOVR` and the `RFLM` lock (the SVD tables
-    carry no filter-bank data registers, so received frames always land in
-    FIFO0). The four interrupt lines (TX, RX0, RX1, SCE) map through the SVD
-    IRQ table, and the host injects or drains frames as 16-byte mailbox-word
-    descriptors. Locked in with unit tests, an SVD-layout conformance test, a
-    machine e2e dispatch through the `CAN1_RX0` line, and CMSIS firmware
-    (`STM32F10X_CL`) that receives on `CAN1` and transmits back. **USB done:**
-    the STM32 USB OTG FS controller in device mode (`USB_OTG_FS` at
-    `0x5000_0000` on the F107, `OTG_FS`/`OTG_HS` on the F407), driven through
-    the SVD register tables: the `FDMOD` soft-reset handshake, the
-    receive-FIFO pop path (`GRXSTSR`/`GRXSTSP`), the `USBRST`/`ENUMDNE`/`RXFLVL`
-    interrupt bits, and the EP0 IN/OUT state machines with `STUP`/`XFRC` and
-    the TX FIFO. Both NVIC lines dispatch their ISR, and the host injects or
-    drains bytes as 8-byte descriptor words plus a 4-byte status word. Locked
-    in with unit tests, an SVD-layout conformance test, a machine e2e dispatch
-    through the `OTG_FS` line, and CMSIS firmware (`STM32F10X_CL`) that
-    soft-resets the core, enumerates, and answers a GET_DESCRIPTOR request from
-    RAM. **Ethernet done:** the STM32 Ethernet (MAC/MMC/PTP/DMA windows on the
-    F107 at `0x4002_8000` and the F407 at `0x4002_8000` with the MAC subset
-    window) — a mailbox-driven DMA model: the host pushes an RX frame as a
-    `[CMD_RX, len_lo, len_hi, payload...]` word and drains a transmitted frame
-    as `[EVT_TX, ...]`; the model walks the two self-chained descriptor rings
-    (`RDES`/`TDES` with `OWN`, `RBS1`/`TBS1`, `RCH`/`TCH`, `FS`/`LS`),
-    synthesizes `DMASR`/`DMAIER` flags (`NIS`/`RS`/`TS`/`RBUS`/`TPSS`, write-one
-    to-clear), honors `MACCR` `RE`/`TE` plus `DMAOMR` `SR`/`ST` as the RX/TX
-    enable gates and `DMATPDR` as the TX poll, and raises the `ETH` (IRQ 61 →
-    vector 77) and `ETH_WKUP` (IRQ 62 → vector 78) lines so both ISRs dispatch
-    on the F107. The F407 shares the model with the MAC window difference (`0x61`
-    with no `MACRWUFFR`). Locked in with unit tests, an SVD-layout conformance
-    test, a machine e2e dispatch through the `ETH` line, and CMSIS firmware
-    (`STM32F10X_CL`) that drives the descriptor rings directly and
-    receive-echoes a frame under interrupts. **CRC done:** the STM32 CRC
-    calculation unit (`CRC` at `0x4002_3000`) with `DR`/`IDR`/`CR` and
-    polynomial `0x04C1_1DB7` (init `0xFFFF_FFFF`, `CR.RESET` reloads; locked in
-    with unit tests `crc_resets_to_all_ones_and_computes`/`idr_is_plain_storage`
-    and mounted on the F103/F107/F407 boards).     **DAC done:** the STM32 DAC
-    (`DAC` at `0x4000_7400`) with `CR` (`EN`/`TEN`/`TSEL`/`DMAEN`), `SWTRIGR`
-    software trigger, `DHR12R1/L1/8R1`→`DOR1` and dual `DHR12RD` (immediate when
-    `TEN==0`/`DMAEN==0`, latched on `SWTRIGR` when `TEN==1`/`TSEL==0`,
-    `DMAEN` asserts `DMA1 Ch3/4` `to_periph` request on `SWTRIGR` for `F103`;
-    `dac_immediate_…`/`dac_triggered_…`; mounted on F103/F107/F407, `F103` `DAC`
-    wired to `DMA1`).
-    **RTC/BKP done:** the backup domain (`RTC` at `0x4000_2800`, `BKP` at
-    `0x4000_6C00` on F1) — `RTC` now accurate prescaler/counter/alarm
-    (`PRL`→`DIV`→`CNT` 32-bit, `SECF`/`ALRF`/`OWF`, `CRH` enables, `CNF`/`RTOFF`
-    gating, `RTCAlarm` IRQ 41, `rtc_prescaler_ticks_counter_and_alarm`; `BKP`
-    remains `DR1..10` latches, `RTC` on all lines, `BKP` only on F1/F107).
-    **SDIO done:** the SD-card host (`SDIO` at `0x4001_8000` on F1 / `0x4001_2C00`
-    on F4) with `POWER`/`CLKCR`/`ARG`/`CMD`/`RESP`/`STA`/`ICR`/`MASK`/`DLEN`/
-    `DCTRL`/`FIFO` CMD+data+card-accurate (`CPSMEN` latches `RESPCMD`/`RESP1`,
-    `STA.CMDSENT`/`CMDREND`/`DATAEND`/`DBCKEND` + `MASK` → IRQ 49, `FIFO`
-    `RXDAVL` queue, card `CMD0/2/3/7/8/55/41` `OCR`/`RCA`/`CID`, `sdio_card_init…`;
-    mounted on F103/F107/F407 so `SD_Init` HAL completes — `CSD`/`card image`
-    remain stubbed as `0xFF` blocks). **PWR done:** the STM32 PWR (`PWR` at `0x4000_7000`) with
-    `CR`/`CSR` (`DBP`/`PVDE`/`WUF`) latch (`pwr_registers_do_not_fault`;
-    mounted on F103/F107/F407, `DBP` gates backup domain on silicon but `RTC`/
-    `BKP` latches ignore it as HAL always sets `DBP` first).
-8. **ARMv6-M (Cortex-M0/M0+)** and instruction-table/SVD codegen hardening.
-   **Done.** The ARMv6-M exception model is now distinct from ARMv7-M: `MRS`/
-   `MSR` of `BASEPRI`/`BASEPRI_MAX`/`FAULTMASK` read zero and ignore writes
-   (the QEMU M0 RAZ/WI behavior), a `UsageFault` no longer exists as a
-   distinct exception — the fold to `HardFault` is unconditional — and
-   `CONTROL.nPRIV`/`CONTROL.FPCA` are RAZ/WI with only `SPSEL` writable in
-   Thread mode (verified by `armv6m_has_no_basepri_or_faultmask`,
-   `armv6m_undefined_faults_fold_to_hardfault`, and the updated
-   `sysreg_primask_and_control`). A `cortex_m0()` board exposes the generic
-   peripheral set under the ARMv6-M core, and real-firmware locking includes
-   `cortex_m0_rejects_thumb2_firmware`, which compiles `MOVW` for a
-   Cortex-M4 and proves the v6-m core escalates it to `HardFault` before any
-   side effect. **QEMU M0 differential conformance added:** the harness now
-   runs the v6-m machine against a `Cortex-M0` micro:bit reference (same
-   per-instruction trace diff as the M3/M4 suite), covered by
-   `m0_sysreg` (MSP/PSP/PRIMASK round-trips, the BASEPRI/FAULTMASK RAZ/WI
-   gates, and the SPSEL-only CONTROL), `m0_alu_thumb1` (the Thumb-1
-   data-processing forms), `m0_loadstore_thumb1` (word/byte/halfword,
-   register/SP-relative offsets, literal loads, push/pop), `m0_branch_bl`
-   (16-bit conditional branches, `CBZ`/`CBNZ`, `BL`/`BX`), and the exception
-   pair `m0_exception_svc`/`m0_hardfault_undef` (SVCall round-trips and the
-   undefined-instruction fold to HardFault). Codegen hardening: `decode16` is
-   verified by exhaustive sweeps of all 65536 16-bit encodings
-   (`armv6m_decoder_is_subset_of_armv7m` asserts every v6-m acceptance is a
-   v7-m acceptance and every v7-m rejection is a v6-m rejection;
-   `it_block_encodings_are_v7m_only` proves `IT` blocks are never ARMv6-M),
-   and `vioarm-svd` regenerates all three committed tables byte-for-byte from
-   their packs (`committed_tables_regenerate_identically`).
+### Measurement methodology
 
-### Done
+Progress percentages count *observable behavior*, not registered windows:
+a peripheral scores by checklist items (each modeled register field group +
+each behavior = one item), weighted equally inside the domain. Latch stubs
+score 0. Domain % = implemented items / total items on its checklist. Overall
+% = unweighted mean of domain percentages (domains listed in the table at the
+bottom of this file). Recompute the table at each milestone tag and paste the
+numbers into `CHANGELOG.md`.
 
-9. **ARMv8-M baseline (Cortex-M23).** **Done.** `Isa::Armv8MBaseline` is a
-   superset of ARMv6-M plus the baseline Thumb-2 subset: hardware divide
-   (`SDIV`/`UDIV`), 32-bit branches (`B.W`), exclusive access
-   (`LDREX`/`STREX`/`CLREX` word/byte/halfword), `MOVW`/`MOVT`,
-   load-acquire/store-release (`LDA*`/`STL*` including the exclusive forms),
-   IT blocks, the TrustZone security extension (`SG`, `TT`/`TTT`/`TTA`/`TTAT`,
-   `BXNS`/`BLXNS`/`FNC_RETURN`, banked `MSP`/`PSP`/`CONTROL`), stack-limit
-   registers (`MSPLIM`/`PSPLIM`), the PMSAv8 MPU programmer's model with
-   `SAU` attribution, and the v8-M exception model (Secure HardFault vs
-   Non-secure HardFault escalation gated by `AIRCR.BFHFNMINS`, `SecureFault`
-   exception 7 with the `ES`/`DCRS` exception-return validity check and
-   `SFSR.INVER`, the callee-saves (`DCRS`) block stacked on Secure-to-Non-secure
-exception entries with the `SFSR.INVIS` integrity-signature check on return,
-    the `ITNS`-targeted delivery of external interrupts (the ARMSSE default
-    routes every line to the Non-secure state, so an IRQ taken from a Secure
-    background is a Secure-to-Non-secure entry that switches the handler into
-    Non-secure with `r0-r12` cleared),
-    banked `S_VTOR`/`VTOR` vector tables, and the `S`/`ES`/`SPSEL`
-    `EXC_RETURN` construction). Verified two ways:
-   - Differential conformance against QEMU `cortex-m33` (`mps2-an505`) as a
-     *superset* oracle (`m33_baseline_*` suite: sysreg, additions,
-lda_stl, splim, tt/sau_tt/mpu_tt, alu_thumb1, sg, blxns/bxns,
-      secure_undef_hardfault, secure_udf_return_restores_r0r3,
-      nonsecure_udf_returns_through_secure_handler),
-      plus the v6-m
-      suite against `cortex-m0`.
-     `secure_irq_returns_nonsecure` is locked VioARM-only: QEMU 10.2.x on
-     `mps2-an505` delivers external interrupts Secure-targeted regardless of
-     `NVIC_ITNS` programming, so the oracle never performs the
-     Secure-to-Non-secure entry; the test asserts the full register restore
-     of the round trip directly instead (see "Known limitations").
-   - Unit tests pinning the *boundary*: `v8m_baseline_rejects_v7m_only` proves
-     the full Thumb-2 DSP/bitfield/saturate/VFP zones, wide data-processing,
-     conditional branches, `blx` immediate, `tbb`/`tbh`, `ldm`, and VFP
-     encodings decode-fail under `Armv8MBaseline` while still decoding on
-     ARMv7-M.
-   Documented baseline simplification kept: `SecureFault` is taken
-   unconditionally (`SFSR` causes are recorded but no `SF` software
-   configurable/fault handler enable is modeled).
+---
 
+## M1 — Correctness debt (target `v1.10`, ~2 agent-days)
+
+### WP-A1 bxCAN acceptance filtering + per-instance filter window
+
+Goal: `HAL_CAN_ConfigFilter` semantics actually filter frames.
+
+Files: `vioarm-core/src/device/stm32/can.rs`.
+
+Spec (RM0008 §24.7 / RM0090 §41.7):
+- Filter banks live at CAN base + `0x200`: 28 banks × 2 words (`FR1`/`FR2`),
+  bank n at `0x200 + 8n`. Control registers (RM offsets relative to CAN base):
+  `FMR@+0x200` with the `INIT`/`FINIT` init protocol, `FM1R@+0x204` mode per
+  bank (mask/list), `FS1R@+0x20C` scale (16-bit ×2 / 32-bit ×1), `FFA1R@+0x214`
+  FIFO assignment, `FA1R@+0x21C` activation. If the pack SVD models any of
+  these, prefer its offsets; else use the RM values above.
+- Filter-window base is per-instance: CAN1 banks at CAN1+`0x200`; **CAN2
+  shares CAN1's bank array** starting at bank `CAN2SB` in `FMR` — CAN2
+  filtering reads CAN1's banks (this is silicon behavior, not a shortcut).
+- Acceptance check per received frame: apply active banks in order until match;
+  32-bit mask mode: `(ID & FxR2) == (FxR1 & FxR2)` incl IDE/RTR bits; list
+  mode: exact compare against 2 (scale 1) or 4 (scale 0) IDs. Miss-all → frame
+  dropped. Match → FIFO per `FFA1R`.
+- Keep the in-`Can` latch for bank storage but drive routing decisions from it.
+Acceptance:
+- Unit tests: mask-hit, mask-miss, list-hit, FIFO assignment, `CAN2SB`
+  split (frames visible to CAN2 only above split), drop-on-no-match.
+- e2e: CMSIS firmware configures one 32-bit mask filter; host injects a
+  matching and a non-matching frame; ISR fires only for the match.
+- Remove dead `EXTRA`/`R` consts + self-argument comment in
+  `Can::ranges()` (`can.rs:561`).
+Effort: 8ah.
+
+### WP-A2 Hygiene sweep
+
+- Delete dead code found in review: `can.rs` consts (see A1), any other
+  `const R`/unused helpers flagged by clippy.
+- Fix `QspiGate` reset polarity (`fmc.rs:74`): construct `enabled: false`,
+  `reset()` keeps `false` (CR.EN resets cleared on silicon); update
+  `stm32h743_fmc_qspi` e2e to set `CR.EN=1` before touching `0x90000000`,
+  and extend `qspi_gate` e2e to assert gated-at-reset.
+- RCC: stop OR-ing both `HSIRDY` bits on every read; select bit per family
+  (`Isa`/device table), keep instant-ready synthesis, document the shim in
+  the module doc.
+Acceptance: full suite green; `grep -n 'EXTRA' can.rs` empty; both e2e names
+above green; no behavioral regression in F107/F103 boards (their suites).
+Effort: 3ah.
+
+### WP-A3 Timer input capture + observable output state
+
+Goal: close the biggest timer gap honestly.
+Spec (RM0008 §17.3.6-17.3.7, RM0090 §26.3.6+):
+- Output compare: channel output state machine per `OCxM` (`000`=frozen,
+  `001`=active on match, `010`=inactive on match, `011`=toggle, `110`=PWM1,
+  `111`=PWM2), honoring `OCxPE` preload and `EGR.CCxG` generate/force events.
+  Expose per-channel current output level through a host-visible trait method
+  (`TimerChannels::output_level(ch)`) — there are no pins; the trait is the
+  pin.
+- Input capture: host injects edge events (trait method
+  `inject_capture(ch, rising, timestamp)`); hardware latches `CNT` into
+  `CCRx`, sets `CCxIF`, honors `ICxF` filter as N-consecutive-sample
+  debounce, `CCxP` polarity, `TIxFP` mapping. Chained PWM-input mode
+  (`OCxM=000 ICx=...` LSI pattern) optional-stretch.
+- One-pulse mode `CR1.OPM`: counter clears CEN on next update event after
+  trigger.
+Acceptance: unit tests per OCxM class; capture e2e with CMSIS firmware using
+interrupt-driven capture; `output_level` sequence test for PWM1 @50% duty over
+one ARR period. Existing `tim1_update` stays green.
+Effort: 10ah.
+
+---
+
+## M2 — Peripheral depth (target `v1.11`/`v1.12`, ~5 agent-days)
+
+### WP-B1 DMA completeness (F1/F4)
+
+Spec (RM0008 §13, RM0090 §11):
+- F4 streams: implement true request-driven transfers (per-request unit step)
+  wired from TIM (`TIMx_DMAReq` on UE/CCx), ADC (`ADC_CR2.DMA` on EOC), SPI
+  (`SR.RXNE/TXE`), USART (existing). Honor `SxCR.DIR/PINC/MINC/PSIZE/MSIZE/
+  CIRC`, `SxFCR.FTH` thresholds, direct/error interrupts `TEIF/FEIF/HTIF`.
+- Burst/`MBURST`/`PBURST` + FIFO flush semantics for memory-to-peripheral.
+- F1: add TIM-DMA request sources (UE/CCx per channel map table), ADC DMA.
+- Arbitration: keep PL-then-number, document that per-request timing is
+  instruction-granular.
+Acceptance: CMSIS e2e moving an ADC sequence to RAM via DMA with HT/TC
+interrupts; SPI TX DMA loopback test; burst-mode unit test asserting beat
+counting. Existing suites green.
+Effort: 14ah.
+
+### WP-B2 DMAMUX behavioral (H743)
+
+Replace `NoBehavior` with request-line router: `CCR_DMAREQ_ID` selects among
+the RM0433 §14 Table request ids; route generated requests (TIM/ADC/SPI/
+USART/SAI) to the selected DMAMUX→DMA stream channel; support sync/trigger
+fields as latched no-op with documented note.
+Acceptance: H7 e2e: USART RX via DMAMUX-routed stream into RAM.
+Effort: 6ah.
+
+### WP-B3 USB OTG FS beyond EP0
+
+- Endpoints IN/OUT 1..=4 with `DIEPTSIZ/DOEPTSIZ`, double-packing optional.
+- Bulk/interrupt transfer plumbing so a CDC-ACM device class enumerates and
+  moves bytes (host injects/extracts via mailbox like EP0).
+Acceptance: CMSIS-style CDC firmware enumerates, host writes serial data,
+firmware echoes under interrupt; conformance-style state dump test.
+Effort: 12ah.
+
+### WP-B4 ETH fixed-link PHY + MDIO
+
+- Model `MDIO` read/write: PHY id registers, BMSR link-up autoneg-done,
+  BMCR speed/duplex writable no-op; `MACMIIAR` busy-bit handshake with
+  1-tick latency.
+- MAC address filtering per `MACFFR`/H7 equivalents: promiscuous/hash modes.
+Acceptance: SPL/HAL `ETH_Init` with fixed-link PHY completes; hash-filter
+unit tests; existing descriptor-ring e2e green.
+Effort: 6ah.
+
+### WP-B5 SDIO block data + card image
+
+- Host-provided card image (`Vec<u8>` or file path feature flag): CMD17/18/24/
+  25 single/multi block read/write against the image, `DCTRL` data counters,
+  CRC16 generation (static pattern acceptable, documented), `DATAEND/RXNE/
+  TXHE` interrupts, ACMD6 width, CMD7 deselect.
+Acceptance: FAT-free raw-block e2e: firmware reads sector 0 from injected
+image over DMA-less polled path and DMA path.
+Effort: 8ah.
+
+### WP-B6 H7 platform decision (scope gate)
+
+Evaluate cost/value: making `LTDC/DMA2D/BDMA/MDMA/SAI4/DFSDM/HRTIM` minimally
+behavioral vs permanent latch-only. Decision rule: enterprise users run headless
+control/HIL workloads; display/audio stacks are out of primary value. Default:
+**descope to latch-only permanently**, delete the phrase "windows" from all
+progress claims, and note it in `Non-goals`. Any behavior beyond latch needs a
+written customer scenario first.
+Acceptance: decision recorded in roadmap + CHANGELOG; progress table updated.
+Effort: 1ah.
+
+---
+
+## M3 — Verification gates (target `v1.13`, ~3 agent-days)
+
+### WP-C1 CI hardening
+
+- `.github/workflows/ci.yml`: remove `|| true` from `cargo deny check`;
+  coverage job gains a threshold gate (`cargo llvm-cov ... --fail-under-lines
+  85`) and uploads lcov artifact; clippy becomes `-- -D warnings` once the
+  ~13 pre-existing warnings are fixed or explicitly allowed inline.
+- Add `cargo audit --deny warnings` policy decision note.
+- Pin the QEMU version used for conformance (`sudo apt-get install
+  qemu-system-arm=X.Y.Z*` with fallback comment) and print
+  `qemu-system-arm --version` in CI logs; store it in
+  `vioarm-qemu/src/qemu.rs::ORACLE_VERSION` const surfaced in test output.
+Acceptance: deliberately introduce a lint failure / coverage drop / vulnerable
+dep on a scratch branch → CI red on each axis.
+Effort: 5ah.
+
+### WP-C2 Fuzzing
+
+- `cargo fuzz` targets (separate `fuzz/` crate, offline-friendly):
+  `fuzz_elf_loader`, `fuzz_hex_loader`, `fuzz_decode16/32` (bounded by
+  exhaustive sweeps already, so target the *loaders* + GDB RSP byte stream +
+  SVD parser), `fuzz_rsp_server`.
+- Seed corpus from existing e2e images; 60s/target locally, 5min in nightly CI
+  job (non-blocking initially, blocking after two clean weeks).
+Acceptance: each target runs clean ≥5min; any crash filed as issue and fixed;
+regression tests added per crash.
+Effort: 8ah.
+
+### WP-C3 Differential expansion
+
+- Add conformance programs for: load/store multiple with writeback edge cases,
+  saturating QADD/QSUB corner values, VFP denormal/rounding matrix (already
+  partially covered), IT-block taken-branch matrix on M33 (oracle allows there),
+  exclusive-access contention loops.
+- Re-enable `m33_baseline_secure_irq_returns_nonsecure` differential
+  automatically IF a future oracle delivers NS-targeted lines: detection =
+  probe program asserting delivery; keep current VioARM-only lock otherwise.
+Acceptance: conformance suite grows by ≥8 programs; suite stays green.
+Effort: 6ah.
+
+### WP-C4 Determinism audit
+
+- Machine-level guarantee: identical image + identical host-call sequence ⇒
+  identical trace. Audit for HashMap iteration influencing state (use BTreeMap
+  or sort), time-based sources (none allowed), thread nondeterminism (machine
+  is single-threaded; enforce with `!Send` marker or doc).
+- Add `determinism` integration test: run one firmware twice in-process and
+  byte-compare traces.
+Acceptance: audit notes committed; test green.
+Effort: 4ah.
+
+---
+
+## M4 — Performance & scale (target `v1.14`, ~2 agent-days)
+
+### WP-D1 Benchmarks
+
+- `criterion` benches: core MIPS on a fixed compute kernel (CoreMark-like
+  loop), boot-to-halt wall time per board, conformance-suite throughput.
+- Track numbers in the bench README; regressions >15% fail CI (allow-listed
+  noisy benches).
+Acceptance: benches in CI (stable toolchain only), baseline recorded.
+Effort: 5ah.
+
+### WP-D2 Fast-path equivalence (stretch)
+
+- Optional decode-cache interpreter path behind feature flag; MUST be guarded
+  by a differential test running the whole conformance suite twice (canonical
+  vs fast) comparing traces byte-for-byte. Non-goal if benchmarks show <20%
+  headroom.
+Acceptance: either shipped with equivalence proof or closed with measured
+justification.
+Effort: 16ah stretch.
+
+---
+
+## M5 — Enterprise release (target `v2.0`, ~5 agent-days)
+
+### WP-E1 License compliance (BLOCKER — do first in M5)
+
+- `packs/` contains Keil DFP content under SLA0044 (Arm proprietary;
+  redistribution restricted). 216MB in git history.
+- Actions: move packs out of the repository (document fetch commands instead);
+  keep only the *generated* SVD tables in-tree plus a provenance manifest
+  (source pack version + file sha256 per table); add a `cargo xtask packs`
+  fetcher for local regeneration; ensure `cargo deny` license policy matches
+  vioarm licensing (MIT, per root `Cargo.toml`).
+- Rewrite git history or accept history retains the blobs (decision note;
+  default: keep history private-side, fresh public repo going forward).
+Acceptance: repo tree free of SLA0044 files; provenance manifest complete;
+`xtask packs fetch` reproduces tables byte-identically (existing
+`committed_tables_regenerate_identically` proves it).
+Effort: 6ah.
+
+### WP-E2 Documentation
+
+- mdBook (`doc/`): getting-started (CLI), embedding `vioarm-core` as a library
+  (custom Peripheral trait walkthrough), boards reference, host-I/O cookbook
+  (mailbox protocols per peripheral), architecture overview.
+- rustdoc: `#![warn(missing_docs)]` on public surface, fix stragglers.
+- `examples/` per board: blink, USART echo, CAN loop, ETH echo — each runnable
+  via CLI and asserted in e2e.
+Acceptance: book builds in CI; examples compile+run in e2e; missing-docs
+warning-clean.
+Effort: 12ah.
+
+### WP-E3 Release engineering
+
+- All five crates publishable: consistent versions, descriptions, keywords,
+  `readme`, `repository`; dry-run publish in CI.
+- Semver policy doc (Peripheral trait = major-version surface; register
+  accuracy fixes = minor; docs = patch).
+- Signed tags per release; `cargo cyclonedx` SBOM artifact; release notes
+  auto-extracted from CHANGELOG headings.
+Acceptance: dry-run green; a beta tag produces artifacts + SBOM.
+Effort: 6ah.
+
+### WP-E4 Support & stability policy
+
+- Freeze supported boards list; document per-board fidelity level using the
+  measurement table.
+- Platform CI: linux (existing) + macos + windows build jobs (no QEMU on
+  windows-runners requirement — conformance job stays linux-only, others
+  cross-platform).
+- Stability: golden-trace snapshot tests per board boot to catch unintended
+  model drift between releases.
+Acceptance: policy section in book; platform jobs green; snapshots in tree.
+Effort: 6ah.
+
+---
+
+### Milestone exit criteria (global DoD)
+
+A milestone is done when: every WP acceptance criterion met; full workspace
+suite green on stable + MSRV; fmt/clippy clean; CHANGELOG updated; progress
+table recomputed; milestone tagged (`vX.Y.0`); release notes extracted. An
+enterprise-critical subset (E1, C1) may land independently but v2.0 requires
+all five milestones.
+
+### Domain checklist table (recompute per milestone)
+
+| Domain | Items modeled today | Target gaps (WP refs) |
+|---|---|---|
+| Core ISA | 95% | C3 extras |
+| Exceptions/NVIC/SCB/MPU | 85% | C3 |
+| Timing/DWT | 80% | — |
+| GPIO F1/F4 | 90% | — |
+| Flash F1/F4 | 75% | — |
+| RTC/PWR/IWDG/WWDG/CRC/DAC/BKP | 75% | — |
+| USART family | 75% | B1 (remaining req paths) |
+| ADC/SPI/I2C | 70% | B1 request wiring |
+| Timers | 45% | A3 |
+| CAN bxCAN | 50% | A1 |
+| DMA F1/F4/DMAMUX | 35% | B1/B2 |
+| USB OTG FS | 40% | B3 |
+| ETH | 50% | B4 |
+| SDIO | 45% | B5 |
+| H743 platform | 15% | B2/B6 (descoped remainder) |
+| Tooling | 90% | E2/E3 |
+
+Current overall ≈55-58%. Projected post-M2 ≈68-72%; post-M5 with descopes
+finalized ≈75-80% behavioral (100% is not claimed — see Non-goals).
 ## Known limitations
 
 - v8-M Secure-to-Non-secure interrupt delivery is not differentially tested
@@ -397,7 +509,7 @@ lda_stl, splim, tt/sau_tt/mpu_tt, alu_thumb1, sg, blxns/bxns,
   `S|DCRS|FTYPE|MODE`, QEMU built `ES|S|FTYPE|MODE` with clear `DCRS` for
   this entry in the version where delivery still worked) remains
   unexercised until an oracle that delivers the scenario is available.
-- Cycle timing: `cycles` is still 1c/insn (and 1c/sleep) for compat; `DWT_CYCCNT` (`0xE000_1004`, `CTRL.CYCCNTENA`) counts `cyccnt` (`1c` data, `2c` `LDR/STR`, `n+1` `LDM/STM`, `3c` taken branch, `4c` `BL`, plus `FLASH_ACR` `LATENCY` `WS` when `pc < 0x2000_0000`). `WFI`/`WFE` sleep and `SEV` latch are modeled. See item 6 hardening.
+- Cycle timing: `cycles` is still 1c/insn (and 1c/sleep) for compat; `DWT_CYCCNT` (`0xE000_1004`, `CTRL.CYCCNTENA`) counts `cyccnt` (`1c` data, `2c` `LDR/STR`, `n+1` `LDM/STM`, `3c` taken branch, `4c` `BL`, plus `FLASH_ACR` `LATENCY` `WS` when `pc < 0x2000_0000`). `WFI`/`WFE` sleep and `SEV` latch are modeled (see the "Cycle/timing policy" entry in Implemented).
 - UsageFault is a distinct exception gated by `SHCSR.USGFAULTENA`, FP access
   is gated by `CPACR` (`NOCP` when denied), and the MPU enforces eight
   configurable regions on every fetch and data access.
@@ -460,13 +572,20 @@ lda_stl, splim, tt/sau_tt/mpu_tt, alu_thumb1, sg, blxns/bxns,
 
 ## Open questions
 
-- Cycle-fidelity policy: peripheral-accurate versus instruction-accurate
-  timing once a timing milestone is scheduled.
-- Whether the conformance suite should pin QEMU at a specific version.
-- Which chip families receive the first generated SVD descriptors.
+All three former open questions are resolved by the plan above:
+- Cycle-fidelity policy → instruction-accurate with DWT CPI modeling
+  (shipped, item "Cycle/timing policy" in Implemented); peripheral-accurate
+  timing stays out until a customer scenario demands it.
+- QEMU pinning → WP-C1 pins the conformance oracle version in CI.
+- First SVD families → F1/F4/F0/F3/G4/L4/H7 packs already vendored; no new
+  families before v2.0.
 
 ## Non-goals (for now)
 
 - JIT compilation (deferred; any future fast path requires
-  interpreter-versus-JIT divergence tests).
+  interpreter-versus-JIT divergence tests — see WP-D2's guard).
 - ARM (A-profile) support.
+- H743 dual-core (CM4 companion), display/audio behavioral stacks (LTDC/
+  DMA2D/SAI/DFSDM stay latch-only per WP-B6 unless a written customer
+  scenario reopens them), gate-level or cycle-accurate silicon modeling,
+  hypervisor/virtualization features.
