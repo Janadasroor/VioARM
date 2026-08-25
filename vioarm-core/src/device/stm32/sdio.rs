@@ -36,6 +36,8 @@ struct SdioBehavior {
     next_is_acmd: bool,
     rca: u32,
     ocr: u32,
+    card: Vec<u8>,
+    last_arg: u32,
 }
 
 impl Default for SdioBehavior {
@@ -44,7 +46,9 @@ impl Default for SdioBehavior {
             fifo: std::collections::VecDeque::new(),
             next_is_acmd: false,
             rca: 0x4567_0000,
-            ocr: 0x80FF_8000, // ready, 3.3V
+            ocr: 0x80FF_8000,            // ready, 3.3V
+            card: vec![0u8; 512 * 2048], // 1 MiB card image
+            last_arg: 0,
         }
     }
 }
@@ -122,17 +126,28 @@ impl Behavior for SdioBehavior {
                     // If data path is enabled, complete the block and prime FIFO.
                     if view.get(DCTRL) & DCTRL_DTEN != 0 {
                         sta |= STA_DATAEND | STA_DBCKEND;
-                        // Prime FIFO with DLEN bytes of 0xFF for reads (card → controller).
+                        self.last_arg = view.get(0x08);
                         if view.get(DCTRL) & DCTRL_DTDIR == 0 {
-                            let dlen = view.get(DLEN);
+                            let dlen = view.get(DLEN).min(512);
                             self.fifo.clear();
-                            for _ in 0..dlen.min(512) {
-                                self.fifo.push_back(0xFF);
+                            let arg = self.last_arg;
+                            let block =
+                                if arg >= 512 && arg % 512 == 0 && (arg as usize) < self.card.len()
+                                {
+                                    (arg as usize) / 512
+                                } else {
+                                    arg as usize
+                                };
+                            let off = (block * 512).min(self.card.len());
+                            for i in 0..dlen as usize {
+                                let b = self.card.get(off + i).copied().unwrap_or(0xFF);
+                                self.fifo.push_back(b);
                             }
                             if !self.fifo.is_empty() {
                                 sta |= STA_RXDAVL;
                             }
                         } else {
+                            self.fifo.clear();
                             sta |= STA_TXDAVL;
                         }
                     }
@@ -147,6 +162,23 @@ impl Behavior for SdioBehavior {
                 self.fifo.push_back(val);
                 let sta = view.get(STA) | STA_TXDAVL;
                 view.set(STA, sta);
+                // When a full block has been written, commit to card image.
+                let dlen = view.get(DLEN);
+                if dlen != 0 && (self.fifo.len() as u32) >= dlen {
+                    let arg = self.last_arg;
+                    let block = if arg >= 512 && arg % 512 == 0 && (arg as usize) < self.card.len()
+                    {
+                        (arg as usize) / 512
+                    } else {
+                        arg as usize
+                    };
+                    let off = (block * 512).min(self.card.len());
+                    for (i, b) in self.fifo.iter().enumerate().take(dlen as usize) {
+                        if off + i < self.card.len() {
+                            self.card[off + i] = *b;
+                        }
+                    }
+                }
                 // FIFO is not a stored word; keep the register word as 0.
                 0
             }
