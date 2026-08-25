@@ -128,7 +128,7 @@ impl Behavior for SdioBehavior {
                         sta |= STA_DATAEND | STA_DBCKEND;
                         self.last_arg = view.get(0x08);
                         if view.get(DCTRL) & DCTRL_DTDIR == 0 {
-                            let dlen = view.get(DLEN).min(512);
+                            let dlen = view.get(DLEN) as usize;
                             self.fifo.clear();
                             let arg = self.last_arg;
                             let block =
@@ -139,9 +139,12 @@ impl Behavior for SdioBehavior {
                                     arg as usize
                                 };
                             let off = (block * 512).min(self.card.len());
-                            for i in 0..dlen as usize {
+                            for i in 0..dlen.min(self.card.len().saturating_sub(off)) {
                                 let b = self.card.get(off + i).copied().unwrap_or(0xFF);
                                 self.fifo.push_back(b);
+                            }
+                            while self.fifo.len() < dlen {
+                                self.fifo.push_back(0xFF);
                             }
                             if !self.fifo.is_empty() {
                                 sta |= STA_RXDAVL;
