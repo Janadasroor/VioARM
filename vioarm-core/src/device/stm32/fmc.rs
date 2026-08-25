@@ -185,9 +185,13 @@ impl InterruptSource for Qspi {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, Default)]
+struct DmamuxBehavior;
+
+impl Behavior for DmamuxBehavior {}
+
 pub struct Dmamux {
-    inner: RegisterFile<NoBehavior>,
+    inner: RegisterFile<DmamuxBehavior>,
 }
 
 impl Dmamux {
@@ -197,14 +201,14 @@ impl Dmamux {
             .or_else(|| D::peripheral("DMAMUX"))
             .expect("generated tables contain DMAMUX1");
         Self {
-            inner: RegisterFile::new(def, NoBehavior),
+            inner: RegisterFile::new(def, DmamuxBehavior),
         }
     }
     #[must_use]
     pub fn dmamux2_for<D: Device>() -> Self {
         let def = D::peripheral("DMAMUX2").expect("generated tables contain DMAMUX2");
         Self {
-            inner: RegisterFile::new(def, NoBehavior),
+            inner: RegisterFile::new(def, DmamuxBehavior),
         }
     }
 }
