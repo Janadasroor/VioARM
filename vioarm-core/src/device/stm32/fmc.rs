@@ -59,10 +59,9 @@ impl InterruptSource for Fmc {
 /// backed when `QUADSPI->CR.EN` (bit 0) is set, mirroring silicon where the
 /// memory-mapped mode is `CR.EN == 1`. The gate is shared between the
 /// `QUADSPI` register device (which drives `EN`) and the `SystemMemory` bus
-/// (which drops `0x9000_0000` accesses while disabled). Like `FlashGate` it
-/// resets enabled to keep the existing `stm32h743_fmc_qspi` e2e (which bangs
-/// `0x90000000` without touching `CR`) green; `BSP_QSPI_Init` `CR.EN=1`
-/// then makes the gated path observable via the `qspi_gate` e2e.
+/// (which drops `0x9000_0000` accesses while disabled). At reset `CR.EN`
+/// is 0 so the window is gated; firmware must set `CR.EN=1` before touching
+/// `0x90000000` (see `stm32h743_fmc_qspi` and `qspi_gate` e2es).
 #[derive(Debug)]
 pub struct QspiGate {
     /// The QSPI memory-mapped region `0x9000_0000 + len`.
@@ -76,7 +75,7 @@ impl QspiGate {
     pub const fn new(region: Region) -> Self {
         Self {
             region,
-            enabled: true,
+            enabled: false,
         }
     }
     pub fn reset(&mut self) {

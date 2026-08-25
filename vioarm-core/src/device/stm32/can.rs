@@ -557,20 +557,10 @@ impl Can {
 
 impl Peripheral for Can {
     fn ranges(&self) -> &[Region] {
-        // Advertise filter window as well so 0x40006600 not Reserved.
-        const EXTRA: Region = Region::new(0x4000_6600, 0x200);
-        // SAFETY: leak to static is fine for const range.
-        const R: &[Region] = &[EXTRA];
-        // Merge inner + filter: SystemMemory linear scan picks first hit,
-        // so we claim filter first; inner's 0x40006400/0x400 window covers
-        // 0x40006400-0x400067FF but filter will be checked first via early
-        // return in read/write.
-        // To keep one slice, return inner's ranges if addr not in filter;
-        // filter is handled in read/write early return, so we return inner.
-        // But we need to advertise filter: return a static that includes it.
-        // The simplest is to return a leaked Vec's slice, but we instead
-        // handle filter in read/write and let inner's Reserved be overridden
-        // by checking filter first in read/write.
+        // Filter window 0x40006600 lies inside CAN1's 0x40006400/0x400
+        // window; CAN2's shared banks are at the same physical address via
+        // CAN1's window, so no extra region is advertised. Handling is via
+        // early return in read/write.
         self.inner.ranges()
     }
 

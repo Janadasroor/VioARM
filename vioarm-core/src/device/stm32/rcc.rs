@@ -39,20 +39,29 @@ const CSIRDY: u32 = 1 << 8;
 const CR_OFFSET: u32 = 0x00;
 
 /// RCC's only synthesis: the clock-ready bits in `CR`.
-#[derive(Clone, Copy, Debug, Default)]
-struct RccBehavior;
+#[derive(Clone, Copy, Debug)]
+struct RccBehavior {
+    hsi_rdy: u32,
+}
+
+impl Default for RccBehavior {
+    fn default() -> Self {
+        Self { hsi_rdy: HSIRDY_F1 }
+    }
+}
 
 impl Behavior for RccBehavior {
     fn on_read(&mut self, _view: &mut Registers<&mut [u32]>, offset: u32, value: u32) -> u32 {
         if offset == CR_OFFSET {
-            // HSI is always on and ready (both F1 bit1 and H7 bit2 so `while (!(RCC->CR & RCC_CR_HSIRDY))` terminates on either).
-            // HSE locks instantly once HSEON is set, likewise PLL* once *ON is set. CSI likewise.
+            // HSI is always on and ready; which HSIRDY bit is synthesized
+            // depends on the family (F1 bit1 vs H7 bit2), derived at
+            // construction from the peripheral base (see `for_device`).
             let hse = if value & HSEON != 0 { HSERDY } else { 0 };
             let pll = if value & PLLON != 0 { PLLRDY } else { 0 };
             let pll2 = if value & PLL2ON != 0 { PLL2RDY } else { 0 };
             let pll3 = if value & PLL3ON != 0 { PLL3RDY } else { 0 };
             let csi = if value & CSION != 0 { CSIRDY } else { 0 };
-            value | HSION | HSIRDY_F1 | HSIRDY_H7 | hse | pll | pll2 | pll3 | csi
+            value | HSION | self.hsi_rdy | hse | pll | pll2 | pll3 | csi
         } else {
             value
         }
@@ -83,8 +92,16 @@ impl Rcc {
     #[must_use]
     pub fn for_device<D: Device>() -> Self {
         let def = D::peripheral("RCC").expect("generated tables contain RCC");
+        // H7 RCC lives at 0x58024400 with HSIRDY at bit2; F1/F4/etc at
+        // 0x4002xxxx use bit1. Derive the synthesized bit from the base so
+        // we don't OR both shims on every read.
+        let hsi_rdy = if def.base == 0x5802_4400 {
+            HSIRDY_H7
+        } else {
+            HSIRDY_F1
+        };
         Self {
-            inner: RegisterFile::new(def, RccBehavior),
+            inner: RegisterFile::new(def, RccBehavior { hsi_rdy }),
         }
     }
 }
@@ -189,8 +206,9 @@ mod tests {
         write_word(&mut r, BASE + CR, PLLON);
         write_word(&mut r, BASE + APB2ENR, 0xFFFF_FFFF);
         r.reset();
-        // SVD CR reset is 0x83 (HSION|HSIRDY_F1| bit7); behavior also synthesizes HSIRDY_H7 so read is 0x87.
-        assert_eq!(read_word(&mut r, BASE + CR) & 0xFF, 0x87);
+        // SVD CR reset is 0x83 (HSION|HSIRDY_F1| bit7); H7 would synthesize
+        // HSIRDY_H7 (0x84) instead, so F1 reads 0x83.
+        assert_eq!(read_word(&mut r, BASE + CR) & 0xFF, 0x83);
         assert_eq!(read_word(&mut r, BASE + APB2ENR), 0);
     }
 
