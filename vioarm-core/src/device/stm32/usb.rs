@@ -110,7 +110,7 @@ const HOST_OFFSET: u32 = 0x400;
 const DEVICE_OFFSET: u32 = 0x800;
 const PWRCLK_OFFSET: u32 = 0xe00;
 const FIFO_OFFSET: u32 = 0x1000;
-const FIFO_LEN: u32 = 0x400;
+const FIFO_LEN: u32 = 0x4000;
 /// Free words `DTXFSTS` reports once the TX FIFO is empty.
 const TX_CAPACITY: u32 = 0x40;
 
@@ -1112,5 +1112,41 @@ mod tests {
         let hs = Usb::otg_hs_for::<crate::device::svd::stm32f407::Stm32f407>();
         assert_eq!(hs.exception_number(), Some(16 + 77), "OTG_HS on F407");
         assert_eq!(hs.ranges()[0].base, 0x4004_0000);
+    }
+
+    #[test]
+    fn ep1_bulk_in_and_out() {
+        let mut u = usb_fs();
+        init_device(&mut u);
+        // Enable EP1 IN/OUT interrupts.
+        write_word(&mut u, FS + 0x800 + 0x10, 1 | (1 << 1)); // DIEPMSK XFRC for EP0+EP1
+        write_word(&mut u, FS + 0x800 + 0x14, 1 | (1 << 1)); // DOEPMSK
+                                                             // IN bulk on EP1
+        let payload = [0xAA, 0xBB, 0xCC, 0xDD];
+        for (i, b) in payload.iter().enumerate() {
+            u.write(FS + 0x1000 + 0x1000 + u32::try_from(i).unwrap(), *b)
+                .unwrap();
+        }
+        // DIEPCTL1 EPENA etc is via 0x900? Actually EP1 is at 0x120
+        write_word(&mut u, FS + 0x800 + 0x110 + 0x20, (1 << 19) | 4); // DIEPTSIZ1
+        write_word(&mut u, FS + 0x800 + 0x100 + 0x20, 0x8000_0000); // DIEPCTL1 EPENA
+        assert_ne!(
+            read_word(&mut u, FS + 0x800 + 0x108 + 0x20) & 1,
+            0,
+            "EP1 XFRC"
+        );
+        let out = u.drain_output();
+        assert_eq!(out[0], EVT_IN);
+        assert_eq!(out[1], 4);
+        assert_eq!(out[2], 1, "EP1 IN framed");
+        // OUT bulk on EP1
+        write_word(&mut u, FS + 0x800 + 0x310 + 0x20, (1 << 19) | 4); // DOEPTSIZ1
+        write_word(&mut u, FS + 0x800 + 0x300 + 0x20, 0x8000_0000); // DOEPCTL1 EPENA
+        inject(&mut u, &[CMD_OUT, 4, 1, 0x11, 0x22, 0x33, 0x44]);
+        assert_ne!(
+            read_word(&mut u, FS + 0x800 + 0x308 + 0x20) & 1,
+            0,
+            "EP1 OUT XFRC"
+        );
     }
 }
