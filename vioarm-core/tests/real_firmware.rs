@@ -4730,3 +4730,39 @@ void reset(void) {
     assert_eq!(m.core.mem().read_word(RAM).unwrap(), 1, "PWR_CR3");
     assert_eq!(m.core.mem().read_word(RAM + 4).unwrap(), 1, "PWR_CR1");
 }
+
+#[test]
+fn determinism_twice_same_trace() {
+    const FW: &str = r#"
+#define OUT 0x20000000u
+void reset(void) {
+    volatile unsigned *out = (volatile unsigned *)OUT;
+    for (unsigned i=0;i<100;i++) *out = i;
+    __asm__ volatile("bkpt #0");
+}
+"#;
+    let (code, symbols) = match build_firmware(FW) {
+        Ok(v) => v,
+        Err(why) => {
+            eprintln!("skipping determinism: {why}");
+            return;
+        }
+    };
+    let entry = *symbols.get("reset").unwrap();
+    let run_once = || {
+        let mut m = Machine::armv7m(board::stm32f103());
+        m.load_image(&load_flat(CODE_BASE, &code));
+        {
+            let mem = m.core.mem();
+            mem.write_word(board::FLASH, INIT_SP).unwrap();
+            mem.write_word(board::FLASH + 4, (CODE_BASE + entry) | 1)
+                .unwrap();
+        }
+        m.reset().unwrap();
+        let _ = m.run(50_000);
+        m.core.mem().read_word(RAM).unwrap()
+    };
+    let a = run_once();
+    let b = run_once();
+    assert_eq!(a, b, "deterministic: two runs must match");
+}
