@@ -180,7 +180,7 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "vioarm-cli"
-version = "1.9.0"
+version = "1.9.1"
 dependencies = [
  "clap",
  "vioarm-core",
@@ -189,25 +189,25 @@ dependencies = [
 
 [[package]]
 name = "vioarm-core"
-version = "1.9.0"
+version = "1.9.1"
 
 [[package]]
 name = "vioarm-gdb"
-version = "1.9.0"
+version = "1.9.1"
 dependencies = [
  "vioarm-core",
 ]
 
 [[package]]
 name = "vioarm-qemu"
-version = "1.9.0"
+version = "1.9.1"
 dependencies = [
  "vioarm-core",
 ]
 
 [[package]]
 name = "vioarm-svd"
-version = "1.9.0"
+version = "1.9.1"
 dependencies = [
  "quick-xml",
 ]

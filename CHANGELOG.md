@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.1] - 2026-08-25
+### Fixed
+- `SCB`: a data-access bus error recorded `BFSR.IBUSERR` (CFSR bit 8) where the
+  ARM ARM puts `PRECISERR`; it now latches `PRECISERR|BFARVALID`, stores the
+  faulting address in the new `BFAR` window (`0xE000_ED38`), and `data_fault`
+  routes through `Scb::record_bus_fault`. Locked against the QEMU M3 oracle
+  (`busfault_precise_taken_as_busfault`) `d349667`.
+- Conformance harness: an interrupted run orphaned its `qemu-system-arm`
+  children, whose `-d cpu` traces grew by gigabytes inside `/tmp` (tmpfs =
+  RAM) and OOM-killed the desktop session. Logs now live under the disk-backed
+  `target/vioarm-qemu-logs`, scoped per PID, reaped stale, deleted after each
+  run (`VIOARM_KEEP_LOGS` keeps them) `db146da`.
+- `m7_f64` fed architectural words to `raw32`, whose convention is the
+  half-swapped pair; the stream decoded as garbage on both sides. Canonical
+  encodings per GNU as (`vmov d1/d2` = `EC41_0B11/12`, `vrintr.f64` =
+  `EEB6_2B40`); VioARM's FPv5-D16 now diffs clean against `mps2-an500`.
+- `-d cpu` log parsing could index one line past EOF when a QEMU killed under
+  parallel load truncated a state block; the block is bounds-checked now and
+  the retry timeout rose 15s -> 60s.
+
+### Known gap
+- `m33_baseline_secure_irq_returns_nonsecure` is the one red of 744: VioARM
+  builds the Non-secure handler's `EXC_RETURN` as `S|DCRS|FTYPE|MODE`
+  (`0xFFFFFFF8`) where QEMU builds `ES|S|FTYPE|MODE` with `DCRS` clear while a
+  callee-saves block is stacked (`0xFFFFFFD9`). Each machine is self-consistent
+  end-to-end (both restore every register), but the per-instruction diff sees
+  the LR mismatch at handler entry. Fix requires reworking entry construction
+  and `exception_return_v8m`'s R_SMFL check together (key it on the return
+  target's security state, not the current one).
+
 ## [1.9.0] - 2026-08-22
 ### Added
 - Timer `PWM` `CCMR1/2 0x18/0x1C` `CCER 0x20` `CCR1-4 0x34..40` `CNT==CCR→CCxIF` gated `OCxM+CCxE` `DIER CCxIE` `pending` `TIM 60→85%` `162a121`.
