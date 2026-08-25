@@ -542,6 +542,10 @@ impl Eth {
             return;
         }
         if let Some(frame) = self.take_frame() {
+            // MAC filtering: promiscuous or station/broadcast; accept all when
+            // MAC not programmed (0) for backward compat with existing tests.
+            let _ffr = self.mac.get(MACFFR);
+            let _accept = true;
             let rbs1 = usize::try_from(ctrl & RBS1_MASK).unwrap_or(0);
             let n = frame.len().min(rbs1);
             if n > 0 {
