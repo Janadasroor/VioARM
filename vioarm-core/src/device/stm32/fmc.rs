@@ -623,3 +623,38 @@ impl InterruptSource for Dma2d {
         self.inner.acknowledge(lines);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Dmamux, DmamuxBehavior};
+    use crate::device::svd::stm32h743::Stm32h743;
+    use crate::device::{svd::Device, Peripheral};
+
+    fn write_word(p: &mut Dmamux, addr: u32, val: u32) {
+        for i in 0..4 {
+            p.write(addr + i, ((val >> (8 * i)) & 0xFF) as u8).unwrap();
+        }
+    }
+    fn read_word(p: &mut Dmamux, addr: u32) -> u32 {
+        let mut w = 0;
+        for i in 0..4 {
+            w |= u32::from(p.read(addr + i).unwrap()) << (8 * i);
+        }
+        w
+    }
+
+    #[test]
+    fn dmamux_routes_dma_req_id() {
+        let mut d = Dmamux::new_for::<Stm32h743>();
+        let base = d.ranges()[0].base;
+        // CCR0 DMAREQ_ID = 0x12
+        write_word(&mut d, base, 0x12);
+        assert_eq!(read_word(&mut d, base) & 0x7F, 0x12);
+        // CCR1
+        write_word(&mut d, base + 4, 0x34);
+        assert_eq!(read_word(&mut d, base + 4) & 0x7F, 0x34);
+        // Check internal routing table via behavior
+        assert_eq!(d.inner.behavior().req_id[0], 0x12);
+        assert_eq!(d.inner.behavior().req_id[1], 0x34);
+    }
+}
