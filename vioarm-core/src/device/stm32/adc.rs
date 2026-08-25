@@ -12,11 +12,13 @@
 //! every channel comes from the host through [`Peripheral::drive_inputs`],
 //! truncated to the 12-bit result.
 
+use crate::device::stm32::dma::DmaRequests;
 use crate::device::svd::stm32f103;
 use crate::device::svd::{Behavior, Device, PeripheralDef, RegisterFile, Registers};
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
 use crate::mem::bus::Region;
+use std::sync::{Arc, Mutex};
 
 /// Register offsets within the ADC, per the SVD.
 const SR: u32 = 0x00;
@@ -79,15 +81,17 @@ struct AdcBehavior {
     converting: Option<Conversion>,
     sq_index: u32,
     config: AdcConfig,
+    dma: Option<(Arc<Mutex<DmaRequests>>, u8, u8)>,
 }
 
 impl AdcBehavior {
-    const fn new(config: AdcConfig) -> Self {
+    fn new(config: AdcConfig) -> Self {
         Self {
             analog: [0; 18],
             converting: None,
             sq_index: 0,
             config,
+            dma: None,
         }
     }
 
@@ -207,6 +211,15 @@ impl Behavior for AdcBehavior {
             view.set(self.config.sr_off, sr | eoc | STRT);
         }
         view.set(self.config.dr_off, aligned);
+        // DMA request on EOC: CR2 DMA (bit8) enabled.
+        if view.get(self.config.cr_off) & (1 << 8) != 0 {
+            if let Some((reqs, ctrl, ch)) = self.dma.as_ref() {
+                let reqs = Arc::clone(reqs);
+                reqs.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .request(*ctrl, *ch, false);
+            }
+        }
         // Continuous or scan mode re-arms the next conversion immediately.
         let continuous = view.get(self.config.cr_off) & CONT != 0;
         let scan = view.get(CR1) & SCAN != 0;
@@ -328,6 +341,18 @@ impl Adc {
             inner: RegisterFile::new(def, AdcBehavior::new(config_from(def))),
             name,
         }
+    }
+
+    /// Attach DMA peripheral->memory request line.
+    #[must_use]
+    pub fn with_dma(
+        mut self,
+        requests: Arc<Mutex<DmaRequests>>,
+        controller: u8,
+        channel: u8,
+    ) -> Self {
+        self.inner.behavior_mut().dma = Some((requests, controller, channel));
+        self
     }
 }
 
@@ -603,5 +628,18 @@ mod tests {
         adc.tick(20);
         assert_eq!(read_word(&mut adc, SR) & EOC, 0);
         assert_eq!(read_word(&mut adc, DR), 0);
+    }
+
+    #[test]
+    fn dma_request_on_eoc() {
+        use crate::device::stm32::dma::DmaRequests;
+        use std::sync::{Arc, Mutex};
+        let reqs = Arc::new(Mutex::new(DmaRequests::new()));
+        let mut adc = Adc::adc1().with_dma(reqs.clone(), 0, 1);
+        adc.drive_inputs(0x123);
+        write_word(&mut adc, CR2, ADON | (1 << 8)); // DMA
+        write_word(&mut adc, CR2, ADON | (1 << 8) | SWSTART_F1);
+        adc.tick(14);
+        assert_ne!(reqs.lock().unwrap().from_periph(), 0, "DMA requested");
     }
 }
