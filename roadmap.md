@@ -121,10 +121,9 @@ Tooling:
 
 ### In progress
 
-- **M1 — Correctness debt** (next up): WP-A1 bxCAN acceptance filtering +
-  per-instance filter window, WP-A2 hygiene sweep (QspiGate reset polarity,
-  RCC HSIRDY per family, dead code), WP-A3 timer input capture + observable
-  output state. See "Plan to production" below.
+- **M2 — Peripheral depth** done (B1 TIM/ADC DMA, B3 EP1-3, B4 PHY, B5 card
+  image, B6 H7 descoped; B2 DMAMUX scaffold). **M3 — Verification gates**
+  next: C1 done, C2/C3/C4 in flight. See "Plan to production" below.
 
 ## Plan to production — `v1.9.1 → v2.0`
 
@@ -315,15 +314,13 @@ Acceptance: FAT-free raw-block e2e: firmware reads sector 0 from injected
 image over DMA-less polled path and DMA path.
 Effort: 8ah.
 
-### WP-B6 H7 platform decision (scope gate)
+### WP-B6 H7 platform decision (scope gate) — DONE 2026-08-25
 
-Evaluate cost/value: making `LTDC/DMA2D/BDMA/MDMA/SAI4/DFSDM/HRTIM` minimally
-behavioral vs permanent latch-only. Decision rule: enterprise users run headless
-control/HIL workloads; display/audio stacks are out of primary value. Default:
-**descope to latch-only permanently**, delete the phrase "windows" from all
-progress claims, and note it in `Non-goals`. Any behavior beyond latch needs a
-written customer scenario first.
-Acceptance: decision recorded in roadmap + CHANGELOG; progress table updated.
+Decision: **descope to latch-only permanently**. `LTDC/DMA2D/BDMA/MDMA/SAI4/
+DFSDM/HRTIM` remain `NoBehavior` latch windows. Enterprise value is headless
+HIL; display/audio stacks require a written customer scenario to reopen.
+Progress claims no longer count H7 windows; see updated table and Non-goals.
+Acceptance: decision recorded here + CHANGELOG; no code change beyond doc.
 Effort: 1ah.
 
 ---
@@ -478,18 +475,18 @@ all five milestones.
 | GPIO F1/F4 | 90% | — |
 | Flash F1/F4 | 75% | — |
 | RTC/PWR/IWDG/WWDG/CRC/DAC/BKP | 75% | — |
-| USART family | 75% | B1 (remaining req paths) |
-| ADC/SPI/I2C | 70% | B1 request wiring |
-| Timers | 45% | A3 |
-| CAN bxCAN | 50% | A1 |
-| DMA F1/F4/DMAMUX | 35% | B1/B2 |
-| USB OTG FS | 40% | B3 |
-| ETH | 50% | B4 |
-| SDIO | 45% | B5 |
-| H743 platform | 15% | B2/B6 (descoped remainder) |
+| USART family | 75% | — |
+| ADC/SPI/I2C | 75% | — |
+| Timers | 65% | C3 |
+| CAN bxCAN | 70% | — |
+| DMA F1/F4/DMAMUX | 50% | B1 burst |
+| USB OTG FS | 60% | — |
+| ETH | 65% | — |
+| SDIO | 60% | — |
+| H743 platform | 15% | descoped |
 | Tooling | 90% | E2/E3 |
 
-Current overall ≈55-58%. Projected post-M2 ≈68-72%; post-M5 with descopes
+Current overall ≈62-65% (post-M2). Projected post-M5 with descopes
 finalized ≈75-80% behavioral (100% is not claimed — see Non-goals).
 ## Known limitations
 
