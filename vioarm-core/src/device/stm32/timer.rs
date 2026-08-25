@@ -16,11 +16,13 @@
 //! the model routes its single pending line to `TIM1_UP` (IRQ 25) rather than
 //! the break line the table happens to list first.
 
+use crate::device::stm32::dma::DmaRequests;
 use crate::device::svd::stm32f103;
 use crate::device::svd::{Behavior, Device, RegisterFile, Registers};
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
 use crate::mem::bus::Region;
+use std::sync::{Arc, Mutex};
 
 /// Register offsets within the timer, per the SVD.
 const CR1: u32 = 0x00;
@@ -61,9 +63,14 @@ const CC1E: u32 = 1 << 0;
 const CC2E: u32 = 1 << 4;
 const CC3E: u32 = 1 << 8;
 const CC4E: u32 = 1 << 12;
+const UDE: u32 = 1 << 8;
+const CC1DE: u32 = 1 << 9;
+const CC2DE: u32 = 1 << 10;
+const CC3DE: u32 = 1 << 11;
+const CC4DE: u32 = 1 << 12;
 
 /// The counting core the SVD cannot express.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct TimerBehavior {
     /// Register width mask: `u32::MAX` for the 32-bit `TIM2`/`TIM5`,
     /// `0xFFFF` for the 16-bit counters.
@@ -72,14 +79,17 @@ struct TimerBehavior {
     psc_phase: u64,
     /// Per-channel output levels (the pin, host-visible via `Timer::output_level`).
     output: [bool; 4],
+    /// Optional DMA update request line: `Some((requests, controller, channel))`.
+    dma_update: Option<(Arc<Mutex<DmaRequests>>, u8, u8)>,
 }
 
 impl TimerBehavior {
-    const fn new(width_mask: u32) -> Self {
+    fn new(width_mask: u32) -> Self {
         Self {
             width_mask,
             psc_phase: 0,
             output: [false; 4],
+            dma_update: None,
         }
     }
 
@@ -235,6 +245,14 @@ impl Behavior for TimerBehavior {
                 if view.get(CR1) & OPM != 0 {
                     view.set(CR1, view.get(CR1) & !CEN);
                 }
+                if view.get(DIER) & UDE != 0 {
+                    if let Some((reqs, ctrl, ch)) = self.dma_update.as_ref() {
+                        let reqs = Arc::clone(reqs);
+                        reqs.lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .request(*ctrl, *ch, false);
+                    }
+                }
             }
             // CCxG force generates compare event.
             for (ch, bit) in [(0, CC1G), (1, CC2G), (2, CC3G), (3, CC4G)] {
@@ -308,6 +326,14 @@ impl Behavior for TimerBehavior {
                     view.set(SR, view.get(SR) | UIF);
                     if view.get(CR1) & OPM != 0 {
                         view.set(CR1, view.get(CR1) & !CEN);
+                    }
+                    if view.get(DIER) & UDE != 0 {
+                        if let Some((reqs, ctrl, ch)) = self.dma_update.as_ref() {
+                            let reqs = Arc::clone(reqs);
+                            reqs.lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .request(*ctrl, *ch, false);
+                        }
                     }
                 }
                 view.set(CNT, next);
@@ -547,6 +573,18 @@ impl Timer {
         let ch = (channel - 1) as usize;
         self.inner
             .with_view(|view, beh| beh.inject_capture(view, ch));
+    }
+
+    /// Attach DMA update request line.
+    #[must_use]
+    pub fn with_dma_update(
+        mut self,
+        requests: Arc<Mutex<DmaRequests>>,
+        controller: u8,
+        channel: u8,
+    ) -> Self {
+        self.inner.behavior_mut().dma_update = Some((requests, controller, channel));
+        self
     }
 }
 
@@ -866,5 +904,28 @@ mod tests {
         let mut t = Timer::tim2();
         assert!(matches!(t.read(BASE + 0x50), Err(BusError::Reserved)));
         assert!(matches!(t.write(BASE - 1, 0), Err(BusError::Reserved)));
+    }
+
+    #[test]
+    fn dma_update_request_on_overflow() {
+        use crate::device::stm32::dma::DmaRequests;
+        use std::sync::{Arc, Mutex};
+        let reqs = Arc::new(Mutex::new(DmaRequests::new()));
+        let mut t = Timer::tim2().with_dma_update(reqs.clone(), 0, 2);
+        write_word(&mut t, BASE + 0x2C, 2); // ARR 2
+        write_word(&mut t, BASE + 0x0C, 1 << 8); // DIER UDE
+        write_word(&mut t, BASE, CEN);
+        for _ in 0..2 {
+            t.tick(1);
+        }
+        assert_eq!(reqs.lock().unwrap().to_periph(), 0);
+        assert_eq!(reqs.lock().unwrap().from_periph(), 0);
+        t.tick(1); // overflow at 2->0
+                   // Update DMA is from_periph (timer is peripheral)
+        assert_ne!(
+            reqs.lock().unwrap().from_periph(),
+            0,
+            "update DMA requested"
+        );
     }
 }
