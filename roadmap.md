@@ -126,7 +126,6 @@ Tooling:
   routing `fmc.rs:188` + test, USB EP1-3 bulk `FIFO 0x4000`, ETH PHY `BMSR`,
   SDIO card 1 MiB multi-block, H7 descoped), M3 C1-C4 (CI `ORACLE_VERSION`
   `qemu.rs:132` + `deny`/`cov`/`clippy`, `fuzz/` real `loader::{load_elf,load_hex,load_flat}` `76af9ef`, determinism `real_firmware.rs:4735`, C3 8 extra `c3_qadd` `9cfcef2`), M4 `vioarm-core/benches/mips.rs:1` `criterion` board-boot `6d53430`, M5 `packs/PROVENANCE.md` + `xtask` + `docs/book.toml`.
-- **Next — v2.1 polish**: `DMAMUX` sync/trigger, `ETH` hash filter, `SDIO` DMA path, `DMA` F4 burst `MBURST`, `mdBook` full content + `examples/`, `cargo cyclonedx` SBOM, `macos/windows` CI.
 
 ## Plan to production — `v1.9.1 → v2.0`
 
