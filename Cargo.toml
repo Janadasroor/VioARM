@@ -3,7 +3,7 @@ resolver = "2"
 members = ["vioarm-core", "vioarm-cli", "vioarm-svd", "vioarm-gdb", "vioarm-qemu"]
 
 [workspace.package]
-version = "1.9.1"
+version = "2.0.0"
 edition = "2021"
 license = "MIT"
 rust-version = "1.75"
