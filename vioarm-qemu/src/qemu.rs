@@ -124,6 +124,9 @@ fn qemu_candidates() -> Vec<PathBuf> {
     out
 }
 
+/// QEMU oracle version pinned in CI (`ci.yml`).
+pub const ORACLE_VERSION: &str = "qemu-system-arm 10.2.1";
+
 /// Locate a usable `qemu-system-arm`.
 #[must_use]
 pub fn find_qemu() -> Option<PathBuf> {
