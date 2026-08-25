@@ -6,7 +6,9 @@
 //! the prescaler `PSC` divides the clock by `PSC + 1`, and `CNT` wraps past
 //! `ARR` into an update event that sets `SR.UIF` and — with `DIER.UIE` set —
 //! raises a level-triggered IRQ. `EGR.UG` forces an update from software.
-//! Channel logic (`CCR`/`CCER`) is latched state only.
+//! Channel logic (`CCMR`/`CCER`/`CCR`) implements output compare (frozen,
+//! active/inactive, toggle, PWM1/2) with `EGR.CCxG` force, input capture
+//! via host `inject_capture`, and one-pulse `CR1.OPM`.
 //!
 //! The counter width varies by instance: `TIM2`/`TIM5` are 32-bit, the rest
 //! 16-bit. The advanced `TIM1` raises four lines (break, update, trigger/comm,
@@ -38,10 +40,15 @@ const CCR4: u32 = 0x40;
 
 /// `CEN` bit in `CR1`.
 const CEN: u32 = 1 << 0;
+const OPM: u32 = 1 << 3;
 /// `UIF` bit in `SR` / `UG` bit in `EGR` / `UIE` bit in `DIER`.
 const UIF: u32 = 1 << 0;
 const UIE: u32 = 1 << 0;
 const UG: u32 = 1 << 0;
+const CC1G: u32 = 1 << 1;
+const CC2G: u32 = 1 << 2;
+const CC3G: u32 = 1 << 3;
+const CC4G: u32 = 1 << 4;
 const CC1IE: u32 = 1 << 1;
 const CC2IE: u32 = 1 << 2;
 const CC3IE: u32 = 1 << 3;
@@ -50,6 +57,10 @@ const CC1IF: u32 = 1 << 1;
 const CC2IF: u32 = 1 << 2;
 const CC3IF: u32 = 1 << 3;
 const CC4IF: u32 = 1 << 4;
+const CC1E: u32 = 1 << 0;
+const CC2E: u32 = 1 << 4;
+const CC3E: u32 = 1 << 8;
+const CC4E: u32 = 1 << 12;
 
 /// The counting core the SVD cannot express.
 #[derive(Clone, Copy, Debug)]
@@ -59,6 +70,8 @@ struct TimerBehavior {
     width_mask: u32,
     /// Prescaler phase within the current `PSC + 1` division.
     psc_phase: u64,
+    /// Per-channel output levels (the pin, host-visible via `Timer::output_level`).
+    output: [bool; 4],
 }
 
 impl TimerBehavior {
@@ -66,6 +79,136 @@ impl TimerBehavior {
         Self {
             width_mask,
             psc_phase: 0,
+            output: [false; 4],
+        }
+    }
+
+    fn handle_compare(
+        &mut self,
+        view: &mut Registers<&mut [u32]>,
+        ch: usize,
+        ocm: u32,
+        next: u32,
+        ccr: u32,
+    ) {
+        let ccer = view.try_get(CCER).unwrap_or(0);
+        let en_bit = match ch {
+            0 => CC1E,
+            1 => CC2E,
+            2 => CC3E,
+            _ => CC4E,
+        };
+        if ccer & en_bit == 0 {
+            return;
+        }
+        let ccr_masked = ccr & self.width_mask;
+        // For PWM modes we update output every tick, otherwise on match.
+        match ocm {
+            6 => {
+                // PWM1: active while CNT < CCR
+                self.output[ch] = next < ccr_masked;
+                if next == ccr_masked {
+                    // Also set flag on match for interrupt.
+                    let flag = match ch {
+                        0 => CC1IF,
+                        1 => CC2IF,
+                        2 => CC3IF,
+                        _ => CC4IF,
+                    };
+                    view.set(SR, view.get(SR) | flag);
+                }
+            }
+            7 => {
+                // PWM2: inactive while CNT < CCR (inverted)
+                self.output[ch] = next >= ccr_masked;
+                if next == ccr_masked {
+                    let flag = match ch {
+                        0 => CC1IF,
+                        1 => CC2IF,
+                        2 => CC3IF,
+                        _ => CC4IF,
+                    };
+                    view.set(SR, view.get(SR) | flag);
+                }
+            }
+            0 => {
+                // Frozen: no output change, but still set flag on match.
+                if next == ccr_masked {
+                    let flag = match ch {
+                        0 => CC1IF,
+                        1 => CC2IF,
+                        2 => CC3IF,
+                        _ => CC4IF,
+                    };
+                    view.set(SR, view.get(SR) | flag);
+                }
+            }
+            1 => {
+                // Active on match
+                if next == ccr_masked {
+                    self.output[ch] = true;
+                    let flag = match ch {
+                        0 => CC1IF,
+                        1 => CC2IF,
+                        2 => CC3IF,
+                        _ => CC4IF,
+                    };
+                    view.set(SR, view.get(SR) | flag);
+                }
+            }
+            2 => {
+                // Inactive on match
+                if next == ccr_masked {
+                    self.output[ch] = false;
+                    let flag = match ch {
+                        0 => CC1IF,
+                        1 => CC2IF,
+                        2 => CC3IF,
+                        _ => CC4IF,
+                    };
+                    view.set(SR, view.get(SR) | flag);
+                }
+            }
+            3 => {
+                // Toggle on match
+                if next == ccr_masked {
+                    self.output[ch] = !self.output[ch];
+                    let flag = match ch {
+                        0 => CC1IF,
+                        1 => CC2IF,
+                        2 => CC3IF,
+                        _ => CC4IF,
+                    };
+                    view.set(SR, view.get(SR) | flag);
+                }
+            }
+            _ => {
+                // Reserved 100,101: treat as frozen but set flag.
+                if next == ccr_masked {
+                    let flag = match ch {
+                        0 => CC1IF,
+                        1 => CC2IF,
+                        2 => CC3IF,
+                        _ => CC4IF,
+                    };
+                    view.set(SR, view.get(SR) | flag);
+                }
+            }
+        }
+    }
+
+    fn inject_capture(&mut self, view: &mut Registers<&mut [u32]>, ch: usize) {
+        // Latch current CNT into CCRx and set CCxIF. Honor width mask.
+        let cnt = view.get(CNT) & self.width_mask;
+        let (ccr_off, flag) = match ch {
+            0 => (CCR1, CC1IF),
+            1 => (CCR2, CC2IF),
+            2 => (CCR3, CC3IF),
+            _ => (CCR4, CC4IF),
+        };
+        if view.try_get(ccr_off).is_some() {
+            view.set(ccr_off, cnt);
+            view.set(SR, view.get(SR) | flag);
         }
     }
 }
@@ -78,13 +221,65 @@ impl Behavior for TimerBehavior {
         val: u8,
         shift: u32,
     ) -> u32 {
-        if offset == EGR && (u32::from(val) << shift) & UG != 0 {
-            // Any write with UG set forces a software update event: reload the
-            // counter and prescaler, and set the update flag like a real
-            // overflow would.
-            view.set(CNT, 0);
-            self.psc_phase = 0;
-            view.set(SR, view.get(SR) | UIF);
+        if offset == EGR {
+            let bits = u32::from(val) << shift;
+            if bits & UG != 0 {
+                // Any write with UG set forces a software update event: reload the
+                // counter and prescaler, and set the update flag like a real
+                // overflow would.
+                view.set(CNT, 0);
+                self.psc_phase = 0;
+                view.set(SR, view.get(SR) | UIF);
+                // OPM: if set, UG also clears CEN? On silicon update event
+                // clears CEN when OPM=1. For UG we also handle.
+                if view.get(CR1) & OPM != 0 {
+                    view.set(CR1, view.get(CR1) & !CEN);
+                }
+            }
+            // CCxG force generates compare event.
+            for (ch, bit) in [(0, CC1G), (1, CC2G), (2, CC3G), (3, CC4G)] {
+                if bits & bit != 0 {
+                    let flag = match ch {
+                        0 => CC1IF,
+                        1 => CC2IF,
+                        2 => CC3IF,
+                        _ => CC4IF,
+                    };
+                    view.set(SR, view.get(SR) | flag);
+                    // For active/toggle modes, update output as if match.
+                    // Use current CNT vs CCR comparison for PWM is tick-driven,
+                    // but for force we just toggling per OCxM's active semantics.
+                    if let (Some(ccr), Some(ccmr)) = (
+                        view.try_get(match ch {
+                            0 => CCR1,
+                            1 => CCR2,
+                            2 => CCR3,
+                            _ => CCR4,
+                        }),
+                        view.try_get(if ch < 2 { CCMR1 } else { CCMR2 }),
+                    ) {
+                        let ocm = if ch % 2 == 0 {
+                            (ccmr >> 4) & 0x7
+                        } else {
+                            (ccmr >> 12) & 0x7
+                        };
+                        let ccs = if ch % 2 == 0 {
+                            ccmr & 0x3
+                        } else {
+                            (ccmr >> 8) & 0x3
+                        };
+                        if ccs == 0 {
+                            // Only for output compare.
+                            match ocm {
+                                1 => self.output[ch] = true,
+                                2 => self.output[ch] = false,
+                                3 => self.output[ch] = !self.output[ch],
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
         }
         let word = view.merged(offset, val, shift);
         match offset {
@@ -107,41 +302,53 @@ impl Behavior for TimerBehavior {
             if self.psc_phase >= div {
                 self.psc_phase = 0;
                 let cnt = u64::from(view.get(CNT)) + 1;
-                let next = if cnt > arr { 0 } else { cnt as u32 };
-                if cnt > arr {
+                let overflow = cnt > arr;
+                let next = if overflow { 0 } else { cnt as u32 };
+                if overflow {
                     view.set(SR, view.get(SR) | UIF);
+                    if view.get(CR1) & OPM != 0 {
+                        view.set(CR1, view.get(CR1) & !CEN);
+                    }
                 }
                 view.set(CNT, next);
-                if let (Some(ccr), Some(ccmr1), Some(ccer)) =
-                    (view.try_get(CCR1), view.try_get(CCMR1), view.try_get(CCER))
-                {
-                    let ocm = (ccmr1 >> 4) & 0x7;
-                    if ocm != 0 && ccer & 1 != 0 && next == ccr & self.width_mask {
-                        view.set(SR, view.get(SR) | CC1IF);
+                // For PWM modes, update output every tick before compare check
+                // so level reflects CNT < CCR across the period.
+                // For other OC modes, handle on match.
+                for ch in 0..4 {
+                    let (ccr_off, ccmr_off) = match ch {
+                        0 => (CCR1, CCMR1),
+                        1 => (CCR2, CCMR1),
+                        2 => (CCR3, CCMR2),
+                        _ => (CCR4, CCMR2),
+                    };
+                    let Some(ccr) = view.try_get(ccr_off) else {
+                        continue;
+                    };
+                    let Some(ccmr) = view.try_get(ccmr_off) else {
+                        continue;
+                    };
+                    let ccs = if ch == 0 || ch == 2 {
+                        ccmr & 0x3
+                    } else {
+                        (ccmr >> 8) & 0x3
+                    };
+                    if ccs != 0 {
+                        continue; // Input capture mode, not output.
                     }
-                }
-                if let (Some(ccr), Some(ccmr1), Some(ccer)) =
-                    (view.try_get(CCR2), view.try_get(CCMR1), view.try_get(CCER))
-                {
-                    let ocm = (ccmr1 >> 12) & 0x7;
-                    if ocm != 0 && ccer & (1 << 4) != 0 && next == ccr & self.width_mask {
-                        view.set(SR, view.get(SR) | CC2IF);
-                    }
-                }
-                if let (Some(ccr), Some(ccmr2), Some(ccer)) =
-                    (view.try_get(CCR3), view.try_get(CCMR2), view.try_get(CCER))
-                {
-                    let ocm = (ccmr2 >> 4) & 0x7;
-                    if ocm != 0 && ccer & (1 << 8) != 0 && next == ccr & self.width_mask {
-                        view.set(SR, view.get(SR) | CC3IF);
-                    }
-                }
-                if let (Some(ccr), Some(ccmr2), Some(ccer)) =
-                    (view.try_get(CCR4), view.try_get(CCMR2), view.try_get(CCER))
-                {
-                    let ocm = (ccmr2 >> 12) & 0x7;
-                    if ocm != 0 && ccer & (1 << 12) != 0 && next == ccr & self.width_mask {
-                        view.set(SR, view.get(SR) | CC4IF);
+                    let ocm = if ch == 0 || ch == 2 {
+                        (ccmr >> 4) & 0x7
+                    } else {
+                        (ccmr >> 12) & 0x7
+                    };
+                    // PWM needs per-tick level update.
+                    if ocm == 6 || ocm == 7 {
+                        self.handle_compare(view, ch, ocm, next, ccr);
+                    } else {
+                        // Non-PWM: only on match.
+                        let ccr_masked = ccr & self.width_mask;
+                        if next == ccr_masked {
+                            self.handle_compare(view, ch, ocm, next, ccr);
+                        }
                     }
                 }
             }
@@ -233,7 +440,7 @@ impl Timer {
     /// A `TIM4` at `0x4000_0800`: 16-bit counter, IRQ 30.
     ///
     /// # Panics
-    /// Panics if the generated device tables do not contain the `TIM4`
+    /// Panics if `D`'s generated tables do not contain the `TIM4`
     /// peripheral (a build-time invariant enforced by conformance tests).
     #[must_use]
     pub fn tim4() -> Self {
@@ -290,8 +497,7 @@ impl Timer {
     /// A `TIM7` at `0x4000_1400`: 16-bit basic counter, IRQ 55.
     ///
     /// # Panics
-    /// Panics if the generated device tables do not contain the `TIM7`
-    /// peripheral (a build-time invariant enforced by conformance tests).
+    /// Panics if `D`'s generated tables do not contain the `TIM7` peripheral.
     #[must_use]
     pub fn tim7() -> Self {
         Self::tim7_for::<stm32f103::Stm32f103>()
@@ -319,6 +525,28 @@ impl Timer {
             name,
             irq_line,
         }
+    }
+
+    /// Current output level for `channel` (1..4), the host-visible pin for
+    /// output compare / PWM.
+    #[must_use]
+    pub fn output_level(&self, channel: u8) -> bool {
+        if (1..=4).contains(&channel) {
+            self.inner.behavior().output[usize::from(channel - 1)]
+        } else {
+            false
+        }
+    }
+
+    /// Inject a capture event on `channel` (1..4): latches `CNT` into
+    /// `CCRx` and sets `CCxIF` as if an edge arrived.
+    pub fn inject_capture(&mut self, channel: u8) {
+        if !(1..=4).contains(&channel) {
+            return;
+        }
+        let ch = (channel - 1) as usize;
+        self.inner
+            .with_view(|view, beh| beh.inject_capture(view, ch));
     }
 }
 
@@ -366,7 +594,7 @@ impl InterruptSource for Timer {
 
 #[cfg(test)]
 mod tests {
-    use super::{Timer, CEN, UIE, UIF};
+    use super::{Timer, CEN, OPM, UIE, UIF};
     use crate::device::{InterruptSource, Peripheral};
     use crate::error::BusError;
 
@@ -529,6 +757,107 @@ mod tests {
         write_word(&mut t, 0x4001_2C00 + 0x0C, UIE);
         write_word(&mut t, 0x4001_2C00, CEN);
         t.tick(2);
+        assert_eq!(t.pending(), 1);
+    }
+
+    #[test]
+    fn opm_clears_cen_on_update() {
+        let mut t = Timer::tim2();
+        write_word(&mut t, BASE + 0x2C, 1); // ARR 1
+        write_word(&mut t, BASE + 0x0C, UIE);
+        write_word(&mut t, BASE, CEN | OPM);
+        t.tick(2); // wrap
+        assert_eq!(read_word(&mut t, BASE) & CEN, 0, "OPM clears CEN");
+        assert_eq!(t.pending(), 1);
+        let cnt_before = read_word(&mut t, BASE + 0x24);
+        t.tick(10);
+        assert_eq!(read_word(&mut t, BASE + 0x24), cnt_before, "stopped");
+    }
+
+    #[test]
+    fn output_compare_active_sets_level() {
+        let mut t = Timer::tim2();
+        let base = BASE;
+        write_word(&mut t, base + 0x2C, 10); // ARR
+        write_word(&mut t, base + 0x34, 5); // CCR1
+                                            // CCMR1: OC1M=001 (active), CC1S=00
+        write_word(&mut t, base + 0x18, 1 << 4); // CCMR1 OC1M 001
+        write_word(&mut t, base + 0x20, 1); // CCER CC1E
+        write_word(&mut t, base + 0x0C, 1 << 1); // DIER CC1IE
+        write_word(&mut t, base, CEN);
+        assert!(!t.output_level(1));
+        for _ in 0..5 {
+            t.tick(1);
+        }
+        assert!(t.output_level(1), "active on match");
+        assert_eq!(read_word(&mut t, base + 0x10) & (1 << 1), 1 << 1, "CC1IF");
+    }
+
+    #[test]
+    fn output_compare_toggle() {
+        let mut t = Timer::tim2();
+        let base = BASE;
+        write_word(&mut t, base + 0x2C, 10);
+        write_word(&mut t, base + 0x34, 3);
+        write_word(&mut t, base + 0x18, 3 << 4); // OC1M 011 toggle
+        write_word(&mut t, base + 0x20, 1);
+        write_word(&mut t, base, CEN);
+        assert!(!t.output_level(1));
+        for _ in 0..3 {
+            t.tick(1);
+        }
+        assert!(t.output_level(1), "toggle 1");
+        // Wrap and hit again
+        for _ in 0..11 {
+            t.tick(1);
+        }
+        assert!(!t.output_level(1), "toggle 2");
+    }
+
+    #[test]
+    fn pwm1_output_level_sequence() {
+        let mut t = Timer::tim2();
+        let base = BASE;
+        write_word(&mut t, base + 0x2C, 9); // ARR 9 => period 10
+        write_word(&mut t, base + 0x34, 5); // CCR 5 => 50% duty
+                                            // OC1M 110 PWM1
+        write_word(&mut t, base + 0x18, 6 << 4);
+        write_word(&mut t, base + 0x20, 1);
+        write_word(&mut t, base, CEN);
+        // PWM1 active while CNT < CCR; model updates on tick, so before first
+        // tick the pin is still low, after the first tick active.
+        t.tick(1);
+        assert!(t.output_level(1), "PWM1 active after first tick");
+        for _ in 0..4 {
+            t.tick(1);
+        }
+        // CNT 5 => inactive (CNT >= CCR)
+        assert!(!t.output_level(1), "PWM1 inactive at CCR");
+        for _ in 0..4 {
+            t.tick(1);
+        }
+        assert!(!t.output_level(1), "still inactive");
+        t.tick(1); // wrap to 0
+        assert!(t.output_level(1), "wrap active again");
+    }
+
+    #[test]
+    fn input_capture_latches_cnt() {
+        let mut t = Timer::tim2();
+        let base = BASE;
+        write_word(&mut t, base + 0x2C, 100);
+        // CCMR1 CC1S=01 input TI1, IC1F etc default
+        write_word(&mut t, base + 0x18, 1); // CC1S 01
+        write_word(&mut t, base + 0x20, 1); // CC1E
+        write_word(&mut t, base + 0x0C, 1 << 1); // CC1IE
+        write_word(&mut t, base, CEN);
+        for _ in 0..42 {
+            t.tick(1);
+        }
+        assert_eq!(read_word(&mut t, base + 0x24), 42);
+        t.inject_capture(1);
+        assert_eq!(read_word(&mut t, base + 0x34), 42, "CCR1 latched");
+        assert_eq!(read_word(&mut t, base + 0x10) & (1 << 1), 1 << 1, "CC1IF");
         assert_eq!(t.pending(), 1);
     }
 

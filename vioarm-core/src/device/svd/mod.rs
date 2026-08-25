@@ -98,7 +98,7 @@ impl<W> Registers<W>
 where
     W: Deref<Target = [u32]>,
 {
-    const fn new(def: &'static PeripheralDef, words: W) -> Self {
+    pub(crate) const fn new(def: &'static PeripheralDef, words: W) -> Self {
         Self { def, words }
     }
 
@@ -262,6 +262,23 @@ impl<B: Behavior> RegisterFile<B> {
     #[must_use]
     pub fn behavior(&self) -> &B {
         &self.behavior
+    }
+
+    /// Accessor for the peripheral def.
+    #[must_use]
+    pub fn def(&self) -> &'static PeripheralDef {
+        self.def
+    }
+
+    /// Mutable access to the register words.
+    pub fn regs_mut(&mut self) -> &mut [u32] {
+        &mut self.regs[..]
+    }
+
+    /// Run a closure with a mutable view and behavior.
+    pub fn with_view<R>(&mut self, f: impl FnOnce(&mut Registers<&mut [u32]>, &mut B) -> R) -> R {
+        let mut view = Registers::new(self.def, &mut self.regs[..]);
+        f(&mut view, &mut self.behavior)
     }
 }
 
