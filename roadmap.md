@@ -466,6 +466,33 @@ Effort: 4ah.
 
 ---
 
+## M6 — Cycle-accurate / peripheral-accurate framework (target `v3.0`, ~8 agent-days)
+
+Research on `Known limitations` → high-fidelity framework. Extends `M1` DWT CPI and `Known limitations` DMA/IT-block gaps to cycle/peripheral accuracy without breaking determinism.
+
+### WP-F1 Core pipeline & bus cycle accuracy
+
+- Replace `cycles=1/insn` + `cyccnt` CPI (`timer.rs:65` 1c/2c/n+1/3c/4c) with `ARMv7-M TRM` pipeline: fetch/decode/execute, `FLASH_ACR` `LATENCY` `WS` stall when `pc<0x20000000`, `MPU` region `TEX/CB` cacheable, `DWT` `CYCCNT` per `TRM` Table 11-2 (branch mispredict, load-use stall, `LDM`/`STM` `n+1` with bus wait).
+- Files: `cpu/mod.rs:4109` `branch`, `mem/system.rs:474` `FlashGate`, `device/scb.rs:1` `MPU`.
+- Acceptance: `cargo test --test m3_cycle` diffs `cyccnt` vs QEMU `qemu-system-arm -d exec` trace and vs `STM32H7` `DWT` hardware capture within ±2% for CoreMark loop.
+
+### WP-F2 Peripheral timing (RCC/DMA/TIM)
+
+- `RCC` `cr.rs:43` clock tree: `HSE`/`HSI`/`PLL` `1-tick` → `SYSCLK`→`HCLK`/`PCLK1/2` with `CFGR` `SW`/`SWS`/`PPRE` dividers; `TIM` `PSC` now ticks `PCLK` not `delta`, `DMA` `1 unit per request` (`dma.rs:214` 1/tick) with `PL` arbitration and `MBURST`/`PBURST` beat counting + `FIFO` `FTH` thresholds (`dma_f4.rs:132`).
+- Acceptance: `TIM` PWM at `PCLK/PSC` measured via `output_level` vs logic analyzer model, `DMA` `SPI TX` burst 4 beats, `ADC` `CONT`+`DMA` HT/TC at `PCLK`.
+
+### WP-F3 Memory & cache
+
+- `ICache`/`DCache`/`TCM`/`AXI` `board.rs:819` `DTCM 0x20000000` `AXI 0x24000000` with `MPU` `TEX` cacheable, `FLASH` `ART` accelerator, `FMC` `0xC0000000` SDRAM timing `SDTR`/`SDCR`.
+- Acceptance: `H743` `AXI` vs `DTCM` load latency diff 1c, `FMC` SDRAM read 6c per burst.
+
+### WP-F4 Validation harness
+
+- `vioarm-qemu` + `orbis` ETM trace vs hardware `SWO`/`ETM` capture, `criterion` `benches/mips.rs:1` `board_boot` now gated at ±5% vs H743 `DWT`.
+- Acceptance: `cargo bench --bench mips` within 5% of `STM32F407` 168 MHz `DWT` for 10k insn loop.
+
+---
+
 ### Milestone exit criteria (global DoD)
 
 A milestone is done when: every WP acceptance criterion met; full workspace
