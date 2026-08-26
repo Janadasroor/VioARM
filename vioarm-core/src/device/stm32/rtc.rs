@@ -1,12 +1,20 @@
-//! STM32 RTC (`RTC`, `0x4000_2800`) — accurate prescaler/counter/alarm.
-//! `PRLH`/`PRLL` (20-bit prescaler, reset `0x8000`), `DIVH`/`DIVL` (read-only
-//! divider), `CNTH`/`CNTL` (32-bit counter), `ALRH`/`ALRL` (alarm), `CRL`
-//! (`SECF`/`ALRF`/`OWF`/`RSF`/`CNF`/`RTOFF`) and `CRH` (`SECIE`/`ALRIE`/`OWIE`).
-//! `CNF` gates `CNT`/`PRL`/`ALR` writes; `RTOFF` is `1` when not in config.
-//! `DIV` decrements each `tick()` (1 RTCCLK per `delta`); on underflow it
-//! reloads from `PRL` and increments `CNT`, setting `SECF`; on `CNT==ALR`
-//! sets `ALRF`; on wrap sets `OWF`. Flags `SECF`/`ALRF`/`OWF` raise `RTC`
-//! (IRQ 3) and `RTCAlarm` (IRQ 41) via `CRH` enables.
+//! STM32 RTC (`RTC`, `0x4000_2800`).
+//!
+//! Two generations share this module, selected by the generated tables:
+//!
+//! **F1 (classic)** — `PRLH`/`PRLL` (20-bit prescaler), `DIVH`/`DIVL`,
+//! `CNTH`/`CNTL`, `ALRH`/`ALRL`, `CRL` (`SECF`/`ALRF`/`OWF`/`RSF`/`CNF`/
+//! `RTOFF`) and `CRH`. `CNF` gates `CNT`/`PRL`/`ALR` writes; the divider
+//! decrements per tick, reloads from `PRL`, increments `CNT` (`SECF`),
+//! matches `ALR` (`ALRF`) and wraps (`OWF`). Flags raise `RTC` (IRQ 3) and
+//! `RTCAlarm` (IRQ 41) through `CRH`.
+//!
+//! **New-gen (F0/L4/G4/H7)** — table declares `ISR`: write protection via
+//! `WPR` (0xCA 0x53 unlocks CR/ISR/PRER/ALRMAR), `INIT` enters init
+//! (`INITF` while synchronizing), a free-running seconds calendar latched
+//! into `TR`/`DR`, and alarm A: `ALRMAR` seconds field compared against the
+//! running time unless its mask bit is set; match latches `ISR.ALRAF` and
+//! — with `CR.ALRAIE` (ISR bit 12) — asserts the alarm line.
 
 use crate::device::svd::{Behavior, Device, RegisterFile, Registers};
 use crate::device::{InterruptSource, Peripheral};
@@ -24,6 +32,29 @@ const CNTL: u32 = 0x1C;
 const ALRH: u32 = 0x20;
 const ALRL: u32 = 0x24;
 
+/// New-gen register offsets (tables that declare `ISR`).
+const NG_TR: u32 = 0x00;
+const NG_DR: u32 = 0x04;
+const NG_CR: u32 = 0x08;
+const NG_ISR: u32 = 0x0C;
+const NG_PRER: u32 = 0x10;
+const NG_ALRMAR: u32 = 0x1C;
+const NG_WPR: u32 = 0x24;
+/// `TR` reserved high bits kept clear.
+const NG_TR_RESET_BASE: u32 = 0;
+/// `TR` reset base (reserved bits read as written; keep zero).
+#[allow(dead_code)]
+
+/// `ISR` bit positions.
+const NG_ISR_WUTWF: u32 = 1 << 2;
+const NG_ISR_INITS: u32 = 1 << 4;
+const NG_ISR_RSF: u32 = 1 << 5;
+const NG_ISR_INITF: u32 = 1 << 6;
+const NG_ISR_INIT: u32 = 1 << 7;
+const NG_ISR_ALRAF: u32 = 1 << 8;
+/// `CR.ALRAIE` lives in ISR bits [15:8] on new-gen.
+const NG_CR_ALRAIE: u32 = 1 << 12;
+
 const CRL_SECF: u32 = 1 << 0;
 const CRL_ALRF: u32 = 1 << 1;
 const CRL_OWF: u32 = 1 << 2;
@@ -37,13 +68,25 @@ const CRH_OWIE: u32 = 1 << 2;
 
 #[derive(Debug)]
 struct RtcBehavior {
-    /// Divider countdown, mirrors `DIVH`/`DIVL`.
+    /// Divider countdown, mirrors `DIVH`/`DIVL` (F1) — or the free-running
+    /// seconds calendar (new-gen).
     div: u32,
+    /// New-generation tables (`ISR` present): WPR gate + calendar mode.
+    new_gen: bool,
+    /// `WPR` unlock state for new-gen (0xCA then 0x53 seen as words).
+    wpr_step: u8,
+    /// The `WPR` word being assembled from byte-lane writes.
+    wpr_word: u32,
 }
 
 impl RtcBehavior {
     const fn new() -> Self {
-        Self { div: 0x8000 }
+        Self {
+            div: 0x8000,
+            new_gen: false,
+            wpr_step: 0,
+            wpr_word: 0,
+        }
     }
     fn prl<W>(view: &Registers<W>) -> u32
     where
@@ -67,6 +110,99 @@ impl RtcBehavior {
     {
         (view.get(ALRH) & 0xFFFF_u32) << 16 | (view.get(ALRL) & 0xFFFF_u32)
     }
+
+    /// New-gen `WPR` gate: the unlock sequence 0xCA then 0x53 (as full word
+    /// writes) enables writes to `CR`/`ISR`/`PRER`/`ALRMAR`; any other value
+    /// re-locks until reset.
+    fn ng_unlocked(&self) -> bool {
+        self.wpr_step == 2
+    }
+
+    #[allow(clippy::similar_names)]
+    fn ng_on_write(
+        &mut self,
+        view: &mut Registers<&mut [u32]>,
+        offset: u32,
+        val: u8,
+        shift: u32,
+    ) -> u32 {
+        if offset == NG_WPR {
+            // Assemble the key from byte lanes (a word store arrives as four
+            // writes) and evaluate the two-key sequence per completed word.
+            self.wpr_word = (self.wpr_word & !(0xFF << shift)) | (u32::from(val) << shift);
+            if shift == 24 {
+                let w = self.wpr_word;
+                match (self.wpr_step, w) {
+                    (0, 0xCA) => self.wpr_step = 1,
+                    (1, 0x53) => self.wpr_step = 2,
+                    _ => self.wpr_step = 0,
+                }
+                self.wpr_word = 0;
+            }
+            return 0;
+        }
+        // Protected registers ignore writes while locked. `ISR` is special:
+        // INIT is r/w, ALRAF/RSF are write-0-to-clear.
+        let protected =
+            matches!(offset, NG_CR | NG_PRER | NG_ALRMAR | NG_TR | NG_DR) && !self.ng_unlocked();
+        if protected {
+            return view.get(offset);
+        }
+        if offset == NG_ISR {
+            let cur = view.get(NG_ISR);
+            let bits = view.merged(NG_ISR, val, shift);
+            // INIT is plain r/w; the status flags are write-0-to-clear.
+            let mut next = bits;
+            for flag in [NG_ISR_RSF, NG_ISR_INITF, NG_ISR_ALRAF] {
+                if bits & flag == 0 {
+                    next &= !flag;
+                }
+            }
+            // Entering init: INITF set immediately in this model; leaving
+            // clears it and marks the calendar initialized.
+            if cur & NG_ISR_INIT == 0 && next & NG_ISR_INIT != 0 {
+                next |= NG_ISR_INITF;
+                next &= !NG_ISR_INITS;
+            } else if cur & NG_ISR_INIT != 0 && next & NG_ISR_INIT == 0 {
+                next &= !NG_ISR_INITF;
+                next |= NG_ISR_INITS | NG_ISR_RSF;
+            }
+            return next;
+        }
+        view.merged(offset, val, shift)
+    }
+
+    /// Advance the seconds calendar by `delta` ticks (1 tick = 1 s here) and
+    /// evaluate alarm A unless in init or seconds-masked.
+    fn ng_tick(&mut self, view: &mut Registers<&mut [u32]>, delta: u64) {
+        if view.get(NG_ISR) & NG_ISR_INIT != 0 || delta == 0 {
+            return;
+        }
+        for _ in 0..delta {
+            let s = Self::ng_seconds(view);
+            let next = (s + 1) % 60;
+            Self::ng_set_seconds(view, next);
+            let alrmar = view.get(NG_ALRMAR);
+            if alrmar & (1 << 7) != 0 {
+                continue; // MSK1: seconds masked
+            }
+            let alarm_secs = ((alrmar >> 4) & 0x7) * 10 + (alrmar & 0xF);
+            if next == alarm_secs {
+                view.set(NG_ISR, view.get(NG_ISR) | NG_ISR_ALRAF);
+            }
+        }
+    }
+
+    /// The running seconds count latched into `TR.SU[5:0]`/`ST[2:0]`.
+    fn ng_seconds(view: &Registers<&mut [u32]>) -> u32 {
+        let tr = view.get(NG_TR);
+        ((tr >> 4) & 0x7) * 10 + (tr & 0xF)
+    }
+    fn ng_set_seconds(view: &mut Registers<&mut [u32]>, s: u32) {
+        let su = s % 10;
+        let st = (s / 10) % 6;
+        view.set(NG_TR, NG_TR_RESET_BASE | (st << 4) | su);
+    }
 }
 
 impl Behavior for RtcBehavior {
@@ -77,6 +213,9 @@ impl Behavior for RtcBehavior {
         val: u8,
         shift: u32,
     ) -> u32 {
+        if self.new_gen {
+            return self.ng_on_write(view, offset, val, shift);
+        }
         let cur = view.get(offset);
         let word = (cur & !(0xFF << shift)) | (u32::from(val) << shift);
         match offset {
@@ -159,6 +298,10 @@ impl Behavior for RtcBehavior {
     }
 
     fn tick(&mut self, view: &mut Registers<&mut [u32]>, delta: u64) {
+        if self.new_gen {
+            self.ng_tick(view, delta);
+            return;
+        }
         if delta == 0 {
             return;
         }
@@ -196,6 +339,11 @@ impl Behavior for RtcBehavior {
     }
 
     fn pending(&self, view: &Registers<&[u32]>) -> u32 {
+        if self.new_gen {
+            // Alarm A line: ISR.ALRAF gated by the CR-bank ALRAIE (ISR bit 12).
+            let isr = view.get(NG_ISR);
+            return u32::from(isr & NG_ISR_ALRAF != 0 && isr & NG_CR_ALRAIE != 0);
+        }
         let crl = view.get(CRL);
         let crh = view.get(CRH);
         let mut lines = 0;
@@ -217,6 +365,8 @@ impl Behavior for RtcBehavior {
 
     fn reset(&mut self) {
         self.div = 0x8000;
+        self.wpr_step = 0;
+        self.wpr_word = 0;
     }
 }
 
@@ -228,8 +378,11 @@ impl Rtc {
     #[must_use]
     pub fn new_for<D: Device>() -> Self {
         let def = D::peripheral("RTC").expect("generated tables contain RTC");
+        let mut b = RtcBehavior::new();
+        // New-generation tables declare `ISR`; F1 declares `CRL`.
+        b.new_gen = def.registers.iter().any(|r| r.name == "ISR");
         Self {
-            inner: RegisterFile::new(def, RtcBehavior::new()),
+            inner: RegisterFile::new(def, b),
         }
     }
 }
@@ -321,6 +474,50 @@ mod tests {
         assert_eq!(read_word(&mut rtc, 0x04) & 0x02, 0);
         assert_eq!(rtc.pending() & (1 << 1), 0);
     }
+    /// New-generation RTC: WPR-protected writes, INIT/INITF, and alarm A
+    /// matching the running seconds with `ALRAF`/`ALRAIE`.
+    #[test]
+    fn newgen_rtc_wpr_init_and_alarm_a() {
+        use crate::device::svd::stm32l476::Stm32l476;
+        const B: u32 = 0x4000_2800;
+        let mut r = Rtc::new_for::<Stm32l476>();
+        // Locked: CR/ISR/PRER/ALRMAR ignore writes.
+        write_word(&mut r, 0x08, 0xFFFF_FFFF);
+        assert_eq!(read_word(&mut r, 0x08), 0, "CR locked");
+        // Unlock WPR.
+        write_word(&mut r, 0x24, 0xCA);
+        write_word(&mut r, 0x24, 0x53);
+        write_word(&mut r, 0x08, 0xFFFF_FFFF); // now latches
+        assert_ne!(read_word(&mut r, 0x08), 0);
+        // Enter init then leave it: INITS marks the calendar initialized.
+        write_word(&mut r, 0x0C, 1 << 7); // ISR byte1 INIT
+        let isr = read_word(&mut r, 0x0C);
+        assert_ne!(isr & (1 << 6), 0, "INITF while in init");
+        write_word(&mut r, 0x0C, 0); // leave init (byte1=0)
+        let isr = read_word(&mut r, 0x0C);
+        assert_eq!(isr & (1 << 7), 0);
+        assert_ne!(isr & (1 << 4), 0, "INITS after init exit");
+        // Program alarm A for seconds = 03, enable ALRAIE.
+        write_word(&mut r, 0x1C, 0x03); // SU=3, ST=0, MSK1 clear
+        write_word(&mut r, 0x0C, 1 << 12); // ALRAIE (byte lane 1)
+                                           // Run the calendar to :03 (the match lands on the third second).
+        for _ in 0..3 {
+            r.tick(1);
+        }
+        assert_eq!(read_word(&mut r, 0x00) & 0xF, 3, "TR.SU == 3");
+        assert_ne!(read_word(&mut r, 0x0C) & (1 << 8), 0, "ALRAF");
+        assert_eq!(r.pending(), 1, "alarm line via ALRAIE");
+        // Clear ALRAF (write zero into its lane).
+        write_word(&mut r, 0x0D, 0); // byte1 of ISR clears nothing here
+        write_word(&mut r, 0x0C, !(1 << 8));
+        assert_eq!(read_word(&mut r, 0x0C) & (1 << 8), 0);
+        assert_eq!(r.pending(), 0);
+        // MSK1 masks the compare entirely.
+        write_word(&mut r, 0x1C, 0x80 | 0x30);
+        r.tick(60);
+        assert_eq!(r.pending(), 0, "masked alarm never fires");
+    }
+
     #[test]
     fn rtc_registers_do_not_fault() {
         let mut r = Rtc::new_for::<Stm32f103>();

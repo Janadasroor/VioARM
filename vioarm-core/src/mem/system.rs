@@ -527,6 +527,15 @@ impl<M: Bus> SystemMemory<M> {
             self.perform_erase(erase, region, page);
             guard = gate.lock().unwrap_or_else(|e| e.into_inner());
         }
+        // Write protection (RM0008 §9.1.5 `WRPR`): a cleared bit protects its
+        // page; a protected page rejects programming and latches the error
+        // even while unlocked and programming.
+        let page_index = (addr - guard.region.base) / guard.page_size.max(1);
+        if guard.wrpr & (1 << page_index.min(31)) == 0 {
+            guard.wrprterr = true;
+            drop(guard);
+            return Ok(());
+        }
         if guard.unlocked && guard.program {
             drop(guard);
             let result = self.backing.write(addr, val);
@@ -1284,6 +1293,43 @@ mod tests {
             gate.lock().unwrap_or_else(|e| e.into_inner()).eop,
             "EOP latches after a program"
         );
+    }
+
+    /// `WRPR` write protection (RM0008 §9.1.5): a cleared bit protects its
+    /// page — writes there are consumed with `WRPRTERR` even while unlocked
+    /// and programming, while unprotected pages in the same bank still land.
+    #[test]
+    fn wrpr_protects_pages_even_when_unlocked() {
+        use crate::device::stm32::flash::FlashGate as G;
+        const FLASH: u32 = MAIN_FLASH;
+        let backing = FlatMemory::with_layout(&[FLASH], &[0x1000]);
+        // 4 pages of 1024 bytes.
+        let gate = std::sync::Arc::new(std::sync::Mutex::new(G::new(
+            Region::new(FLASH, 0x1000),
+            1024,
+        )));
+        let mut sys = SystemMemory::new(backing);
+        sys.set_flash_gate(gate.clone());
+        {
+            let mut g = gate.lock().unwrap_or_else(|e| e.into_inner());
+            g.unlocked = true;
+            g.program = true;
+            g.wrpr = !(1u32 << 1); // protect page 1 only
+        }
+        // Unprotected page 0 lands; protected page 1 rejects + errors.
+        sys.write_word(FLASH, 0x1111_1111).unwrap();
+        sys.write_word(FLASH + 1024, 0x2222_2222).unwrap();
+        assert_eq!(sys.read_word(FLASH).unwrap(), 0x1111_1111);
+        assert_eq!(sys.read_word(FLASH + 1024).unwrap(), 0, "page 1 protected");
+        let g = gate.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(g.wrprterr, "WRPRTERR latched");
+        drop(g);
+        // Clearing the flag restores normal reporting.
+        let mut g = gate.lock().unwrap_or_else(|e| e.into_inner());
+        g.wrprterr = false;
+        drop(g);
+        sys.write_word(FLASH + 2048, 0x3333_3333).unwrap();
+        assert_eq!(sys.read_word(FLASH + 2048).unwrap(), 0x3333_3333);
     }
 
     #[test]

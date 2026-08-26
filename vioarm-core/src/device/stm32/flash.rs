@@ -55,6 +55,8 @@ const SR: u32 = 0x0c;
 const CR: u32 = 0x10;
 /// `AR` lives at register offset `0x14`.
 const AR: u32 = 0x14;
+/// `WRPR` (F1): the write-protection register.
+const WRPR: u32 = 0x20;
 
 /// A pending erase, executed by the memory gate on the next access to the
 /// flash region so the controller's instant-completion model stays visible to
@@ -91,6 +93,10 @@ pub struct FlashGate {
     pub eop: bool,
     /// Latched `WRPRTERR`: a gated write was rejected.
     pub wrprterr: bool,
+    /// The write-protection register (`WRPR`, F1): one bit per page, a
+    /// cleared bit protects its page. All-ones (unprotected) at reset,
+    /// matching default option bytes.
+    pub wrpr: u32,
 }
 
 impl FlashGate {
@@ -105,6 +111,7 @@ impl FlashGate {
             erase: None,
             eop: false,
             wrprterr: false,
+            wrpr: u32::MAX,
         }
     }
 
@@ -208,6 +215,16 @@ impl Behavior for FlashBehavior {
                 } else {
                     drop(gate);
                     word
+                }
+            }
+            WRPR => {
+                // The option-loader model: WRPR is writable while the
+                // controller is unlocked, ignored locked. A cleared bit
+                // protects its page (enforced by the bus write gate).
+                if self.gate.lock().unwrap_or_else(|e| e.into_inner()).unlocked {
+                    view.merged(WRPR, val, shift)
+                } else {
+                    view.get(WRPR)
                 }
             }
             _ => view.merged(offset, val, shift),
@@ -466,6 +483,16 @@ impl Behavior for FlashF4Behavior {
                     word
                 }
             }
+            WRPR => {
+                // The option-loader model: WRPR is writable while the
+                // controller is unlocked, ignored locked. A cleared bit
+                // protects its page (enforced by the bus write gate).
+                if self.gate.lock().unwrap_or_else(|e| e.into_inner()).unlocked {
+                    view.merged(WRPR, val, shift)
+                } else {
+                    view.get(WRPR)
+                }
+            }
             _ => view.merged(offset, val, shift),
         }
     }
@@ -720,6 +747,8 @@ mod tests {
     const SR: u32 = 0x0c;
     const CR: u32 = 0x10;
     const AR: u32 = 0x14;
+    /// `WRPR` (F1): the write-protection register.
+    const WRPR: u32 = 0x20;
 
     fn gate() -> Arc<Mutex<FlashGate>> {
         Arc::new(Mutex::new(FlashGate::new(

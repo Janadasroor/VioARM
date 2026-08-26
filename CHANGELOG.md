@@ -21,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Timer dead-time insertion**: complementary `OCxN` outputs (CCxNE-enabled channels) invert their `OCx` and hold low through the decoded `BDTR.DTG` gap after every edge; `MOE=0` forces both inactive. Host API `Timer::output_level_n(ch)`.
 - **USART LIN break detection**: drive-input bit 8 signals a break; with `CR2.LBDIE` it latches `SR.LBD` and asserts the line until software clears it.
 - **F103 board DMA request wiring**: ADC1→DMA1 ch1, TIM2 update→ch2, SPI1 TX/RX→ch3/ch2 (RM0008 §13.3.7 Table 78), proven by a board-level overflow-drives-DMA e2e.
+- **Flash `WRPR` write protection**: a cleared bit protects its page in the bus write gate — protected pages consume writes and latch `WRPRTERR` even while unlocked/programming (RM0008 §9.1.5); `WRPR` writable while unlocked (option-loader model).
+- **New-generation RTC** (F0/L4/G4/H7 tables with `ISR`): `WPR` 0xCA/0x53 unlock gate, `INIT`/`INITF`/`INITS` init flow, free-running seconds calendar in `TR`, alarm A seconds-compare honoring `MSK1`, `ISR.ALRAF` + alarm line via ALRAIE, W0C flag clears.
+- **SDIO real CRC-16**: block reads append the CRC-16/XMODEM of the served payload to the FIFO (known-answer test against `"123456789"` → `0x31C3`).
 - `TIM` IC/PWM/OPM: `OCxM` state machine + `output_level()` pin, `EGR.CCxG`, `CR1.OPM` one-pulse, `inject_capture()` latch, `URE` etc. (17 timer tests).
 - `DMA` `TIM` `ADC` request lines: `TIM` `DIER.UDE`→`DmaRequests`, `ADC` `CR2.DMA`→`DmaRequests`, `with_dma()` helpers.
 - `USB` EP1-3 bulk: `FIFO_LEN` 0x400→0x4000, `DIEPTSIZ`/`DOEPTSIZ` per-EP, EP1 bulk test.

@@ -516,8 +516,8 @@ all five milestones.
 | Exceptions/NVIC/SCB/MPU | 85% | C3 |
 | Timing/DWT | 100% | — |
 | GPIO F1/F4 | 90% | — |
-| Flash F1/F4 | 75% | — |
-| RTC/PWR/IWDG/WWDG/CRC/DAC/BKP | 75% | — |
+| Flash F1/F4 | 85% | H7 OTP/bank-swap (descoped) |
+| RTC/PWR/IWDG/WWDG/CRC/DAC/BKP | 85% | PVD/WUF wake paths |
 | USART family | 85% | synchronous mode, auto-baud |
 | ADC/SPI/I2C | 95% | F4/F3 simultaneous dual mode |
 | Timers | 100% | — |
@@ -525,15 +525,18 @@ all five milestones.
 | DMA F1/F4/DMAMUX | 85% | bus arbitration timing |
 | USB OTG FS | 80% | host mode (double-buffering = documented no-op) |
 | ETH | 80% | PTP window, MIIM latency |
-| SDIO | 60% | — |
+| SDIO | 75% | CRC error injection, SPI mode |
 | Chip coverage (SVD tables) | 12 chips | variant deltas |
 | H743 platform | 15% | descoped (B6) |
 | Tooling | 95% | — |
 
-Overall ≈83% post-M6+peripheral-depth passes (Timers 100% — break,
-dead-time insertion into complementary pairs, encoder, Hall; DMA 85% with
-the F103 board's ADC1/TIM2/SPI1 request lines wired per RM0008 Table 78;
-USART 85% with LIN break detection). Cycle accuracy is *measured*
+Overall ≈85% post-M6+peripheral-depth passes (Timers 100% — break,
+dead-time insertion into complementary pairs, encoder, Hall; Flash 85%
+with `WRPR` page-protection enforced in the bus gate; RTC 85% with the
+new-generation `WPR`/`INIT`/alarm-A model for F0/L4/G4/H7; SDIO 75% with
+real CRC-16 appended to block reads; DMA 85% with the F103 board's
+ADC1/TIM2/SPI1 request lines wired per RM0008 Table 78; USART 85% with
+LIN break detection). Cycle accuracy is *measured*
 (`m3_cycle` ±2%, `f4_validation`/benches ±5%), not claimed. 100% is not
 claimed (see Non-goals).
 ## Known limitations

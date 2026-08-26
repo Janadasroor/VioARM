@@ -30,6 +30,23 @@ const STA_TXDAVL: u32 = 1 << 20;
 const DCTRL_DTEN: u32 = 1 << 0;
 const DCTRL_DTDIR: u32 = 1 << 1;
 
+/// The SD data-line CRC: CRC-16/CCITT-FALSE variant used by SD (`poly
+/// 0x1021`, init 0, no reflection), MSB transmitted first.
+pub(crate) fn sd_crc16(bytes: &[u8]) -> u16 {
+    let mut crc: u16 = 0;
+    for &b in bytes {
+        crc ^= u16::from(b) << 8;
+        for _ in 0..8 {
+            if crc & 0x8000 != 0 {
+                crc = (crc << 1) ^ 0x1021;
+            } else {
+                crc <<= 1;
+            }
+        }
+    }
+    crc
+}
+
 #[derive(Debug)]
 struct SdioBehavior {
     fifo: std::collections::VecDeque<u8>,
@@ -146,6 +163,12 @@ impl Behavior for SdioBehavior {
                             while self.fifo.len() < dlen {
                                 self.fifo.push_back(0xFF);
                             }
+                            // The card appends the block CRC on the data
+                            // lines right after the payload.
+                            let served: Vec<u8> = self.fifo.iter().take(dlen).copied().collect();
+                            let crc = sd_crc16(&served);
+                            self.fifo.push_back((crc >> 8) as u8);
+                            self.fifo.push_back((crc & 0xFF) as u8);
                             if !self.fifo.is_empty() {
                                 sta |= STA_RXDAVL;
                             }
@@ -254,6 +277,14 @@ impl Sdio {
         }
     }
 }
+impl Sdio {
+    /// Test access to the backing card image.
+    #[cfg(test)]
+    pub(crate) fn inner_behavior_card(&mut self) -> &mut Vec<u8> {
+        &mut self.inner.behavior_mut().card
+    }
+}
+
 impl Peripheral for Sdio {
     fn ranges(&self) -> &[Region] {
         self.inner.ranges()
@@ -287,7 +318,7 @@ impl InterruptSource for Sdio {
 }
 #[cfg(test)]
 mod tests {
-    use super::Sdio;
+    use super::{sd_crc16, Sdio, CMD, DCTRL, DLEN, DTIMER, FIFO};
     use crate::device::svd::stm32f103::Stm32f103;
     use crate::device::svd::Device;
     use crate::device::{InterruptSource, Peripheral};
@@ -366,5 +397,40 @@ mod tests {
         assert_eq!(read_word(&mut s, base + 0x10) & 0x3F, 55);
         write_word(&mut s, base + 0x0C, 0x0000_4469); // 41 + CE_ATACMD (bit14) + WAITRESP + CPSMEN
         assert_ne!(read_word(&mut s, base + 0x14) & 0x8000_0000, 0, "OCR ready");
+    }
+
+    /// A block read serves the payload followed by its CRC-16 (XMODEM),
+    /// matching the two trailing bytes the card puts on the data lines.
+    #[test]
+    fn block_read_appends_crc16() {
+        let mut s = Sdio::new_for::<Stm32f103>();
+        s.reset();
+        // Known-answer: CRC-16/XMODEM of "123456789" is 0x31C3.
+        assert_eq!(sd_crc16(b"123456789"), 0x31C3);
+        // Prime the card image with that pattern.
+        {
+            let mut b = s.inner_behavior_card();
+            for (i, byte) in b"123456789".iter().enumerate() {
+                b[i] = *byte;
+            }
+        }
+        const B: u32 = 0x4001_8000;
+        // Read 9 bytes from address 0.
+        write_word(&mut s, B + 0x08, 0); // ARG: block 0
+        write_word(&mut s, B + super::DLEN, 9);
+        write_word(&mut s, B + super::DTIMER, 0x2C);
+        write_word(&mut s, B + super::DCTRL, super::DCTRL_DTEN);
+        write_word(&mut s, B + CMD, 0x0000_0440 | (1 << 10)); // CMD17
+                                                              // Drain payload + CRC bytes from the FIFO.
+        let mut got = Vec::new();
+        for _ in 0..11 {
+            got.push(s.read(B + FIFO).unwrap());
+        }
+        assert_eq!(&got[..9], b"123456789", "payload served");
+        assert_eq!(
+            u16::from_be_bytes([got[9], got[10]]),
+            0x31C3,
+            "trailing CRC-16"
+        );
     }
 }
