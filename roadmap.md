@@ -126,6 +126,7 @@ Tooling:
   routing `fmc.rs:188` + test, USB EP1-3 bulk `FIFO 0x4000`, ETH PHY `BMSR`,
   SDIO card 1 MiB multi-block, H7 descoped), M3 C1-C4 (CI `ORACLE_VERSION`
   `qemu.rs:132` + `deny`/`cov`/`clippy`, `fuzz/` real `loader::{load_elf,load_hex,load_flat}` `76af9ef`, determinism `real_firmware.rs:4735`, C3 8 extra `c3_qadd` `9cfcef2`), M4 `vioarm-core/benches/mips.rs:1` `criterion` board-boot `6d53430`, M5 `packs/PROVENANCE.md` + `xtask` + `docs/book.toml`.
+- **In progress — M6 F1** (2026-08-26): `cpu/mod.rs:615` TRM CPI refined (`VFP` 3c, `flash_ws` `LATENCY` `WS`), `DWT` `cyccnt` ±2% `m3_cycle.rs:1` `coremark_loop` green, `load-use` stall deferred to `F2` (fails `sat_bitfield` when enabled on `FlatMemory`).
 
 ## Plan to production — `v1.9.1 → v2.0`
 
@@ -543,7 +544,7 @@ finalized ≈75-80% behavioral (100% is not claimed — see Non-goals).
   `S|DCRS|FTYPE|MODE`, QEMU built `ES|S|FTYPE|MODE` with clear `DCRS` for
   this entry in the version where delivery still worked) remains
   unexercised until an oracle that delivers the scenario is available.
-- Cycle timing: `cycles` is still 1c/insn (and 1c/sleep) for compat; `DWT_CYCCNT` (`0xE000_1004`, `CTRL.CYCCNTENA`) counts `cyccnt` (`1c` data, `2c` `LDR/STR`, `n+1` `LDM/STM`, `3c` taken branch, `4c` `BL`, plus `FLASH_ACR` `LATENCY` `WS` when `pc < 0x2000_0000`). `WFI`/`WFE` sleep and `SEV` latch are modeled (see the "Cycle/timing policy" entry in Implemented).
+- Cycle timing: `cycles` is still 1c/insn (and 1c/sleep) for compat; `DWT_CYCCNT` (`0xE000_1004`, `CTRL.CYCCNTENA`) counts `cyccnt` (`1c` data, `2c` `LDR/STR`, `n+1` `LDM/STM`, `3c` taken branch, `4c` `BL`, `VFP` 3c/2c, plus `FLASH_ACR` `LATENCY` `WS` when `pc < 0x2000_0000` `cpu/mod.rs:615`). Load-use 1c stall (`TRM` Table 11-2) deferred to `F2` (breaks `sat_bitfield` on `FlatMemory` `tick_by` when enabled). `WFI`/`WFE` sleep and `SEV` latch are modeled (see the "Cycle/timing policy" entry in Implemented).
 - UsageFault is a distinct exception gated by `SHCSR.USGFAULTENA`, FP access
   is gated by `CPACR` (`NOCP` when denied), and the MPU enforces eight
   configurable regions on every fetch and data access.

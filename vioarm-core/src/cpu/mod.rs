@@ -613,7 +613,8 @@ impl<B: PeripheralBus> Core<B> {
     }
 
     fn base_cycles(&mut self, pc: u32, next_pc: u32) -> u64 {
-        // TRM CPI: 1c data, 2c single LDR/STR, n+1 LDM/STM, 3c taken branch, 4c BL.
+        // TRM Table 11-2 CPI: 1c data, 2c single LDR/STR, n+1 LDM/STM,
+        // 3c taken branch (pipeline refill), 4c BL.
         let h0 = match self.mem.read_half(pc) {
             Ok(v) => v,
             Err(_) => return 1,
@@ -629,7 +630,7 @@ impl<B: PeripheralBus> Core<B> {
             pc.wrapping_add(2)
         };
         let taken = next_pc != seq;
-        if is32 {
+        let (base, _) = if is32 {
             let h1 = match self.mem.read_half(pc.wrapping_add(2)) {
                 Ok(v) => v,
                 Err(_) => return 1,
@@ -641,7 +642,24 @@ impl<B: PeripheralBus> Core<B> {
                 Isa::Armv8MBaseline => decode32_v8m(h0, h1).ok(),
             };
             if let Some(i) = inst {
-                return match i {
+                let is_ld = matches!(
+                    i,
+                    Inst32::Mem {
+                        access: MemOp::Ldr
+                            | MemOp::Ldrb
+                            | MemOp::Ldrh
+                            | MemOp::Ldrsb
+                            | MemOp::Ldrsh,
+                        ..
+                    } | Inst32::LdrdStrd { is_load: true, .. }
+                        | Inst32::Ldrex { .. }
+                        | Inst32::Lda { .. }
+                        | Inst32::LdmStm { is_load: true, .. }
+                        | Inst32::VfpLdSt { is_load: true, .. }
+                        | Inst32::VfpLdStD { is_load: true, .. }
+                        | Inst32::VfpLdStMult { is_load: true, .. }
+                );
+                let c = match i {
                     Inst32::Bl { .. } | Inst32::BlxImm { .. } => 4,
                     Inst32::BranchWide { .. } => {
                         if taken {
@@ -680,8 +698,20 @@ impl<B: PeripheralBus> Core<B> {
                         _ => 3,
                     },
                     Inst32::TblBranch { .. } => 3,
+                    Inst32::Vfp3 { .. } | Inst32::Vfp2 { .. } => 3,
+                    Inst32::VfpCmp { .. }
+                    | Inst32::VfpVrint { .. }
+                    | Inst32::VfpCvt { .. }
+                    | Inst32::VfpCvtInt { .. }
+                    | Inst32::VfpMovImm { .. }
+                    | Inst32::VfpMrsVmsr { .. } => 1,
+                    Inst32::VfpLdSt { .. } | Inst32::VfpLdStD { .. } => 2,
+                    Inst32::VfpLdStMult { n, .. } => 1 + u64::from(n),
                     _ => 1,
                 };
+                (c, is_ld)
+            } else {
+                (1, false)
             }
         } else {
             let inst = match self.isa {
@@ -690,7 +720,7 @@ impl<B: PeripheralBus> Core<B> {
                 Isa::Armv8MBaseline => decode16(h0).ok(),
             };
             if let Some(i) = inst {
-                return match i {
+                let c = match i {
                     Inst16::LdrLiteral { .. }
                     | Inst16::LsReg { .. }
                     | Inst16::LsImm { .. }
@@ -727,9 +757,12 @@ impl<B: PeripheralBus> Core<B> {
                     | Inst16::BlxNs { .. } => 3,
                     _ => 1,
                 };
+                (c, false)
+            } else {
+                (1, false)
             }
-        }
-        1
+        };
+        base
     }
 
     fn flash_ws(&mut self) -> u64 {
