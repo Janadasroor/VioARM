@@ -590,7 +590,7 @@ mod tests {
         spi.reset();
         assert_eq!(read_word(&mut spi, SR) & RXNE, 0);
         assert_eq!(read_word(&mut spi, SR) & TXE, TXE); // SVD reset value
-        assert_eq!(spi.drain_output(), []);
+        assert_eq!(spi.drain_output(), Vec::<u8>::new());
     }
 
     #[test]

@@ -2,6 +2,7 @@ use vioarm_core::device::stm32::dma_f4::DmaF4;
 use vioarm_core::device::stm32::rcc::Rcc;
 use vioarm_core::device::stm32::timer::Timer;
 use vioarm_core::device::Peripheral;
+use vioarm_core::mem::Bus;
 
 fn write_word<P: Peripheral>(p: &mut P, base: u32, off: u32, val: u32) {
     for (i, b) in val.to_le_bytes().iter().enumerate() {
@@ -84,4 +85,64 @@ fn dma_f4_burst_4_beats_per_tick() {
     assert_eq!(m.lock().unwrap().len(), 8, "second burst completes");
     assert_eq!(read_word(&mut d, base, ndtr), 0);
     assert_eq!(read_word(&mut d, base, cr) & 0x1, 0, "EN cleared");
+}
+
+/// The F103 board wires TIM2's update DMA request to DMA1 channel 2
+/// (RM0008 \u{a7}13.3.7 Table 78): arming UDE + a peripheral-request channel
+/// moves one unit per counter overflow, end to end through the bus.
+#[test]
+fn f103_board_tim2_update_dma_moves_units() {
+    use std::sync::{Arc, Mutex};
+    use vioarm_core::device::stm32::dma::{DmaF1, DmaRequests, DmaUnit};
+    use vioarm_core::device::stm32::timer::Timer;
+    use vioarm_core::device::svd::stm32f103::Stm32f103;
+    use vioarm_core::device::Peripheral;
+    use vioarm_core::mem::flat::FlatMemory;
+    use vioarm_core::mem::system::SystemMemory;
+    use vioarm_core::mem::Bus;
+
+    fn ww(p: &mut SystemMemory<FlatMemory>, addr: u32, val: u32) {
+        for (i, b) in val.to_le_bytes().iter().enumerate() {
+            p.write(addr + i as u32, *b).unwrap();
+        }
+    }
+    fn rd(p: &mut SystemMemory<FlatMemory>, addr: u32) -> u32 {
+        let mut v = 0u32;
+        for i in 0..4u32 {
+            v |= u32::from(p.read(addr + i).unwrap()) << (8 * i);
+        }
+        v
+    }
+
+    let requests = Arc::new(Mutex::new(DmaRequests::new()));
+    let mailbox = Arc::new(Mutex::new(Vec::<DmaUnit>::new()));
+
+    // A bare F103-style bus: TIM2 wired to the request box plus a DMA1 that
+    // drains it.
+    let backing = FlatMemory::with_layout(&[0x4000_0000, 0x4002_0000], &[0x4000, 0x400]);
+    let mut mem = SystemMemory::new(backing);
+    mem.set_dma_mailbox(mailbox.clone());
+    let t = Timer::tim2_for::<Stm32f103>().with_dma_update(requests.clone(), 0, 2);
+    mem.attach(Box::new(t));
+    mem.attach(Box::new(DmaF1::dma_for::<Stm32f103>(
+        "DMA1", mailbox, requests,
+    )));
+
+    const T2: u32 = 0x4000_0000;
+    const D1: u32 = 0x4002_0000;
+    // TIM2: UDE + CEN (ARR reset 0 -> overflow every tick).
+    ww(&mut mem, T2 + 0x0C, 1 << 8);
+    ww(&mut mem, T2 + 0x00, 1);
+    // DMA1 ch2 (index 1): MINC, TCIE, NDTR=2.
+    ww(&mut mem, D1 + 0x14 + 0x14, 0x2000); // CMAR2
+    ww(&mut mem, D1 + 0x10 + 0x14, 0x2000); // CPAR2
+    ww(&mut mem, D1 + 0x0C + 0x14, 2); // CNDTR2
+    ww(&mut mem, D1 + 0x08 + 0x14, 1 | (1 << 7) | 0x2); // EN|MINC|TCIE
+
+    // Two overflows -> two units land via CMAR2.
+    for i in 0..4 {
+        mem.tick_devices(1);
+    }
+    assert_eq!(rd(&mut mem, D1 + 0x0C + 0x14), 0, "CNDTR exhausted");
+    assert_ne!(rd(&mut mem, D1 + 0x00) & 0x30, 0, "GIF2|TCIF2 latched");
 }

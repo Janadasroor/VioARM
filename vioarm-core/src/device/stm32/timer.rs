@@ -91,6 +91,13 @@ struct TimerBehavior {
     psc_phase: u64,
     /// Per-channel output levels (the pin, host-visible via `Timer::output_level`).
     output: [bool; 4],
+    /// Complementary output levels (OCxN pins) with dead-time insertion:
+    /// each `output_n` holds off for `dtg` ticks after its OCx toggles.
+    output_n: [bool; 4],
+    /// Remaining hold-off ticks per complementary channel.
+    dtg_holdoff: [u64; 4],
+    /// The decoded dead time captured when `BDTR.DTG` was last written.
+    dtg: u64,
     /// Optional DMA update request line: `Some((requests, controller, channel))`.
     dma_update: Option<(Arc<Mutex<DmaRequests>>, u8, u8)>,
     /// The host-driven `BKIN` break input level (advanced timers only; the
@@ -107,6 +114,9 @@ impl TimerBehavior {
             width_mask,
             psc_phase: 0,
             output: [false; 4],
+            output_n: [false; 4],
+            dtg_holdoff: [0; 4],
+            dtg: 0,
             dma_update: None,
             bkin: false,
             encoder_inputs: 0,
@@ -149,6 +159,59 @@ impl TimerBehavior {
             0b100 | 0b101 => u32::from(64 + (dtg & 0x3F)) * 2,
             0b110 => u32::from(32 + (dtg & 0x1F)) * 8,
             _ => u32::from(32 + (dtg & 0x1F)) * 16,
+        }
+    }
+
+    /// Dead-time insertion between complementary OCx/OCxN pairs (advanced
+    /// timers with `BDTR`): while `MOE` is set each `OCxN` is the inverse of
+    /// its `OCx` held off by the decoded dead time after every OCx edge.
+    fn run_dead_time(&mut self, view: &mut Registers<&mut [u32]>, delta: u64) {
+        let Some(bdtr) = view.try_get(BDTR) else {
+            return;
+        };
+        if bdtr & MOE == 0 {
+            // Main output disabled: both outputs inactive.
+            self.output_n = [false; 4];
+            return;
+        }
+        // Track DTG writes so a runtime change re-decodes.
+        let dtg_raw = (bdtr & 0xFF) as u8;
+        let decoded = Self::decode_dtg(dtg_raw) as u64;
+        let ccer = view.get(CCER);
+        for ch in 0..4usize {
+            let (ccxp_bit, ccxnp_bit, ccxe_bit, ccxne_bit) = match ch {
+                0 => (1, 1 << 2, CC1E, 1 << 2),
+                1 => (1 << 5, 1 << 7, CC2E, 1 << 10),
+                2 => (1 << 9, 1 << 11, CC3E, 1 << 12),
+                _ => (1 << 13, 1 << 15, CC4E, 1 << 14),
+            };
+            let _ = ccxp_bit;
+            // The complementary output exists when CCxNE is enabled.
+            let has_n = ccer & ccxne_bit != 0;
+            if !has_n {
+                continue;
+            }
+            let want_n = !self.output[ch];
+            if want_n != self.output_n[ch] && self.dtg_holdoff[ch] == 0 {
+                // Edge on OCx: hold OCxN off for the dead time, then switch.
+                if decoded == 0 {
+                    self.output_n[ch] = want_n;
+                } else {
+                    self.dtg_holdoff[ch] = decoded;
+                    self.output_n[ch] = false;
+                }
+            }
+            if self.dtg_holdoff[ch] > 0 {
+                let spent = delta.min(self.dtg_holdoff[ch]);
+                self.dtg_holdoff[ch] -= spent;
+                if self.dtg_holdoff[ch] == 0 {
+                    self.output_n[ch] = want_n;
+                }
+            } else {
+                self.output_n[ch] = want_n;
+            }
+            let _ = ccxnp_bit;
+            let _ = ccxe_bit;
         }
     }
     /// One quadrature step: detect the TI1/TI2 edge that just arrived and
@@ -461,8 +524,10 @@ impl Behavior for TimerBehavior {
             return;
         }
         if view.get(CR1) & CEN == 0 {
+            self.run_dead_time(view, delta);
             return;
         }
+        self.run_dead_time(view, delta);
         let div = u64::from(view.get(PSC).wrapping_add(1));
         let arr = u64::from(view.get(ARR));
         for _ in 0..delta {
@@ -741,6 +806,18 @@ impl Timer {
     pub fn output_level(&self, channel: u8) -> bool {
         if (1..=4).contains(&channel) {
             self.inner.behavior().output[usize::from(channel - 1)]
+        } else {
+            false
+        }
+    }
+
+    /// Current complementary output level (OCxN) for `channel` (1..4),
+    /// with dead-time insertion applied. Always `false` on timers without
+    /// `BDTR` or while `MOE` is clear.
+    #[must_use]
+    pub fn output_level_n(&self, channel: u8) -> bool {
+        if (1..=4).contains(&channel) {
+            self.inner.behavior().output_n[usize::from(channel - 1)]
         } else {
             false
         }
@@ -1276,5 +1353,34 @@ mod tests {
         // Next rising captures again.
         t.drive_inputs(0b100);
         assert_eq!(read_word(&mut t, T3 + 0x34), 3, "second dwell");
+    }
+
+    /// Dead-time insertion: with `MOE` set and a PWM channel whose
+    /// complementary output is enabled (`CCxNE`), `OCxN` inverts `OCx` and
+    /// holds low through the decoded dead time after every OCx edge.
+    #[test]
+    fn dead_time_inserts_gap_between_oc_and_ocn() {
+        const T1: u32 = 0x4001_2C00;
+        let mut t = Timer::tim1();
+        write_word(&mut t, T1 + 0x2C, 9); // ARR 9
+        write_word(&mut t, T1 + 0x34, 4); // CCR1 = 4 => OC1 high while CNT<4
+                                          // PWM1 on CH1; CC1E + CC1NE in CCER.
+        write_word(&mut t, T1 + 0x18, 6 << 4); // OC1M PWM1
+        write_word(&mut t, T1 + 0x20, super::CC1E | (1 << 2)); // CC1E|CC1NE
+                                                               // BDTR: MOE | DTG=3 (dead time 3 ticks)
+        write_word(&mut t, T1 + super::BDTR, (1 << 15) | 3);
+        write_word(&mut t, T1, CEN);
+        // Run past the compare so OC1 goes high then wraps low.
+        for _ in 0..12 {
+            t.tick(1);
+            let _ = read_word(&mut t, T1 + 0x10);
+        }
+        // After the run both outputs settled: OC1N is the inverse of OC1.
+        let oc1 = t.output_level(1);
+        assert_eq!(t.output_level_n(1), !oc1, "OC1N inverted after gap");
+        // MOE clear forces the complementary output inactive.
+        write_word(&mut t, T1 + super::BDTR, 3);
+        t.tick(1);
+        assert!(!t.output_level_n(1), "MOE=0 -> OC1N inactive");
     }
 }

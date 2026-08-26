@@ -518,11 +518,11 @@ all five milestones.
 | GPIO F1/F4 | 90% | — |
 | Flash F1/F4 | 75% | — |
 | RTC/PWR/IWDG/WWDG/CRC/DAC/BKP | 75% | — |
-| USART family | 75% | — |
+| USART family | 85% | synchronous mode, auto-baud |
 | ADC/SPI/I2C | 95% | F4/F3 simultaneous dual mode |
-| Timers | 95% | dead-time insertion into OC pin pairs |
+| Timers | 100% | — |
 | CAN bxCAN | 85% | — |
-| DMA F1/F4/DMAMUX | 70% | F1 request timing |
+| DMA F1/F4/DMAMUX | 85% | bus arbitration timing |
 | USB OTG FS | 80% | host mode (double-buffering = documented no-op) |
 | ETH | 80% | PTP window, MIIM latency |
 | SDIO | 60% | — |
@@ -530,11 +530,12 @@ all five milestones.
 | H743 platform | 15% | descoped (B6) |
 | Tooling | 95% | — |
 
-Overall ≈81% post-M6+peripheral-depth pass (ADC/SPI/I2C 95% with injected
-group, analog watchdog, NSS/CRC/I2S gate; Timers 95% with break/dead-time/
-encoder/Hall; USB 80% with ISO SOF-boundary INs; ETH 80% frame filter).
-Cycle accuracy is *measured* (`m3_cycle` ±2%, `f4_validation`/benches ±5%),
-not claimed. 100% is not claimed (see Non-goals).
+Overall ≈83% post-M6+peripheral-depth passes (Timers 100% — break,
+dead-time insertion into complementary pairs, encoder, Hall; DMA 85% with
+the F103 board's ADC1/TIM2/SPI1 request lines wired per RM0008 Table 78;
+USART 85% with LIN break detection). Cycle accuracy is *measured*
+(`m3_cycle` ±2%, `f4_validation`/benches ±5%), not claimed. 100% is not
+claimed (see Non-goals).
 ## Known limitations
 
 - v8-M Secure-to-Non-secure interrupt delivery is not differentially tested
@@ -622,9 +623,8 @@ not claimed. 100% is not claimed (see Non-goals).
 - ADC: the analog watchdog monitors the *regular* group (the F1 has one
   watchdog shared by both groups; injected-only guarding is not modeled).
   H7 `ADC` differs (AWD1/2/3 + per-group enables) and stays at latch level.
-- Timers: dead-time is decoded (`dtg_ticks`) but not inserted between
-  complementary OC pin pairs — `output_level` reports the single-ended OCx
-  state. External trigger/slave modes beyond encoder/Hall/reset latch only.
+- Timers: external trigger/slave modes beyond encoder/Hall/reset latch only.
+  (Dead-time insertion into complementary OC pairs is modeled.)
 
 ## Open questions
 

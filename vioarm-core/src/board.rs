@@ -158,7 +158,11 @@ pub fn stm32f103() -> BoardMemory {
     mem.attach(Box::new(Usart::usart3_for_device_with_dma::<Stm32f103>(
         dma_requests.clone(),
     )));
-    mem.attach(Box::new(Timer::tim2()));
+    mem.attach(Box::new(Timer::tim2().with_dma_update(
+        dma_requests.clone(),
+        0,
+        2,
+    ))); // DMA1 ch2: TIM2_UP (RM0008 §13.3.7 Table 78)
     mem.attach(Box::new(Timer::tim3()));
     mem.attach(Box::new(Timer::tim1()));
     mem.attach(Box::new(Timer::tim4()));
@@ -166,10 +170,13 @@ pub fn stm32f103() -> BoardMemory {
     mem.attach(Box::new(Timer::tim7()));
     mem.attach(Box::new(Exti::new()));
     mem.attach(Box::new(Afio::new()));
-    mem.attach(Box::new(Adc::adc1()));
+    mem.attach(Box::new(Adc::adc1().with_dma(dma_requests.clone(), 0, 1))); // DMA1 ch1: ADC1
     mem.attach(Box::new(Adc::adc2()));
     mem.attach(Box::new(Adc::adc3()));
-    mem.attach(Box::new(Spi::spi1()));
+    mem.attach(Box::new(Spi::spi1().with_dma(
+        Some((dma_requests.clone(), 0, 3)),
+        Some((dma_requests.clone(), 0, 2)),
+    ))); // DMA1 ch3/ch2: SPI1_TX/RX
     mem.attach(Box::new(Spi::spi2()));
     mem.attach(Box::new(Spi::spi3()));
     mem.attach(Box::new(I2c::new()));

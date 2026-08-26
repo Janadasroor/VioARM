@@ -39,6 +39,12 @@ const CR1_F1: u32 = 0x0C;
 const RXNE: u32 = 1 << 5;
 const TC: u32 = 1 << 6;
 const TXE: u32 = 1 << 7;
+/// `SR.LBD` (F1 bit 8): a LIN break was detected on `RX`.
+const LBD_F1: u32 = 1 << 8;
+/// `CR2` offset and bits (LIN support).
+const CR2_F1: u32 = 0x10;
+/// `CR2.LBDIE` (bit 6): the LIN break detection interrupt enable.
+const LBDIE_F1: u32 = 1 << 6;
 
 /// `CR1` bit positions.
 const UE: u32 = 1 << 13;
@@ -196,13 +202,14 @@ impl Behavior for UsartBehavior {
 
     fn pending(&self, view: &Registers<&[u32]>) -> u32 {
         // Level-triggered: asserts while a received byte is both unread and
-        // unmasked. The handler clears it by reading `DR`.
+        // unmasked. The handler clears it by reading `DR`. A LIN break
+        // (`SR.LBD` with `CR2.LBDIE`) asserts the same line until cleared.
         let sr = view.try_get(self.sr_off).unwrap_or(0);
         let cr1 = view.try_get(self.cr1_off).unwrap_or(0);
-        u32::from(
-            sr & self.rxne_bit != 0
-                && cr1 & (self.rxneie_bit | self.ue_bit) == (self.rxneie_bit | self.ue_bit),
-        )
+        let rx = sr & self.rxne_bit != 0
+            && cr1 & (self.rxneie_bit | self.ue_bit) == (self.rxneie_bit | self.ue_bit);
+        let lbd = view.try_get(CR2_F1).is_some_and(|cr2| cr2 & LBDIE_F1 != 0) && sr & LBD_F1 != 0;
+        u32::from(rx || lbd)
     }
 
     fn reset(&mut self) {
@@ -214,6 +221,17 @@ impl Behavior for UsartBehavior {
         view.try_set(self.rdr_off, value & 0xFF);
         if let Some(sr) = view.try_get(self.sr_off) {
             view.try_set(self.sr_off, sr | self.rxne_bit);
+        }
+        // Bit 8 set signals a LIN break (RX held low for a full frame):
+        // latch `SR.LBD` on F1-style tables that declare it.
+        if value & (1 << 8) != 0 {
+            if let Some(cr2) = view.try_get(CR2_F1) {
+                if cr2 & LBDIE_F1 != 0 {
+                    if let Some(sr) = view.try_get(self.sr_off) {
+                        view.try_set(self.sr_off, sr | LBD_F1);
+                    }
+                }
+            }
         }
     }
 
@@ -617,7 +635,10 @@ impl InterruptSource for Usart {
 
 #[cfg(test)]
 mod tests {
-    use super::{Usart, CR1_F1 as CR1, DR_F1 as DR, RXNE, RXNEIE, SR_F1 as SR, TC, TE, TXE, UE};
+    use super::{
+        Usart, CR1_F1 as CR1, CR2_F1 as CR2, DR_F1 as DR, RXNE, RXNEIE, SR_F1 as SR, TC, TE, TXE,
+        UE,
+    };
     use crate::device::svd::stm32f407::Stm32f407;
     use crate::device::{InterruptSource, Peripheral};
     use crate::error::BusError;
@@ -872,5 +893,31 @@ mod tests {
                 .from_periph(),
             1 << 6 | 1 << 3 | 1 << 4
         );
+    }
+
+    /// LIN break detection: a break input (drive bit 8) latches `SR.LBD`
+    /// only when `CR2.LBDIE` is set, asserts the line, and software clears
+    /// the flag by writing zeros.
+    #[test]
+    fn lin_break_latches_lbd_when_enabled() {
+        const B: u32 = 0x4001_3800;
+        let mut u = Usart::new();
+        u.reset();
+        // Enable UE + LBDIE.
+        write_word(&mut u, B + CR1, UE);
+        write_word(&mut u, B + CR2, 1 << 6); // CR2.LBDIE
+                                             // Break arrives.
+        u.drive_inputs(1 << 8);
+        assert_ne!(read_word(&mut u, B + SR) & (1 << 8), 0, "LBD latched");
+        assert_eq!(u.pending(), 1, "line via LBDIE");
+        // Software clear: write zeros over the flag.
+        write_word(&mut u, B + SR, !(1u32 << 8));
+        assert_eq!(read_word(&mut u, B + SR) & (1 << 8), 0);
+        assert_eq!(u.pending(), 0);
+        // Without LBDIE the break is invisible.
+        write_word(&mut u, B + CR2, 0);
+        u.drive_inputs(1 << 8);
+        assert_eq!(read_word(&mut u, B + SR) & (1 << 8), 0, "masked");
+        assert_eq!(u.pending(), 0);
     }
 }
