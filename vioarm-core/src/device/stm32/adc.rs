@@ -27,16 +27,28 @@ const CR2: u32 = 0x08;
 const SQR1: u32 = 0x2C;
 const SQR2: u32 = 0x30;
 const SQR3: u32 = 0x34;
+const JSQR: u32 = 0x38;
+const JDR1: u32 = 0x3C;
 const DR: u32 = 0x4C;
+
+/// Test-visible aliases for the injected-group offsets.
+#[cfg(test)]
+pub(crate) const JSQR_OFFSET: u32 = JSQR;
+#[cfg(test)]
+pub(crate) const JDR1_OFFSET: u32 = JDR1;
 
 /// `SR` flag bits.
 const EOC: u32 = 1 << 1;
+const JEOC: u32 = 1 << 2;
+const JSTRT: u32 = 1 << 3;
 const STRT: u32 = 1 << 4;
 const OVR: u32 = 1 << 5; // F4 only
 
 /// `CR1` bits.
 const EOCIE: u32 = 1 << 5;
+const JEOCIE: u32 = 1 << 7;
 const SCAN: u32 = 1 << 8;
+const JAUTO: u32 = 1 << 10;
 const OVRIE: u32 = 1 << 26; // F4 only
 
 /// `CR2` bits.
@@ -80,6 +92,9 @@ struct AdcBehavior {
     analog: [u16; 18],
     converting: Option<Conversion>,
     sq_index: u32,
+    /// In-progress injected conversion and its index into `JSQR`.
+    jconverting: Option<Conversion>,
+    jindex: u32,
     config: AdcConfig,
     dma: Option<(Arc<Mutex<DmaRequests>>, u8, u8)>,
 }
@@ -90,6 +105,8 @@ impl AdcBehavior {
             analog: [0; 18],
             converting: None,
             sq_index: 0,
+            jconverting: None,
+            jindex: 0,
             config,
             dma: None,
         }
@@ -112,6 +129,18 @@ impl AdcBehavior {
         ((view.get(reg) >> shift) & 0x1F) as u8
     }
 
+    /// The length of the injected sequence (`JSQR.JL`, 0 → 1 conversion).
+    fn injected_len(&self, view: &Registers<&mut [u32]>) -> u32 {
+        ((view.get(JSQR) >> 20) & 0x3) + 1
+    }
+
+    /// The channel at `index` in the injected sequence (`JSQR` JSQ1..JSQ4
+    /// starting at bit 15 downward).
+    fn injected_channel_at(&self, view: &Registers<&mut [u32]>, index: u32) -> u8 {
+        let shift = 15 - index * 5;
+        ((view.get(JSQR) >> shift) & 0x1F) as u8
+    }
+
     /// Begin a conversion of the first channel in the sequence.
     fn start_sequence(&mut self, view: &Registers<&mut [u32]>) {
         if view.get(self.config.cr_off) & self.config.adon_bit == 0 {
@@ -122,6 +151,48 @@ impl AdcBehavior {
             channel: self.channel_at(view, 0),
             remaining: u64::from(CONVERSION_CYCLES),
         });
+    }
+
+    /// Begin the injected sequence (`CR2.JSWSTART` strobe or `JAUTO`).
+    fn start_injected(&mut self, view: &Registers<&mut [u32]>) {
+        if view.get(self.config.cr_off) & self.config.adon_bit == 0 {
+            return;
+        }
+        self.jindex = 0;
+        self.jconverting = Some(Conversion {
+            channel: self.injected_channel_at(view, 0),
+            remaining: u64::from(CONVERSION_CYCLES),
+        });
+    }
+
+    /// Land one regular result in `DR` (shared by the tick paths).
+    fn land_regular(&mut self, view: &mut Registers<&mut [u32]>, channel: u8) {
+        let value = self.sample(channel);
+        let aligned = if view.get(self.config.cr_off) & ALIGN != 0 {
+            value << 4
+        } else {
+            value
+        };
+        let sr = view.get(self.config.sr_off);
+        let eoc = self.config.eoc_bit;
+        if self.config.has_ovr && sr & eoc != 0 {
+            view.set(self.config.sr_off, sr | eoc | STRT | OVR);
+        } else {
+            view.set(self.config.sr_off, sr | eoc | STRT);
+        }
+        view.set(self.config.dr_off, aligned);
+        if view.get(self.config.cr_off) & (1 << 8) != 0 {
+            if let Some((reqs, ctrl, ch)) = self.dma.as_ref() {
+                let reqs = Arc::clone(reqs);
+                reqs.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .request(*ctrl, *ch, false);
+            }
+        }
+    }
+
+    fn sample(&self, channel: u8) -> u32 {
+        u32::from(self.analog.get(usize::from(channel)).copied().unwrap_or(0) & 0x0FFF)
     }
 }
 
@@ -139,6 +210,9 @@ impl Behavior for AdcBehavior {
             let powered = word & self.config.adon_bit != 0;
             let was_powered = before & self.config.adon_bit != 0;
             let swstart = word & self.config.swstart != 0;
+            // F1/F4: JSWSTART (CR2 bit 21) strobes the injected sequence.
+            const JSWSTART: u32 = 1 << 21;
+            let jswstart = word & JSWSTART != 0;
             // SWSTART/ADSTART is a self-clearing strobe: it reads back as zero.
             let stored = word & !self.config.swstart;
             // H7: ADEN rising sets ISR.ADRDY
@@ -149,6 +223,8 @@ impl Behavior for AdcBehavior {
             if powered {
                 if swstart {
                     self.start_sequence(view);
+                } else if jswstart {
+                    self.start_injected(view);
                 } else if self.config.adon_restarts
                     && was_powered
                     && word & CONT == 0
@@ -176,10 +252,49 @@ impl Behavior for AdcBehavior {
                 view.get(self.config.sr_off) & !(self.config.eoc_bit | STRT),
             );
         }
+        if (JDR1..JDR1 + 16).contains(&offset) {
+            // Reading an injected data register clears JEOC/JSTRT
+            // (RM0008 §11.7.5).
+            view.set(
+                self.config.sr_off,
+                view.get(self.config.sr_off) & !(JEOC | JSTRT),
+            );
+        }
         value
     }
 
     fn tick(&mut self, view: &mut Registers<&mut [u32]>, delta: u64) {
+        // The injected group outranks the regular one: it converts first.
+        if let Some(mut jconv) = self.jconverting {
+            if jconv.remaining > delta {
+                jconv.remaining -= delta;
+                self.jconverting = Some(jconv);
+                return;
+            }
+            self.jconverting = None;
+            let value = self.sample(jconv.channel);
+            let aligned = if view.get(self.config.cr_off) & ALIGN != 0 {
+                value << 4
+            } else {
+                value
+            };
+            view.set(JDR1 + self.jindex * 4, aligned);
+            view.set(
+                self.config.sr_off,
+                view.get(self.config.sr_off) | JEOC | JSTRT,
+            );
+            let len = self.injected_len(view);
+            let next = self.jindex + 1;
+            if next < len {
+                // Walk the rest of the injected sequence.
+                self.jindex = next;
+                self.jconverting = Some(Conversion {
+                    channel: self.injected_channel_at(view, next),
+                    remaining: u64::from(CONVERSION_CYCLES),
+                });
+            }
+            return;
+        }
         let Some(mut conv) = self.converting else {
             return;
         };
@@ -190,40 +305,17 @@ impl Behavior for AdcBehavior {
         }
         // The sample completes: land it in DR and latch EOC/STRT.
         self.converting = None;
-        let value = u32::from(
-            self.analog
-                .get(usize::from(conv.channel))
-                .copied()
-                .unwrap_or(0)
-                & 0x0FFF,
-        );
-        let aligned = if view.get(self.config.cr_off) & ALIGN != 0 {
-            value << 4
-        } else {
-            value
-        };
-        let sr = view.get(self.config.sr_off);
-        let eoc = self.config.eoc_bit;
-        if self.config.has_ovr && sr & eoc != 0 {
-            // A second result while the previous one is unread overruns.
-            view.set(self.config.sr_off, sr | eoc | STRT | OVR);
-        } else {
-            view.set(self.config.sr_off, sr | eoc | STRT);
-        }
-        view.set(self.config.dr_off, aligned);
-        // DMA request on EOC: CR2 DMA (bit8) enabled.
-        if view.get(self.config.cr_off) & (1 << 8) != 0 {
-            if let Some((reqs, ctrl, ch)) = self.dma.as_ref() {
-                let reqs = Arc::clone(reqs);
-                reqs.lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .request(*ctrl, *ch, false);
-            }
-        }
-        // Continuous or scan mode re-arms the next conversion immediately.
+        self.land_regular(view, conv.channel);
+        // JAUTO: the regular sequence completing auto-starts an injected one.
         let continuous = view.get(self.config.cr_off) & CONT != 0;
         let scan = view.get(CR1) & SCAN != 0;
         let len = self.sequence_len(view);
+        let at_end = !continuous && !(scan && self.sq_index + 1 < len);
+        if at_end && view.get(CR1) & JAUTO != 0 {
+            self.start_injected(view);
+            return;
+        }
+        // Continuous or scan mode re-arms the next conversion immediately.
         let next = if continuous && scan {
             (self.sq_index + 1) % len
         } else {
@@ -252,6 +344,7 @@ impl Behavior for AdcBehavior {
         let eocie = (cr1 & EOCIE != 0) || (ier & (1 << 2) != 0);
         u32::from(
             (sr & self.config.eoc_bit != 0 && eocie)
+                || (sr & JEOC != 0 && cr1 & JEOCIE != 0)
                 || (self.config.has_ovr && sr & OVR != 0 && cr1 & OVRIE != 0),
         )
     }
@@ -259,6 +352,8 @@ impl Behavior for AdcBehavior {
     fn reset(&mut self) {
         self.converting = None;
         self.sq_index = 0;
+        self.jconverting = None;
+        self.jindex = 0;
     }
 
     fn drive_inputs(&mut self, _view: &mut Registers<&mut [u32]>, value: u32) {
@@ -641,5 +736,77 @@ mod tests {
         write_word(&mut adc, CR2, ADON | (1 << 8) | SWSTART_F1);
         adc.tick(14);
         assert_ne!(reqs.lock().unwrap().from_periph(), 0, "DMA requested");
+    }
+
+    const JSWSTART_F1: u32 = 1 << 21;
+
+    /// `CR2.JSWSTART` runs the injected sequence from `JSQR`: each result
+    /// lands in its own `JDRn`, `SR.JEOC` latches at the end, and the line
+    /// asserts only with `CR1.JEOCIE`.
+    #[test]
+    fn injected_sequence_lands_jdrs_and_jeoc() {
+        let mut adc = Adc::adc1();
+        adc.drive_inputs(0xABC);
+        // JSQR: JL=1 (2 conversions), JSQ1=ch3 @bit15, JSQ2=ch8 @bit10.
+        write_word(
+            &mut adc,
+            super::JSQR_OFFSET,
+            (1 << 21) | (3 << 15) | (8 << 10),
+        );
+        write_word(&mut adc, CR2, ADON | JSWSTART_F1);
+        assert_eq!(adc.pending(), 0, "JEOCIE off");
+        adc.tick(14); // first injected conversion
+        assert_eq!(read_word(&mut adc, super::JDR1_OFFSET), 0xABC);
+        adc.tick(14); // second
+        assert_eq!(read_word(&mut adc, super::JDR1_OFFSET + 4), 0xABC);
+        // Third pass to re-latch flags (the JDR reads above cleared them).
+        write_word(&mut adc, CR2, ADON | JSWSTART_F1);
+        adc.tick(14);
+        adc.tick(14);
+        let sr = read_word(&mut adc, SR);
+        assert_ne!(sr & (1 << 2), 0, "JEOC");
+        assert_ne!(sr & (1 << 3), 0, "JSTRT");
+        // Enable JEOCIE: line asserts; reading JDR1 clears JEOC/JSTRT.
+        write_word(&mut adc, CR1, 1 << 7);
+        assert_eq!(adc.pending(), 1);
+        let _ = read_word(&mut adc, super::JDR1_OFFSET);
+        assert_eq!(adc.pending(), 0);
+    }
+
+    /// The injected group preempts an in-flight regular conversion and the
+    /// regular one resumes afterwards.
+    #[test]
+    fn injected_preempts_regular_and_resumes() {
+        let mut adc = Adc::adc1();
+        adc.drive_inputs(0x111);
+        write_word(&mut adc, CR2, ADON);
+        write_word(&mut adc, CR2, ADON | SWSTART_F1); // regular ch0
+        adc.tick(5); // partially through
+                     // Inject now.
+        write_word(&mut adc, super::JSQR_OFFSET, (3 << 15)); // JL=0: ch3 only
+        write_word(&mut adc, CR2, ADON | JSWSTART_F1);
+        adc.tick(14);
+        assert_eq!(read_word(&mut adc, super::JDR1_OFFSET), 0x111);
+        assert_eq!(read_word(&mut adc, DR) & 0xFFF, 0, "regular not done yet");
+        // Regular conversion still completes after the injected one.
+        adc.tick(14);
+        assert_eq!(read_word(&mut adc, DR) & 0xFFF, 0x111, "regular resumed");
+    }
+
+    /// `CR1.JAUTO` starts the injected sequence automatically when the
+    /// regular sequence completes.
+    #[test]
+    fn jauto_starts_injected_after_regular() {
+        let mut adc = Adc::adc1();
+        adc.drive_inputs(0x222);
+        write_word(&mut adc, super::JSQR_OFFSET, (6 << 15)); // injected ch6
+                                                             // JAUTO bit 10 + scan-less single regular conversion.
+        write_word(&mut adc, CR1, 1 << 10);
+        write_word(&mut adc, CR2, ADON);
+        write_word(&mut adc, CR2, ADON | SWSTART_F1);
+        adc.tick(14); // regular completes...
+        adc.tick(14); // ...injected auto-started and finishes
+        assert_ne!(read_word(&mut adc, SR) & (1 << 2), 0, "JEOC");
+        assert_eq!(read_word(&mut adc, super::JDR1_OFFSET), 0x222);
     }
 }

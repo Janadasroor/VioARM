@@ -39,6 +39,17 @@ const CCR1: u32 = 0x34;
 const CCR2: u32 = 0x38;
 const CCR3: u32 = 0x3C;
 const CCR4: u32 = 0x40;
+/// `BDTR` (break and dead-time, advanced timers).
+const BDTR: u32 = 0x44;
+
+/// `SR.BIF` / `DIER.BIE`: the break interrupt.
+const BIF: u32 = 1 << 7;
+const BIE: u32 = 1 << 7;
+
+/// `BDTR` bits: main output enable, break enable/polarity.
+const MOE: u32 = 1 << 15;
+const BKP: u32 = 1 << 13;
+const BKE: u32 = 1 << 12;
 
 /// `CEN` bit in `CR1`.
 const CEN: u32 = 1 << 0;
@@ -81,6 +92,9 @@ struct TimerBehavior {
     output: [bool; 4],
     /// Optional DMA update request line: `Some((requests, controller, channel))`.
     dma_update: Option<(Arc<Mutex<DmaRequests>>, u8, u8)>,
+    /// The host-driven `BKIN` break input level (advanced timers only; the
+    /// field is ignored on timers whose tables lack `BDTR`).
+    bkin: bool,
 }
 
 impl TimerBehavior {
@@ -90,6 +104,46 @@ impl TimerBehavior {
             psc_phase: 0,
             output: [false; 4],
             dma_update: None,
+            bkin: false,
+        }
+    }
+
+    /// The `BDTR` break input is active: enabled (`BKE`) and the level
+    /// disagrees with the selected polarity (`BKP`).
+    const fn break_active(bdtr: Option<u32>, bkin: bool) -> bool {
+        let Some(bdtr) = bdtr else {
+            return false;
+        };
+        bdtr & BKE != 0 && bkin != (bdtr & BKP != 0)
+    }
+
+    /// Latch a break event: clear the main output, set `SR.BIF`, and drop the
+    /// channel outputs (the pins go to their inactive/OSSI state).
+    fn latch_break(&mut self, view: &mut Registers<&mut [u32]>) {
+        if view.try_get(BDTR).is_some_and(|b| b & MOE != 0) {
+            view.set(BDTR, view.get(BDTR) & !MOE);
+            view.set(SR, view.get(SR) | BIF);
+            self.output = [false; 4];
+        }
+    }
+
+    /// Dead-time in `tDTS` units decoded from `BDTR.DTG` (RM0008 §17.4.18).
+    fn dtg_ticks(&self, view: &Registers<&mut [u32]>) -> u32 {
+        let Some(bdtr) = view.try_get(BDTR) else {
+            return 0;
+        };
+        Self::decode_dtg((bdtr & 0xFF) as u8)
+    }
+
+    /// The RM0008 §17.4.18 dead-time generator decode, in `tDTS` units:
+    /// `DTG[7:5]=0xx` → `DTG·t`, `10x` → `(64+DTG[5:0])·2t`,
+    /// `110` → `(32+DTG[4:0])·8t`, `111` → `(32+DTG[4:0])·16t`.
+    fn decode_dtg(dtg: u8) -> u32 {
+        match dtg >> 5 {
+            0b000..=0b011 => u32::from(dtg),
+            0b100 | 0b101 => u32::from(64 + (dtg & 0x3F)) * 2,
+            0b110 => u32::from(32 + (dtg & 0x1F)) * 8,
+            _ => u32::from(32 + (dtg & 0x1F)) * 16,
         }
     }
 
@@ -310,6 +364,12 @@ impl Behavior for TimerBehavior {
 
     #[allow(clippy::cast_possible_truncation)]
     fn tick(&mut self, view: &mut Registers<&mut [u32]>, delta: u64) {
+        // The break input overrides counting: while active, the counter is
+        // held and the main output stays off (RM0008 §17.4.18).
+        if Self::break_active(view.try_get(BDTR), self.bkin) {
+            self.latch_break(view);
+            return;
+        }
         if view.get(CR1) & CEN == 0 {
             return;
         }
@@ -389,7 +449,15 @@ impl Behavior for TimerBehavior {
         let cc2 = sr & CC2IF != 0 && dier & CC2IE != 0;
         let cc3 = sr & CC3IF != 0 && dier & CC3IE != 0;
         let cc4 = sr & CC4IF != 0 && dier & CC4IE != 0;
-        u32::from(uie || cc1 || cc2 || cc3 || cc4)
+        let brk = sr & BIF != 0 && dier & BIE != 0;
+        u32::from(uie || brk || cc1 || cc2 || cc3 || cc4)
+    }
+
+    fn drive_inputs(&mut self, view: &mut Registers<&mut [u32]>, value: u32) {
+        self.bkin = value & 1 != 0;
+        if Self::break_active(view.try_get(BDTR), self.bkin) {
+            self.latch_break(view);
+        }
     }
 }
 
@@ -585,6 +653,22 @@ impl Timer {
     ) -> Self {
         self.inner.behavior_mut().dma_update = Some((requests, controller, channel));
         self
+    }
+
+    /// Drive the `BKIN` break input level (advanced timers). An enabled break
+    /// (`BDTR.BKE`) whose level disagrees with `BKP` clears `MOE`, latches
+    /// `SR.BIF`, and drops the channel outputs.
+    pub fn drive_bkin(&mut self, level: bool) {
+        let value = u32::from(level);
+        self.inner.drive_inputs(value);
+    }
+
+    /// The dead time in `tDTS` units decoded from `BDTR.DTG`
+    /// (RM0008 §17.4.18). Zero when the timer has no `BDTR`.
+    #[must_use]
+    pub fn dtg_ticks(&self) -> u32 {
+        let bdtr = self.inner.word(BDTR);
+        TimerBehavior::decode_dtg((bdtr & 0xFF) as u8)
     }
 }
 
@@ -927,5 +1011,59 @@ mod tests {
             0,
             "update DMA requested"
         );
+    }
+
+    /// TIM1 break: an active `BKIN` clears `MOE`, latches `BIF`, drops the
+    /// outputs, holds the counter; releasing resumes and the ISR's BIE path
+    /// raises the line.
+    #[test]
+    fn tim1_break_clears_moe_and_latches_bif() {
+        const T1: u32 = 0x4001_2C00;
+        let mut t = Timer::tim1();
+        // BDTR: MOE | BKE, BKP=0 (active low break).
+        write_word(&mut t, T1 + super::BDTR, (1 << 15) | (1 << 12));
+        write_word(&mut t, T1 + 0x2C, 10); // ARR
+        write_word(&mut t, T1, CEN);
+        assert_eq!(t.exception_number(), Some(16 + 25));
+        // Break asserted (level high vs BKP=0): MOE clears, BIF latches.
+        t.drive_bkin(true);
+        assert_eq!(
+            read_word(&mut t, T1 + super::BDTR) & (1 << 15),
+            0,
+            "MOE cleared by break"
+        );
+        assert_ne!(read_word(&mut t, T1 + 0x10) & super::BIF, 0, "BIF");
+        // Counting is held while the break is active.
+        let cnt = read_word(&mut t, T1 + 0x24);
+        t.tick(5);
+        assert_eq!(read_word(&mut t, T1 + 0x24), cnt, "counter held");
+        // With DIER.BIE the pending line asserts until cleared.
+        write_word(&mut t, T1 + 0x0C, super::BIE);
+        assert_eq!(t.pending(), 1, "break interrupt line");
+        // Release: counting resumes.
+        t.drive_bkin(false);
+        t.acknowledge(1); // NVIC took it; SR.BIF cleared via W1C below
+        write_word(&mut t, T1 + 0x10, super::BIF);
+        t.tick(1);
+        assert_ne!(read_word(&mut t, T1 + 0x24), cnt, "resumed after break");
+    }
+
+    /// The `BDTR.DTG` dead-time decode follows RM0008 §17.4.18 exactly.
+    #[test]
+    fn tim1_dtg_decode_matches_rm_table() {
+        let mut t = Timer::tim1();
+        const T1: u32 = 0x4001_2C00;
+        // 0xx: DT = DTG * tDTS.
+        write_word(&mut t, T1 + super::BDTR, 0b0000_1010);
+        assert_eq!(t.dtg_ticks(), 10);
+        // 10x: DT = (64+DTG[5:0]) * 2.
+        write_word(&mut t, T1 + super::BDTR, 0b1000_0001);
+        assert_eq!(t.dtg_ticks(), (64 + 1) * 2);
+        // 110: DT = (32+DTG[4:0]) * 8.
+        write_word(&mut t, T1 + super::BDTR, 0b1100_0010);
+        assert_eq!(t.dtg_ticks(), (32 + 2) * 8);
+        // 111: DT = (32+DTG[4:0]) * 16.
+        write_word(&mut t, T1 + super::BDTR, 0b1110_0011);
+        assert_eq!(t.dtg_ticks(), (32 + 3) * 16);
     }
 }

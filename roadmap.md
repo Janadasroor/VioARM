@@ -519,19 +519,20 @@ all five milestones.
 | Flash F1/F4 | 75% | — |
 | RTC/PWR/IWDG/WWDG/CRC/DAC/BKP | 75% | — |
 | USART family | 75% | — |
-| ADC/SPI/I2C | 75% | — |
-| Timers | 85% | C3 |
+| ADC/SPI/I2C | 85% | SPI I2S/CRC/NSS, ADC watchdog |
+| Timers | 90% | encoder/Hall mode |
 | CAN bxCAN | 85% | — |
 | DMA F1/F4/DMAMUX | 70% | F1 request timing |
-| USB OTG FS | 60% | — |
-| ETH | 65% | — |
+| USB OTG FS | 75% | double-buffering, ISO/host |
+| ETH | 80% | PTP window, MIIM latency |
 | SDIO | 60% | — |
 | Chip coverage (SVD tables) | 12 chips | variant deltas |
 | H743 platform | 15% | descoped (B6) |
 | Tooling | 95% | — |
 
-Overall ≈77% post-M6 (unweighted mean; was ≈62-65% post-M2, ≈75-80%
-projected post-M5). Cycle/peripheral accuracy now measured (`m3_cycle`
+Overall ≈79% post-M6+peripheral-depth pass (USB 75%, ETH 80%, ADC/SPI/I2C
+85%, Timers 90% after CDC enumeration e2e, MAC frame filter, injected ADC,
+and TIM1 break/dead-time landed). Cycle accuracy is *measured* (`m3_cycle`
 ±2%, `f4_validation`/benches ±5%), not claimed. 100% is not claimed
 (see Non-goals).
 ## Known limitations

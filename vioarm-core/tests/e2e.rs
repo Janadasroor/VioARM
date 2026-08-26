@@ -1650,7 +1650,10 @@ fn eth_dispatches_its_isr() {
     {
         let mem = m.core.mem();
         mem.write_word(NVIC_ISER1, 1 << 29).unwrap(); // enable ETH
-                                                      // One RX descriptor ring: OWN set, 1536-byte buffer, self-chained.
+                                                      // Accept every frame (RA): the test's destination is multicast and
+                                                      // no hash/perfect filter is programmed.
+        mem.write_word(0x4002_8004, 1 << 31).unwrap();
+        // One RX descriptor ring: OWN set, 1536-byte buffer, self-chained.
         mem.write_word(RING, 0x8000_0000).unwrap();
         mem.write_word(RING + 4, 0x4000 | 0x0600).unwrap(); // RCH | RBS1
         mem.write_word(RING + 8, BUF).unwrap();

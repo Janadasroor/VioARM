@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased] — v2.0 production
 ### Added
 - `CAN` bxCAN filter: `FMR/CAN2SB` `FM1R` `FS1R` `FFA1R` `FA1R` `FR1/2` 28 banks, 32-bit mask/list + 16-bit, FIFO routing, drop-on-miss (564 lib).
+- **USB CDC-ACM full enumeration e2e** (`usb_cdc_enumeration.rs`): bus reset→`ENUMDNE`→`GET_DESCRIPTOR(DEVICE)` control-IN with descriptor bytes verified on the host channel→`SET_ADDRESS`/`SET_CONFIGURATION` zero-length status stages (SETUP `STUP` handshake each)→EP1 bulk IN notification + bulk OUT "hello" RX path with `PKTSTS` decode.
+- **ETH MAC frame filter implemented** (`eth.rs` `accepts_frame`, RM0008 §27.6.2 layout from pack SVD): promiscuous `PM`/`RA`, broadcast drop `BFD`, multicast pass-all `PAM` or `HM` 64-bit CRC hash table, unicast perfect-match or `HU` hash, `HPF`, inverse `DAIF`; filtered frames advance the ring without storing or latching RX. Unit tests for perfect/drop, RA vs BFD vs PM, mcast hash hit/miss; H7 `EthH7` window roundtrip.
+- **ADC injected group**: `JSQR` (JL + JSQ1..4), `JSWSTART` strobe, results land per-conversion in `JDR1..4`, `SR.JEOC|JSTRT`, `CR1.JEOCIE` line, JDR read clears flags (RM0008 §11.7.5), `CR1.JAUTO` auto-start after regular sequence completes, injected preempts in-flight regular then resumes.
+- **TIM1 break + dead-time**: `BDTR.BKE/BKP/MOE`, host `drive_bkin()` input, active break clears MOE/latches `SR.BIF`/holds the counter, `DIER.BIE` line; `DTG` decode per RM0008 §17.4.18 (`Timer::dtg_ticks`).
 - `TIM` IC/PWM/OPM: `OCxM` state machine + `output_level()` pin, `EGR.CCxG`, `CR1.OPM` one-pulse, `inject_capture()` latch, `URE` etc. (17 timer tests).
 - `DMA` `TIM` `ADC` request lines: `TIM` `DIER.UDE`→`DmaRequests`, `ADC` `CR2.DMA`→`DmaRequests`, `with_dma()` helpers.
 - `USB` EP1-3 bulk: `FIFO_LEN` 0x400→0x4000, `DIEPTSIZ`/`DOEPTSIZ` per-EP, EP1 bulk test.

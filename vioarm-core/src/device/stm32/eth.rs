@@ -557,31 +557,97 @@ impl Eth {
             return;
         }
         if let Some(frame) = self.take_frame() {
-            let _ffr = self.mac.get(MACFFR);
-            let _accept = true;
-            let rbs1 = usize::try_from(ctrl & RBS1_MASK).unwrap_or(0);
-            let n = frame.len().min(rbs1);
-            if n > 0 {
-                self.push_write(buf, frame[..n].to_vec());
-            }
-            // Status word: ownership returned, first+last segment set, frame
-            // length (with CRC) in the upper field — exactly what the driver's
-            // `GetRxFrameSize` decodes back to `len`.
-            let fl = (u32::try_from(frame.len()).unwrap_or(0).wrapping_add(4)) & 0x3FFF;
-            self.push_write(
-                self.state.rx_desc,
-                ((fl << 16) | RX_FS | RX_LS).to_le_bytes().to_vec(),
-            );
-            // A magic packet wakes the `ETH_WKUP` line when the filter is on.
-            if self.mac.get(MACPMTCSR) & PMTCSR_MPE != 0 && self.is_magic_packet(&frame) {
-                self.set_macsr(MACSR_PMTS);
-                let word = self.mac.get(MACPMTCSR) | PMTCSR_MPR;
-                self.mac.set(MACPMTCSR, word);
+            if self.accepts_frame(&frame) {
+                let rbs1 = usize::try_from(ctrl & RBS1_MASK).unwrap_or(0);
+                let n = frame.len().min(rbs1);
+                if n > 0 {
+                    self.push_write(buf, frame[..n].to_vec());
+                }
+                // Status word: ownership returned, first+last segment set, frame
+                // length (with CRC) in the upper field — exactly what the driver's
+                // `GetRxFrameSize` decodes back to `len`.
+                let fl = (u32::try_from(frame.len()).unwrap_or(0).wrapping_add(4)) & 0x3FFF;
+                self.push_write(
+                    self.state.rx_desc,
+                    ((fl << 16) | RX_FS | RX_LS).to_le_bytes().to_vec(),
+                );
+                // A magic packet wakes the `ETH_WKUP` line when the filter is on.
+                if self.mac.get(MACPMTCSR) & PMTCSR_MPE != 0 && self.is_magic_packet(&frame) {
+                    self.set_macsr(MACSR_PMTS);
+                    let word = self.mac.get(MACPMTCSR) | PMTCSR_MPR;
+                    self.mac.set(MACPMTCSR, word);
+                }
+            } else {
+                // Filtered on real silicon: nothing is stored, no status word
+                // is written back (the descriptor keeps CPU ownership), and
+                // no RX interrupt latches — but the DMA still advances to the
+                // next descriptor and returns to idle.
+                self.state.rx_desc = next;
+                self.state.phase = Phase::Idle;
+                return;
             }
         }
         self.latch_rx_status();
         self.state.rx_desc = next;
         self.state.phase = Phase::Idle;
+    }
+
+    /// The MAC frame filter (RM0008 §27.6.2 `MACFFR`, layout from the pack
+    /// SVD): promiscuous/RA pass everything; otherwise broadcast is dropped
+    /// only when `BFD` is set; multicast passes via `PAM` or the `HM` hash
+    /// table; unicast passes on a perfect station-address match or the `HU`
+    /// hash table (`HPF` ORs hash and perfect); `DAIF` inverts the verdict
+    /// for non-broadcast frames.
+    fn accepts_frame(&self, frame: &[u8]) -> bool {
+        let ffr = self.mac.get(MACFFR);
+        // Promiscuous mode (PM) or receive-all (RA): everything passes.
+        if ffr & 1 != 0 || ffr & (1 << 31) != 0 {
+            return true;
+        }
+        let Some(dest) = frame.get(..6) else {
+            return false;
+        };
+        let is_bcast = dest == [0xFF; 6];
+        if is_bcast {
+            return ffr & (1 << 5) == 0; // BFD rejects broadcast frames.
+        }
+        let is_mcast = dest[0] & 1 != 0;
+        let hr = self.mac.get(MACA0HR);
+        let lr = self.mac.get(MACA0LR);
+        let station = [
+            ((hr >> 8) & 0xFF) as u8,
+            (hr & 0xFF) as u8,
+            ((lr >> 24) & 0xFF) as u8,
+            ((lr >> 16) & 0xFF) as u8,
+            ((lr >> 8) & 0xFF) as u8,
+            (lr & 0xFF) as u8,
+        ];
+        let perfect = dest == station;
+        let mut accepted = if is_mcast {
+            ffr & (1 << 4) != 0 // PAM passes all multicast…
+                || (ffr & (1 << 2) != 0 && self.hash_filters(dest)) // …or HM table.
+        } else {
+            perfect || (ffr & 1 << 1 != 0 && self.hash_filters(dest)) // HU table.
+        };
+        // HPF: hash OR perfect (perfect already folded into `accepted`).
+        let _ = ffr & (1 << 10);
+        if ffr & (1 << 3) != 0 {
+            // DAIF: inverse destination filtering flips the verdict.
+            accepted = !accepted;
+        }
+        accepted
+    }
+
+    /// Whether the destination's 6-bit CRC hash indexes a set bit across the
+    /// 64-bit filter table (`MACHTLR` holds bits 31..=0, `MACHTHR` 63..=32).
+    fn hash_filters(&self, dest: &[u8]) -> bool {
+        let idx = eth_hash(dest);
+        let word = if idx < 32 {
+            self.mac.get(MACHTLR)
+        } else {
+            self.mac.get(MACHTHR)
+        };
+        word & (1 << (idx % 32)) != 0
     }
 
     /// Latch the receive-interrupt bits into `DMASR`.
@@ -965,15 +1031,18 @@ mod tests {
     fn rx_frame_walks_descriptor_and_latches_status() {
         let (mut mem, _mailbox) = sys();
         enable_rx(&mut mem);
+        // Station address matches the injected frame's unicast destination.
+        write_word(&mut mem, MAC + MACA0HR, 0x0202);
+        write_word(&mut mem, MAC + MACA0LR, 0x0304_0506);
         rx_ring(&mut mem, RAM + 0x400);
-        inject_frame(&mut mem, &[1, 2, 3, 4, 5, 6]);
+        inject_frame(&mut mem, &[2, 2, 3, 4, 5, 6]);
         cycle(&mut mem);
         // Second cycle consumes the descriptor read and lands the frame.
         cycle(&mut mem);
         assert_eq!(mem.devices()[0].pending() & 1, 1, "ETH line");
         assert_eq!(
             read_word(&mut mem, RAM + 0x400),
-            0x0403_0201,
+            0x0403_0202,
             "frame stored little-endian"
         );
         let stat = read_word(&mut mem, RAM);
@@ -1060,6 +1129,7 @@ mod tests {
         write_word(&mut mem, DMA + 0x18, 1 << 1);
         // No NISE: the RX latch must not assert the line.
         write_word(&mut mem, DMA + 0x1c, 0);
+        write_word(&mut mem, MAC + super::MACFFR, 1 << 31); // RA: receive all
         rx_ring(&mut mem, RAM + 0x400);
         inject_frame(&mut mem, &[1, 2, 3]);
         cycle(&mut mem);
@@ -1067,6 +1137,132 @@ mod tests {
         assert_eq!(mem.devices()[0].pending() & 1, 0, "NIS masked");
         write_word(&mut mem, DMA + 0x1c, 1 << 16);
         assert_eq!(mem.devices()[0].pending() & 1, 1, "NISE now enables");
+    }
+
+    /// A frame lands only when the filter accepts it: perfect unicast match
+    /// passes, an unknown unicast is dropped with the descriptor untouched.
+    #[test]
+    fn frame_filter_perfect_match_and_drop() {
+        let (mut mem, _mailbox) = sys();
+        enable_rx(&mut mem);
+        write_word(&mut mem, MAC + MACA0HR, 0x0202);
+        write_word(&mut mem, MAC + MACA0LR, 0x0304_0506);
+        rx_ring(&mut mem, RAM + 0x400);
+        // Unknown unicast destination: filtered, buffer untouched.
+        inject_frame(&mut mem, &[2, 2, 3, 4, 5, 7]);
+        cycle(&mut mem);
+        cycle(&mut mem);
+        assert_eq!(
+            read_word(&mut mem, RAM) & OWN,
+            OWN,
+            "descriptor stays owned by DMA"
+        );
+        assert_eq!(
+            read_word(&mut mem, RAM + 0x400),
+            0,
+            "filtered frame not stored"
+        );
+        // Perfect station-address match: stored and latched.
+        inject_frame(&mut mem, &[2, 2, 3, 4, 5, 6]);
+        cycle(&mut mem);
+        cycle(&mut mem);
+        assert_eq!(read_word(&mut mem, RAM + 0x400), 0x0403_0202, "stored");
+    }
+
+    /// `MACFFR.RA` (receive all) overrides every other filter bit.
+    #[test]
+    fn frame_filter_receive_all_and_broadcast_disable() {
+        let (mut mem, _mailbox) = sys();
+        enable_rx(&mut mem);
+        // RA: unknown unicast passes.
+        write_word(&mut mem, MAC + super::MACFFR, 1 << 31);
+        rx_ring(&mut mem, RAM + 0x400);
+        inject_frame(&mut mem, &[9, 9, 9, 9, 9, 8]);
+        cycle(&mut mem);
+        cycle(&mut mem);
+        assert_ne!(read_word(&mut mem, RAM + 0x400), 0, "RA accepted");
+
+        // BFD drops broadcast when not promiscuous.
+        let (mut mem, _mailbox) = sys();
+        enable_rx(&mut mem);
+        write_word(&mut mem, MAC + super::MACFFR, 1 << 5); // BFD
+        rx_ring(&mut mem, RAM + 0x400);
+        inject_frame(&mut mem, &[0xFF; 6]);
+        cycle(&mut mem);
+        cycle(&mut mem);
+        assert_eq!(
+            read_word(&mut mem, RAM + 0x400),
+            0,
+            "broadcast dropped by BFD"
+        );
+        // …but PM (promiscuous) lets it through even with BFD set.
+        write_word(&mut mem, MAC + super::MACFFR, 1 << 5 | 1);
+        inject_frame(&mut mem, &[0xFF; 6]);
+        cycle(&mut mem);
+        cycle(&mut mem);
+        assert_ne!(read_word(&mut mem, RAM + 0x400), 0, "PM overrides");
+    }
+
+    /// The multicast hash table (`HM` + `MACHTLR/MACHTHR`) admits a frame
+    /// whose CRC hash indexes a set bit, and rejects one that misses.
+    #[test]
+    fn frame_filter_multicast_hash_table() {
+        let (mut mem, _mailbox) = sys();
+        enable_rx(&mut mem);
+        let dest: [u8; 6] = [0x01, 0x00, 0x5E, 0x00, 0x00, 0x01]; // IPv4 mcast
+        let idx = super::eth_hash(&dest);
+        let mut word = if idx < 32 {
+            super::MACHTLR
+        } else {
+            super::MACHTHR
+        };
+        // Program the hash bit for the frame's destination.
+        write_word(
+            &mut mem,
+            MAC + word,
+            if word == super::MACHTHR {
+                1 << (idx - 32)
+            } else {
+                1 << idx
+            },
+        );
+        word = 0; // silence unused warnings in cfg paths below
+        write_word(&mut mem, MAC + super::MACFFR, 1 << 2); // HM
+        rx_ring(&mut mem, RAM + 0x400);
+        inject_frame(&mut mem, &dest);
+        cycle(&mut mem);
+        cycle(&mut mem);
+        assert_ne!(read_word(&mut mem, RAM + 0x400), 0, "hash hit accepted");
+        // A different multicast group whose hash bit is clear is dropped.
+        let miss: [u8; 6] = [0x01, 0x00, 0x5E, 0x00, 0x00, 0x02];
+        let mi = super::eth_hash(&miss);
+        if mi != idx {
+            rx_ring(&mut mem, RAM + 0x800);
+            inject_frame(&mut mem, &miss);
+            cycle(&mut mem);
+            cycle(&mut mem);
+            assert_eq!(read_word(&mut mem, RAM + 0x800), 0, "hash miss dropped");
+        }
+    }
+
+    /// The H7 single-window MAC stub (`EthH7`) round-trips HAL probing writes.
+    #[test]
+    fn h7_eth_stub_window_roundtrip() {
+        use crate::device::stm32::eth::EthH7;
+        use crate::device::svd::stm32h743::Stm32h743;
+        let backing = FlatMemory::with_layout(&[RAM], &[0x1000]);
+        let mailbox = Arc::new(Mutex::new(EthMailbox::default()));
+        let mut mem = SystemMemory::new(backing);
+        mem.set_eth_mailbox(mailbox.clone());
+        mem.attach(Box::new(EthH7::new_for::<Stm32h743>()));
+        // H7 ETH MAC base from the generated tables.
+        let base = EthH7::new_for::<Stm32h743>().ranges()[0].base;
+        assert_eq!(base, 0x4002_8000, "H7 MAC window");
+        // MACCR / MACFFR-style config round-trips through the latch.
+        write_word(&mut mem, base + 0x00, 0x0000_004C); // RE|TE|FES|DM
+        assert_eq!(read_word(&mut mem, base + 0x00), 0x0000_004C);
+        write_word(&mut mem, base + 0x04, 1 << 31); // RA
+        assert_eq!(read_word(&mut mem, base + 0x04), 1 << 31);
     }
 
     #[test]
