@@ -30,22 +30,67 @@ const CR1: u32 = 0x00;
 const CR2: u32 = 0x04;
 const SR: u32 = 0x08;
 const DR: u32 = 0x0C;
+/// `CRCPOLY` / `RXCRCR` / `TXCRCR` — the hardware-CRC block.
+const CRCPOLY: u32 = 0x10;
+const RXCRCR: u32 = 0x14;
+const TXCRCR: u32 = 0x18;
+/// `I2SCFGR` — audio mode repurposes the shift register.
+const I2SCFGR: u32 = 0x1C;
 
 /// `CR1` bits.
 const SPE: u32 = 1 << 6;
 const MSTR: u32 = 1 << 2;
 const DFF: u32 = 1 << 11;
+const CRCNEXT: u32 = 1 << 12;
+const CRCEN: u32 = 1 << 13;
+const SSM: u32 = 1 << 9;
+const SSI: u32 = 1 << 8;
 
 /// `CR2` bits.
 const TXEIE: u32 = 1 << 7;
 const RXNEIE: u32 = 1 << 6;
 const RXDMAEN: u32 = 1 << 0;
 const TXDMAEN: u32 = 1 << 1;
+const SSOE: u32 = 1 << 2;
 
 /// `SR` bits.
 const RXNE: u32 = 1 << 0;
 const TXE: u32 = 1 << 1;
+const CRCERR: u32 = 1 << 4;
+const MODF: u32 = 1 << 5;
 const BSY: u32 = 1 << 7;
+
+/// `I2SCFGR.I2SMOD`: the peripheral is in audio mode.
+const I2SMOD: u32 = 1 << 11;
+
+/// One step of the SPI CRC engine (RM0008 §26.3.8): MSB-first, XOR into the
+/// top bit, conditionally subtract the polynomial — width-selected by `DFF`.
+fn crc_step(crc: u16, byte: u8, poly: u16, dff16: bool) -> u16 {
+    let mut crc = crc;
+    if dff16 {
+        for bit in (0..8).rev() {
+            let next = (byte >> bit) as u16 & 1;
+            let msb = (crc >> 15) & 1;
+            crc <<= 1;
+            if msb != next {
+                crc ^= poly;
+            }
+        }
+    } else {
+        let mut full: u16 = crc & 0xFF;
+        let poly8 = poly & 0xFF;
+        for bit in (0..8).rev() {
+            let next = u16::from((byte >> bit) & 1);
+            let msb = (full >> 7) & 1;
+            full = (full << 1) & 0xFF;
+            if msb != next {
+                full ^= poly8;
+            }
+        }
+        crc = full;
+    }
+    crc
+}
 
 /// An in-flight master frame shifting out of the `MOSI` pin.
 #[derive(Clone, Copy, Debug)]
@@ -64,6 +109,15 @@ struct SpiBehavior {
     transfer: Option<SpiTransfer>,
     /// Bytes the master shifted out, for host draining.
     mosi: Vec<u8>,
+    /// Hardware-NSS line asserted low (`drive_inputs` bit 8 set). While
+    /// `MSTR && !SSM` this is a mode fault; undriven inputs idle high.
+    nss_asserted: bool,
+    /// One CRC frame is queued: after the current byte, `TXCRCR` shifts out.
+    crc_send_pending: bool,
+    /// Running TX/RX CRC shadows (`TXCRCR`/`RXCRCR` are read-only in the SVD
+    /// so the engine keeps its own state and synthesizes reads).
+    tx_crc: u16,
+    rx_crc: u16,
     dma_tx: Option<(Arc<Mutex<DmaRequests>>, u8, u8)>,
     dma_rx: Option<(Arc<Mutex<DmaRequests>>, u8, u8)>,
 }
@@ -74,6 +128,10 @@ impl Default for SpiBehavior {
             rx_byte: 0,
             transfer: None,
             mosi: Vec::new(),
+            nss_asserted: false,
+            crc_send_pending: false,
+            tx_crc: 0xFFFF,
+            rx_crc: 0xFFFF,
             dma_tx: None,
             dma_rx: None,
         }
@@ -106,16 +164,65 @@ impl Behavior for SpiBehavior {
         val: u8,
         shift: u32,
     ) -> u32 {
+        if offset == CR1 {
+            let before = view.get(CR1);
+            let word = view.merged(CR1, val, shift);
+            // Enabling the peripheral with CRC support reloads both CRC
+            // registers to the reset 0xFFFF (RM0008 §26.5: "set when SPE=1").
+            if word & CRCEN != 0 && before & SPE == 0 && word & SPE != 0 {
+                self.tx_crc = 0xFFFF;
+                self.rx_crc = 0xFFFF;
+                self.crc_send_pending = false;
+            }
+            // A mode fault disables SPI. Re-enabling (the RM's "read SR,
+            // write CR1" recovery) clears the latch.
+            if word & SPE != 0 && view.get(SR) & MODF != 0 {
+                view.set(SR, view.get(SR) & !MODF);
+            }
+            // CRCNEXT is a request consumed by the *next* frame start.
+            let stored = if self.crc_send_pending && word & CRCNEXT != 0 {
+                word
+            } else {
+                word
+            };
+            return stored;
+        }
         if offset == DR {
             let cr1 = view.get(CR1);
+            // I2S audio mode (where the tables have I2SCFGR) repurposes the
+            // shift register; SPI frames do not start.
+            let i2s = view.try_get(I2SCFGR).is_some_and(|w| w & I2SMOD != 0);
             let word = view.merged(DR, val, shift);
-            // A frame starts only in master mode with the peripheral enabled
-            // and the transmit buffer empty; writes while busy are dropped.
-            let ready = view.get(SR) & TXE != 0 && cr1 & (SPE | MSTR) == (SPE | MSTR);
+            // A frame starts only in master mode with the peripheral enabled,
+            // not in I2S audio mode, and with the transmit buffer empty;
+            // writes while busy are dropped.
+            let ready = view.get(SR) & TXE != 0 && cr1 & (SPE | MSTR) == (SPE | MSTR) && !i2s;
             if ready && shift == Self::frame_lane(cr1) {
                 view.set(SR, (view.get(SR) & !TXE) | BSY);
+                let byte = (word & 0xFF) as u8;
+                // CRCNEXT armed: this frame shifts out the running TX CRC and
+                // the request self-clears (RM0008 §26.3.8).
+                let (tx_byte, keep_crcnext) = if cr1 & CRCEN != 0 && cr1 & CRCNEXT != 0 {
+                    (
+                        if cr1 & DFF != 0 {
+                            (self.tx_crc >> 8) as u8
+                        } else {
+                            (self.tx_crc & 0xFF) as u8
+                        },
+                        false,
+                    )
+                } else {
+                    (byte, true)
+                };
+                if cr1 & CRCNEXT != 0 {
+                    self.crc_send_pending = keep_crcnext;
+                    // Consume the strobe from the stored CR1 shadow.
+                    view.set(CR1, cr1 & !CRCNEXT);
+                } else {
+                    self.crc_send_pending = false;
+                }
                 self.transfer = Some(SpiTransfer {
-                    tx_byte: (word & 0xFF) as u8,
+                    tx_byte,
                     remaining: Self::transfer_cycles(cr1),
                 });
             }
@@ -129,10 +236,25 @@ impl Behavior for SpiBehavior {
             // Reading the data register acknowledges `RXNE`.
             view.set(SR, view.get(SR) & !RXNE);
         }
+        if offset == TXCRCR {
+            return u32::from(self.tx_crc);
+        }
+        if offset == RXCRCR {
+            return u32::from(self.rx_crc);
+        }
         value
     }
 
     fn tick(&mut self, view: &mut Registers<&mut [u32]>, delta: u64) {
+        // Hardware NSS mode fault: master with external NSS pulled low and
+        // software management disabled (RM0008 §26.3.6).
+        let cr1 = view.get(CR1);
+        if cr1 & (SPE | MSTR) == (SPE | MSTR) && cr1 & SSM == 0 && self.nss_asserted {
+            view.set(SR, view.get(SR) | MODF);
+            view.set(CR1, cr1 & !SPE);
+            self.transfer = None;
+            return;
+        }
         let Some(mut transfer) = self.transfer else {
             return;
         };
@@ -143,6 +265,13 @@ impl Behavior for SpiBehavior {
         }
         // The frame completes: the sampled MISO byte lands in DR.
         self.transfer = None;
+        let cr1 = view.get(CR1);
+        let dff16 = cr1 & DFF != 0;
+        if cr1 & CRCEN != 0 {
+            let poly = (view.get(CRCPOLY) & 0xFFFF) as u16;
+            self.tx_crc = crc_step(self.tx_crc, transfer.tx_byte, poly, dff16);
+            self.rx_crc = crc_step(self.rx_crc, self.rx_byte, poly, dff16);
+        }
         view.set(DR, u32::from(self.rx_byte));
         view.set(SR, (view.get(SR) & !BSY) | RXNE | TXE);
         self.mosi.push(transfer.tx_byte);
@@ -179,11 +308,15 @@ impl Behavior for SpiBehavior {
         self.transfer = None;
         self.mosi.clear();
         self.rx_byte = 0;
+        self.nss_asserted = false;
+        self.crc_send_pending = false;
     }
 
     fn drive_inputs(&mut self, _view: &mut Registers<&mut [u32]>, value: u32) {
-        // The low byte is the slave's response on the next frame.
+        // The low byte is the slave's response on the next frame; bit 8 set
+        // pulls hardware NSS low (undriven inputs idle high).
         self.rx_byte = (value & 0xFF) as u8;
+        self.nss_asserted = value & (1 << 8) != 0;
     }
 
     fn drain_output(&mut self) -> Vec<u8> {
@@ -484,5 +617,122 @@ mod tests {
         spi.tick(16);
         assert_eq!(read_word(&mut spi, DR), 0xAB);
         assert_eq!(spi.drain_output(), [0x55]);
+    }
+
+    /// Hardware-NSS master (`SSM=0`): the external NSS line driven low is a
+    /// mode fault — `SR.MODF` latches, `SPE` self-clears, the in-flight frame
+    /// aborts; re-enabling clears MODF.
+    #[test]
+    fn nss_mode_fault_disables_master() {
+        let mut spi = Spi::spi1();
+        write_word(&mut spi, CR1, SPE | MSTR); // SSM off: hard NSS
+                                               // MISO byte plus NSS pulled low (bit 8).
+        spi.drive_inputs(0xAB | (1 << 8));
+        write_word(&mut spi, DR, 0x55);
+        spi.tick(4); // mid-frame...
+        assert_eq!(
+            read_word(&mut spi, SR) & super::MODF,
+            super::MODF,
+            "mode fault latched"
+        );
+        assert_eq!(read_word(&mut spi, CR1) & SPE, 0, "SPE cleared by MODF");
+        // The aborted frame produced nothing.
+        spi.tick(64);
+        assert_eq!(read_word(&mut spi, SR) & RXNE, 0, "frame aborted");
+        // Re-enable clears MODF.
+        write_word(&mut spi, CR1, SPE | MSTR);
+        assert_eq!(read_word(&mut spi, SR) & super::MODF, 0);
+    }
+
+    /// With software slave management (`SSM=1`) the external pin is ignored:
+    /// no mode fault regardless of its level.
+    #[test]
+    fn ssm_ignores_the_nss_pin() {
+        let mut spi = Spi::spi1();
+        spi.drive_inputs(0xAB | (1 << 8)); // NSS low
+        write_word(&mut spi, CR1, SPE | MSTR | super::SSM | super::SSI);
+        write_word(&mut spi, DR, 0x55);
+        spi.tick(16);
+        assert_eq!(read_word(&mut spi, SR) & super::MODF, 0, "no fault");
+        assert_eq!(read_word(&mut spi, DR), 0xAB, "frame completed");
+    }
+
+    /// The hardware CRC engine: enabling reloads both CRC registers,
+    /// shifted bytes fold through `CRCPOLY`, and a `CRCNEXT` frame sends the
+    /// computed CRC instead of the written data byte.
+    #[test]
+    fn crc_engine_folds_bytes_and_sends_crcnext_frame() {
+        let mut spi = Spi::spi1();
+        // Poly 0x07 (CRC-8/ATM), 8-bit frames.
+        write_word(&mut spi, super::CRCPOLY, 0x07);
+        write_word(&mut spi, CR1, SPE | MSTR | super::CRCEN);
+        // Both CRC registers reloaded to 0xFFFF by the enable.
+        assert_eq!(read_word(&mut spi, super::TXCRCR), 0xFFFF);
+        assert_eq!(read_word(&mut spi, super::RXCRCR), 0xFFFF);
+
+        spi.drive_inputs(0x00); // slave idle
+        write_word(&mut spi, DR, 0x01);
+        spi.tick(16);
+        // Expected TX CRC after byte 0x01 with poly 0x07 from init 0xFF.
+        let expect = {
+            let mut crc: u16 = 0xFF;
+            for bit in (0..8).rev() {
+                let next = u16::from((0x01u16 >> bit) & 1);
+                let msb = (crc >> 7) & 1;
+                crc = (crc << 1) & 0xFF;
+                if msb != next {
+                    crc ^= 0x07;
+                }
+            }
+            crc
+        };
+        assert_eq!(read_word(&mut spi, super::TXCRCR), u32::from(expect));
+        // The RX CRC folded the *received* byte (slave drove 0x00).
+        let expect_rx = {
+            let mut crc: u16 = 0xFF;
+            for bit in (0..8).rev() {
+                let next = u16::from((0x00u16 >> bit) & 1);
+                let msb = (crc >> 7) & 1;
+                crc = (crc << 1) & 0xFF;
+                if msb != next {
+                    crc ^= 0x07;
+                }
+            }
+            crc
+        };
+        assert_eq!(
+            read_word(&mut spi, super::RXCRCR),
+            u32::from(expect_rx),
+            "rx folded 0x00"
+        );
+
+        // Arm CRCNEXT and send one more frame: the CRC byte goes out.
+        write_word(&mut spi, CR1, SPE | MSTR | super::CRCEN | super::CRCNEXT);
+        write_word(&mut spi, DR, 0xAA); // data byte ignored in favor of CRC
+        spi.tick(16);
+        let out = spi.drain_output();
+        assert_eq!(&out[..2], &[0x01, expect as u8], "CRC frame appended");
+        // CRCNEXT self-cleared.
+        assert_eq!(read_word(&mut spi, CR1) & super::CRCNEXT, 0);
+    }
+
+    /// `I2SCFGR.I2SMOD=1` repurposes the shift register: DR writes start no
+    /// SPI frames until audio mode is left.
+    #[test]
+    fn i2s_mode_gates_spi_frames() {
+        use crate::device::{InterruptSource as _, Peripheral as _};
+        let mut spi = Spi::spi2();
+        write_word(&mut spi, super::I2SCFGR, 1 << 11); // I2SMOD
+        write_word(&mut spi, CR1, SPE | MSTR);
+        spi.drive_inputs(0xAB);
+        write_word(&mut spi, DR, 0x55);
+        spi.tick(16);
+        assert_eq!(read_word(&mut spi, SR) & RXNE, 0, "no SPI frame in I2S");
+        assert_eq!(spi.drain_output(), Vec::<u8>::new());
+        // Leaving I2S restores the shift register.
+        write_word(&mut spi, super::I2SCFGR, 0);
+        write_word(&mut spi, DR, 0x55);
+        spi.tick(16);
+        assert_ne!(read_word(&mut spi, SR) & RXNE, 0);
     }
 }

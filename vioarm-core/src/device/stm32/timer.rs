@@ -26,6 +26,7 @@ use std::sync::{Arc, Mutex};
 
 /// Register offsets within the timer, per the SVD.
 const CR1: u32 = 0x00;
+const SMCR: u32 = 0x08;
 const DIER: u32 = 0x0C;
 const SR: u32 = 0x10;
 const EGR: u32 = 0x14;
@@ -95,6 +96,9 @@ struct TimerBehavior {
     /// The host-driven `BKIN` break input level (advanced timers only; the
     /// field is ignored on timers whose tables lack `BDTR`).
     bkin: bool,
+    /// Encoder-interface input levels: bit 0 = TI1, bit 1 = TI2. Edges are
+    /// detected against the previous drive and counted per `SMCR.SMS`.
+    encoder_inputs: u8,
 }
 
 impl TimerBehavior {
@@ -105,6 +109,7 @@ impl TimerBehavior {
             output: [false; 4],
             dma_update: None,
             bkin: false,
+            encoder_inputs: 0,
         }
     }
 
@@ -145,6 +150,91 @@ impl TimerBehavior {
             0b110 => u32::from(32 + (dtg & 0x1F)) * 8,
             _ => u32::from(32 + (dtg & 0x1F)) * 16,
         }
+    }
+    /// One quadrature step: detect the TI1/TI2 edge that just arrived and
+    /// move `CNT` per the RM0008 §17.3.12 encoding table, honoring the
+    /// selected `SMCR.SMS` mode (`001` = count TI2 edges only, `010` = TI1
+    /// only, `011` = both).
+    fn count_encoder_edge(
+        &mut self,
+        view: &mut Registers<&mut [u32]>,
+        old_ti2: bool,
+        old_ti1: bool,
+        new_ti2: bool,
+        new_ti1: bool,
+    ) {
+        let sms = view.get(SMCR) & 0x7;
+        let ti1_rising = !old_ti1 && new_ti1;
+        let ti1_falling = old_ti1 && !new_ti1;
+        let ti2_rising = !old_ti2 && new_ti2;
+        let ti2_falling = old_ti2 && !new_ti2;
+        let mut delta: i64 = 0;
+        match sms {
+            0b001 => {
+                // Encoder mode 1: edges of TI2.
+                if ti2_rising && new_ti1 {
+                    delta = 1;
+                }
+                if ti2_falling && !new_ti1 {
+                    delta = 1;
+                }
+                if ti2_rising && !new_ti1 {
+                    delta = -1;
+                }
+                if ti2_falling && new_ti1 {
+                    delta = -1;
+                }
+            }
+            0b010 => {
+                // Encoder mode 2: edges of TI1.
+                if ti1_rising && !new_ti2 {
+                    delta = 1;
+                }
+                if ti1_falling && new_ti2 {
+                    delta = 1;
+                }
+                if ti1_rising && new_ti2 {
+                    delta = -1;
+                }
+                if ti1_falling && !new_ti2 {
+                    delta = -1;
+                }
+            }
+            _ => {
+                // Encoder mode 3: both signal edges (full quadrature x4).
+                if ti1_rising && !new_ti2
+                    || ti1_falling && new_ti2
+                    || ti2_rising && new_ti1
+                    || ti2_falling && !new_ti1
+                {
+                    delta = 1;
+                }
+                if ti1_rising && new_ti2
+                    || ti1_falling && !new_ti2
+                    || ti2_rising && !new_ti1
+                    || ti2_falling && new_ti1
+                {
+                    delta = -1;
+                }
+            }
+        }
+        if delta == 0 {
+            return;
+        }
+        let arr = view.get(ARR) & self.width_mask;
+        let cnt = view.get(CNT) & self.width_mask as u32;
+        let next = if delta > 0 {
+            if cnt >= arr {
+                0
+            } else {
+                cnt + 1
+            }
+        } else if cnt == 0 {
+            arr
+        } else {
+            cnt - 1
+        };
+        view.set(CNT, next);
     }
 
     fn handle_compare(
@@ -454,9 +544,20 @@ impl Behavior for TimerBehavior {
     }
 
     fn drive_inputs(&mut self, view: &mut Registers<&mut [u32]>, value: u32) {
+        // bit 0 is the BKIN level on advanced timers; bits 1 (TI2) and 2
+        // (TI1) feed the encoder interface. (BKIN and TI1 share the low bit
+        // without conflict: BDTR exists only on TIM1, SMCR encoder modes only
+        // on general-purpose timers.)
+        let ti1 = value & (1 << 2) != 0;
+        let ti2 = value & (1 << 1) != 0;
         self.bkin = value & 1 != 0;
         if Self::break_active(view.try_get(BDTR), self.bkin) {
             self.latch_break(view);
+        }
+        if view.try_get(SMCR).is_some_and(|smcr| smcr & 0x7 != 0) {
+            let prev = self.encoder_inputs;
+            self.count_encoder_edge(view, prev & 0b10 != 0, prev & 0b01 != 0, ti2, ti1);
+            self.encoder_inputs = u8::from(ti1) | (u8::from(ti2) << 1);
         }
     }
 }
@@ -691,6 +792,10 @@ impl Peripheral for Timer {
 
     fn tick(&mut self, delta: u64) {
         self.inner.tick(delta);
+    }
+
+    fn drive_inputs(&mut self, value: u32) {
+        self.inner.drive_inputs(value);
     }
 
     fn name(&self) -> &'static str {
@@ -1065,5 +1170,69 @@ mod tests {
         // 111: DT = (32+DTG[4:0]) * 16.
         write_word(&mut t, T1 + super::BDTR, 0b1110_0011);
         assert_eq!(t.dtg_ticks(), (32 + 3) * 16);
+    }
+
+    /// Encoder mode 3 (both edges): a full quadrature cycle moves CNT
+    /// forward four counts; reversing the rotation walks it back.
+    #[test]
+    fn encoder_mode3_quadrature_counts_forward_and_back() {
+        const T2: u32 = BASE;
+        let mut t = Timer::tim2();
+        write_word(&mut t, T2 + super::SMCR, 0b011); // SMS=3: both edges
+        write_word(&mut t, T2 + 0x2C, 9); // ARR 9
+                                          // Drive a quadrature sequence A/B:
+                                          // (T1,T2): 00 -> 10 -> 11 -> 01 -> 00
+        let step = |t: &mut Timer, ti1: bool, ti2: bool| {
+            let v = u32::from(ti1) << 2 | u32::from(ti2) << 1;
+            t.drive_inputs(v);
+        };
+        step(&mut t, false, false); // establish level
+        assert_eq!(read_word(&mut t, T2 + 0x24), 0);
+        step(&mut t, true, false); // TI1 rise, TI2 low: up
+        assert_eq!(read_word(&mut t, T2 + 0x24), 1);
+        step(&mut t, true, true); // TI2 rise, TI1 high: up
+        assert_eq!(read_word(&mut t, T2 + 0x24), 2);
+        step(&mut t, false, true); // TI1 fall, TI2 high: up
+        assert_eq!(read_word(&mut t, T2 + 0x24), 3);
+        step(&mut t, false, false); // TI2 fall, TI1 low: up
+        assert_eq!(read_word(&mut t, T2 + 0x24), 4);
+        // Reverse direction: TI2 rise with TI1 low counts down.
+        step(&mut t, false, true);
+        assert_eq!(read_word(&mut t, T2 + 0x24), 3);
+        step(&mut t, true, true);
+        assert_eq!(read_word(&mut t, T2 + 0x24), 2);
+    }
+
+    /// Encoder mode wraps through zero into ARR on reverse counting.
+    #[test]
+    fn encoder_mode_wraps_through_zero() {
+        const T3: u32 = crate::device::stm32::TIM3;
+        let mut t = Timer::tim3_for::<crate::device::svd::stm32f103::Stm32f103>();
+        write_word(&mut t, T3 + super::SMCR, 0b010); // mode 2: TI1 edges only
+        write_word(&mut t, T3 + 0x2C, 99); // ARR 99
+        let step = |t: &mut Timer, ti1: bool| {
+            // Keep TI2 high so TI1 rising counts down in this phase.
+            t.drive_inputs(u32::from(ti1) << 2 | 0b10);
+        };
+        step(&mut t, false);
+        step(&mut t, true); // TI1 rise with TI2 high: down from 0 -> ARR
+        assert_eq!(read_word(&mut t, T3 + 0x24), 99, "wrapped below zero");
+    }
+
+    /// Non-encoder timers ignore the encoder input bits entirely.
+    #[test]
+    fn plain_timer_ignores_encoder_levels() {
+        let mut t = Timer::tim2();
+        write_word(&mut t, BASE + 0x2C, 9);
+        write_word(&mut t, BASE, CEN); // no SMCR programming
+        t.drive_inputs(0b100); // "TI1 rising"
+        t.tick(1);
+        assert_eq!(
+            read_word(&mut t, BASE + 0x24),
+            1,
+            "CNT advanced by tick, not by inputs"
+        );
+        t.drive_inputs(0b000);
+        assert_eq!(read_word(&mut t, BASE + 0x24), 1, "no edge counting");
     }
 }

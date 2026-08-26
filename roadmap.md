@@ -519,22 +519,22 @@ all five milestones.
 | Flash F1/F4 | 75% | — |
 | RTC/PWR/IWDG/WWDG/CRC/DAC/BKP | 75% | — |
 | USART family | 75% | — |
-| ADC/SPI/I2C | 85% | SPI I2S/CRC/NSS, ADC watchdog |
-| Timers | 90% | encoder/Hall mode |
+| ADC/SPI/I2C | 90% | SPI slave CRC check, ADC watchdog |
+| Timers | 95% | Hall-sensor mode (SMS=100 reset mode) |
 | CAN bxCAN | 85% | — |
 | DMA F1/F4/DMAMUX | 70% | F1 request timing |
-| USB OTG FS | 75% | double-buffering, ISO/host |
+| USB OTG FS | 80% | double-buffering, host mode |
 | ETH | 80% | PTP window, MIIM latency |
 | SDIO | 60% | — |
 | Chip coverage (SVD tables) | 12 chips | variant deltas |
 | H743 platform | 15% | descoped (B6) |
 | Tooling | 95% | — |
 
-Overall ≈79% post-M6+peripheral-depth pass (USB 75%, ETH 80%, ADC/SPI/I2C
-85%, Timers 90% after CDC enumeration e2e, MAC frame filter, injected ADC,
-and TIM1 break/dead-time landed). Cycle accuracy is *measured* (`m3_cycle`
-±2%, `f4_validation`/benches ±5%), not claimed. 100% is not claimed
-(see Non-goals).
+Overall ≈80% post-M6+peripheral-depth pass (USB 80% with ISO SOF-boundary
+INs, ETH 80% frame filter, ADC/SPI/I2C 90% with injected group + NSS/CRC/
+I2S-gate, Timers 95% with break/dead-time/encoder). Cycle accuracy is
+*measured* (`m3_cycle` ±2%, `f4_validation`/benches ±5%), not claimed.
+100% is not claimed (see Non-goals).
 ## Known limitations
 
 - v8-M Secure-to-Non-secure interrupt delivery is not differentially tested

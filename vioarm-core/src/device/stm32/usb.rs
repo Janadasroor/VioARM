@@ -91,6 +91,10 @@ const USBAEP: u32 = 1 << 15;
 const NAKSTS: u32 = 1 << 17;
 const XFRC: u32 = 1 << 0; // DIEPINT/DOEPINT
 const STUP: u32 = 1 << 3; // DOEPINT
+/// `DIEPCTLn.EPTYPE` bits [12:11]: `01` selects an isochronous endpoint,
+/// whose IN transfers complete on the SOF boundary instead of immediately.
+const EPTYPE_SHIFT: u32 = 11;
+const EPTYPE_ISO: u32 = 0b01;
 const TXFE: u32 = 1 << 7; // DIEPINT bit 7, always set; DOEPINT bit 7 too
 const STUPCNT: u32 = 0b11 << 29; // DOEPTSIZ
 #[allow(dead_code)] // the model always transfers a single packet
@@ -229,6 +233,9 @@ struct UsbState {
     host_rx: Vec<u8>,
     /// Completed IN transfers, framed for the host channel.
     output: Vec<u8>,
+    /// An isochronous IN endpoint armed but not yet completed; its transfer
+    /// lands at the next SOF (`start_in` defers, `sof` completes).
+    iso_pending_in: Option<usize>,
 }
 
 impl UsbState {
@@ -417,6 +424,7 @@ impl UsbState {
         self.setup_pending = false;
         self.enum_done = false;
         self.frame = 0;
+        self.iso_pending_in = None;
     }
 }
 
@@ -623,6 +631,10 @@ impl Peripheral for Usb {
             CMD_SOF => {
                 self.state.frame = (self.state.frame + 1) & 0x3FFF;
                 self.state.events |= SOF;
+                // An armed isochronous IN transfer lands on this boundary.
+                if let Some(ep) = self.state.iso_pending_in.take() {
+                    self.state.start_in(&self.d, ep);
+                }
             }
             CMD_SETUP => {
                 let data = frame[2..].to_vec();
@@ -807,8 +819,16 @@ impl Usb {
         let mut merged = self.d.merged(reg, val, 8 * l);
         if l == 3 {
             if val & 0x80 != 0 {
-                self.state.start_in(&self.d, ep);
-                merged &= !EPENA;
+                // Isochronous IN transfers defer to the SOF boundary
+                // (RM0008 §22.4.2: one packet per frame).
+                let eptype = (self.d.get(reg) >> EPTYPE_SHIFT) & 0x3;
+                if eptype == EPTYPE_ISO {
+                    self.state.iso_pending_in = Some(ep);
+                    merged &= !EPENA;
+                } else {
+                    self.state.start_in(&self.d, ep);
+                    merged &= !EPENA;
+                }
             }
             if val & 0x08 != 0 {
                 self.state.in_ep[ep].nak = true;

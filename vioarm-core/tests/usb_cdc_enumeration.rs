@@ -244,3 +244,34 @@ fn cdc_acm_full_enumeration_and_bulk_echo() {
     wr(&mut u, GINTSTS, 0xFFFF_FFFF);
     assert_eq!(rd(&mut u, GINTSTS) & (1 << 4), 0, "RX queue drained");
 }
+
+/// An isochronous IN endpoint (EPTYPE=01) defers its transfer completion to
+/// the SOF boundary instead of completing on the EPENA write.
+#[test]
+fn iso_in_completes_on_sof_boundary() {
+    let mut u = Usb::otg_fs_for::<vioarm_core::device::svd::stm32f107::Stm32f107>();
+    u.reset();
+    init_device(&mut u);
+    inject(&mut u, &[0x00, 0]); // bus reset
+    wr(&mut u, GINTSTS, 1 << 12); // clear USBRST -> ENUMDNE
+
+    // EP1 as isochronous: EPTYPE=01 at bits 12:11, USBAEP.
+    let payload = [0x10, 0x20, 0x30];
+    for &b in &payload {
+        u.write(FS + 0x2000, b).unwrap(); // EP1 TX FIFO
+    }
+    wr(&mut u, dieptsiz(1), (1 << 19) | payload.len() as u32);
+    wr(&mut u, diepctl(1), (1 << 15) | (0b01 << 11)); // USBAEP | ISO
+                                                      // Arm the transfer.
+    wr(&mut u, diepctl(1), (0b01 << 11) | (1 << 31));
+    // Nothing has been sent yet: no XFRC, no output frame.
+    assert_eq!(rd(&mut u, diepint(1)) & 1, 0, "ISO IN waits for SOF");
+    assert!(u.drain_output().is_empty(), "no bytes before SOF");
+    // The next SOF lands exactly one packet.
+    inject(&mut u, &[0x01, 0]); // CMD_SOF
+    assert_ne!(rd(&mut u, diepint(1)) & 1, 0, "XFRC at SOF");
+    let out = u.drain_output();
+    assert_eq!(out[0], 0x80, "EVT_IN");
+    assert_eq!(out[2], 1, "EP1");
+    assert_eq!(&out[3..3 + payload.len()], &payload);
+}
