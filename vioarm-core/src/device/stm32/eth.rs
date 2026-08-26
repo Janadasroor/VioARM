@@ -264,6 +264,8 @@ pub struct Eth {
     exception_wkup: Option<u8>,
     name: &'static str,
     phy: [u16; 32],
+    mii_pending: Option<(bool, usize)>,
+    mii_ticks: u8,
 }
 
 impl Eth {
@@ -285,6 +287,8 @@ impl Eth {
         phy[PHY_ID1] = 0x0007;
         phy[PHY_ID2] = 0xC0F1;
         Self {
+            mii_pending: None,
+            mii_ticks: 0,
             ranges: [
                 Region::new(mac.def.base, mac.def.window),
                 Region::new(eth_def::<D>("MMC").base, eth_def::<D>("MMC").window),
@@ -387,24 +391,14 @@ impl Eth {
     fn write_mac(&mut self, off: u32, val: u8) -> Result<(), BusError> {
         if let Some(l) = lane(off, MACMIIAR) {
             let merged = self.mac.merged(MACMIIAR, val, 8 * l);
-            // MII transaction: if MB set, emulate PHY access via MACMIIDR.
-            if merged & MIIAR_MB != 0 {
+            // MII transaction: if MB set, queue PHY access with 1-tick latency.
+            if merged & MIIAR_MB != 0 && self.mii_pending.is_none() {
                 let mw = merged & MIIAR_MW != 0;
                 let mr = ((merged >> 6) & 0x1F) as usize;
-                // PA is bits 11:15, ignored (single PHY at 0).
-                if mr < 32 {
-                    if mw {
-                        // Write: latch low 16 bits from MACMIIDR into PHY.
-                        let data = (self.mac.get(MACMIIDR) & 0xFFFF) as u16;
-                        self.phy[mr] = data;
-                    } else {
-                        // Read: load PHY register into MACMIIDR.
-                        let data = self.phy[mr];
-                        self.mac.set(MACMIIDR, u32::from(data));
-                    }
-                }
+                self.mii_pending = Some((mw, mr));
+                self.mii_ticks = 1;
             }
-            self.mac.set(MACMIIAR, merged & !MIIAR_MB);
+            self.mac.set(MACMIIAR, merged);
             return Ok(());
         }
         if let Some(l) = lane(off, MACPMTCSR) {
@@ -743,7 +737,28 @@ impl Peripheral for Eth {
         self.soft_reset();
     }
 
-    fn tick(&mut self, _delta: u64) {
+    fn tick(&mut self, delta: u64) {
+        // MII busy latency: 1-tick to complete PHY access, then clear MB.
+        if let Some((mw, mr)) = self.mii_pending {
+            if self.mii_ticks > 0 {
+                let dec = delta.min(u64::from(self.mii_ticks));
+                self.mii_ticks = self.mii_ticks.saturating_sub(dec as u8);
+            }
+            if self.mii_ticks == 0 {
+                if mr < 32 {
+                    if mw {
+                        let data = (self.mac.get(MACMIIDR) & 0xFFFF) as u16;
+                        self.phy[mr] = data;
+                    } else {
+                        let data = self.phy[mr];
+                        self.mac.set(MACMIIDR, u32::from(data));
+                    }
+                }
+                let cur = self.mac.get(MACMIIAR);
+                self.mac.set(MACMIIAR, cur & !MIIAR_MB);
+                self.mii_pending = None;
+            }
+        }
         // Consume the result of the in-flight read, if it has landed.
         if let Some(result) = self.pop_result() {
             match self.state.phase {
@@ -872,6 +887,8 @@ impl Eth {
         self.ptp.reload_reset();
         self.dma.reload_reset();
         self.state = EthState::default();
+        self.mii_pending = None;
+        self.mii_ticks = 0;
         let mut mailbox = self.mailbox.lock().unwrap_or_else(|e| e.into_inner());
         mailbox.ops.clear();
         mailbox.results.clear();
@@ -1081,10 +1098,16 @@ mod tests {
     }
 
     #[test]
-    fn miir_busy_bit_clears_immediately() {
+    fn miir_busy_bit_clears_after_one_tick() {
         let (mut mem, _mailbox) = sys();
         write_word(&mut mem, MAC + 0x10, 1 | (2 << 2)); // MACMIIAR MB | CR
-        assert_eq!(read_word(&mut mem, MAC + 0x10) & 1, 0, "MB auto-clear");
+        assert_eq!(read_word(&mut mem, MAC + 0x10) & 1, 1, "MB set");
+        mem.tick_devices(1);
+        assert_eq!(
+            read_word(&mut mem, MAC + 0x10) & 1,
+            0,
+            "MB cleared after 1 tick"
+        );
     }
 
     #[test]

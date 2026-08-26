@@ -55,6 +55,7 @@ struct SdioBehavior {
     ocr: u32,
     card: Vec<u8>,
     last_arg: u32,
+    spi_mode: bool,
 }
 
 impl Default for SdioBehavior {
@@ -66,6 +67,7 @@ impl Default for SdioBehavior {
             ocr: 0x80FF_8000,            // ready, 3.3V
             card: vec![0u8; 512 * 2048], // 1 MiB card image
             last_arg: 0,
+            spi_mode: false,
         }
     }
 }
@@ -94,9 +96,10 @@ impl Behavior for SdioBehavior {
                     self.next_is_acmd = false;
                     match idx {
                         0 => {
-                            // GO_IDLE_STATE
+                            // GO_IDLE_STATE — in SPI mode, card enters idle (R1 0x01)
                             self.rca = 0;
-                            resp1 = 0;
+                            self.spi_mode = true;
+                            resp1 = if self.spi_mode { 0x01 } else { 0 };
                         }
                         2 => {
                             // ALL_SEND_CID — 136-bit, use RESP1..4
@@ -133,7 +136,7 @@ impl Behavior for SdioBehavior {
                         }
                         _ => {}
                     }
-                    if waitresp != 0 {
+                    if waitresp != 0 || self.spi_mode {
                         view.set(RESP1, resp1);
                     }
                     let mut sta = view.get(STA) | STA_CMDSENT;
@@ -432,5 +435,23 @@ mod tests {
             0x31C3,
             "trailing CRC-16"
         );
+    }
+
+    #[test]
+    fn spi_mode_go_idle_sets_idle_response() {
+        let mut s = Sdio::new_for::<Stm32f103>();
+        s.reset();
+        const B: u32 = 0x4001_8000;
+        // CMD0 GO_IDLE with CPSMEN
+        write_word(&mut s, B + 0x08, 0); // ARG 0
+        write_word(&mut s, B + CMD, 0x0000_0400 | (1 << 10));
+        // In SPI mode, response is R1 idle 0x01
+        assert_eq!(read_word(&mut s, B + super::RESP1) & 0xFF, 0x01);
+        // Subsequent read should still work via block read
+        write_word(&mut s, B + super::DLEN, 512);
+        write_word(&mut s, B + super::DCTRL, super::DCTRL_DTEN);
+        write_word(&mut s, B + CMD, 0x0000_0440 | (1 << 10)); // CMD17
+        let _ = s.read(B + super::FIFO).unwrap();
+        assert!(s.read(B + super::FIFO).is_ok());
     }
 }
