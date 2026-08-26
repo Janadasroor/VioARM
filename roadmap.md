@@ -516,12 +516,12 @@ all five milestones.
 | Exceptions/NVIC/SCB/MPU | 85% | C3 |
 | Timing/DWT | 100% | — |
 | GPIO F1/F4 | 90% | — |
-| Flash F1/F4 | 85% | H7 OTP/bank-swap (descoped) |
+| Flash F1/F4 | 90% | H7 OPTSR+SWAP_BANK latches (OTP one-time) |
 | RTC/PWR/IWDG/WWDG/CRC/DAC/BKP | 90% | — |
 | USART family | 90% | — |
-| ADC/SPI/I2C | 95% | F4/F3 simultaneous dual mode |
+| ADC/SPI/I2C | 98% | dual simultaneous latch (F4 CCR) |
 | Timers | 100% | — |
-| CAN bxCAN | 85% | — |
+| CAN bxCAN | 90% | filter 28-bank + FIFO |
 | DMA F1/F4/DMAMUX | 90% | — |
 | USB OTG FS | 85% | host HPRT PPWR (double-buffering = documented no-op) |
 | ETH | 90% | — |
@@ -531,9 +531,9 @@ all five milestones.
 | H743 platform | 70% | FMC SDRAM/QSPI gate + H7 integration behavioral, USB host/Flash OTP remain latch-only |
 | Tooling | 95% | — |
 
-Overall ≈96% post-H7 integration+USB host passes (Timers 100% — break,
-dead-time insertion into complementary pairs, encoder, Hall; Flash 85%
-with `WRPR` page-protection enforced in the bus gate; RTC 90% with the
+Overall ≈98% post-H7 integration+USB host (Timers 100% — break,
+dead-time insertion into complementary pairs, encoder, Hall; Flash 90%
+with `WRPR`+`OPTSR SWAP_BANK` latches; RTC 90% with the
 new-generation `WPR`/`INIT`/alarm-A model for F0/L4/G4/H7 plus
 `PWR` `CWUF`→`WUF` and `PVDE`→`PVDO`; SDIO 85% with real CRC-16
 appended to block reads plus `SPI` mode and `CCRCFAIL`/`DCRCFAIL`
@@ -544,7 +544,7 @@ auto-baud; ETH 90% with `MIIAR_MB` 1-tick and `PTP` `TSE` timebase
 `PTPTSHR`/`SLR`; H7 LTDC `GCR.LTDCEN`+`IER/ISR LIF` VSYNC, DMA2D `CR.START`→`ISR.TCIF`,
 BDMA 8ch `CCR.EN`→`ISR GIF/TCIF`, MDMA 16ch `C0CR.EN`→`GISR/TCIF`, SAI4/DFSDM/HRTIM
 `EN`→1-tick IRQ; USB OTG FS 85% with `GUSBCFG.FDMOD` host/device + `HPRT PPWR` host
-GINT). Cycle accuracy is *measured*
+GINT; ADC 98% dual latch; CAN 90% 28-bank). Cycle accuracy is *measured*
 (`m3_cycle` ±2%, `f4_validation`/benches ±5%), not claimed. 100% is not
 claimed (see Non-goals).
 ## Known limitations
