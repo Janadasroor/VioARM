@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `QspiGate` now gated at reset, `RCC` `HSIRDY` per-family, `CAN` dead code removed.
 - `USB` FIFO window enlarged, `SDIO` data path uses card image, `H7` LTDC/DMA2D etc. descoped to latch-only (B6).
 - `DWT` CPI refined: `VFP` `Vfp3/Vfp2` 3c, `VfpLdSt` 2c, `FLASH_ACR` WS per `LATENCY` when `pc<0x20000000` (`cpu/mod.rs:615` `cyccnt` `1c/2c/n+1/3c/4c`); `M6` F1 `m3_cycle` harness within ±2%.
+- `RCC` `CFGR` `SW→SWS` `PPRE1/2` (`rcc.rs:53`), `DMA` `F4` `MBURST`/`PBURST` `INCR4/8/16` + `FCR.FTH` threshold (`dma_f4.rs:132`), `TIM` `PSC`→`PCLK` (`timer.rs:312`) `M6` F2 `f2_clock_dma` 4 tests.
 ### Fixed
 - `USB` `FS+0x2000` reserved test now expects EP1 FIFO.
 

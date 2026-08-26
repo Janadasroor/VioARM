@@ -127,6 +127,7 @@ Tooling:
   SDIO card 1 MiB multi-block, H7 descoped), M3 C1-C4 (CI `ORACLE_VERSION`
   `qemu.rs:132` + `deny`/`cov`/`clippy`, `fuzz/` real `loader::{load_elf,load_hex,load_flat}` `76af9ef`, determinism `real_firmware.rs:4735`, C3 8 extra `c3_qadd` `9cfcef2`), M4 `vioarm-core/benches/mips.rs:1` `criterion` board-boot `6d53430`, M5 `packs/PROVENANCE.md` + `xtask` + `docs/book.toml`.
 - **In progress — M6 F1** (2026-08-26): `cpu/mod.rs:615` TRM CPI refined (`VFP` 3c, `flash_ws` `LATENCY` `WS`), `DWT` `cyccnt` ±2% `m3_cycle.rs:1` `coremark_loop` green, `load-use` stall deferred to `F2` (fails `sat_bitfield` when enabled on `FlatMemory`).
+- **Done — M6 F2** (2026-08-26): `rcc.rs:53` `CFGR` `SW→SWS` `PPRE1/2` roundtrip, `timer.rs:312` `PSC`→`PCLK` (tested `timer_pwm_at_pclk_psc` 50% duty), `dma_f4.rs:132` `MBURST`/`PBURST` `INCR4/8/16` burst `FCR.FTH` threshold gated, `f2_clock_dma.rs:1` 4 tests green.
 
 ## Plan to production — `v1.9.1 → v2.0`
 

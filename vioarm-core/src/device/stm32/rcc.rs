@@ -37,8 +37,10 @@ const CSIRDY: u32 = 1 << 8;
 
 /// `CR` lives at register offset `0x00`.
 const CR_OFFSET: u32 = 0x00;
+/// `CFGR` lives at register offset `0x04`.
+const CFGR_OFFSET: u32 = 0x04;
 
-/// RCC's only synthesis: the clock-ready bits in `CR`.
+/// RCC's synthesis: clock-ready bits in `CR` + CFGR SW/SWS.
 #[derive(Clone, Copy, Debug)]
 struct RccBehavior {
     hsi_rdy: u32,
@@ -53,18 +55,34 @@ impl Default for RccBehavior {
 impl Behavior for RccBehavior {
     fn on_read(&mut self, _view: &mut Registers<&mut [u32]>, offset: u32, value: u32) -> u32 {
         if offset == CR_OFFSET {
-            // HSI is always on and ready; which HSIRDY bit is synthesized
-            // depends on the family (F1 bit1 vs H7 bit2), derived at
-            // construction from the peripheral base (see `for_device`).
             let hse = if value & HSEON != 0 { HSERDY } else { 0 };
             let pll = if value & PLLON != 0 { PLLRDY } else { 0 };
             let pll2 = if value & PLL2ON != 0 { PLL2RDY } else { 0 };
             let pll3 = if value & PLL3ON != 0 { PLL3RDY } else { 0 };
             let csi = if value & CSION != 0 { CSIRDY } else { 0 };
             value | HSION | self.hsi_rdy | hse | pll | pll2 | pll3 | csi
+        } else if offset == CFGR_OFFSET {
+            // SW (1:0) selects SYSCLK; SWS (3:2) reports it.
+            // HSI always ready, so SWS follows SW instantly.
+            let sw = value & 0x3;
+            (value & !0xC) | (sw << 2)
         } else {
             value
         }
+    }
+
+    fn on_write(
+        &mut self,
+        view: &mut Registers<&mut [u32]>,
+        offset: u32,
+        val: u8,
+        shift: u32,
+    ) -> u32 {
+        if offset == CFGR_OFFSET {
+            // CFGR is fully writable; SW/SWS handling is in on_read.
+            return view.merged(offset, val, shift);
+        }
+        view.merged(offset, val, shift)
     }
 }
 

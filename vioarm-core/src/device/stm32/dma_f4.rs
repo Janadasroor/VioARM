@@ -57,6 +57,11 @@ const MINC: u32 = 1 << 10;
 const PSIZE_SHIFT: u32 = 11;
 /// `SxCR.MSIZE`: the memory-side data width.
 const MSIZE_SHIFT: u32 = 13;
+/// `SxCR.MBURST`/`PBURST` burst transfer: 00 single, 01 INCR4, 10 INCR8, 11 INCR16.
+const PBURST_SHIFT: u32 = 21;
+const MBURST_SHIFT: u32 = 23;
+/// `SxFCR.FTH` FIFO threshold: 00 quarter, 01 half, 10 3/4, 11 full.
+const FTH_MASK: u32 = 0x3;
 /// `SxNDTR` is a 16-bit count of data items.
 const NDTR_MASK: u32 = 0xFFFF;
 
@@ -170,22 +175,33 @@ impl Behavior for DmaF4Behavior {
             };
             let pinc = cr_word & PINC != 0;
             let minc = cr_word & MINC != 0;
+            let mburst = (cr_word >> MBURST_SHIFT) & 0x3;
+            let pburst = (cr_word >> PBURST_SHIFT) & 0x3;
+            let burst_len = match mburst.max(pburst) {
+                0 => 1,
+                1 => 4,
+                2 => 8,
+                _ => 16,
+            };
             // `DIR` selects the copy direction: `00` peripheral→memory,
-            // `01` memory→peripheral, `10` memory-to-memory. All complete
-            // optimistically in the enable cycle, matching the F1 M2M model.
+            // `01` memory→peripheral, `10` memory-to-memory.
             let (mut src, mut dst) = match dir {
                 0 => (view.get(cr + SPAR), view.get(cr + SM0AR)),
                 1 => (view.get(cr + SM0AR), view.get(cr + SPAR)),
                 _ => (view.get(cr + SPAR), view.get(cr + SM0AR)),
             };
-            // Peripheral-side stepping honors `PINC`, memory-side honors `MINC`;
-            // for `01` the roles are swapped (PAR is destination).
             let src_inc = if dir == 1 { minc } else { pinc };
             let dst_inc = if dir == 1 { pinc } else { minc };
             let src_step = if dir == 1 { step } else { unit };
             let dst_step = if dir == 1 { unit } else { step };
-            let mut units = Vec::with_capacity(ndt as usize);
-            for _ in 0..ndt {
+            // Burst/FIFO: transfer burst_len per tick when burst>1, else whole.
+            let chunk = if burst_len > 1 {
+                burst_len.min(ndt)
+            } else {
+                ndt
+            };
+            let mut units = Vec::with_capacity(chunk as usize);
+            for _ in 0..chunk {
                 units.push((src, dst, unit));
                 if src_inc {
                     src = src.wrapping_add(u32::from(src_step));
@@ -194,15 +210,52 @@ impl Behavior for DmaF4Behavior {
                     dst = dst.wrapping_add(u32::from(dst_step));
                 }
             }
+            // FIFO threshold gating (SxFCR.FTH) when direct mode disabled.
+            let fcr = view.get(cr + 0x14);
+            let fifo_en = fcr & (1 << 2) != 0;
+            let fth = (fcr & FTH_MASK) as u8;
+            let fifo_ready = if fifo_en {
+                // Simplified: need chunk >= FTH+1 quarter levels.
+                let thresh = match fth {
+                    0 => 1,
+                    1 => 2,
+                    2 => 3,
+                    _ => 4,
+                };
+                chunk >= thresh
+            } else {
+                true
+            };
+            if !fifo_ready {
+                continue;
+            }
             self.mailbox
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .extend(units);
-            // Optimistic completion: the whole transfer lands this cycle.
-            view.set(cr + SNDTR, 0);
-            view.set(cr, cr_word & !EN);
-            let isr = if s < 4 { LISR } else { HISR };
-            view.set(isr, view.get(isr) | tcif_bit(s));
+            let remain = ndt - chunk;
+            // Update addresses after burst.
+            if dir == 1 {
+                if minc {
+                    view.set(cr + SM0AR, src);
+                }
+                if pinc {
+                    view.set(cr + SPAR, dst);
+                }
+            } else {
+                if pinc {
+                    view.set(cr + SPAR, src);
+                }
+                if minc {
+                    view.set(cr + SM0AR, dst);
+                }
+            }
+            view.set(cr + SNDTR, remain);
+            if remain == 0 {
+                view.set(cr, cr_word & !EN);
+                let isr = if s < 4 { LISR } else { HISR };
+                view.set(isr, view.get(isr) | tcif_bit(s));
+            }
         }
     }
 
