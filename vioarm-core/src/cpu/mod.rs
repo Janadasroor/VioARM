@@ -606,9 +606,10 @@ impl<B: PeripheralBus> Core<B> {
         };
         let base = self.base_cycles(pc, next_pc);
         let ws = if pc < 0x2000_0000 { self.flash_ws() } else { 0 };
+        let cache = self.cache_latency(pc, next_pc);
         self.regs.pc = next_pc;
         self.cycles += 1;
-        self.cyccnt += base + ws;
+        self.cyccnt += base + ws + cache;
         Ok(())
     }
 
@@ -782,6 +783,111 @@ impl<B: PeripheralBus> Core<B> {
             .map(|v| (v & 0xF) as u64)
             .unwrap_or(0);
         ws_f1.max(ws_f4).max(ws_h7)
+    }
+
+    fn cache_latency(&mut self, pc: u32, _next_pc: u32) -> u64 {
+        // Fetch latency: DTCM 0x20000000 128K is 1c (tight), AXI 0x24000000 512K is +1c,
+        // FMC SDRAM 0xC0000000 8M is +5c (6c burst), ITCM 0 alias at 0 is 0.
+        // Data latency for loads/stores adds same per-region delta.
+        // Simplified: AXI vs DTCM diff 1c, FMC 6c.
+        let mut extra = 0;
+        if (0x2400_0000..0x2408_0000).contains(&pc) {
+            extra += 1;
+        } else if (0xC000_0000..0xC800_0000).contains(&pc) {
+            extra += 5; // fetch from SDRAM 6c vs 1c base => +5
+        }
+        // Data address latency: decode current insn at pc to get effective address.
+        // Only for single LDR/STR and LDM/STM bursts.
+        if let Ok(h0) = self.mem.read_half(pc) {
+            let is32 = match self.isa {
+                Isa::Armv6M => is_thumb2(h0),
+                Isa::Armv7M | Isa::Armv7EM => is_thumb2_v7m(h0),
+                Isa::Armv8MBaseline => is_thumb2_v7m(h0),
+            };
+            if is32 {
+                if let Ok(h1) = self.mem.read_half(pc.wrapping_add(2)) {
+                    let inst = match self.isa {
+                        Isa::Armv6M => decode32(h0, h1).ok(),
+                        Isa::Armv7M => decode32_v7m(h0, h1).ok(),
+                        Isa::Armv7EM => decode32_v7em(h0, h1).ok(),
+                        Isa::Armv8MBaseline => decode32_v8m(h0, h1).ok(),
+                    };
+                    if let Some(i) = inst {
+                        let addr = match i {
+                            Inst32::Mem {
+                                rt: _,
+                                rn,
+                                off,
+                                rm,
+                                add,
+                                ..
+                            } => {
+                                let base = self.regs.read(rn);
+                                let off_val = if let Some(rm) = rm {
+                                    self.regs.read(rm)
+                                } else {
+                                    off
+                                };
+                                if add {
+                                    base.wrapping_add(off_val)
+                                } else {
+                                    base.wrapping_sub(off_val)
+                                }
+                            }
+                            Inst32::LdrdStrd { rn, imm, add, .. } => {
+                                let base = self.regs.read(rn);
+                                if add {
+                                    base.wrapping_add(imm)
+                                } else {
+                                    base.wrapping_sub(imm)
+                                }
+                            }
+                            Inst32::LdmStm { rn, .. } => self.regs.read(rn),
+                            _ => 0,
+                        };
+                        if addr != 0 {
+                            if (0x2400_0000..0x2408_0000).contains(&addr) {
+                                extra += 1;
+                            } else if (0xC000_0000..0xC800_0000).contains(&addr) {
+                                // FMC SDRAM 6c per burst (LDM): add 5 extra, single adds 5
+                                extra += 5;
+                            } else if (0x2000_0000..0x2002_0000).contains(&addr) {
+                                // DTCM fast, no extra
+                            }
+                        }
+                    }
+                }
+            } else {
+                if let Ok(inst) = match self.isa {
+                    Isa::Armv6M => decode16(h0),
+                    Isa::Armv7M | Isa::Armv7EM => decode16_v7m(h0),
+                    Isa::Armv8MBaseline => decode16(h0),
+                } {
+                    let addr = match inst {
+                        Inst16::LsReg { rn, rm, .. } => {
+                            self.regs.read(rn).wrapping_add(self.regs.read(rm))
+                        }
+                        Inst16::LsImm { rn, imm, .. } => {
+                            self.regs.read(rn).wrapping_add(imm as u32)
+                        }
+                        Inst16::LdrLiteral { imm, .. } => {
+                            (pc & !3).wrapping_add(4).wrapping_add(imm as u32)
+                        }
+                        Inst16::LsSp { .. } => self.regs.sp,
+                        Inst16::LdmStm { rn, .. } => self.regs.read(rn),
+                        _ => 0,
+                    };
+                    if addr != 0 {
+                        if (0x2400_0000..0x2408_0000).contains(&addr) {
+                            extra += 1;
+                        } else if (0xC000_0000..0xC800_0000).contains(&addr) {
+                            extra += 5;
+                        }
+                    }
+                }
+            }
+        }
+        extra
     }
 
     /// Fetch and execute a single 16-bit-centric ARMv6-M instruction.
