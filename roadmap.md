@@ -523,7 +523,7 @@ all five milestones.
 | Timers | 100% | — |
 | CAN bxCAN | 85% | — |
 | DMA F1/F4/DMAMUX | 90% | — |
-| USB OTG FS | 80% | host mode (double-buffering = documented no-op) |
+| USB OTG FS | 85% | host HPRT PPWR (double-buffering = documented no-op) |
 | ETH | 90% | — |
 | SDIO | 85% | — |
 | H7 integration (LTDC/DMA2D/BDMA/MDMA/SAI4/DFSDM/HRTIM) | 90% | — |
@@ -531,7 +531,7 @@ all five milestones.
 | H743 platform | 70% | FMC SDRAM/QSPI gate + H7 integration behavioral, USB host/Flash OTP remain latch-only |
 | Tooling | 95% | — |
 
-Overall ≈95% post-H7 integration passes (Timers 100% — break,
+Overall ≈96% post-H7 integration+USB host passes (Timers 100% — break,
 dead-time insertion into complementary pairs, encoder, Hall; Flash 85%
 with `WRPR` page-protection enforced in the bus gate; RTC 90% with the
 new-generation `WPR`/`INIT`/alarm-A model for F0/L4/G4/H7 plus
@@ -543,7 +543,8 @@ gating; USART 90% with LIN break plus `CLKEN` sync latch and `ABREN`→`ABRF`
 auto-baud; ETH 90% with `MIIAR_MB` 1-tick and `PTP` `TSE` timebase
 `PTPTSHR`/`SLR`; H7 LTDC `GCR.LTDCEN`+`IER/ISR LIF` VSYNC, DMA2D `CR.START`→`ISR.TCIF`,
 BDMA 8ch `CCR.EN`→`ISR GIF/TCIF`, MDMA 16ch `C0CR.EN`→`GISR/TCIF`, SAI4/DFSDM/HRTIM
-`EN`→1-tick IRQ). Cycle accuracy is *measured*
+`EN`→1-tick IRQ; USB OTG FS 85% with `GUSBCFG.FDMOD` host/device + `HPRT PPWR` host
+GINT). Cycle accuracy is *measured*
 (`m3_cycle` ±2%, `f4_validation`/benches ±5%), not claimed. 100% is not
 claimed (see Non-goals).
 ## Known limitations

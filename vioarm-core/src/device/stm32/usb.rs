@@ -236,6 +236,9 @@ struct UsbState {
     /// An isochronous IN endpoint armed but not yet completed; its transfer
     /// lands at the next SOF (`start_in` defers, `sof` completes).
     iso_pending_in: Option<usize>,
+    /// Host mode: HPRT PPWR latched, raises GINT when FDMOD clear.
+    host_hprt: u32,
+    host_pending: bool,
 }
 
 impl UsbState {
@@ -250,10 +253,15 @@ impl UsbState {
     }
 
     /// The single NVIC line: asserted once the global interrupt enable is set
-    /// and any `GINTSTS` bit is unmasked.
+    /// and any `GINTSTS` bit is unmasked.  In host mode (`FDMOD` clear) the
+    /// latched `HPRT` connection raises the line via `host_pending`.
     fn pending(&self, g: &Win, d: &Win) -> u32 {
         if g.get(GAHBCFG) & GINT_EN == 0 {
             return 0;
+        }
+        // Host mode (FDMOD clear) — HPRT PPWR connection raises GINT
+        if g.get(GUSBCFG) & FDMOD == 0 {
+            return u32::from(self.host_pending);
         }
         u32::from(self.gintsts(d) & g.get(GINTMSK) != 0)
     }
@@ -587,6 +595,18 @@ impl Peripheral for Usb {
             return self.write_global(off, val);
         }
         if addr >= base + HOST_OFFSET && addr < base + DEVICE_OFFSET {
+            let off = addr - (base + HOST_OFFSET);
+            let word = self.h.merged(off & !3, val, 8 * (off & 3));
+            // HPRT at 0x40 within HOST window: PPWR bit 12 powers port,
+            // PCDET etc.  Any PPWR set in host mode latches host_pending.
+            if off & !3 == 0x40 {
+                self.state.host_hprt = word;
+                if word & (1 << 12) != 0 && self.g.get(GUSBCFG) & FDMOD == 0 {
+                    self.state.host_pending = true;
+                } else if word & (1 << 12) == 0 {
+                    self.state.host_pending = false;
+                }
+            }
             return write_latch(&mut self.h, addr - (base + HOST_OFFSET), val);
         }
         if addr >= base + DEVICE_OFFSET && addr < base + PWRCLK_OFFSET {
@@ -664,7 +684,9 @@ impl InterruptSource for Usb {
         self.state.pending(&self.g, &self.d)
     }
 
-    fn acknowledge(&mut self, _lines: u32) {}
+    fn acknowledge(&mut self, _lines: u32) {
+        self.state.host_pending = false;
+    }
 }
 
 impl Usb {
@@ -1169,5 +1191,28 @@ mod tests {
             0,
             "EP1 OUT XFRC"
         );
+    }
+
+    #[test]
+    fn host_hprt_ppwr_raises_interrupt_in_host_mode() {
+        let mut u = usb_fs();
+        // default is host mode (FDMOD clear) — HPRT PPWR should raise GINT
+        assert_eq!(u.pending(), 0);
+        // HPRT at HOST offset 0x40, PPWR bit 12
+        write_word(&mut u, FS + 0x440, 1 << 12);
+        assert_eq!(read_word(&mut u, FS + 0x440) & (1 << 12), 1 << 12);
+        // need GAHBCFG GINT_EN and host pending to raise line
+        write_word(&mut u, FS + 0x08, 1); // GAHBCFG GINT_EN
+        assert_eq!(
+            u.pending(),
+            1,
+            "HPRT PPWR raises host interrupt in host mode"
+        );
+        u.acknowledge(1);
+        assert_eq!(u.pending(), 0, "ack clears host pending");
+        // switch to device mode — same HPRT write should not pend
+        write_word(&mut u, FS + 0x0c, 1 << 30); // GUSBCFG FDMOD
+        write_word(&mut u, FS + 0x440, 1 << 12);
+        assert_eq!(u.pending(), 0, "HPRT in device mode does not pend");
     }
 }
