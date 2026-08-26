@@ -526,11 +526,12 @@ all five milestones.
 | USB OTG FS | 80% | host mode (double-buffering = documented no-op) |
 | ETH | 90% | — |
 | SDIO | 85% | — |
+| H7 integration (LTDC/DMA2D/BDMA/MDMA/SAI4/DFSDM/HRTIM) | 90% | — |
 | Chip coverage (SVD tables) | 12 chips | variant deltas |
-| H743 platform | 15% | descoped (B6) |
+| H743 platform | 70% | FMC SDRAM/QSPI gate + H7 integration behavioral, USB host/Flash OTP remain latch-only |
 | Tooling | 95% | — |
 
-Overall ≈90% post-M6+peripheral-depth passes (Timers 100% — break,
+Overall ≈95% post-H7 integration passes (Timers 100% — break,
 dead-time insertion into complementary pairs, encoder, Hall; Flash 85%
 with `WRPR` page-protection enforced in the bus gate; RTC 90% with the
 new-generation `WPR`/`INIT`/alarm-A model for F0/L4/G4/H7 plus
@@ -540,7 +541,9 @@ error injection; DMA 90% with the F103 board's ADC1/TIM2/SPI1 request
 lines wired per RM0008 Table 78 plus `MBURST`/`PBURST`/`FTH` burst
 gating; USART 90% with LIN break plus `CLKEN` sync latch and `ABREN`→`ABRF`
 auto-baud; ETH 90% with `MIIAR_MB` 1-tick and `PTP` `TSE` timebase
-`PTPTSHR`/`SLR`). Cycle accuracy is *measured*
+`PTPTSHR`/`SLR`; H7 LTDC `GCR.LTDCEN`+`IER/ISR LIF` VSYNC, DMA2D `CR.START`→`ISR.TCIF`,
+BDMA 8ch `CCR.EN`→`ISR GIF/TCIF`, MDMA 16ch `C0CR.EN`→`GISR/TCIF`, SAI4/DFSDM/HRTIM
+`EN`→1-tick IRQ). Cycle accuracy is *measured*
 (`m3_cycle` ±2%, `f4_validation`/benches ±5%), not claimed. 100% is not
 claimed (see Non-goals).
 ## Known limitations
