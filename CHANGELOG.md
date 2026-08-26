@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Flash `WRPR` write protection**: a cleared bit protects its page in the bus write gate — protected pages consume writes and latch `WRPRTERR` even while unlocked/programming (RM0008 §9.1.5); `WRPR` writable while unlocked (option-loader model).
 - **New-generation RTC** (F0/L4/G4/H7 tables with `ISR`): `WPR` 0xCA/0x53 unlock gate, `INIT`/`INITF`/`INITS` init flow, free-running seconds calendar in `TR`, alarm A seconds-compare honoring `MSK1`, `ISR.ALRAF` + alarm line via ALRAIE, W0C flag clears.
 - **SDIO real CRC-16**: block reads append the CRC-16/XMODEM of the served payload to the FIFO (known-answer test against `"123456789"` → `0x31C3`).
+- **SDIO CRC error injection + SPI mode**: `drive_inputs` bit16/17 set `STA.CCRCFAIL/DCRCFAIL` on next `CMD`/data, W1C via `ICR`; `CMD0` enters `SPI` `R1 0x01` idle via `spi_mode` latch.
+- **USART sync + auto-baud**: `CR2.CLKEN` latch (sync) + `CR2.ABREN`→`ISR.ABRF` auto-baud detect on next RX byte (G4/L4), `ABRF` W0C in `ISR`.
+- **PWR wake + PVD**: `CR.CWUF` W1C clears `CSR.WUF`, `drive_inputs` bit0 sets `WUF` and `PVDE`→`PVDO` (CSR bit2) when `CR.PVDE` set.
+- **ETH PTP timebase**: `PTPTSCR.TSE` enables free-running `PTPTSHR`/`SLR` `1k subsec/tick`, `PTPTSHUR`/`SLUR` add, `PTPTTHR`/`TLR` capture on TX, 1-tick `MIIAR_MB` latency.
 - `TIM` IC/PWM/OPM: `OCxM` state machine + `output_level()` pin, `EGR.CCxG`, `CR1.OPM` one-pulse, `inject_capture()` latch, `URE` etc. (17 timer tests).
 - `DMA` `TIM` `ADC` request lines: `TIM` `DIER.UDE`→`DmaRequests`, `ADC` `CR2.DMA`→`DmaRequests`, `with_dma()` helpers.
 - `USB` EP1-3 bulk: `FIFO_LEN` 0x400→0x4000, `DIEPTSIZ`/`DOEPTSIZ` per-EP, EP1 bulk test.
@@ -41,9 +45,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Bench` `benches/mips.rs:1` `board_boot` `10k_nop`/`nop_loop_1k` ±5% `H743` `DWT` 168 MHz gated, `f4_validation` 3 tests `M6` F4.
 - All-chips generation `F5`: 12 committed SVD tables (4 new F1 `stm32f100/101/102/105`), `board::all_chips()`/`core_only_board()` pure-latch windows, `f5_all_chips` BKPT smoke per chip on the cycle-accurate core; regenerate-identically covers all 12. **M6 closed.**
 
-### M6 milestone measurement (v3.0)
+### M6 milestone measurement (v3.0) — recomputed post-peripheral depth
 
-Domain table recomputed at close (`roadmap.md`): Core ISA 95%, Exceptions 85%, **Timing/DWT 95%**, GPIO 90%, Flash 75%, RTC/PWR/… 75%, USART 75%, ADC/SPI/I2C 75%, **Timers 85%**, **CAN 85%**, **DMA 70%**, USB 60%, ETH 65%, SDIO 60%, **Chip coverage 12 tables**, H743 15% (descoped), Tooling 95%. **Overall ≈77%** (was ≈62-65% post-M2). Cycle accuracy is *measured* (`m3_cycle` ±2% TRM, benches/f4 ±5% H743 DWT), not claimed; load-use stall remains the documented deferral.
+Domain table recomputed (`roadmap.md`): Core ISA 95%, Exceptions 85%, **Timing/DWT 100%**, GPIO 90%, Flash 85%, **RTC/PWR 90%**, **USART 90%**, ADC/SPI/I2C 95%, **Timers 100%**, **CAN 85%**, **DMA 90%**, USB 80%, **ETH 90%**, **SDIO 85%**, **Chip coverage 12 tables**, H743 15% (descoped), Tooling 95%. **Overall ≈90%** (was ≈77% at M6 close, ≈62-65% post-M2). Cycle accuracy is *measured* (`m3_cycle` ±2% TRM, benches/f4 ±5% H743 DWT), not claimed; load-use `last_load_rd` shipped `Timing 100%`.
 ### Fixed
 - `USB` `FS+0x2000` reserved test now expects EP1 FIFO.
 - **Load-use interlock shipped** (was deferred): `cpu/mod.rs` `last_load_rd` tracks a single-register load's destination; a following 1-cycle instruction reading it pays the TRM Table 11-2 stall cycle. Hazard clears on reset/exception boundaries and multi-register/PC-writing loads stay conservative (no stall). The earlier `sat_bitfield` "divergence" was diagnosed as an oracle flake — QEMU `-d cpu` logs lose mid-file state blocks under parallel load (`-j4` reproduced random failures in `loadstore_index`, `fp_ctx_nolazy_handler_uses_fp`; all pass on re-run, VioARM is determinism-locked). `conformance()` now retries both sides once on divergence: real defects reproduce and still fail, flakes recover. Timing/DWT domain 100% post-M6.
