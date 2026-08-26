@@ -70,24 +70,40 @@ mod tests {
             .expect("vioarm-svd should sit one level under the workspace root");
         let pairs: &[(&str, &str)] = &[
             (
+                "packs/Keil.STM32F0xx_DFP/SVD/STM32F072x.svd",
+                "vioarm-core/src/device/svd/stm32f072.rs",
+            ),
+            (
+                "packs/Keil.STM32F1xx_DFP/SVD/STM32F100xx.svd",
+                "vioarm-core/src/device/svd/stm32f100.rs",
+            ),
+            (
+                "packs/Keil.STM32F1xx_DFP/SVD/STM32F101xx.svd",
+                "vioarm-core/src/device/svd/stm32f101.rs",
+            ),
+            (
+                "packs/Keil.STM32F1xx_DFP/SVD/STM32F102xx.svd",
+                "vioarm-core/src/device/svd/stm32f102.rs",
+            ),
+            (
                 "packs/Keil.STM32F1xx_DFP/SVD/STM32F103xx.svd",
                 "vioarm-core/src/device/svd/stm32f103.rs",
+            ),
+            (
+                "packs/Keil.STM32F1xx_DFP/SVD/STM32F105xx.svd",
+                "vioarm-core/src/device/svd/stm32f105.rs",
             ),
             (
                 "packs/Keil.STM32F1xx_DFP/SVD/STM32F107xx.svd",
                 "vioarm-core/src/device/svd/stm32f107.rs",
             ),
             (
-                "packs/STM32F407.svd",
-                "vioarm-core/src/device/svd/stm32f407.rs",
-            ),
-            (
-                "packs/Keil.STM32F0xx_DFP/SVD/STM32F072x.svd",
-                "vioarm-core/src/device/svd/stm32f072.rs",
-            ),
-            (
                 "packs/Keil.STM32F3xx_DFP/SVD/STM32F303xE.svd",
                 "vioarm-core/src/device/svd/stm32f303xe.rs",
+            ),
+            (
+                "packs/STM32F407.svd",
+                "vioarm-core/src/device/svd/stm32f407.rs",
             ),
             (
                 "packs/Keil.STM32L4xx_DFP/SVD/STM32L476.svd",

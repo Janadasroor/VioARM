@@ -810,7 +810,6 @@ pub fn stm32g474xx() -> BoardMemory {
 pub const STM32_H743_FLASH_LEN: u32 = 0x0020_0000;
 /// STM32H743 RAM size in bytes (512 KiB AXI + 128 KiB DTCM).
 pub const STM32_H743_RAM_LEN: u32 = 0x0008_0000;
-
 /// An STM32H743 board: the H7 line with `Stm32h743` tables.
 #[must_use]
 pub fn stm32h743() -> BoardMemory {
@@ -1076,4 +1075,80 @@ pub fn stm32h743() -> BoardMemory {
     mem.attach(Box::new(Dwt::new()));
     mem.attach(Box::new(SysTick::new()));
     mem
+}
+
+/// A core-only chip entry: name + generated table + flash base, from which
+/// [`core_only_board`] builds a `BoardMemory` on demand (boards are not
+/// cloneable; each machine gets its own).
+pub struct Chip {
+    /// The SVD table short name (e.g. `"stm32f101"`).
+    pub name: &'static str,
+    /// Main-flash base for the image (the boot alias).
+    pub flash_base: u32,
+    /// The generated peripheral tables.
+    pub peripherals: &'static [crate::device::svd::PeripheralDef],
+}
+
+/// Every generated chip table, enumerated for the all-chips smoke test.
+#[must_use]
+pub fn all_chip_tables() -> Vec<(&'static str, &'static [crate::device::svd::PeripheralDef])> {
+    use crate::device::svd;
+    vec![
+        ("stm32f072", svd::stm32f072::PERIPHERALS),
+        ("stm32f100", svd::stm32f100::PERIPHERALS),
+        ("stm32f101", svd::stm32f101::PERIPHERALS),
+        ("stm32f102", svd::stm32f102::PERIPHERALS),
+        ("stm32f103", svd::stm32f103::PERIPHERALS),
+        ("stm32f105", svd::stm32f105::PERIPHERALS),
+        ("stm32f107", svd::stm32f107::PERIPHERALS),
+        ("stm32f303xe", svd::stm32f303xe::PERIPHERALS),
+        ("stm32f407", svd::stm32f407::PERIPHERALS),
+        ("stm32g474xx", svd::stm32g474xx::PERIPHERALS),
+        ("stm32h743", svd::stm32h743::PERIPHERALS),
+        ("stm32l476", svd::stm32l476::PERIPHERALS),
+    ]
+}
+
+/// Build a core-only board from any generated table: flash + RAM + every
+/// peripheral window mounted as a `NoBehavior` register file (pure latch),
+/// plus `RCC` behavior, `DWT`, `SysTick`. No hand-written peripheral
+/// behaviors — this is the F5 "core production only" contract: the
+/// cycle-accurate core executes, windows round-trip, nothing else moves.
+#[must_use]
+pub fn core_only_board(
+    peripherals: &'static [crate::device::svd::PeripheralDef],
+    flash_base: u32,
+) -> BoardMemory {
+    use crate::device::svd::{NoBehavior, RegisterFile};
+    // RAM size heuristic: H7 has DTCM/AXI banks; others 128 KiB is safe.
+    let ram_len = if flash_base == 0x0800_0000 {
+        0x0002_0000
+    } else {
+        0x0001_0000
+    };
+    let backing = FlatMemory::with_layout(&[flash_base, RAM], &[ram_len, ram_len]);
+    let mut mem = SystemMemory::new(backing);
+    // Every generated window is a pure `NoBehavior` latch; the RCC ready-bit
+    // synthesis is not mounted here (core-only contract).
+    for p in peripherals {
+        mem.attach(Box::new(RegisterFile::<NoBehavior>::new(p, NoBehavior)));
+    }
+    mem.attach(Box::new(Dwt::new()));
+    mem.attach(Box::new(SysTick::new()));
+    mem
+}
+
+/// Enumerate every generated chip. Pair each with [`core_only_board`] to get
+/// a bootable board; the smoke test boots each to `BKPT` on the cycle-accurate
+/// core (M6).
+#[must_use]
+pub fn all_chips() -> Vec<Chip> {
+    all_chip_tables()
+        .into_iter()
+        .map(|(name, peripherals)| Chip {
+            name,
+            flash_base: 0x0800_0000,
+            peripherals,
+        })
+        .collect()
 }

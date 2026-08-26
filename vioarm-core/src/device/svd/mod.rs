@@ -15,7 +15,11 @@ use crate::mem::bus::Region;
 use core::ops::Deref;
 
 pub mod stm32f072;
+pub mod stm32f100;
+pub mod stm32f101;
+pub mod stm32f102;
 pub mod stm32f103;
+pub mod stm32f105;
 pub mod stm32f107;
 pub mod stm32f303xe;
 pub mod stm32f407;

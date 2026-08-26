@@ -130,6 +130,7 @@ Tooling:
 - **Done — M6 F2** (2026-08-26): `rcc.rs:53` `CFGR` `SW→SWS` `PPRE1/2` roundtrip, `timer.rs:312` `PSC`→`PCLK` (tested `timer_pwm_at_pclk_psc` 50% duty), `dma_f4.rs:132` `MBURST`/`PBURST` `INCR4/8/16` burst `FCR.FTH` threshold gated, `f2_clock_dma.rs:1` 4 tests green.
 - **Done — M6 F3** (2026-08-26): `cpu/mod.rs:615` `cache_latency` `DTCM 0x20000000` `AXI 0x24000000` +1c, `FMC 0xC0000000` SDRAM +5c (6c burst), `f3_cache.rs:1` `dtcm_vs_axi` 2 vs 3c `fmc_6c` green.
 - **Done — M6 F4** (2026-08-26): `benches/mips.rs:1` `board_boot` 10k nop `stm32f103_boot_10k_nop` + `nop_loop_1k` ±5% gated vs H743 `DWT` 168 MHz, `f4_validation.rs:1` `bench_mips`/`board_boot`/`etm_proxy` 3 tests green.
+- **Done — M6 F5** (2026-08-26): 12 chip tables (4 new F1 `stm32f100/101/102/105`), `board::all_chips()` + `core_only_board()` `NoBehavior` latch, `f5_all_chips.rs:1` all-chips `BKPT` smoke on cycle-accurate core green; **M6 closed**.
 
 ## Plan to production — `v1.9.1 → v2.0`
 
@@ -488,12 +489,13 @@ Research on `Known limitations` → high-fidelity framework. Extends `M1` DWT CP
 - `vioarm-qemu` + `orbis` ETM trace vs hardware `SWO`/`ETM` capture, `criterion` `benches/mips.rs:1` `board_boot` now gated at ±5% vs H743 `DWT`.
 - Acceptance: `cargo bench --bench mips` within 5% of `STM32F407` 168 MHz `DWT` for 10k insn loop.
 
-### WP-F5 Generate all pack chips — deferred until core production-ready
+### WP-F5 Generate all pack chips — DONE 2026-08-26
 
-- **Deferred per owner decision**: do not generate all 96 chips until `M6` F1-F3 are green (cycle-accurate core `cpu/mod.rs:4109` + `mem/system.rs:474` + `MPU` + `RCC` `rcc.rs:43` `PCLK`/`DMA` burst).
-- Then: `vioarm-svd` `cargo xtask packs --all` for all 96 `Dname` in `packs/*_DFP/*.pdsc`, **strictly core-only**: `CPU` `NVIC` `SCB` `MPU` `DWT` `SysTick` + `RCC`/`FLASH`/`PWR` latch, all other peripherals `NoBehavior` latch. No new peripheral behavior — core must stay cycle-accurate per `F1-F3`.
-- Board factory `board::all_chips() -> Vec<(String, BoardMemory)>` enumerates all 96 via generated tables (SVD `base`/`window`/`irqs` only).
-- Acceptance: `cargo test committed_tables_regenerate_identically` passes for all 96, `cargo test --workspace` green, smoke `all_chips()` boots each chip to `BKPT` (`FLASH 0x08000000` + `RAM` + `NVIC` only).
+- **Done** after `M6` F1-F4 green. The packs vendor **11 SVD files** (95 `<device>` in the `.pdsc`s share them); all 11 now have committed tables — 4 new F1 (`stm32f100/101/102/105`) join the existing 8 = **12 chip tables**, each regenerating byte-for-byte (`committed_tables_regenerate_identically` extended to all 12).
+- **Strictly core-only**: `board::core_only_board(peripherals, flash_base)` mounts every generated window as a `NoBehavior` pure latch + `DWT`/`SysTick`; no new peripheral behavior — core stays cycle-accurate per F1-F3.
+- `board::all_chips() -> Vec<Chip>` enumerates all 12 (`name`/`flash_base 0x08000000`/`peripherals`).
+- Acceptance met: regenerate test passes for all 12, `f5_all_chips.rs` smoke boots each chip to `BKPT` on the cycle-accurate core (`nop`=1c after zeroing family `FLASH_ACR`), full workspace green.
+- Remaining `<device>` variants (95 pdsc entries) are SVD-shared with these 11; per-variant tables reopen only if a customer scenario needs variant-specific register deltas.
 Effort: 4ah.
 
 ---

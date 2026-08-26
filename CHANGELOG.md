@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `RCC` `CFGR` `SW→SWS` `PPRE1/2` (`rcc.rs:53`), `DMA` `F4` `MBURST`/`PBURST` `INCR4/8/16` + `FCR.FTH` threshold (`dma_f4.rs:132`), `TIM` `PSC`→`PCLK` (`timer.rs:312`) `M6` F2 `f2_clock_dma` 4 tests.
 - `Cache` `DTCM`/`AXI`/`FMC` latency (`cpu/mod.rs:615` `cache_latency` `AXI +1c` `FMC 6c` `f3_cache` 3 tests) `M6` F3.
 - `Bench` `benches/mips.rs:1` `board_boot` `10k_nop`/`nop_loop_1k` ±5% `H743` `DWT` 168 MHz gated, `f4_validation` 3 tests `M6` F4.
+- All-chips generation `F5`: 12 committed SVD tables (4 new F1 `stm32f100/101/102/105`), `board::all_chips()`/`core_only_board()` pure-latch windows, `f5_all_chips` BKPT smoke per chip on the cycle-accurate core; regenerate-identically covers all 12. **M6 closed.**
 ### Fixed
 - `USB` `FS+0x2000` reserved test now expects EP1 FIFO.
 
