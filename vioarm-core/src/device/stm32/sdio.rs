@@ -20,6 +20,10 @@ const ICR: u32 = 0x38;
 const MASK: u32 = 0x3C;
 const FIFO: u32 = 0x80;
 
+const STA_CCRCFAIL: u32 = 1 << 0;
+const STA_DCRCFAIL: u32 = 1 << 1;
+const STA_CTIMEOUT: u32 = 1 << 2;
+const STA_DTIMEOUT: u32 = 1 << 3;
 const STA_CMDSENT: u32 = 1 << 7;
 const STA_CMDREND: u32 = 1 << 6;
 const STA_DATAEND: u32 = 1 << 8;
@@ -56,6 +60,8 @@ struct SdioBehavior {
     card: Vec<u8>,
     last_arg: u32,
     spi_mode: bool,
+    inject_ccrcfail: bool,
+    inject_dcrcfail: bool,
 }
 
 impl Default for SdioBehavior {
@@ -68,6 +74,8 @@ impl Default for SdioBehavior {
             card: vec![0u8; 512 * 2048], // 1 MiB card image
             last_arg: 0,
             spi_mode: false,
+            inject_ccrcfail: false,
+            inject_dcrcfail: false,
         }
     }
 }
@@ -142,6 +150,15 @@ impl Behavior for SdioBehavior {
                     let mut sta = view.get(STA) | STA_CMDSENT;
                     if waitresp != 0 {
                         sta |= STA_CMDREND;
+                    }
+                    // CRC error injection: next command/data will latch CCRCFAIL/DCRCFAIL.
+                    if self.inject_ccrcfail {
+                        sta |= STA_CCRCFAIL;
+                        self.inject_ccrcfail = false;
+                    }
+                    if self.inject_dcrcfail && view.get(DCTRL) & DCTRL_DTEN != 0 {
+                        sta |= STA_DCRCFAIL;
+                        self.inject_dcrcfail = false;
                     }
                     // If data path is enabled, complete the block and prime FIFO.
                     if view.get(DCTRL) & DCTRL_DTEN != 0 {
@@ -261,6 +278,27 @@ impl Behavior for SdioBehavior {
         } else {
             0
         }
+    }
+
+    fn drive_inputs(&mut self, _view: &mut Registers<&mut [u32]>, value: u32) {
+        // Bit 16 => inject CCRCFAIL on next command, bit 17 => DCRCFAIL on next data.
+        if value & (1 << 16) != 0 {
+            self.inject_ccrcfail = true;
+        }
+        if value & (1 << 17) != 0 {
+            self.inject_dcrcfail = true;
+        }
+        // Bit 18 clears injected flags.
+        if value & (1 << 18) != 0 {
+            self.inject_ccrcfail = false;
+            self.inject_dcrcfail = false;
+        }
+    }
+
+    fn reset(&mut self) {
+        self.fifo.clear();
+        self.inject_ccrcfail = false;
+        self.inject_dcrcfail = false;
     }
 }
 

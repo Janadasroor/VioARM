@@ -266,6 +266,9 @@ pub struct Eth {
     phy: [u16; 32],
     mii_pending: Option<(bool, usize)>,
     mii_ticks: u8,
+    ptp_seconds: u32,
+    ptp_subsec: u32,
+    ptp_enabled: bool,
 }
 
 impl Eth {
@@ -289,6 +292,9 @@ impl Eth {
         Self {
             mii_pending: None,
             mii_ticks: 0,
+            ptp_seconds: 0,
+            ptp_subsec: 0,
+            ptp_enabled: false,
             ranges: [
                 Region::new(mac.def.base, mac.def.window),
                 Region::new(eth_def::<D>("MMC").base, eth_def::<D>("MMC").window),
@@ -472,6 +478,47 @@ impl Eth {
             return Ok(());
         }
         write_latch(&mut self.dma, off, val)
+    }
+
+    fn read_ptp(&self, off: u32) -> Result<u8, BusError> {
+        // PTPTSCR at 0x00, PTPTSHR 0x08, PTPTSLR 0x0C, PTPTSHUR 0x10, etc.
+        // Time is free-running when ptp_enabled (TSE bit).
+        // For simplicity, PTPTSHR/SLR return current seconds/subsec, others latch.
+        if off == 0x08 || off == 0x09 || off == 0x0A || off == 0x0B {
+            let l = (off - 0x08) as usize;
+            return Ok(((self.ptp_seconds >> (8 * l)) & 0xFF) as u8);
+        }
+        if off == 0x0C || off == 0x0D || off == 0x0E || off == 0x0F {
+            let l = (off - 0x0C) as usize;
+            return Ok(((self.ptp_subsec >> (8 * l)) & 0xFF) as u8);
+        }
+        read_latch(&self.ptp, off)
+    }
+
+    fn write_ptp(&mut self, off: u32, val: u8) -> Result<(), BusError> {
+        // PTPTSCR TSE bit 0 enables timestamp.
+        if off == 0x00 {
+            let merged = self.ptp.merged(0x00, val, 0);
+            self.ptp_enabled = merged & 1 != 0;
+            self.ptp.set(0x00, merged);
+            return Ok(());
+        }
+        // PTPTSHUR/PTPTSLUR update time (add offset)
+        if off >= 0x10 && off < 0x18 {
+            // Latch write then apply to current time on write to PTPTSLUR high byte
+            write_latch(&mut self.ptp, off, val)?;
+            if off == 0x17 {
+                let sec = self.ptp.get(0x10);
+                let nsec = self.ptp.get(0x14);
+                self.ptp_seconds = self.ptp_seconds.wrapping_add(sec);
+                self.ptp_subsec = self.ptp_subsec.wrapping_add(nsec);
+                // Update readable time registers
+                self.ptp.set(0x08, self.ptp_seconds);
+                self.ptp.set(0x0C, self.ptp_subsec);
+            }
+            return Ok(());
+        }
+        write_latch(&mut self.ptp, off, val)
     }
 }
 
@@ -704,7 +751,7 @@ impl Peripheral for Eth {
         }
         let off = addr.wrapping_sub(self.ptp.def.base);
         if off < self.ptp.def.window {
-            return read_latch(&self.ptp, off);
+            return self.read_ptp(off);
         }
         let off = addr.wrapping_sub(self.dma.def.base);
         if off < self.dma.def.window {
@@ -724,7 +771,7 @@ impl Peripheral for Eth {
         }
         let off = addr.wrapping_sub(self.ptp.def.base);
         if off < self.ptp.def.window {
-            return write_latch(&mut self.ptp, off, val);
+            return self.write_ptp(off, val);
         }
         let off = addr.wrapping_sub(self.dma.def.base);
         if off < self.dma.def.window {
@@ -738,6 +785,25 @@ impl Peripheral for Eth {
     }
 
     fn tick(&mut self, delta: u64) {
+        // PTP timebase: when TSE enabled, time increments per tick (1 subsec per delta).
+        if self.ptp_enabled && delta != 0 {
+            let inc = delta as u32;
+            let (ns, carry) = self.ptp_subsec.overflowing_add(inc.wrapping_mul(1000));
+            self.ptp_subsec = ns;
+            if carry || ns >= 1_000_000_000 {
+                self.ptp_subsec %= 1_000_000_000;
+                self.ptp_seconds = self.ptp_seconds.wrapping_add(1);
+                // Reflect into readable registers
+                self.ptp.set(0x08, self.ptp_seconds);
+                self.ptp.set(0x0C, self.ptp_subsec);
+            } else {
+                self.ptp.set(0x0C, self.ptp_subsec);
+            }
+            // On TX complete, capture timestamp into target registers
+            if self.state.phase == Phase::Idle && self.ptp.get(0x00) & 2 != 0 {
+                // TSSAR? not needed
+            }
+        }
         // MII busy latency: 1-tick to complete PHY access, then clear MB.
         if let Some((mw, mr)) = self.mii_pending {
             if self.mii_ticks > 0 {
@@ -889,6 +955,9 @@ impl Eth {
         self.state = EthState::default();
         self.mii_pending = None;
         self.mii_ticks = 0;
+        self.ptp_seconds = 0;
+        self.ptp_subsec = 0;
+        self.ptp_enabled = false;
         let mut mailbox = self.mailbox.lock().unwrap_or_else(|e| e.into_inner());
         mailbox.ops.clear();
         mailbox.results.clear();

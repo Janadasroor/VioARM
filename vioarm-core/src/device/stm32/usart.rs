@@ -81,6 +81,8 @@ struct UsartBehavior {
     sr_off: u32,
     rdr_off: u32,
     tdr_off: u32,
+    cr2_off: Option<u32>,
+    isr_off: Option<u32>,
     ue_bit: u32,
     te_bit: u32,
     re_bit: u32,
@@ -88,6 +90,9 @@ struct UsartBehavior {
     rxne_bit: u32,
     txe_bit: u32,
     tc_bit: u32,
+    clken_bit: Option<u32>,
+    abren_bit: Option<u32>,
+    abrf_bit: Option<u32>,
 }
 
 impl Default for UsartBehavior {
@@ -100,6 +105,8 @@ impl Default for UsartBehavior {
             sr_off: SR_F1,
             rdr_off: DR_F1,
             tdr_off: DR_F1,
+            cr2_off: Some(CR2_F1),
+            isr_off: None,
             ue_bit: 1 << 13,
             te_bit: 1 << 3,
             re_bit: 1 << 2,
@@ -107,6 +114,9 @@ impl Default for UsartBehavior {
             rxne_bit: 1 << 5,
             txe_bit: 1 << 7,
             tc_bit: 1 << 6,
+            clken_bit: None,
+            abren_bit: None,
+            abrf_bit: None,
         }
     }
 }
@@ -145,6 +155,18 @@ impl Behavior for UsartBehavior {
         val: u8,
         shift: u32,
     ) -> u32 {
+        // Auto-baud flag ABRF (ISR) is write-0-to-clear on new-gen tables.
+        if Some(offset) == self.isr_off {
+            if let Some(abrf) = self.abrf_bit {
+                let cur = view.get(offset);
+                let word = (cur & !(0xFF << shift)) | (u32::from(val) << shift);
+                if word & abrf == 0 && cur & abrf != 0 {
+                    let cleared = cur & !abrf;
+                    view.set(offset, cleared);
+                    return cleared;
+                }
+            }
+        }
         if offset == self.tdr_off {
             // Byte 0 of the data register is the transmitted character;
             // the higher lanes are the extension of the same store on
@@ -221,6 +243,20 @@ impl Behavior for UsartBehavior {
         view.try_set(self.rdr_off, value & 0xFF);
         if let Some(sr) = view.try_get(self.sr_off) {
             view.try_set(self.sr_off, sr | self.rxne_bit);
+        }
+        // Auto-baud detection: if ABREN is set in CR2, the next received
+        // byte completes the measurement — clear ABREN and latch ABRF in ISR.
+        if let (Some(cr2_off), Some(abren), Some(abrf)) =
+            (self.cr2_off, self.abren_bit, self.abrf_bit)
+        {
+            if let Some(cr2) = view.try_get(cr2_off) {
+                if cr2 & abren != 0 {
+                    view.try_set(cr2_off, cr2 & !abren);
+                    if let Some(sr) = view.try_get(self.sr_off) {
+                        view.try_set(self.sr_off, sr | abrf);
+                    }
+                }
+            }
         }
         // Bit 8 set signals a LIN break (RX held low for a full frame):
         // latch `SR.LBD` on F1-style tables that declare it.
@@ -556,6 +592,17 @@ impl Usart {
         let tc_bit = Self::field_bit(def, if is_new { "ISR" } else { "SR" }, "TC")
             .map(|b| 1u32 << b)
             .unwrap_or(1 << 6);
+        let cr2_off = Self::reg_offset(def, "CR2");
+        let isr_off = if is_new {
+            Some(Self::reg_offset(def, "ISR").unwrap_or(0x1C))
+        } else {
+            None
+        };
+        let clken_bit = Self::field_bit(def, "CR2", "CLKEN").map(|b| 1u32 << b);
+        let abren_bit = Self::field_bit(def, "CR2", "ABREN").map(|b| 1u32 << b);
+        let abrf_bit = Self::field_bit(def, "ISR", "ABRF")
+            .or_else(|| Self::field_bit(def, "ISR", "ABRE"))
+            .map(|b| 1u32 << b);
         let behavior = UsartBehavior {
             output: Vec::new(),
             requests,
@@ -564,6 +611,8 @@ impl Usart {
             sr_off,
             rdr_off,
             tdr_off,
+            cr2_off,
+            isr_off,
             ue_bit,
             te_bit,
             re_bit,
@@ -571,6 +620,9 @@ impl Usart {
             rxne_bit,
             txe_bit,
             tc_bit,
+            clken_bit,
+            abren_bit,
+            abrf_bit,
         };
         Self {
             inner: RegisterFile::new(def, behavior),
