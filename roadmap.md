@@ -508,29 +508,32 @@ table recomputed; milestone tagged (`vX.Y.0`); release notes extracted. An
 enterprise-critical subset (E1, C1) may land independently but v2.0 requires
 all five milestones.
 
-### Domain checklist table (recompute per milestone)
+### Domain checklist table (recomputed at M6 close, `v3.0`)
 
 | Domain | Items modeled today | Target gaps (WP refs) |
 |---|---|---|
-| Core ISA | 95% | C3 extras |
+| Core ISA | 95% | C3 extras, D2 fast path |
 | Exceptions/NVIC/SCB/MPU | 85% | C3 |
-| Timing/DWT | 80% | — |
+| Timing/DWT | 95% | load-use stall (deferred) |
 | GPIO F1/F4 | 90% | — |
 | Flash F1/F4 | 75% | — |
 | RTC/PWR/IWDG/WWDG/CRC/DAC/BKP | 75% | — |
 | USART family | 75% | — |
 | ADC/SPI/I2C | 75% | — |
-| Timers | 65% | C3 |
-| CAN bxCAN | 70% | — |
-| DMA F1/F4/DMAMUX | 50% | B1 burst |
+| Timers | 85% | C3 |
+| CAN bxCAN | 85% | — |
+| DMA F1/F4/DMAMUX | 70% | F1 request timing |
 | USB OTG FS | 60% | — |
 | ETH | 65% | — |
 | SDIO | 60% | — |
-| H743 platform | 15% | descoped |
-| Tooling | 90% | E2/E3 |
+| Chip coverage (SVD tables) | 12 chips | variant deltas |
+| H743 platform | 15% | descoped (B6) |
+| Tooling | 95% | — |
 
-Current overall ≈62-65% (post-M2). Projected post-M5 with descopes
-finalized ≈75-80% behavioral (100% is not claimed — see Non-goals).
+Overall ≈77% post-M6 (unweighted mean; was ≈62-65% post-M2, ≈75-80%
+projected post-M5). Cycle/peripheral accuracy now measured (`m3_cycle`
+±2%, `f4_validation`/benches ±5%), not claimed. 100% is not claimed
+(see Non-goals).
 ## Known limitations
 
 - v8-M Secure-to-Non-secure interrupt delivery is not differentially tested

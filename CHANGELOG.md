@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Cache` `DTCM`/`AXI`/`FMC` latency (`cpu/mod.rs:615` `cache_latency` `AXI +1c` `FMC 6c` `f3_cache` 3 tests) `M6` F3.
 - `Bench` `benches/mips.rs:1` `board_boot` `10k_nop`/`nop_loop_1k` ±5% `H743` `DWT` 168 MHz gated, `f4_validation` 3 tests `M6` F4.
 - All-chips generation `F5`: 12 committed SVD tables (4 new F1 `stm32f100/101/102/105`), `board::all_chips()`/`core_only_board()` pure-latch windows, `f5_all_chips` BKPT smoke per chip on the cycle-accurate core; regenerate-identically covers all 12. **M6 closed.**
+
+### M6 milestone measurement (v3.0)
+
+Domain table recomputed at close (`roadmap.md`): Core ISA 95%, Exceptions 85%, **Timing/DWT 95%**, GPIO 90%, Flash 75%, RTC/PWR/… 75%, USART 75%, ADC/SPI/I2C 75%, **Timers 85%**, **CAN 85%**, **DMA 70%**, USB 60%, ETH 65%, SDIO 60%, **Chip coverage 12 tables**, H743 15% (descoped), Tooling 95%. **Overall ≈77%** (was ≈62-65% post-M2). Cycle accuracy is *measured* (`m3_cycle` ±2% TRM, benches/f4 ±5% H743 DWT), not claimed; load-use stall remains the documented deferral.
 ### Fixed
 - `USB` `FS+0x2000` reserved test now expects EP1 FIFO.
 
