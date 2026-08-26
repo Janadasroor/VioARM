@@ -457,6 +457,13 @@ Effort: 6ah.
 Acceptance: policy section in book; platform jobs green; snapshots in tree.
 Effort: 6ah.
 
+### WP-E5 Generate all pack chips — core production only
+
+- Generate `PeripheralDef` tables for all **96** `Dname` in `packs/*_DFP/*.pdsc` via `vioarm-svd` (`cargo xtask packs --all`), **strictly core-only**: `CPU` `NVIC` `SCB` `MPU` `DWT` `SysTick` + `RCC`/`FLASH`/`PWR` latch, all other peripherals `NoBehavior` latch. No new peripheral behavior — core must stay production-ready per `M1` (95% ISA, 85% exceptions, 80% timing).
+- Board factory `board::all_chips() -> Vec<(String, BoardMemory)>` enumerates all 96 via generated tables (SVD `base`/`window`/`irqs` only).
+- Acceptance: `cargo test committed_tables_regenerate_identically` passes for all 96, `cargo test --workspace` green, smoke `all_chips()` boots each chip to `BKPT` (`FLASH 0x08000000` + `RAM` + `NVIC` only).
+Effort: 4ah.
+
 ---
 
 ### Milestone exit criteria (global DoD)
