@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **SPI hardware NSS + CRC + I2S gate**: `SSM=0` master with NSS asserted low (drive_inputs bit 8) latches `SR.MODF`, clears `SPE`, aborts the frame; recovery per RM ("read SR, write CR1"). CRC engine: `CRCEN` reloads both registers to 0xFFFF, shifted bytes fold MSB-first through `CRCPOLY` into shadowed read-only `TXCRCR`/`RXCRCR` (width per `DFF`), `CRCNEXT` frame sends the running TX CRC instead of the written byte. `I2SMOD` repurposes the shift register (no SPI frames).
 - **Timer encoder interface**: `SMCR.SMS` 001/010/011 count TI2/TI1/both edges with the RM0008 §17.3.12 quadrature table, wrap through zero↔ARR on reverse; inputs on `drive_inputs` bits 1 (TI2) / 2 (TI1).
 - **USB isochronous IN**: `DIEPCTL.EPTYPE=01` defers completion to the SOF boundary — one packet per frame (`iso_pending_in` drained by `CMD_SOF`).
+- **ADC analog watchdog**: `CR1.AWDEN/AWDSGL/AWDCH[4:0]` guard the regular group against `LTR..HTR`; out-of-band results latch `SR.AWD`, `AWDIE` raises the line, software clears by writing zeros. Fixed latent F1 defect: power-on wrote H7's `ISR.ADRDY` bit 0 unconditionally, which on F1 latched a phantom `AWD` (now gated on the table declaring `ADRDY`).
+- **Timer Hall-sensor mode** (`SMCR.SMS=100`): rising TI1 captures CNT into CCR1 with `CC1IF` and resets the counter — per-commutation dwell measurement.
+- Scope decision: USB double-buffering is a documented latch-only no-op; host mode stays latch-only (B6 pattern).
 - `TIM` IC/PWM/OPM: `OCxM` state machine + `output_level()` pin, `EGR.CCxG`, `CR1.OPM` one-pulse, `inject_capture()` latch, `URE` etc. (17 timer tests).
 - `DMA` `TIM` `ADC` request lines: `TIM` `DIER.UDE`→`DmaRequests`, `ADC` `CR2.DMA`→`DmaRequests`, `with_dma()` helpers.
 - `USB` EP1-3 bulk: `FIFO_LEN` 0x400→0x4000, `DIEPTSIZ`/`DOEPTSIZ` per-EP, EP1 bulk test.

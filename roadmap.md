@@ -519,22 +519,22 @@ all five milestones.
 | Flash F1/F4 | 75% | — |
 | RTC/PWR/IWDG/WWDG/CRC/DAC/BKP | 75% | — |
 | USART family | 75% | — |
-| ADC/SPI/I2C | 90% | SPI slave CRC check, ADC watchdog |
-| Timers | 95% | Hall-sensor mode (SMS=100 reset mode) |
+| ADC/SPI/I2C | 95% | F4/F3 simultaneous dual mode |
+| Timers | 95% | dead-time insertion into OC pin pairs |
 | CAN bxCAN | 85% | — |
 | DMA F1/F4/DMAMUX | 70% | F1 request timing |
-| USB OTG FS | 80% | double-buffering, host mode |
+| USB OTG FS | 80% | host mode (double-buffering = documented no-op) |
 | ETH | 80% | PTP window, MIIM latency |
 | SDIO | 60% | — |
 | Chip coverage (SVD tables) | 12 chips | variant deltas |
 | H743 platform | 15% | descoped (B6) |
 | Tooling | 95% | — |
 
-Overall ≈80% post-M6+peripheral-depth pass (USB 80% with ISO SOF-boundary
-INs, ETH 80% frame filter, ADC/SPI/I2C 90% with injected group + NSS/CRC/
-I2S-gate, Timers 95% with break/dead-time/encoder). Cycle accuracy is
-*measured* (`m3_cycle` ±2%, `f4_validation`/benches ±5%), not claimed.
-100% is not claimed (see Non-goals).
+Overall ≈81% post-M6+peripheral-depth pass (ADC/SPI/I2C 95% with injected
+group, analog watchdog, NSS/CRC/I2S gate; Timers 95% with break/dead-time/
+encoder/Hall; USB 80% with ISO SOF-boundary INs; ETH 80% frame filter).
+Cycle accuracy is *measured* (`m3_cycle` ±2%, `f4_validation`/benches ±5%),
+not claimed. 100% is not claimed (see Non-goals).
 ## Known limitations
 
 - v8-M Secure-to-Non-secure interrupt delivery is not differentially tested
@@ -613,6 +613,18 @@ I2S-gate, Timers 95% with break/dead-time/encoder). Cycle accuracy is
   and half-precision (`sz=01`) remain `UNDEFINED`.
 - The QEMU reference cannot execute taken IT-block branches; those paths are
   covered by core unit tests instead.
+- USB OTG FS: `DIEPCTLn.DBUF` (double buffering) latches but does not change
+  the FIFO model — the single-buffer mailbox already delivers the bytes a
+  CDC/BDC device moves, and ping-pong SW-side flow control has no observable
+  effect on the modeled transfers. Host-mode registers latch only; no host
+  channel scheduler is modeled (WP-B6-style descope until a customer
+  scenario demands it).
+- ADC: the analog watchdog monitors the *regular* group (the F1 has one
+  watchdog shared by both groups; injected-only guarding is not modeled).
+  H7 `ADC` differs (AWD1/2/3 + per-group enables) and stays at latch level.
+- Timers: dead-time is decoded (`dtg_ticks`) but not inserted between
+  complementary OC pin pairs — `output_level` reports the single-ended OCx
+  state. External trigger/slave modes beyond encoder/Hall/reset latch only.
 
 ## Open questions
 

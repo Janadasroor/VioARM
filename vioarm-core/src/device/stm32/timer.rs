@@ -556,7 +556,20 @@ impl Behavior for TimerBehavior {
         }
         if view.try_get(SMCR).is_some_and(|smcr| smcr & 0x7 != 0) {
             let prev = self.encoder_inputs;
-            self.count_encoder_edge(view, prev & 0b10 != 0, prev & 0b01 != 0, ti2, ti1);
+            if view.get(SMCR) & 0x7 == 0b100 {
+                // Hall-sensor / reset mode: a rising TI1 edge captures the
+                // counter into CCR1 and clears it (RM0008 §17.3.14).
+                if (prev >> 2) & 1 == 0 && ti1 {
+                    let cnt = view.get(CNT);
+                    if view.try_get(CCR1).is_some() {
+                        view.set(CCR1, cnt);
+                        view.set(SR, view.get(SR) | CC1IF);
+                    }
+                    view.set(CNT, 0);
+                }
+            } else {
+                self.count_encoder_edge(view, prev & 0b10 != 0, prev & 0b01 != 0, ti2, ti1);
+            }
             self.encoder_inputs = u8::from(ti1) | (u8::from(ti2) << 1);
         }
     }
@@ -1234,5 +1247,34 @@ mod tests {
         );
         t.drive_inputs(0b000);
         assert_eq!(read_word(&mut t, BASE + 0x24), 1, "no edge counting");
+    }
+
+    /// Hall-sensor mode (SMS=100): a rising TI1 edge latches CNT into CCR1
+    /// (with CC1IF) and resets the counter — the dwell-time measurement
+    /// firmware performs per commutation step.
+    #[test]
+    fn hall_sensor_mode_captures_and_resets_on_ti1_rise() {
+        const T3: u32 = crate::device::stm32::TIM3;
+        let mut t = Timer::tim3_for::<crate::device::svd::stm32f103::Stm32f103>();
+        write_word(&mut t, T3 + super::SMCR, 0b100); // SMS=100 reset mode
+        write_word(&mut t, T3 + 0x2C, 99); // ARR
+        write_word(&mut t, T3, CEN);
+        // Let the counter free-run a few ticks.
+        for _ in 0..7 {
+            t.tick(1);
+        }
+        assert_eq!(read_word(&mut t, T3 + 0x24), 7);
+        // TI1 rising: capture into CCR1, clear CNT, latch CC1IF.
+        t.drive_inputs(0b100); // TI1 high (bit 2)
+        assert_eq!(read_word(&mut t, T3 + 0x34), 7, "CCR1 captured dwell");
+        assert_eq!(read_word(&mut t, T3 + 0x24), 0, "counter reset");
+        assert_ne!(read_word(&mut t, T3 + 0x10) & super::CC1IF, 0, "CC1IF");
+        // Falling edge does nothing; counting resumes from zero.
+        t.drive_inputs(0b000);
+        t.tick(3);
+        assert_eq!(read_word(&mut t, T3 + 0x24), 3);
+        // Next rising captures again.
+        t.drive_inputs(0b100);
+        assert_eq!(read_word(&mut t, T3 + 0x34), 3, "second dwell");
     }
 }

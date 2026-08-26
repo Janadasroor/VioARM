@@ -29,6 +29,9 @@ const SQR2: u32 = 0x30;
 const SQR3: u32 = 0x34;
 const JSQR: u32 = 0x38;
 const JDR1: u32 = 0x3C;
+/// `HTR`/`LTR` — the analog-watchdog high/low thresholds.
+const HTR: u32 = 0x24;
+const LTR: u32 = 0x28;
 const DR: u32 = 0x4C;
 
 /// Test-visible aliases for the injected-group offsets.
@@ -36,6 +39,14 @@ const DR: u32 = 0x4C;
 pub(crate) const JSQR_OFFSET: u32 = JSQR;
 #[cfg(test)]
 pub(crate) const JDR1_OFFSET: u32 = JDR1;
+#[cfg(test)]
+pub(crate) const HTR_OFFSET: u32 = HTR;
+#[cfg(test)]
+pub(crate) const LTR_OFFSET: u32 = LTR;
+/// `SQR3` for the tests (first six regular sequence slots).
+const SQR3_OFF: u32 = SQR3;
+#[cfg(test)]
+pub(crate) const SR_TEST: u32 = SR;
 
 /// `SR` flag bits.
 const EOC: u32 = 1 << 1;
@@ -43,6 +54,8 @@ const JEOC: u32 = 1 << 2;
 const JSTRT: u32 = 1 << 3;
 const STRT: u32 = 1 << 4;
 const OVR: u32 = 1 << 5; // F4 only
+/// `SR.AWD` (bit 0): an analog-watchdog event latched.
+const AWD: u32 = 1 << 0;
 
 /// `CR1` bits.
 const EOCIE: u32 = 1 << 5;
@@ -50,6 +63,14 @@ const JEOCIE: u32 = 1 << 7;
 const SCAN: u32 = 1 << 8;
 const JAUTO: u32 = 1 << 10;
 const OVRIE: u32 = 1 << 26; // F4 only
+/// `CR1.AWDEN` (bit 23): the analog watchdog is enabled.
+const AWDEN: u32 = 1 << 23;
+/// `CR1.AWDSGL` (bit 9): watch only the channel selected by `AWDCH`.
+const AWDSGL: u32 = 1 << 9;
+/// `CR1.AWDIE` (bit 6): the watchdog interrupt enable.
+const AWDIE: u32 = 1 << 6;
+/// `CR1.AWDCH[4:0]`: the watched channel when `AWDSGL` is set.
+const AWDCH_MASK: u32 = 0x1F;
 
 /// `CR2` bits.
 const ADON: u32 = 1 << 0;
@@ -76,6 +97,9 @@ struct AdcConfig {
     swstart: u32,
     /// Whether `SR.OVR`/`CR1.OVRIE` exist (the F4 overrun pair).
     has_ovr: bool,
+    /// Whether the status register declares `ADRDY` (H7 ISR) — bit 0 there
+    /// is not the F1 `AWD`.
+    has_adrdy: bool,
     /// Whether a second `ADON` write restarts a conversion (F1 legacy).
     adon_restarts: bool,
     cr_off: u32,
@@ -181,6 +205,9 @@ impl AdcBehavior {
             view.set(self.config.sr_off, sr | eoc | STRT);
         }
         view.set(self.config.dr_off, aligned);
+        // The analog watchdog guards the regular group (RM0008 §11.7.4):
+        // enabled channels outside [LTR, HTR] latch SR.AWD.
+        self.run_watchdog(view, channel, value);
         if view.get(self.config.cr_off) & (1 << 8) != 0 {
             if let Some((reqs, ctrl, ch)) = self.dma.as_ref() {
                 let reqs = Arc::clone(reqs);
@@ -193,6 +220,24 @@ impl AdcBehavior {
 
     fn sample(&self, channel: u8) -> u32 {
         u32::from(self.analog.get(usize::from(channel)).copied().unwrap_or(0) & 0x0FFF)
+    }
+
+    /// Evaluate the analog watchdog for a landed regular result: with
+    /// `AWDEN` set, the watched channel (all channels when `AWDSGL` is
+    /// clear) outside `[LTR, HTR]` latches `SR.AWD`.
+    fn run_watchdog(&self, view: &mut Registers<&mut [u32]>, channel: u8, value: u32) {
+        let cr1 = view.get(CR1);
+        if cr1 & AWDEN == 0 {
+            return;
+        }
+        if cr1 & AWDSGL != 0 && (cr1 & AWDCH_MASK) as u8 != channel {
+            return;
+        }
+        let ht = view.get(HTR) & 0x0FFF;
+        let lt = view.get(LTR) & 0x0FFF;
+        if value > ht || value < lt {
+            view.set(self.config.sr_off, view.get(self.config.sr_off) | AWD);
+        }
     }
 }
 
@@ -215,8 +260,9 @@ impl Behavior for AdcBehavior {
             let jswstart = word & JSWSTART != 0;
             // SWSTART/ADSTART is a self-clearing strobe: it reads back as zero.
             let stored = word & !self.config.swstart;
-            // H7: ADEN rising sets ISR.ADRDY
-            if powered && !was_powered {
+            // H7: ADEN rising sets ISR.ADRDY (bit 0 of ISR). On F1/F4 SR
+            // bit 0 is AWD, so only tables that declare ADRDY get the latch.
+            if powered && !was_powered && self.config.has_adrdy {
                 let isr = view.get(self.config.sr_off);
                 view.set(self.config.sr_off, isr | 1);
             }
@@ -345,6 +391,7 @@ impl Behavior for AdcBehavior {
         u32::from(
             (sr & self.config.eoc_bit != 0 && eocie)
                 || (sr & JEOC != 0 && cr1 & JEOCIE != 0)
+                || (sr & AWD != 0 && cr1 & AWDIE != 0)
                 || (self.config.has_ovr && sr & OVR != 0 && cr1 & OVRIE != 0),
         )
     }
@@ -470,6 +517,7 @@ fn config_from(def: &'static PeripheralDef) -> AdcConfig {
         .find(|r| r.name == "SR" || r.name == "ISR")
         .expect("ADC table contains SR/ISR");
     let has_ovr = sr.fields.iter().any(|f| f.name == "OVR");
+    let has_adrdy = sr.fields.iter().any(|f| f.name == "ADRDY");
     let eoc_bit = sr
         .fields
         .iter()
@@ -498,6 +546,7 @@ fn config_from(def: &'static PeripheralDef) -> AdcConfig {
     AdcConfig {
         swstart,
         has_ovr,
+        has_adrdy,
         adon_restarts,
         cr_off: cr.offset,
         sr_off: sr.offset,
@@ -808,5 +857,78 @@ mod tests {
         adc.tick(14); // ...injected auto-started and finishes
         assert_ne!(read_word(&mut adc, SR) & (1 << 2), 0, "JEOC");
         assert_eq!(read_word(&mut adc, super::JDR1_OFFSET), 0x222);
+    }
+
+    /// The analog watchdog latches `SR.AWD` when a watched regular result
+    /// leaves `[LTR, HTR]`; with `AWDIE` the line asserts and software
+    /// clears the flag by writing zeros to `SR`.
+    #[test]
+    fn analog_watchdog_latches_out_of_band_samples() {
+        let mut adc = Adc::adc1();
+        adc.drive_inputs(0x800); // mid-scale: inside the band
+        write_word(&mut adc, super::HTR_OFFSET, 0x900);
+        write_word(&mut adc, super::LTR_OFFSET, 0x100);
+        // Watch all channels, interrupt on.
+        write_word(&mut adc, CR1, 1 << 23 | 1 << 6);
+        write_word(&mut adc, CR2, ADON | SWSTART_F1);
+        adc.tick(14);
+        assert_eq!(read_word(&mut adc, SR) & (1 << 0), 0, "inside band");
+        assert_eq!(adc.pending(), 0);
+
+        // Drive above the high threshold.
+        adc.drive_inputs(0xA00);
+        write_word(&mut adc, CR2, ADON | SWSTART_F1);
+        adc.tick(14);
+        assert_ne!(read_word(&mut adc, SR) & (1 << 0), 0, "above HT");
+        assert_eq!(adc.pending(), 1, "AWDIE raises the line");
+
+        // Below the low threshold also trips.
+        write_word(&mut adc, SR, !(1 << 0)); // clear AWD
+        assert_eq!(adc.pending(), 0, "flag cleared by software");
+        adc.drive_inputs(0x50);
+        write_word(&mut adc, CR2, ADON | SWSTART_F1);
+        adc.tick(14);
+        assert_ne!(read_word(&mut adc, SR) & (1 << 0), 0, "below LT");
+    }
+
+    /// With `AWDSGL` set only the selected channel is guarded.
+    #[test]
+    fn watchdog_single_channel_ignores_others() {
+        let mut adc = Adc::adc1();
+        adc.drive_inputs(0x900);
+        write_word(&mut adc, super::HTR_OFFSET, 0x700);
+        write_word(&mut adc, super::LTR_OFFSET, 0x000);
+        // SGL watching channel 2; sequence samples channel 5.
+        write_word(&mut adc, CR1, 1 << 23 | 1 << 9 | 2);
+        write_word(&mut adc, SQR3_OFF, 5);
+        if std::env::var("ADC_DBG").is_ok() {
+            println!(
+                "pre-cr2 sr={:#x} cr1={:#x}",
+                read_word(&mut adc, super::SR_TEST),
+                read_word(&mut adc, CR1)
+            );
+        }
+        write_word(&mut adc, CR2, ADON | SWSTART_F1);
+        if std::env::var("ADC_DBG").is_ok() {
+            println!("post-cr2 sr={:#x}", read_word(&mut adc, super::SR_TEST));
+        }
+        adc.tick(14);
+        if std::env::var("ADC_DBG").is_ok() {
+            println!(
+                "sr={:#x} dr={:#x}",
+                read_word(&mut adc, super::SR_TEST),
+                read_word(&mut adc, DR)
+            );
+        }
+        assert_eq!(
+            read_word(&mut adc, SR) & (1 << 0),
+            0,
+            "channel 5 not watched"
+        );
+        // Now sample the watched channel: it trips.
+        write_word(&mut adc, SQR3_OFF, 2);
+        write_word(&mut adc, CR2, ADON | SWSTART_F1);
+        adc.tick(14);
+        assert_ne!(read_word(&mut adc, SR) & (1 << 0), 0, "channel 2 watched");
     }
 }
