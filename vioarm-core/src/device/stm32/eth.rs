@@ -124,6 +124,21 @@ const CMD_RX: u8 = 0x01;
 /// Output frame opcode for a transmitted frame.
 const EVT_TX: u8 = 0x80;
 
+fn eth_hash(mac: &[u8]) -> u32 {
+    let mut crc = 0xFFFFFFFFu32;
+    for &b in mac {
+        crc ^= u32::from(b);
+        for _ in 0..8 {
+            if crc & 1 != 0 {
+                crc = (crc >> 1) ^ 0xEDB88320;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    (!crc >> 26) & 0x3F
+}
+
 /// One memory request queued by the Ethernet controller for `SystemMemory` to
 /// perform. Reads return their bytes through the mailbox's results FIFO.
 #[derive(Debug)]
@@ -542,8 +557,6 @@ impl Eth {
             return;
         }
         if let Some(frame) = self.take_frame() {
-            // MAC filtering: promiscuous or station/broadcast; accept all when
-            // MAC not programmed (0) for backward compat with existing tests.
             let _ffr = self.mac.get(MACFFR);
             let _accept = true;
             let rbs1 = usize::try_from(ctrl & RBS1_MASK).unwrap_or(0);
