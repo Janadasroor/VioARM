@@ -129,6 +129,7 @@ Tooling:
 - **In progress — M6 F1** (2026-08-26): `cpu/mod.rs:615` TRM CPI refined (`VFP` 3c, `flash_ws` `LATENCY` `WS`), `DWT` `cyccnt` ±2% `m3_cycle.rs:1` `coremark_loop` green, `load-use` stall deferred to `F2` (fails `sat_bitfield` when enabled on `FlatMemory`).
 - **Done — M6 F2** (2026-08-26): `rcc.rs:53` `CFGR` `SW→SWS` `PPRE1/2` roundtrip, `timer.rs:312` `PSC`→`PCLK` (tested `timer_pwm_at_pclk_psc` 50% duty), `dma_f4.rs:132` `MBURST`/`PBURST` `INCR4/8/16` burst `FCR.FTH` threshold gated, `f2_clock_dma.rs:1` 4 tests green.
 - **Done — M6 F3** (2026-08-26): `cpu/mod.rs:615` `cache_latency` `DTCM 0x20000000` `AXI 0x24000000` +1c, `FMC 0xC0000000` SDRAM +5c (6c burst), `f3_cache.rs:1` `dtcm_vs_axi` 2 vs 3c `fmc_6c` green.
+- **Done — M6 F4** (2026-08-26): `benches/mips.rs:1` `board_boot` 10k nop `stm32f103_boot_10k_nop` + `nop_loop_1k` ±5% gated vs H743 `DWT` 168 MHz, `f4_validation.rs:1` `bench_mips`/`board_boot`/`etm_proxy` 3 tests green.
 
 ## Plan to production — `v1.9.1 → v2.0`
 

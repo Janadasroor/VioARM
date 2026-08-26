@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `DWT` CPI refined: `VFP` `Vfp3/Vfp2` 3c, `VfpLdSt` 2c, `FLASH_ACR` WS per `LATENCY` when `pc<0x20000000` (`cpu/mod.rs:615` `cyccnt` `1c/2c/n+1/3c/4c`); `M6` F1 `m3_cycle` harness within ±2%.
 - `RCC` `CFGR` `SW→SWS` `PPRE1/2` (`rcc.rs:53`), `DMA` `F4` `MBURST`/`PBURST` `INCR4/8/16` + `FCR.FTH` threshold (`dma_f4.rs:132`), `TIM` `PSC`→`PCLK` (`timer.rs:312`) `M6` F2 `f2_clock_dma` 4 tests.
 - `Cache` `DTCM`/`AXI`/`FMC` latency (`cpu/mod.rs:615` `cache_latency` `AXI +1c` `FMC 6c` `f3_cache` 3 tests) `M6` F3.
+- `Bench` `benches/mips.rs:1` `board_boot` `10k_nop`/`nop_loop_1k` ±5% `H743` `DWT` 168 MHz gated, `f4_validation` 3 tests `M6` F4.
 ### Fixed
 - `USB` `FS+0x2000` reserved test now expects EP1 FIFO.
 
