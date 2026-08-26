@@ -461,6 +461,12 @@ pub struct Core<B: PeripheralBus> {
     /// LDM/STM n+1, taken branch 3-4c). `cycles` stays 1c/insn for backward
     /// compat; `cyccnt` is the hardening target (item 6).
     pub cyccnt: u64,
+    /// Pipeline load-use hazard state (TRM Table 11-2): the destination
+    /// register of the previous single-register load, when the next 1-cycle
+    /// data-processing instruction reads it, costs one stall cycle.
+    /// `None` = no outstanding load (or a multi-register/PC-writing load,
+    /// tracked conservatively as no-hazard).
+    last_load_rd: Option<u8>,
     /// Shared M-profile FP context-control state (`FPCCR`/`FPCAR`). The `SCB`
     /// device holds the same `Rc` so firmware writes through the bus and the
     /// core's exception/FP logic agree on one value.
@@ -559,6 +565,7 @@ impl<B: PeripheralBus> Core<B> {
             just_returned: false,
             cycles: 0,
             cyccnt: 0,
+            last_load_rd: None,
             fpu_ctx: std::sync::Arc::new(std::sync::Mutex::new(FpuCtx::new())),
             vector_base: 0,
             msp_lim: 0,
@@ -615,7 +622,9 @@ impl<B: PeripheralBus> Core<B> {
 
     fn base_cycles(&mut self, pc: u32, next_pc: u32) -> u64 {
         // TRM Table 11-2 CPI: 1c data, 2c single LDR/STR, n+1 LDM/STM,
-        // 3c taken branch (pipeline refill), 4c BL.
+        // 3c taken branch (pipeline refill), 4c BL, plus a 1c load-use
+        // interlock when a 1-cycle instruction reads the register a
+        // preceding single-register load wrote.
         let h0 = match self.mem.read_half(pc) {
             Ok(v) => v,
             Err(_) => return 1,
@@ -631,7 +640,8 @@ impl<B: PeripheralBus> Core<B> {
             pc.wrapping_add(2)
         };
         let taken = next_pc != seq;
-        let (base, _) = if is32 {
+        let prev_load_rd = self.last_load_rd.take();
+        let (base, loaded_rd, reads): (u64, Option<u8>, [Option<u8>; 3]) = if is32 {
             let h1 = match self.mem.read_half(pc.wrapping_add(2)) {
                 Ok(v) => v,
                 Err(_) => return 1,
@@ -642,128 +652,199 @@ impl<B: PeripheralBus> Core<B> {
                 Isa::Armv7EM => decode32_v7em(h0, h1).ok(),
                 Isa::Armv8MBaseline => decode32_v8m(h0, h1).ok(),
             };
-            if let Some(i) = inst {
-                let is_ld = matches!(
-                    i,
-                    Inst32::Mem {
-                        access: MemOp::Ldr
-                            | MemOp::Ldrb
-                            | MemOp::Ldrh
-                            | MemOp::Ldrsb
-                            | MemOp::Ldrsh,
-                        ..
-                    } | Inst32::LdrdStrd { is_load: true, .. }
-                        | Inst32::Ldrex { .. }
-                        | Inst32::Lda { .. }
-                        | Inst32::LdmStm { is_load: true, .. }
-                        | Inst32::VfpLdSt { is_load: true, .. }
-                        | Inst32::VfpLdStD { is_load: true, .. }
-                        | Inst32::VfpLdStMult { is_load: true, .. }
-                );
-                let c = match i {
-                    Inst32::Bl { .. } | Inst32::BlxImm { .. } => 4,
-                    Inst32::BranchWide { .. } => {
-                        if taken {
-                            3
-                        } else {
-                            1
-                        }
+            let Some(i) = inst else {
+                return 1;
+            };
+            // Source registers this instruction reads (conservative subset).
+            let reads = match i {
+                Inst32::DpReg { rn, rm, .. } => [Some(rn), Some(rm), None],
+                Inst32::DpImm { rn, .. } | Inst32::Sat { rn, .. } | Inst32::Bitfield { rn, .. } => {
+                    [Some(rn), None, None]
+                }
+                Inst32::Div { rn, rm, .. }
+                | Inst32::Qadd { rn, rm, .. }
+                | Inst32::Par { rn, rm, .. }
+                | Inst32::ExtendAdd { rn, rm, .. } => [Some(rn), Some(rm), None],
+                Inst32::Sel { rd: _, rn, rm } => [Some(rn), Some(rm), None],
+                Inst32::Mul { op, ra, rn, rm, .. } => [
+                    Some(rn),
+                    Some(rm),
+                    matches!(op, MulOp::Mla | MulOp::Mls).then_some(ra),
+                ],
+                Inst32::Mem { rt, rn, rm, .. } => [Some(rn), rm, None].map(|r| {
+                    // A store's `rt` is also a source.
+                    r.or((rt < 13
+                        && !matches!(
+                            i,
+                            Inst32::Mem {
+                                access: MemOp::Ldr
+                                    | MemOp::Ldrb
+                                    | MemOp::Ldrh
+                                    | MemOp::Ldrsb
+                                    | MemOp::Ldrsh,
+                                ..
+                            }
+                        ))
+                    .then_some(rt))
+                }),
+                Inst32::Strex { rt, rn, .. } | Inst32::Stl { rt, rn, .. } => {
+                    [Some(rn), (rt < 13).then_some(rt), None]
+                }
+                Inst32::LdrdStrd { rn, .. } | Inst32::LdmStm { rn, .. } => [Some(rn), None, None],
+                Inst32::TblBranch { rn, rm, .. } => [Some(rn), Some(rm), None],
+                Inst32::Unary { rm, .. } => [Some(rm), None, None],
+                _ => [None, None, None],
+            };
+            // Single-register load destinations feeding the next-instruction
+            // hazard check.
+            let loaded = match i {
+                Inst32::Mem { access, rt, .. }
+                    if matches!(
+                        access,
+                        MemOp::Ldr | MemOp::Ldrb | MemOp::Ldrh | MemOp::Ldrsb | MemOp::Ldrsh
+                    ) && rt < 13 =>
+                {
+                    Some(rt)
+                }
+                Inst32::Ldrex { rt, .. } | Inst32::Lda { rt, .. } if rt < 13 => Some(rt),
+                _ => None,
+            };
+            let c = match i {
+                Inst32::Bl { .. } | Inst32::BlxImm { .. } => 4,
+                Inst32::BranchWide { .. } | Inst32::BranchCondWide { .. } => {
+                    if taken {
+                        3
+                    } else {
+                        1
                     }
-                    Inst32::BranchCondWide { .. } => {
-                        if taken {
-                            3
-                        } else {
-                            1
-                        }
+                }
+                Inst32::Mem { .. }
+                | Inst32::LdrdStrd { .. }
+                | Inst32::Ldrex { .. }
+                | Inst32::Strex { .. }
+                | Inst32::Lda { .. }
+                | Inst32::Stl { .. } => 2,
+                Inst32::LdmStm { regs, .. } => 1 + regs.count_ones() as u64,
+                Inst32::Div { signed, rm, .. } => {
+                    let d = self.regs.r[rm as usize];
+                    if d == 0 {
+                        2
+                    } else {
+                        let abs = if signed { (d as i32).unsigned_abs() } else { d };
+                        let lz = abs.leading_zeros() as u64;
+                        2 + ((32 - lz) * 10).div_ceil(32)
                     }
-                    Inst32::Mem { .. }
-                    | Inst32::LdrdStrd { .. }
-                    | Inst32::Ldrex { .. }
-                    | Inst32::Strex { .. }
-                    | Inst32::Lda { .. }
-                    | Inst32::Stl { .. } => 2,
-                    Inst32::LdmStm { regs, .. } => 1 + regs.count_ones() as u64,
-                    Inst32::Div { signed, rm, .. } => {
-                        let d = self.regs.r[rm as usize];
-                        if d == 0 {
-                            2
-                        } else {
-                            let abs = if signed { (d as i32).unsigned_abs() } else { d };
-                            let lz = abs.leading_zeros() as u64;
-                            2 + ((32 - lz) * 10).div_ceil(32)
-                        }
-                    }
-                    Inst32::Mul { op, .. } => match op {
-                        MulOp::Mul => 1,
-                        MulOp::Mla | MulOp::Mls => 2,
-                        _ => 3,
-                    },
-                    Inst32::TblBranch { .. } => 3,
-                    Inst32::Vfp3 { .. } | Inst32::Vfp2 { .. } => 3,
-                    Inst32::VfpCmp { .. }
-                    | Inst32::VfpVrint { .. }
-                    | Inst32::VfpCvt { .. }
-                    | Inst32::VfpCvtInt { .. }
-                    | Inst32::VfpMovImm { .. }
-                    | Inst32::VfpMrsVmsr { .. } => 1,
-                    Inst32::VfpLdSt { .. } | Inst32::VfpLdStD { .. } => 2,
-                    Inst32::VfpLdStMult { n, .. } => 1 + u64::from(n),
-                    _ => 1,
-                };
-                (c, is_ld)
-            } else {
-                (1, false)
-            }
+                }
+                Inst32::Mul { op, .. } => match op {
+                    MulOp::Mul => 1,
+                    MulOp::Mla | MulOp::Mls => 2,
+                    _ => 3,
+                },
+                Inst32::TblBranch { .. } => 3,
+                Inst32::Vfp3 { .. } | Inst32::Vfp2 { .. } => 3,
+                Inst32::VfpCmp { .. }
+                | Inst32::VfpVrint { .. }
+                | Inst32::VfpCvt { .. }
+                | Inst32::VfpCvtInt { .. }
+                | Inst32::VfpMovImm { .. }
+                | Inst32::VfpMrsVmsr { .. } => 1,
+                Inst32::VfpLdSt { .. } | Inst32::VfpLdStD { .. } => 2,
+                Inst32::VfpLdStMult { n, .. } => 1 + u64::from(n),
+                _ => 1,
+            };
+            (c, loaded, reads)
         } else {
             let inst = match self.isa {
                 Isa::Armv6M => decode16(h0).ok(),
                 Isa::Armv7M | Isa::Armv7EM => decode16_v7m(h0).ok(),
                 Isa::Armv8MBaseline => decode16(h0).ok(),
             };
-            if let Some(i) = inst {
-                let c = match i {
-                    Inst16::LdrLiteral { .. }
-                    | Inst16::LsReg { .. }
-                    | Inst16::LsImm { .. }
-                    | Inst16::LsSp { .. } => 2,
-                    Inst16::Push { regs, include_lr } => {
-                        1 + regs.count_ones() as u64 + if include_lr { 1 } else { 0 }
+            let Some(i) = inst else {
+                return 1;
+            };
+            let reads = match i {
+                Inst16::ShiftImm { rm, .. } => [Some(rm), None, None],
+                Inst16::ShiftReg { rn, rm, .. } => [Some(rn), Some(rm), None],
+                Inst16::AddReg { rn, rm, .. }
+                | Inst16::SubReg { rn, rm, .. }
+                | Inst16::SpecialCmp { rn, rm } => [Some(rn), Some(rm), None],
+                Inst16::SpecialAdd { rd: _, rm } => [Some(rm), None, None],
+                Inst16::AddImm3 { rn, .. }
+                | Inst16::SubImm3 { rn, .. }
+                | Inst16::CmpImm { rn, .. }
+                | Inst16::CbzCbnz { rn, .. } => [Some(rn), None, None],
+                Inst16::LsImm { rn, .. } => [Some(rn), None, None],
+                Inst16::LsSp { rt, .. } if rt < 13 => [None, None, None],
+                Inst16::Alu { rd, rm, .. } => [Some(rd), Some(rm), None],
+                Inst16::SpecialMov { rm, .. } => [Some(rm), None, None],
+                Inst16::LsReg { rt: _, rn, rm, .. } => [Some(rn), Some(rm), None],
+                Inst16::Extend { rm, .. } | Inst16::Reverse { rm, .. } => [Some(rm), None, None],
+                Inst16::LdmStm { rn, .. } => [Some(rn), None, None],
+                _ => [None, None, None],
+            };
+            let loaded = match i {
+                Inst16::LdrLiteral { rt, .. }
+                | Inst16::LsSp {
+                    rt, is_load: true, ..
+                } if rt < 13 => Some(rt),
+                Inst16::LsReg {
+                    rt,
+                    kind: LsReg::Ldr | LsReg::Ldrb | LsReg::Ldrh | LsReg::Ldrsb | LsReg::Ldrsh,
+                    ..
+                } if rt < 13 => Some(rt),
+                Inst16::LsImm {
+                    rt,
+                    kind: LsImm::Ldr | LsImm::Ldrb | LsImm::Ldrh,
+                    ..
+                } if rt < 13 => Some(rt),
+                _ => None,
+            };
+            let c = match i {
+                Inst16::LdrLiteral { .. }
+                | Inst16::LsReg { .. }
+                | Inst16::LsImm { .. }
+                | Inst16::LsSp { .. } => 2,
+                Inst16::Push { regs, include_lr } => {
+                    1 + regs.count_ones() as u64 + u64::from(include_lr)
+                }
+                Inst16::Pop { regs, load_pc } => {
+                    let n = regs.count_ones() as u64 + u64::from(load_pc);
+                    if load_pc {
+                        3
+                    } else {
+                        1 + n
                     }
-                    Inst16::Pop { regs, load_pc } => {
-                        let n = regs.count_ones() as u64 + if load_pc { 1 } else { 0 };
-                        if load_pc {
-                            3
-                        } else {
-                            1 + n
-                        }
+                }
+                Inst16::LdmStm { regs, .. } => 1 + regs.count_ones() as u64,
+                Inst16::Branch { .. } => {
+                    if taken {
+                        3
+                    } else {
+                        1
                     }
-                    Inst16::LdmStm { regs, .. } => 1 + regs.count_ones() as u64,
-                    Inst16::Branch { .. } => {
-                        if taken {
-                            3
-                        } else {
-                            1
-                        }
+                }
+                Inst16::BranchCond { .. } | Inst16::CbzCbnz { .. } => {
+                    if taken {
+                        3
+                    } else {
+                        1
                     }
-                    Inst16::BranchCond { .. } | Inst16::CbzCbnz { .. } => {
-                        if taken {
-                            3
-                        } else {
-                            1
-                        }
-                    }
-                    Inst16::Bx { .. }
-                    | Inst16::Blx { .. }
-                    | Inst16::BxNs { .. }
-                    | Inst16::BlxNs { .. } => 3,
-                    _ => 1,
-                };
-                (c, false)
-            } else {
-                (1, false)
-            }
+                }
+                Inst16::Bx { .. }
+                | Inst16::Blx { .. }
+                | Inst16::BxNs { .. }
+                | Inst16::BlxNs { .. } => 3,
+                _ => 1,
+            };
+            (c, loaded, reads)
         };
-        base
+        // Load-use interlock: only a 1-cycle instruction pays; anything
+        // costing 2+ cycles (the load itself, branches, multi-word) already
+        // absorbs the latency in its own count.
+        let stall =
+            u64::from(base == 1 && prev_load_rd.is_some_and(|rd| reads.contains(&Some(rd))));
+        self.last_load_rd = loaded_rd;
+        base + stall
     }
 
     fn flash_ws(&mut self) -> u64 {
@@ -1066,6 +1147,7 @@ impl<B: PeripheralBus> Core<B> {
         self.sleeping = false;
         self.event = false;
         self.just_returned = false;
+        self.last_load_rd = None;
         // ARMv8-M: the banked other-state SPs, CONTROL and stack limits all
         // reset to zero (the architectural reset state).
         self.other_ss_msp = 0;
@@ -4935,6 +5017,7 @@ impl<B: PeripheralBus> Core<B> {
     /// machine's interrupt controller. The return address is the instruction
     /// the core is currently pointing at (the next one to execute on return).
     pub fn enter_exception(&mut self, n: u8) -> Result<(), HaltCause> {
+        self.last_load_rd = None;
         let ex = match n {
             3 => Exception::HardFault,
             4 => Exception::MemManage,
@@ -4969,6 +5052,7 @@ impl<B: PeripheralBus> Core<B> {
     /// (`FPCCR.LSPACT`), in which case the FPU still holds valid state and the
     /// reservation is simply abandoned.
     fn exception_return(&mut self, value: u32) -> Result<Next, HaltCause> {
+        self.last_load_rd = None;
         let to_handler = value == EXC_RETURN_HANDLER || value == EXC_RETURN_HANDLER_FP;
         let to_process = value == EXC_RETURN_THREAD_PSP || value == EXC_RETURN_THREAD_PSP_FP;
         let to_main = value == EXC_RETURN_THREAD_MSP || value == EXC_RETURN_THREAD_MSP_FP;

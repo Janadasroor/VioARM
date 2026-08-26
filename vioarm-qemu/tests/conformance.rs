@@ -47,6 +47,14 @@ fn qemu_run_retry(mt: &QemuMachine, bin: &[u8], stop: u32) -> Vec<CpuState> {
 
 /// A test harness that assembles `a`, picks the halt address, runs both
 /// simulators, and diffs.
+///
+/// A divergence is re-checked once with a fresh QEMU run before failing:
+/// under parallel test load the oracle's `-d cpu` log can lose a mid-file
+/// state block (the process is starved, then killed past a quiet window,
+/// leaving a truncated block the parser drops), which shifts its trace and
+/// reads as a false divergence. VioARM is deterministic (locked by
+/// `determinism_twice_same_trace`), so a *real* model defect diverges on
+/// both attempts and still fails; only the flaky-oracle path recovers.
 fn conformance(name: &str, a: &mut Asm, halt: &str, mt: &QemuMachine) {
     let img: Image = a.clone().finish(SP).expect("assemble");
     let stop = img
@@ -64,7 +72,20 @@ fn conformance(name: &str, a: &mut Asm, halt: &str, mt: &QemuMachine) {
         "{name}: qemu never reached halt @ {stop:#x} (got {} states)",
         qemu.len()
     );
-    compare_traces(name, &vio, &qemu).expect("traces agree");
+    if let Err(first) = compare_traces(name, &vio, &qemu) {
+        // Fresh run of both sides; VioARM first so the second QEMU trace is
+        // compared against an identically-computed expectation.
+        let (vio2, reached2) = vio_run(&img.bytes, stop);
+        assert!(reached2, "{name}: retry never reached halt");
+        let qemu2 = qemu_run_retry(mt, &img.bytes, stop);
+        assert!(
+            !qemu2.is_empty() && qemu2.last().expect("empty").r[15] & !1 == stop,
+            "{name}: retry never reached halt on the oracle side"
+        );
+        if let Err(second) = compare_traces(name, &vio2, &qemu2) {
+            panic!("{name}: traces diverge (retried): first: {first}\nsecond: {second}");
+        }
+    }
 }
 
 fn snapshot_like(states: &[CpuState]) -> String {

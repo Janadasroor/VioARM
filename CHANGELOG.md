@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Domain table recomputed at close (`roadmap.md`): Core ISA 95%, Exceptions 85%, **Timing/DWT 95%**, GPIO 90%, Flash 75%, RTC/PWR/… 75%, USART 75%, ADC/SPI/I2C 75%, **Timers 85%**, **CAN 85%**, **DMA 70%**, USB 60%, ETH 65%, SDIO 60%, **Chip coverage 12 tables**, H743 15% (descoped), Tooling 95%. **Overall ≈77%** (was ≈62-65% post-M2). Cycle accuracy is *measured* (`m3_cycle` ±2% TRM, benches/f4 ±5% H743 DWT), not claimed; load-use stall remains the documented deferral.
 ### Fixed
 - `USB` `FS+0x2000` reserved test now expects EP1 FIFO.
+- **Load-use interlock shipped** (was deferred): `cpu/mod.rs` `last_load_rd` tracks a single-register load's destination; a following 1-cycle instruction reading it pays the TRM Table 11-2 stall cycle. Hazard clears on reset/exception boundaries and multi-register/PC-writing loads stay conservative (no stall). The earlier `sat_bitfield` "divergence" was diagnosed as an oracle flake — QEMU `-d cpu` logs lose mid-file state blocks under parallel load (`-j4` reproduced random failures in `loadstore_index`, `fp_ctx_nolazy_handler_uses_fp`; all pass on re-run, VioARM is determinism-locked). `conformance()` now retries both sides once on divergence: real defects reproduce and still fail, flakes recover. Timing/DWT domain 100% post-M6.
 
 ## [1.9.1] - 2026-08-25
 ### Fixed

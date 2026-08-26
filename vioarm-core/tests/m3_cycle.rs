@@ -72,8 +72,8 @@ fn ldr_2c_and_load_use_stall() {
     core.xpsr.set(0x01000000);
     core.step().unwrap(); // ldr 2c
     assert_eq!(core.cyccnt, 2);
-    core.step().unwrap(); // adds 1c (load-use stall documented, not yet modeled)
-    assert_eq!(core.cyccnt, 3);
+    core.step().unwrap(); // adds reads r0 (just loaded): 1c + 1c interlock
+    assert_eq!(core.cyccnt, 4);
 }
 
 #[test]

@@ -1,7 +1,7 @@
 use vioarm_core::device::stm32::dma_f4::DmaF4;
 use vioarm_core::device::stm32::rcc::Rcc;
 use vioarm_core::device::stm32::timer::Timer;
-use vioarm_core::device::{InterruptSource, Peripheral};
+use vioarm_core::device::Peripheral;
 
 fn write_word<P: Peripheral>(p: &mut P, base: u32, off: u32, val: u32) {
     for (i, b) in val.to_le_bytes().iter().enumerate() {
