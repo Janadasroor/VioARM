@@ -512,7 +512,7 @@ all five milestones.
 
 | Domain | Items modeled today | Target gaps (WP refs) |
 |---|---|---|
-| Core ISA | 95% | C3 extras, D2 fast path |
+| Core ISA | 95% | C3 extras (D2 fast path shipped) |
 | Exceptions/NVIC/SCB/MPU | 85% | C3 |
 | Timing/DWT | 100% | — |
 | GPIO F1/F4 | 90% | — |
