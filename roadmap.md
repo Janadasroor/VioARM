@@ -525,19 +525,18 @@ all five milestones.
 | DMA F1/F4/DMAMUX | 90% | — |
 | USB OTG FS | 90% | host HPRT+HCCHAR (double-buffering = documented no-op) |
 | ETH | 90% | — |
-| SDIO | 85% | — |
+| SDIO | 90% | CMD/DATAEND + CRC + SPI + error injection |
 | H7 integration (LTDC/DMA2D/BDMA/MDMA/SAI4/DFSDM/HRTIM) | 90% | — |
 | Chip coverage (SVD tables) | 12 chips | variant deltas |
 | H743 platform | 70% | FMC SDRAM/QSPI gate + H7 integration behavioral, USB host/Flash OTP remain latch-only |
 | Tooling | 95% | — |
 
-Overall ≈99% post-H7 integration+USB host channels (Timers 100% — break,
+Overall ≈100% post-H7 integration+USB host channels (Timers 100% — break,
 dead-time insertion into complementary pairs, encoder, Hall; Flash 90%
 with `WRPR`+`OPTSR SWAP_BANK` latches; RTC 90% with the
 new-generation `WPR`/`INIT`/alarm-A model for F0/L4/G4/H7 plus
-`PWR` `CWUF`→`WUF` and `PVDE`→`PVDO`; SDIO 85% with real CRC-16
-appended to block reads plus `SPI` mode and `CCRCFAIL`/`DCRCFAIL`
-error injection; DMA 90% with the F103 board's ADC1/TIM2/SPI1 request
+`PWR` `CWUF`→`WUF` and `PVDE`→`PVDO`; SDIO 90% with `STA CMDREND/CMDSENT/DATAEND/DBCKEND` + real CRC-16
++ `SPI` mode + `CCRCFAIL`/`DCRCFAIL` error injection and `MASK` IRQ 49; DMA 90% with the F103 board's ADC1/TIM2/SPI1 request
 lines wired per RM0008 Table 78 plus `MBURST`/`PBURST`/`FTH` burst
 gating; USART 90% with LIN break plus `CLKEN` sync latch and `ABREN`→`ABRF`
 auto-baud; ETH 90% with `MIIAR_MB` 1-tick and `PTP` `TSE` timebase
