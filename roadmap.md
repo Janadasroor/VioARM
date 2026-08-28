@@ -512,8 +512,8 @@ all five milestones.
 
 | Domain | Items modeled today | Target gaps (WP refs) |
 |---|---|---|
-| Core ISA | 95% | C3 extras (D2 fast path shipped) |
-| Exceptions/NVIC/SCB/MPU | 85% | C3 |
+| Core ISA | 98% | C3 extras shipped (TT/MSPLIM/PSPLIM/CLREX/CPS) |
+| Exceptions/NVIC/SCB/MPU | 90% | C3 secure TT corner |
 | Timing/DWT | 100% | — |
 | GPIO F1/F4 | 90% | — |
 | Flash F1/F4 | 90% | H7 OPTSR+SWAP_BANK latches (OTP one-time) |
