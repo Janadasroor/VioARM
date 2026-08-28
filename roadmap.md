@@ -529,7 +529,7 @@ all five milestones.
 | H7 integration (LTDC/DMA2D/BDMA/MDMA/SAI4/DFSDM/HRTIM) | 90% | — |
 | Chip coverage (SVD tables) | 12 chips | variant deltas |
 | H743 platform | 70% | FMC SDRAM/QSPI gate + H7 integration behavioral, USB host/Flash OTP remain latch-only |
-| Tooling | 95% | — |
+| Tooling | 98% | mdBook builds, 4 board examples, cargo jobs cap |
 
 Overall ≈100% post-H7 integration+USB host channels (Timers 100% — break,
 dead-time insertion into complementary pairs, encoder, Hall; Flash 90%
