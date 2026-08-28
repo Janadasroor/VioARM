@@ -607,6 +607,20 @@ impl Peripheral for Usb {
                     self.state.host_pending = false;
                 }
             }
+            // HCCHAR at 0x100 + 0x20*ch: CHEN bit 31 enables host channel,
+            // latches HCINT XFRC and raises host GINT in host mode.
+            if off & !3 >= 0x100 && off & !3 < 0x300 && (off & !3).wrapping_sub(0x100) % 0x20 == 0 {
+                if word & (1 << 31) != 0 && self.g.get(GUSBCFG) & FDMOD == 0 {
+                    self.state.host_pending = true;
+                    // set HCINT XFRC bit 0 at offset +8
+                    let hcint_off = (off & !3) + 8;
+                    if self.h.def.registers.iter().any(|r| r.offset == hcint_off) {
+                        let mut v = self.h.get(hcint_off);
+                        v |= 1;
+                        self.h.set(hcint_off, v);
+                    }
+                }
+            }
             return write_latch(&mut self.h, addr - (base + HOST_OFFSET), val);
         }
         if addr >= base + DEVICE_OFFSET && addr < base + PWRCLK_OFFSET {
@@ -1214,5 +1228,26 @@ mod tests {
         write_word(&mut u, FS + 0x0c, 1 << 30); // GUSBCFG FDMOD
         write_word(&mut u, FS + 0x440, 1 << 12);
         assert_eq!(u.pending(), 0, "HPRT in device mode does not pend");
+    }
+
+    #[test]
+    fn host_hcchar_chen_raises_interrupt_in_host_mode() {
+        let mut u = usb_fs();
+        write_word(&mut u, FS + 0x08, 1); // GAHBCFG GINT_EN
+        assert_eq!(u.pending(), 0);
+        // HCCHAR0 at HOST offset 0x100, CHEN bit 31
+        write_word(&mut u, FS + 0x500, 1u32 << 31);
+        assert_eq!(
+            u.pending(),
+            1,
+            "HCCHAR CHEN raises host interrupt in host mode"
+        );
+        assert_eq!(read_word(&mut u, FS + 0x508) & 1, 1, "HCINT XFRC latched");
+        u.acknowledge(1);
+        assert_eq!(u.pending(), 0);
+        // device mode — HCCHAR should not pend
+        write_word(&mut u, FS + 0x0c, 1 << 30); // GUSBCFG FDMOD
+        write_word(&mut u, FS + 0x500, 1u32 << 31);
+        assert_eq!(u.pending(), 0);
     }
 }
