@@ -45,7 +45,7 @@ use crate::device::stm32::watchdog::{Iwdg, Wwdg};
 use crate::device::systick::SysTick;
 use crate::device::uart::UartTx;
 use crate::device::Peripheral;
-use crate::mem::bus::Region;
+use crate::mem::bus::{Bus, Region};
 use crate::mem::flat::FlatMemory;
 use crate::mem::system::SystemMemory;
 use std::sync::{Arc, Mutex};
@@ -188,6 +188,15 @@ pub fn stm32f103() -> BoardMemory {
     mem.set_watchdog_reset(watchdog.clone());
     mem.attach(Box::new(Iwdg::new(watchdog.clone())));
     mem.attach(Box::new(Wwdg::new(watchdog)));
+    for p in crate::device::svd::stm32f103::PERIPHERALS {
+        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
+            mem.attach(Box::new(crate::device::svd::RegisterFile::<
+                crate::device::svd::NoBehavior,
+            >::new(
+                p, crate::device::svd::NoBehavior
+            )));
+        }
+    }
     mem.attach(Box::new(Dwt::new()));
     mem.attach(Box::new(SysTick::new()));
     mem
@@ -296,6 +305,15 @@ pub fn stm32f107() -> BoardMemory {
     mem.set_watchdog_reset(watchdog.clone());
     mem.attach(Box::new(Iwdg::for_device::<Stm32f107>(watchdog.clone())));
     mem.attach(Box::new(Wwdg::for_device::<Stm32f107>(watchdog)));
+    for p in crate::device::svd::stm32f107::PERIPHERALS {
+        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
+            mem.attach(Box::new(crate::device::svd::RegisterFile::<
+                crate::device::svd::NoBehavior,
+            >::new(
+                p, crate::device::svd::NoBehavior
+            )));
+        }
+    }
     mem.attach(Box::new(Dwt::new()));
     mem.attach(Box::new(SysTick::new()));
     mem
@@ -389,6 +407,15 @@ pub fn stm32f407() -> BoardMemory {
     mem.set_watchdog_reset(watchdog.clone());
     mem.attach(Box::new(Iwdg::for_device::<Stm32f407>(watchdog.clone())));
     mem.attach(Box::new(Wwdg::for_device::<Stm32f407>(watchdog)));
+    for p in crate::device::svd::stm32f407::PERIPHERALS {
+        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
+            mem.attach(Box::new(crate::device::svd::RegisterFile::<
+                crate::device::svd::NoBehavior,
+            >::new(
+                p, crate::device::svd::NoBehavior
+            )));
+        }
+    }
     mem.attach(Box::new(Dwt::new()));
     mem.attach(Box::new(SysTick::new()));
     mem
@@ -518,6 +545,15 @@ pub fn stm32f072() -> BoardMemory {
     }
     if <Stm32f072 as crate::device::svd::Device>::peripheral("WWDG").is_some() {
         mem.attach(Box::new(Wwdg::for_device::<Stm32f072>(watchdog)));
+    }
+    for p in crate::device::svd::stm32f072::PERIPHERALS {
+        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
+            mem.attach(Box::new(crate::device::svd::RegisterFile::<
+                crate::device::svd::NoBehavior,
+            >::new(
+                p, crate::device::svd::NoBehavior
+            )));
+        }
     }
     mem.attach(Box::new(Dwt::new()));
     mem.attach(Box::new(SysTick::new()));
@@ -656,6 +692,15 @@ pub fn stm32f303xe() -> BoardMemory {
     if <Stm32f303xe as crate::device::svd::Device>::peripheral("WWDG").is_some() {
         mem.attach(Box::new(Wwdg::for_device::<Stm32f303xe>(watchdog)));
     }
+    for p in crate::device::svd::stm32f303xe::PERIPHERALS {
+        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
+            mem.attach(Box::new(crate::device::svd::RegisterFile::<
+                crate::device::svd::NoBehavior,
+            >::new(
+                p, crate::device::svd::NoBehavior
+            )));
+        }
+    }
     mem.attach(Box::new(Dwt::new()));
     mem.attach(Box::new(SysTick::new()));
     mem
@@ -737,6 +782,15 @@ pub fn stm32l476() -> BoardMemory {
     if <Stm32l476 as crate::device::svd::Device>::peripheral("WWDG").is_some() {
         mem.attach(Box::new(Wwdg::for_device::<Stm32l476>(watchdog)));
     }
+    for p in crate::device::svd::stm32l476::PERIPHERALS {
+        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
+            mem.attach(Box::new(crate::device::svd::RegisterFile::<
+                crate::device::svd::NoBehavior,
+            >::new(
+                p, crate::device::svd::NoBehavior
+            )));
+        }
+    }
     mem.attach(Box::new(Dwt::new()));
     mem.attach(Box::new(SysTick::new()));
     mem
@@ -807,6 +861,15 @@ pub fn stm32g474xx() -> BoardMemory {
     }
     if <Stm32g474 as crate::device::svd::Device>::peripheral("WWDG").is_some() {
         mem.attach(Box::new(Wwdg::for_device::<Stm32g474>(watchdog)));
+    }
+    for p in crate::device::svd::stm32g474xx::PERIPHERALS {
+        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
+            mem.attach(Box::new(crate::device::svd::RegisterFile::<
+                crate::device::svd::NoBehavior,
+            >::new(
+                p, crate::device::svd::NoBehavior
+            )));
+        }
     }
     mem.attach(Box::new(Dwt::new()));
     mem.attach(Box::new(SysTick::new()));
@@ -1078,6 +1141,19 @@ pub fn stm32h743() -> BoardMemory {
     }
     if <Stm32h743 as crate::device::svd::Device>::peripheral("SYSCFG").is_some() {
         mem.attach(Box::new(Syscfg::for_device::<Stm32h743>()));
+    }
+    // Mount any remaining H7 peripherals as pure latches so the 119-peripheral
+    // H743 SVD never faults as Reserved for the 500-chip universe. This closes
+    // the 77-peripheral gap (AXI, COMP, DCMI, JPEG, LPTIM, OPAMP etc.) that
+    // core_only_board already covers.
+    for p in crate::device::svd::stm32h743::PERIPHERALS {
+        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
+            mem.attach(Box::new(crate::device::svd::RegisterFile::<
+                crate::device::svd::NoBehavior,
+            >::new(
+                p, crate::device::svd::NoBehavior
+            )));
+        }
     }
     mem.attach(Box::new(Dwt::new()));
     mem.attach(Box::new(SysTick::new()));

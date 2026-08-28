@@ -527,8 +527,8 @@ all five milestones.
 | ETH | 90% | — |
 | SDIO | 90% | CMD/DATAEND + CRC + SPI + error injection |
 | H7 integration (LTDC/DMA2D/BDMA/MDMA/SAI4/DFSDM/HRTIM) | 90% | — |
-| Chip coverage (SVD tables) | 12 chips | variant deltas |
-| H743 platform | 70% | FMC SDRAM/QSPI gate + H7 integration behavioral, USB host/Flash OTP remain latch-only |
+| Chip coverage (SVD tables) | 12 SVDs → 500 Dnames (109 F1 + F0/F3/G4/H7/L4/F4) | all at least latch via `core_only_board`, 8 full boards (F103/F107/F407/F072/F303/L476/G474/H743) behavioral |
+| H743 platform | 85% | FMC SDRAM/QSPI gate + H7 integration behavioral + remaining 119 periphs latch (AXI/COMP/DCMI/JPEG/LPTIM) |
 | Tooling | 98% | mdBook builds, 4 board examples, cargo jobs cap |
 
 Overall ≈100% post-H7 integration+USB host channels (Timers 100% — break,
