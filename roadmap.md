@@ -531,6 +531,17 @@ all five milestones.
 | H743 platform | 85% | FMC SDRAM/QSPI gate + H7 integration behavioral + remaining 119 periphs latch (AXI/COMP/DCMI/JPEG/LPTIM) |
 | Tooling | 98% | mdBook builds, 4 board examples, cargo jobs cap |
 
+### Remaining to true 100% (step-by-step) — added for 500-chip close
+
+| # | Gap | File | Acceptance | Est. |
+|---|---|---|---|---|
+| R1 | Flash H7 `OPTSR_PRG 0x1C SWAP_BANK@31` + `OPTSR_CUR` + `OPTCCR@0x24` + `PRAR` bank swap + OTP `0x1FF00000` | `flash.rs:378` `FlashF4Behavior` | `OPTSR_PRG` W1C `SWAP_BANK` flips `0x08000000↔0x08100000` alias, `OPTCCR CLR_OPTCHANGEERR` W1C, `PRAR` latch, OTP 1 KiB window @ `0x1FF00000` R/O latch | 1d |
+| R2 | ADC F4 dual simultaneous `ADC12_COMMON CCR DUAL@0x04[0:4]` + `ADC_CCR@0x300` | `adc.rs` `AdcCommon` | `CCR DUAL=0110` simultaneous: `SWSTART` on ADC1 triggers both `JSQR/JDR` + `CR2 DMA` 2-word NDTR, IRQ 18/19 both pend | 1d |
+| R3 | USB double-buffer + host channels full `DIEPCTL EP1-3` `DOEPCTL` `HCCHAR/HCTSIZ/HCINT` | `usb.rs:82` `Win h/d` | `DIEPCTL SD1PID/SE0PID` tog, `HCCHAR CHEN+CHDIS` 1-tick `HCINT XFRC/STALL` + `HCTSIZ`, 2 new tests | 1d |
+| R4 | H743 remaining latch → behavioral `COMP1/2 OPAMP LPTIM1-5 DCMI JPEG SAI1 LTDC layer` | `fmc.rs` + `board.rs` `stm32h743` | `COMP CSR EN→ready 1c`, `LPTIM CR CEN→ARR IRQ`, `DCMI CR CAPTURE` latch | 1d |
+| R5 | Core C3 secure `TT` `MSPLIM/PSPLIM` corner + `SVC` `SHCSR` | `cpu/mod.rs:1506` `tt` | `TTA/TTAT` from Secure state report `MREGION`+`MRVALID` already, add `MSPLIM` stack-limit fault `STKOF` | 0.5d |
+| R6 | Tooling SBOM + `cargo publish --dry-run` | `Cargo.toml:1` `xtask` | `cargo cyclonedx` JSON + `cargo publish -p vioarm-core --dry-run` green, `docs/book` CI | 0.5d |
+
 Overall ≈100% post-H7 integration+USB host channels (Timers 100% — break,
 dead-time insertion into complementary pairs, encoder, Hall; Flash 90%
 with `WRPR`+`OPTSR SWAP_BANK` latches; RTC 90% with the

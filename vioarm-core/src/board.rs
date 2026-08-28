@@ -897,6 +897,8 @@ pub fn stm32h743() -> BoardMemory {
     const FMC_SDRAM_LEN: u32 = 0x0080_0000;
     const QSPI_BASE: u32 = 0x9000_0000;
     const QSPI_LEN: u32 = 0x0100_0000;
+    const OTP_BASE: u32 = 0x1FF0_0000;
+    const OTP_LEN: u32 = 0x0000_0400;
     let backing = FlatMemory::with_layout(
         &[
             FLASH,
@@ -907,6 +909,7 @@ pub fn stm32h743() -> BoardMemory {
             SRAM2_BASE,
             FMC_SDRAM_BASE,
             QSPI_BASE,
+            OTP_BASE,
         ],
         &[
             STM32_H743_FLASH_LEN,
@@ -917,6 +920,7 @@ pub fn stm32h743() -> BoardMemory {
             SRAM2_LEN,
             FMC_SDRAM_LEN,
             QSPI_LEN,
+            OTP_LEN,
         ],
     );
     let gate = Arc::new(Mutex::new(FlashGate::new(

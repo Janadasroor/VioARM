@@ -381,14 +381,21 @@ struct FlashF4Behavior {
     key_word: u32,
     /// Which key of the unlock sequence has been seen (`0`, `1`, or `2`).
     key_step: u8,
+    /// H7 `OPTSR_PRG` latched value and `SWAP_BANK` state.
+    optsr_prg: u32,
+    optsr_cur_swap: bool,
+    opt_change_err: bool,
 }
 
 impl FlashF4Behavior {
-    const fn new(gate: Arc<Mutex<FlashGate>>) -> Self {
+    fn new(gate: Arc<Mutex<FlashGate>>) -> Self {
         Self {
             gate,
             key_word: 0,
             key_step: 0,
+            optsr_prg: 0,
+            optsr_cur_swap: false,
+            opt_change_err: false,
         }
     }
 
@@ -484,22 +491,39 @@ impl Behavior for FlashF4Behavior {
                 }
             }
             WRPR => {
-                // The option-loader model: WRPR is writable while the
-                // controller is unlocked, ignored locked. A cleared bit
-                // protects its page (enforced by the bus write gate).
-                if self.gate.lock().unwrap_or_else(|e| e.into_inner()).unlocked {
+                // H7 `OPTSR_PRG@0x20` shares offset with F4 `WRPR`; detect H7 by
+                // presence of `OPTSR_CUR@0x1C`.
+                if view.try_get(0x1C).is_some() {
+                    let word = view.merged(offset, val, shift);
+                    self.optsr_prg = word;
+                    self.optsr_cur_swap = word & (1 << 31) != 0;
+                    self.opt_change_err = true;
+                    word
+                } else if self.gate.lock().unwrap_or_else(|e| e.into_inner()).unlocked {
                     view.merged(WRPR, val, shift)
                 } else {
                     view.get(WRPR)
+                }
+            }
+            0x24 => {
+                // H7 `OPTCCR@0x24` — W1C `CLR_OPTCHANGEERR@30`
+                if view.try_get(0x1C).is_some() {
+                    let word = view.merged(offset, val, shift);
+                    if word & (1 << 30) != 0 {
+                        self.opt_change_err = false;
+                    }
+                    view.get(offset)
+                } else {
+                    view.merged(offset, val, shift)
                 }
             }
             _ => view.merged(offset, val, shift),
         }
     }
 
-    fn on_read(&mut self, _view: &mut Registers<&mut [u32]>, offset: u32, value: u32) -> u32 {
+    fn on_read(&mut self, view: &mut Registers<&mut [u32]>, offset: u32, value: u32) -> u32 {
         let gate = self.gate.lock().unwrap_or_else(|e| e.into_inner());
-        let synth = match offset {
+        let mut synth = match offset {
             SR4 => {
                 value
                     | if gate.eop { SR4_EOP } else { 0 }
@@ -512,6 +536,18 @@ impl Behavior for FlashF4Behavior {
             _ => value,
         };
         drop(gate);
+        // H7 `OPTSR_CUR@0x1C` — SWAP_BANK@31 + OPTCHANGEERR@30
+        if offset == 0x1C && view.try_get(0x1C).is_some() {
+            if self.optsr_cur_swap {
+                synth |= 1 << 31;
+            }
+            if self.opt_change_err {
+                synth |= 1 << 30;
+            }
+        }
+        if offset == 0x20 && view.try_get(0x1C).is_some() {
+            synth = self.optsr_prg;
+        }
         synth
     }
 
@@ -528,6 +564,9 @@ impl Behavior for FlashF4Behavior {
         self.gate.lock().unwrap_or_else(|e| e.into_inner()).reset();
         self.key_word = 0;
         self.key_step = 0;
+        self.optsr_prg = 0;
+        self.optsr_cur_swap = false;
+        self.opt_change_err = false;
     }
 }
 
