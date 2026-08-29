@@ -1784,6 +1784,15 @@ pub fn stm32h743() -> BoardMemory {
     if <Stm32h743 as crate::device::svd::Device>::peripheral("SPI3").is_some() {
         mem.attach(Box::new(Spi::spi3_for::<Stm32h743>()));
     }
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("SPI4").is_some() {
+        mem.attach(Box::new(Spi::spi4_for::<Stm32h743>()));
+    }
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("SPI5").is_some() {
+        mem.attach(Box::new(Spi::spi5_for::<Stm32h743>()));
+    }
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("SPI6").is_some() {
+        mem.attach(Box::new(Spi::spi6_for::<Stm32h743>()));
+    }
     // I2C
     if <Stm32h743 as crate::device::svd::Device>::peripheral("I2C1").is_some() {
         mem.attach(Box::new(I2c::for_device::<Stm32h743>()));

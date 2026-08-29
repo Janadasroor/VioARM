@@ -389,6 +389,21 @@ impl Spi {
         Self::for_device::<D>("SPI3", "spi3")
     }
 
+    #[must_use]
+    pub fn spi4_for<D: Device>() -> Self {
+        Self::for_device::<D>("SPI4", "spi4")
+    }
+
+    #[must_use]
+    pub fn spi5_for<D: Device>() -> Self {
+        Self::for_device::<D>("SPI5", "spi5")
+    }
+
+    #[must_use]
+    pub fn spi6_for<D: Device>() -> Self {
+        Self::for_device::<D>("SPI6", "spi6")
+    }
+
     fn for_device<D: Device>(peripheral: &str, name: &'static str) -> Self {
         let def = D::peripheral(peripheral)
             .unwrap_or_else(|| panic!("generated tables contain {peripheral}"));
