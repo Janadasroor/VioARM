@@ -34,6 +34,7 @@ pub mod sdio;
 pub mod spi;
 pub mod cec;
 pub mod crs;
+pub mod lptim;
 pub mod syscfg;
 pub mod timer;
 pub mod tsc;

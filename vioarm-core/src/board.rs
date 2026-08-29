@@ -1922,6 +1922,16 @@ pub fn stm32h743() -> BoardMemory {
     if <Stm32h743 as crate::device::svd::Device>::peripheral("SYSCFG").is_some() {
         mem.attach(Box::new(Syscfg::for_device::<Stm32h743>()));
     }
+    // LPTIM1-5 behavioral (one by one)
+    for name in ["LPTIM1", "LPTIM2", "LPTIM3", "LPTIM4", "LPTIM5"] {
+        if let Some(def) = crate::device::svd::stm32h743::peripheral(name) {
+            // Use generic LPTIM if name matches, else latch
+            if <Stm32h743 as crate::device::svd::Device>::peripheral(name).is_some() {
+                mem.attach(Box::new(crate::device::stm32::lptim::Lptim::new_for::<Stm32h743>(name)));
+                let _ = def.base;
+            }
+        }
+    }
     // Mount any remaining H7 peripherals as pure latches so the 119-peripheral
     // H743 SVD never faults as Reserved for the 500-chip universe. This closes
     // the 77-peripheral gap (AXI, COMP, DCMI, JPEG, LPTIM, OPAMP etc.) that
