@@ -39,6 +39,7 @@ pub mod sdio;
 pub mod spi;
 pub mod syscfg;
 pub mod timer;
+pub mod hsem;
 pub mod opamp;
 pub mod rng;
 pub mod spdifrx;

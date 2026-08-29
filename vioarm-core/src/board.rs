@@ -1977,6 +1977,9 @@ pub fn stm32h743() -> BoardMemory {
     if <Stm32h743 as crate::device::svd::Device>::peripheral("SPDIFRX").is_some() {
         mem.attach(Box::new(crate::device::stm32::spdifrx::Spdifrx::new_for::<Stm32h743>()));
     }
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("HSEM").is_some() {
+        mem.attach(Box::new(crate::device::stm32::hsem::Hsem::new_for::<Stm32h743>()));
+    }
     if <Stm32h743 as crate::device::svd::Device>::peripheral("LPUART1").is_some() {
         mem.attach(Box::new(crate::device::stm32::usart::Usart::lpuart1_for::<Stm32h743>()));
     }
