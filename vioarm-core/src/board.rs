@@ -1956,6 +1956,9 @@ pub fn stm32h743() -> BoardMemory {
     if <Stm32h743 as crate::device::svd::Device>::peripheral("VREFBUF").is_some() {
         mem.attach(Box::new(crate::device::stm32::vrefbuf::Vrefbuf::new_for::<Stm32h743>()));
     }
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("OPAMP").is_some() || <Stm32h743 as crate::device::svd::Device>::peripheral("OPAMP1").is_some() {
+        mem.attach(Box::new(crate::device::stm32::opamp::Opamp::new_for::<Stm32h743>()));
+    }
     // Mount any remaining H7 peripherals as pure latches so the 119-peripheral
     // H743 SVD never faults as Reserved for the 500-chip universe. This closes
     // the 77-peripheral gap (AXI, COMP, DCMI, JPEG, LPTIM, OPAMP etc.) that
