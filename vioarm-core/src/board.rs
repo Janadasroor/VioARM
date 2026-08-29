@@ -884,7 +884,9 @@ pub fn stm32f042() -> BoardMemory {
         >()));
     }
     if <Stm32f042 as crate::device::svd::Device>::peripheral("CRS").is_some() {
-        mem.attach(Box::new(crate::device::stm32::crs::Crs::new_for::<Stm32f042>()));
+        mem.attach(Box::new(
+            crate::device::stm32::crs::Crs::new_for::<Stm32f042>(),
+        ));
     }
     for (base, name) in [(0x4800_0000u32, "gpioa"), (0x4800_0400, "gpiob")] {
         if <Stm32f042 as crate::device::svd::Device>::by_base(base).is_some() {
@@ -1084,7 +1086,9 @@ pub fn stm32f091() -> BoardMemory {
         mem.attach(Box::new(Syscfg::for_device::<Stm32f091>()));
     }
     if <Stm32f091 as crate::device::svd::Device>::peripheral("CEC").is_some() {
-        mem.attach(Box::new(crate::device::stm32::cec::Cec::new_for::<Stm32f091>()));
+        mem.attach(Box::new(
+            crate::device::stm32::cec::Cec::new_for::<Stm32f091>(),
+        ));
     }
     if <Stm32f091 as crate::device::svd::Device>::peripheral("SPI1").is_some() {
         mem.attach(Box::new(Spi::spi1_for::<Stm32f091>()));
@@ -1927,10 +1931,17 @@ pub fn stm32h743() -> BoardMemory {
         if let Some(def) = crate::device::svd::stm32h743::peripheral(name) {
             // Use generic LPTIM if name matches, else latch
             if <Stm32h743 as crate::device::svd::Device>::peripheral(name).is_some() {
-                mem.attach(Box::new(crate::device::stm32::lptim::Lptim::new_for::<Stm32h743>(name)));
+                mem.attach(Box::new(crate::device::stm32::lptim::Lptim::new_for::<
+                    Stm32h743,
+                >(name)));
                 let _ = def.base;
             }
         }
+    }
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("DCMI").is_some() {
+        mem.attach(Box::new(crate::device::stm32::dcmi::Dcmi::new_for::<
+            Stm32h743,
+        >()));
     }
     // Mount any remaining H7 peripherals as pure latches so the 119-peripheral
     // H743 SVD never faults as Reserved for the 500-chip universe. This closes
