@@ -1397,10 +1397,29 @@ pub fn stm32f303xe() -> BoardMemory {
     if <Stm32f303xe as crate::device::svd::Device>::peripheral("SYSCFG").is_some() {
         mem.attach(Box::new(Syscfg::for_device::<Stm32f303xe>()));
     }
-    // F3 ADC is the new ADC (ISR/CR), not the old CR2/SR; skip old Adc behavior
-    // if <Stm32f303xe as crate::device::svd::Device>::peripheral("ADC1").is_some() {
-    //     mem.attach(Box::new(Adc::adc1_for::<Stm32f303xe>()));
-    // }
+    // F3 ADC is the new ADC (ISR/CR) — now behavioral via new_for
+    if <Stm32f303xe as crate::device::svd::Device>::peripheral("ADC1").is_some() {
+        mem.attach(Box::new(Adc::new_for::<Stm32f303xe>()));
+    }
+    if <Stm32f303xe as crate::device::svd::Device>::peripheral("ADC2").is_some() {
+        mem.attach(Box::new(Adc::adc2_for::<Stm32f303xe>()));
+    }
+    if <Stm32f303xe as crate::device::svd::Device>::peripheral("ADC3").is_some() {
+        mem.attach(Box::new(Adc::adc3_for::<Stm32f303xe>()));
+    }
+    if <Stm32f303xe as crate::device::svd::Device>::peripheral("ADC4").is_some() {
+        // ADC4 shares ADC3 peripheral name but at different base 0x50000C00
+        let def = crate::device::svd::stm32f303xe::peripheral("ADC4").unwrap_or_else(|| crate::device::svd::stm32f303xe::peripheral("ADC3").unwrap());
+        if matches!(mem.read(def.base), Err(crate::error::BusError::Reserved)) {
+            // Use ADC4 if available, else latch
+            if <Stm32f303xe as crate::device::svd::Device>::peripheral("ADC4").is_some() {
+                let adc4_def = <Stm32f303xe as crate::device::svd::Device>::peripheral("ADC4").unwrap();
+                if matches!(mem.read(adc4_def.base), Err(crate::error::BusError::Reserved)) {
+                    mem.attach(Box::new(crate::device::svd::RegisterFile::<crate::device::svd::NoBehavior>::new(adc4_def, crate::device::svd::NoBehavior)));
+                }
+            }
+        }
+    }
     if <Stm32f303xe as crate::device::svd::Device>::peripheral("SPI1").is_some() {
         mem.attach(Box::new(Spi::spi1_for::<Stm32f303xe>()));
     }
@@ -1540,7 +1559,14 @@ pub fn stm32l476() -> BoardMemory {
     if <Stm32l476 as crate::device::svd::Device>::peripheral("WWDG").is_some() {
         mem.attach(Box::new(Wwdg::for_device::<Stm32l476>(watchdog)));
     }
-    // L476: keep as pre-c3fe471 (no fallback) to preserve real_firmware SPI expectation
+    for p in crate::device::svd::stm32l476::PERIPHERALS {
+        if p.base >= 0xE000_0000 {
+            continue;
+        }
+        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
+            mem.attach(Box::new(crate::device::svd::RegisterFile::<crate::device::svd::NoBehavior>::new(p, crate::device::svd::NoBehavior)));
+        }
+    }
     mem.attach(Box::new(Dwt::new()));
     mem.attach(Box::new(SysTick::new()));
     mem
@@ -1612,7 +1638,14 @@ pub fn stm32g474xx() -> BoardMemory {
     if <Stm32g474 as crate::device::svd::Device>::peripheral("WWDG").is_some() {
         mem.attach(Box::new(Wwdg::for_device::<Stm32g474>(watchdog)));
     }
-    // G474: keep as pre-c3fe471 (no fallback) to preserve real_firmware SPI expectation
+    for p in crate::device::svd::stm32g474xx::PERIPHERALS {
+        if p.base >= 0xE000_0000 {
+            continue;
+        }
+        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
+            mem.attach(Box::new(crate::device::svd::RegisterFile::<crate::device::svd::NoBehavior>::new(p, crate::device::svd::NoBehavior)));
+        }
+    }
     mem.attach(Box::new(Dwt::new()));
     mem.attach(Box::new(SysTick::new()));
     mem
