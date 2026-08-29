@@ -1727,11 +1727,14 @@ pub fn stm32h743() -> BoardMemory {
             dma_requests.clone(),
         )));
     }
-    // SDMMC1 (SDIO) - H743 uses SDMMC1 at 0x52007000, same offsets as SDIO
+    // SDMMC1/2 (SDIO) - H743 uses SDMMC1 at 0x52007000, SDMMC2 at 0x48022400
     if <Stm32h743 as crate::device::svd::Device>::peripheral("SDMMC1").is_some()
         || <Stm32h743 as crate::device::svd::Device>::peripheral("SDIO").is_some()
     {
         mem.attach(Box::new(Sdio::new_for::<Stm32h743>()));
+    }
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("SDMMC2").is_some() {
+        mem.attach(Box::new(Sdio::new_for_sdmmc2::<Stm32h743>()));
     }
     for (base, name) in [
         (0x5802_0000u32, "gpioa"),

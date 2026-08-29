@@ -317,6 +317,13 @@ impl Sdio {
             inner: RegisterFile::new(def, SdioBehavior::default()),
         }
     }
+    #[must_use]
+    pub fn new_for_sdmmc2<D: Device>() -> Self {
+        let def = D::peripheral("SDMMC2").expect("generated tables contain SDMMC2");
+        Self {
+            inner: RegisterFile::new(def, SdioBehavior::default()),
+        }
+    }
 }
 impl Sdio {
     /// Test access to the backing card image.
