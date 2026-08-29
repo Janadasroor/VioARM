@@ -239,6 +239,12 @@ struct UsbState {
     /// Host mode: HPRT PPWR latched, raises GINT when FDMOD clear.
     host_hprt: u32,
     host_pending: bool,
+    /// Double-buffer DATA PID per IN/OUT endpoint (R3): SD0PID/SD1PID latch.
+    in_data_pid: [bool; 4],
+    out_data_pid: [bool; 4],
+    /// Odd/even frame for isochronous double-buffer (`SODDFRM`/`SEVNFRM`).
+    in_odd_frame: [bool; 4],
+    out_odd_frame: [bool; 4],
 }
 
 impl UsbState {
@@ -874,6 +880,17 @@ impl Usb {
                 self.state.in_ep[ep].nak = false;
                 merged &= !CNAK;
             }
+            // R3 double-buffer: SD0PID/SEVNFRM (bit 28) → DATA0/even, SD1PID/SODDFRM (bit 29) → DATA1/odd
+            if val & 0x10 != 0 {
+                self.state.in_data_pid[ep] = false;
+                self.state.in_odd_frame[ep] = false;
+                merged &= !(1 << 28);
+            }
+            if val & 0x20 != 0 {
+                self.state.in_data_pid[ep] = true;
+                self.state.in_odd_frame[ep] = true;
+                merged &= !(1 << 29);
+            }
         }
         self.d.set(reg, merged);
     }
@@ -892,6 +909,17 @@ impl Usb {
             if val & 0x04 != 0 {
                 self.state.out_ep[ep].nak = false;
                 merged &= !CNAK;
+            }
+            // R3 double-buffer for OUT: SD0PID/SEVNFRM → DATA0/even, SD1PID/SODDFRM → DATA1/odd
+            if val & 0x10 != 0 {
+                self.state.out_data_pid[ep] = false;
+                self.state.out_odd_frame[ep] = false;
+                merged &= !(1 << 28);
+            }
+            if val & 0x20 != 0 {
+                self.state.out_data_pid[ep] = true;
+                self.state.out_odd_frame[ep] = true;
+                merged &= !(1 << 29);
             }
         }
         self.d.set(reg, merged);
@@ -1249,5 +1277,21 @@ mod tests {
         write_word(&mut u, FS + 0x0c, 1 << 30); // GUSBCFG FDMOD
         write_word(&mut u, FS + 0x500, 1u32 << 31);
         assert_eq!(u.pending(), 0);
+    }
+
+    #[test]
+    fn device_double_buffer_sd1pid_toggles_pid() {
+        let mut u = usb_fs();
+        // DIEPCTL0 at 0x900, SD1PID bit 29
+        write_word(&mut u, FS + 0x900, 1 << 29);
+        assert!(u.state.in_data_pid[0], "SD1PID → DATA1");
+        assert!(u.state.in_odd_frame[0], "SODDFRM → odd");
+        write_word(&mut u, FS + 0x900, 1 << 28);
+        assert!(!u.state.in_data_pid[0], "SD0PID → DATA0");
+        // DOEPCTL0 at 0xB00 likewise
+        write_word(&mut u, FS + 0xB00, 1 << 29);
+        assert!(u.state.out_data_pid[0]);
+        write_word(&mut u, FS + 0xB00, 1 << 28);
+        assert!(!u.state.out_data_pid[0]);
     }
 }

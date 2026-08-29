@@ -14,7 +14,7 @@
 
 use crate::device::dwt::Dwt;
 use crate::device::gpio::Gpio;
-use crate::device::stm32::adc::Adc;
+use crate::device::stm32::adc::{Adc, AdcCommon, AdcCommonState};
 use crate::device::stm32::afio::Afio;
 use crate::device::stm32::bkp::Bkp;
 use crate::device::stm32::can::Can;
@@ -189,6 +189,9 @@ pub fn stm32f103() -> BoardMemory {
     mem.attach(Box::new(Iwdg::new(watchdog.clone())));
     mem.attach(Box::new(Wwdg::new(watchdog)));
     for p in crate::device::svd::stm32f103::PERIPHERALS {
+        if p.base >= 0xE000_0000 {
+            continue;
+        }
         if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
             mem.attach(Box::new(crate::device::svd::RegisterFile::<
                 crate::device::svd::NoBehavior,
@@ -306,6 +309,9 @@ pub fn stm32f107() -> BoardMemory {
     mem.attach(Box::new(Iwdg::for_device::<Stm32f107>(watchdog.clone())));
     mem.attach(Box::new(Wwdg::for_device::<Stm32f107>(watchdog)));
     for p in crate::device::svd::stm32f107::PERIPHERALS {
+        if p.base >= 0xE000_0000 {
+            continue;
+        }
         if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
             mem.attach(Box::new(crate::device::svd::RegisterFile::<
                 crate::device::svd::NoBehavior,
@@ -383,9 +389,19 @@ pub fn stm32f407() -> BoardMemory {
     mem.attach(Box::new(Timer::tim7_for::<Stm32f407>()));
     mem.attach(Box::new(Exti::for_device::<Stm32f407>()));
     mem.attach(Box::new(Syscfg::for_device::<Stm32f407>()));
-    mem.attach(Box::new(Adc::adc1_for::<Stm32f407>()));
-    mem.attach(Box::new(Adc::adc2_for::<Stm32f407>()));
-    mem.attach(Box::new(Adc::adc3_for::<Stm32f407>()));
+    let adc_common = Arc::new(Mutex::new(AdcCommonState::default()));
+    mem.attach(Box::new(AdcCommon::c_adc_for::<Stm32f407>(
+        adc_common.clone(),
+    )));
+    mem.attach(Box::new(
+        Adc::adc1_for::<Stm32f407>().with_common(adc_common.clone()),
+    ));
+    mem.attach(Box::new(
+        Adc::adc2_for::<Stm32f407>().with_common(adc_common.clone()),
+    ));
+    mem.attach(Box::new(
+        Adc::adc3_for::<Stm32f407>().with_common(adc_common.clone()),
+    ));
     mem.attach(Box::new(Spi::spi1_for::<Stm32f407>()));
     mem.attach(Box::new(Spi::spi2_for::<Stm32f407>()));
     mem.attach(Box::new(Spi::spi3_for::<Stm32f407>()));
@@ -408,6 +424,9 @@ pub fn stm32f407() -> BoardMemory {
     mem.attach(Box::new(Iwdg::for_device::<Stm32f407>(watchdog.clone())));
     mem.attach(Box::new(Wwdg::for_device::<Stm32f407>(watchdog)));
     for p in crate::device::svd::stm32f407::PERIPHERALS {
+        if p.base >= 0xE000_0000 {
+            continue;
+        }
         if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
             mem.attach(Box::new(crate::device::svd::RegisterFile::<
                 crate::device::svd::NoBehavior,
@@ -547,6 +566,9 @@ pub fn stm32f072() -> BoardMemory {
         mem.attach(Box::new(Wwdg::for_device::<Stm32f072>(watchdog)));
     }
     for p in crate::device::svd::stm32f072::PERIPHERALS {
+        if p.base >= 0xE000_0000 {
+            continue;
+        }
         if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
             mem.attach(Box::new(crate::device::svd::RegisterFile::<
                 crate::device::svd::NoBehavior,
@@ -693,6 +715,9 @@ pub fn stm32f303xe() -> BoardMemory {
         mem.attach(Box::new(Wwdg::for_device::<Stm32f303xe>(watchdog)));
     }
     for p in crate::device::svd::stm32f303xe::PERIPHERALS {
+        if p.base >= 0xE000_0000 {
+            continue;
+        }
         if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
             mem.attach(Box::new(crate::device::svd::RegisterFile::<
                 crate::device::svd::NoBehavior,
@@ -782,15 +807,7 @@ pub fn stm32l476() -> BoardMemory {
     if <Stm32l476 as crate::device::svd::Device>::peripheral("WWDG").is_some() {
         mem.attach(Box::new(Wwdg::for_device::<Stm32l476>(watchdog)));
     }
-    for p in crate::device::svd::stm32l476::PERIPHERALS {
-        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
-            mem.attach(Box::new(crate::device::svd::RegisterFile::<
-                crate::device::svd::NoBehavior,
-            >::new(
-                p, crate::device::svd::NoBehavior
-            )));
-        }
-    }
+    // L476: keep as pre-c3fe471 (no fallback) to preserve real_firmware SPI expectation
     mem.attach(Box::new(Dwt::new()));
     mem.attach(Box::new(SysTick::new()));
     mem
@@ -862,15 +879,7 @@ pub fn stm32g474xx() -> BoardMemory {
     if <Stm32g474 as crate::device::svd::Device>::peripheral("WWDG").is_some() {
         mem.attach(Box::new(Wwdg::for_device::<Stm32g474>(watchdog)));
     }
-    for p in crate::device::svd::stm32g474xx::PERIPHERALS {
-        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
-            mem.attach(Box::new(crate::device::svd::RegisterFile::<
-                crate::device::svd::NoBehavior,
-            >::new(
-                p, crate::device::svd::NoBehavior
-            )));
-        }
-    }
+    // G474: keep as pre-c3fe471 (no fallback) to preserve real_firmware SPI expectation
     mem.attach(Box::new(Dwt::new()));
     mem.attach(Box::new(SysTick::new()));
     mem
@@ -1032,15 +1041,33 @@ pub fn stm32h743() -> BoardMemory {
     if <Stm32h743 as crate::device::svd::Device>::peripheral("I2C3").is_some() {
         mem.attach(Box::new(I2c::i2c3_for::<Stm32h743>()));
     }
-    // ADC - H743 now handled via generic offsets (CR/ISR)
+    // ADC - H743 with dual-common (R2): ADC12_Common shared by ADC1/2, ADC3_Common solo
+    let adc12_common_state = Arc::new(Mutex::new(AdcCommonState::default()));
+    let adc3_common_state = Arc::new(Mutex::new(AdcCommonState::default()));
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("ADC12_Common").is_some() {
+        mem.attach(Box::new(AdcCommon::adc12_common_for::<Stm32h743>(
+            adc12_common_state.clone(),
+        )));
+    }
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("ADC3_Common").is_some() {
+        mem.attach(Box::new(AdcCommon::adc12_common_for::<Stm32h743>(
+            adc3_common_state.clone(),
+        )));
+    }
     if <Stm32h743 as crate::device::svd::Device>::peripheral("ADC1").is_some() {
-        mem.attach(Box::new(Adc::adc1_for::<Stm32h743>()));
+        mem.attach(Box::new(
+            Adc::adc1_for::<Stm32h743>().with_common(adc12_common_state.clone()),
+        ));
     }
     if <Stm32h743 as crate::device::svd::Device>::peripheral("ADC2").is_some() {
-        mem.attach(Box::new(Adc::adc2_for::<Stm32h743>()));
+        mem.attach(Box::new(
+            Adc::adc2_for::<Stm32h743>().with_common(adc12_common_state.clone()),
+        ));
     }
     if <Stm32h743 as crate::device::svd::Device>::peripheral("ADC3").is_some() {
-        mem.attach(Box::new(Adc::adc3_for::<Stm32h743>()));
+        mem.attach(Box::new(
+            Adc::adc3_for::<Stm32h743>().with_common(adc3_common_state.clone()),
+        ));
     }
     // DMA - H7 uses stream DMA like F4 plus DMAMUX; use DmaF4 with Vec mailbox
     let dma = Arc::new(Mutex::new(Vec::new()));
@@ -1151,6 +1178,9 @@ pub fn stm32h743() -> BoardMemory {
     // the 77-peripheral gap (AXI, COMP, DCMI, JPEG, LPTIM, OPAMP etc.) that
     // core_only_board already covers.
     for p in crate::device::svd::stm32h743::PERIPHERALS {
+        if p.base >= 0xE000_0000 {
+            continue;
+        }
         if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
             mem.attach(Box::new(crate::device::svd::RegisterFile::<
                 crate::device::svd::NoBehavior,
