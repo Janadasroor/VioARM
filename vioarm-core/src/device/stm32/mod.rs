@@ -20,6 +20,7 @@ pub mod crc;
 pub mod crs;
 pub mod dac;
 pub mod dcmi;
+pub mod jpeg;
 pub mod dma;
 pub mod dma_f4;
 pub mod eth;
