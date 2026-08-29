@@ -34,6 +34,7 @@ pub mod sdio;
 pub mod spi;
 pub mod syscfg;
 pub mod timer;
+pub mod tsc;
 pub mod usart;
 pub mod usb;
 pub mod watchdog;
