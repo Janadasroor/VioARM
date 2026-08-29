@@ -874,13 +874,7 @@ pub fn stm32f042() -> BoardMemory {
         mem.attach(Box::new(Crc::new_for::<Stm32f042>()));
     }
     if <Stm32f042 as crate::device::svd::Device>::peripheral("COMP").is_some() {
-        if let Some(def) = crate::device::svd::stm32f042::peripheral("COMP") {
-            mem.attach(Box::new(crate::device::svd::RegisterFile::<
-                crate::device::svd::NoBehavior,
-            >::new(
-                def, crate::device::svd::NoBehavior
-            )));
-        }
+        mem.attach(Box::new(crate::device::stm32::comp::Comp::new_for::<Stm32f042>()));
     }
     for (base, name) in [(0x4800_0000u32, "gpioa"), (0x4800_0400, "gpiob")] {
         if <Stm32f042 as crate::device::svd::Device>::by_base(base).is_some() {
