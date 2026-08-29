@@ -44,6 +44,7 @@ pub mod mdios;
 pub mod opamp;
 pub mod rng;
 pub mod spdifrx;
+pub mod swpmi;
 pub mod tsc;
 pub mod usart;
 pub mod usb;
