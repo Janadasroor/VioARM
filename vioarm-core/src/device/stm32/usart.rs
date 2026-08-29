@@ -410,6 +410,11 @@ impl Usart {
         Self::for_device_with::<D>("USART6", "usart6", None, None)
     }
 
+    #[must_use]
+    pub fn lpuart1_for<D: Device>() -> Self {
+        Self::for_device_with::<D>("LPUART1", "lpuart1", None, None)
+    }
+
     /// A new F103 `USART1` sharing `requests` with its DMA controller. The F1
     /// routes USART1 TX to DMA1 channel 4 and RX to DMA1 channel 5.
     ///
