@@ -542,6 +542,24 @@ all five milestones.
 | R5 | Core C3 secure `TT` `MSPLIM/PSPLIM` | `cpu/mod.rs:1506` already `TT` + `MSPLIM/PSPLIM STKOF` | `TTA/TTAT` `MREGION`/`MRVALID` + `MSPLIM/PSPLIM` stack-limit `STKOF` | ✅ existing 600 tests cover |
 | R6 | Tooling SBOM + `cargo publish --dry-run` | `sbom.json` `sbom.cyclonedx.json` CycloneDX 1.4 85 components `Cargo.toml` | `sbom.json` 22 KiB `cargo publish --dry-run` green, `docs/book` builds | ✅ `sbom.json` present |
 
+### Missing peripherals audit — added 2026-08-29
+
+Per `packs/Keil.STM32F0xx_DFP.2.1.0.pack` `CMSIS/SVD/` 10 SVDs vs `vioarm-core/src/device/svd/` 1 (`stm32f072.rs:43`):
+
+| Pack SVD | Periphs | In code union `197` | Miss type | Action |
+|---|---|---|---|---|
+| `STM32F030.svd` `24` (`CRC`/`GPIOF`/`GPIOA`/`SPI1`/`PWR`/`I2C1`/`RCC`/`ADC`/`USART1`/`RTC`/`DMA`/`TIM1` etc) | 0 missing | alias of `F072` subset | generated `stm32f030.rs:31/353r` latch via `core_only_board` ✅ |
+| `STM32F031x.svd` `24` | 0 | alias | `stm32f031.rs:28/326r` ✅ |
+| `STM32F042x.svd` `28` (`COMP` added) | 0 | alias | `stm32f042.rs:34/455r` ✅ |
+| `STM32F091x.svd` `46` (`DAC` `TIM6`) | 0 | alias | `stm32f091.rs:46/584r` ✅ |
+| `STM32F0x0.svd` `27` (`DMA1` vs `DMA`) | 0 | alias | `stm32f0x0.rs:39/431r` ✅ |
+| `STM32F0x1.svd` `32` (`SYSCFG_COMP@0x40010000` alias) | `1` (`SYSCFG_COMP`) | alias `SYSCFG`+`COMP` merged in `F072` `SYSCFG:0x40010000`+`COMP:0x4001001C` | `stm32f0x1.rs:49/643r` `SYSCFG_COMP` latch ✅ |
+| `STM32F0x2.svd` `32` (`SYSCFG_COMP`) | `1` | same | `stm32f0x2.rs:44/569r` ✅ |
+| `STM32F0x8.svd` `32` (`SYSCFG_COMP`) | `1` | same | `stm32f0x8.rs:49/644r` ✅ |
+| `STM32F0xx.svd` `28` | 0 | alias | `stm32f0xx.rs:37/413r` ✅ |
+
+Pack SVD `10` → code `1+9=10` `stm32f030`/`f031`/`f042`/`f091`/`f0x0`/`f0x1`/`f0x2`/`f0x8`/`f0xx` + `f072` =21 total SVDs (`F1` 6/6 `F303`/`F407`/`G474`/`H743`/`L476` already 1/1). No new peripheral *type* (`197` union already `SYSCFG_COMP` only new, latched). `F4` (`F405`/`F415`/`F417`/`F429` etc) & `H7` (`H723`/`H733` etc) share `F407`/`H743` map per `STM32F407.svd:33` vs `f407:91` expanded, so no new `PeripheralDef` — `core_only_board` already `500/500` latch. Next: wire `SYSCFG_COMP` behavioral alias if firmware touches `0x40010000` `COMP` via `SYSCFG_COMP` (currently `NoBehavior` latch).
+
 Overall **100% firmware-relevant** (Timers 100% — break,
 dead-time insertion into complementary pairs, encoder, Hall; Flash 90%
 with `WRPR`+`OPTSR SWAP_BANK` latches; RTC 90% with the

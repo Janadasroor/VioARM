@@ -14,7 +14,16 @@ use crate::error::BusError;
 use crate::mem::bus::Region;
 use core::ops::Deref;
 
+pub mod stm32f030;
+pub mod stm32f031;
+pub mod stm32f042;
 pub mod stm32f072;
+pub mod stm32f091;
+pub mod stm32f0x0;
+pub mod stm32f0x1;
+pub mod stm32f0x2;
+pub mod stm32f0x8;
+pub mod stm32f0xx;
 pub mod stm32f100;
 pub mod stm32f101;
 pub mod stm32f102;
