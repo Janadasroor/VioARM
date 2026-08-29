@@ -950,6 +950,13 @@ impl Sai4 {
             inner: RegisterFile::new(def, Sai4Behavior::default()),
         }
     }
+    #[must_use]
+    pub fn new_for_name<D: Device>(name: &str) -> Self {
+        let def = D::peripheral(name).expect("generated tables contain SAI");
+        Self {
+            inner: RegisterFile::new(def, Sai4Behavior::default()),
+        }
+    }
 }
 
 impl Peripheral for Sai4 {
