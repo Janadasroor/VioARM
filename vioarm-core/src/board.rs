@@ -883,6 +883,9 @@ pub fn stm32f042() -> BoardMemory {
             Stm32f042,
         >()));
     }
+    if <Stm32f042 as crate::device::svd::Device>::peripheral("CRS").is_some() {
+        mem.attach(Box::new(crate::device::stm32::crs::Crs::new_for::<Stm32f042>()));
+    }
     for (base, name) in [(0x4800_0000u32, "gpioa"), (0x4800_0400, "gpiob")] {
         if <Stm32f042 as crate::device::svd::Device>::by_base(base).is_some() {
             mem.attach(Box::new(GpioF4::at_in::<Stm32f042>(base, name)));
@@ -1080,15 +1083,8 @@ pub fn stm32f091() -> BoardMemory {
     if <Stm32f091 as crate::device::svd::Device>::peripheral("SYSCFG").is_some() {
         mem.attach(Box::new(Syscfg::for_device::<Stm32f091>()));
     }
-    // CEC at 0x40007800 on F091 (not on F030)
     if <Stm32f091 as crate::device::svd::Device>::peripheral("CEC").is_some() {
-        if let Some(def) = crate::device::svd::stm32f091::peripheral("CEC") {
-            mem.attach(Box::new(crate::device::svd::RegisterFile::<
-                crate::device::svd::NoBehavior,
-            >::new(
-                def, crate::device::svd::NoBehavior
-            )));
-        }
+        mem.attach(Box::new(crate::device::stm32::cec::Cec::new_for::<Stm32f091>()));
     }
     if <Stm32f091 as crate::device::svd::Device>::peripheral("SPI1").is_some() {
         mem.attach(Box::new(Spi::spi1_for::<Stm32f091>()));

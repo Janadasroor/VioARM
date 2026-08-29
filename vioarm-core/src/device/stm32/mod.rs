@@ -32,6 +32,8 @@ pub mod rcc;
 pub mod rtc;
 pub mod sdio;
 pub mod spi;
+pub mod cec;
+pub mod crs;
 pub mod syscfg;
 pub mod timer;
 pub mod tsc;
