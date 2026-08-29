@@ -1794,6 +1794,9 @@ pub fn stm32h743() -> BoardMemory {
     if <Stm32h743 as crate::device::svd::Device>::peripheral("I2C3").is_some() {
         mem.attach(Box::new(I2c::i2c3_for::<Stm32h743>()));
     }
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("I2C4").is_some() {
+        mem.attach(Box::new(I2c::i2c4_for::<Stm32h743>()));
+    }
     // ADC - H743 with dual-common (R2): ADC12_Common shared by ADC1/2, ADC3_Common solo
     let adc12_common_state = Arc::new(Mutex::new(AdcCommonState::default()));
     let adc3_common_state = Arc::new(Mutex::new(AdcCommonState::default()));

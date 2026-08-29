@@ -371,6 +371,14 @@ impl I2c {
             inner: RegisterFile::new(def, I2cBehavior::default()),
         }
     }
+
+    #[must_use]
+    pub fn i2c4_for<D: Device>() -> Self {
+        let def = D::peripheral("I2C4").expect("generated tables contain I2C4");
+        Self {
+            inner: RegisterFile::new(def, I2cBehavior::default()),
+        }
+    }
 }
 
 impl Default for I2c {
