@@ -655,19 +655,7 @@ pub fn stm32f030() -> BoardMemory {
     if <Stm32f030 as crate::device::svd::Device>::peripheral("ADC1").is_some()
         || <Stm32f030 as crate::device::svd::Device>::peripheral("ADC").is_some()
     {
-        // F030 ADC is the new ADC (single, not ADC1)
-        if <Stm32f030 as crate::device::svd::Device>::peripheral("ADC").is_some() {
-            // Use ADC behavior via ADC1 alias if available, else latch
-            if let Some(def) = crate::device::svd::stm32f030::peripheral("ADC") {
-                mem.attach(Box::new(crate::device::svd::RegisterFile::<
-                    crate::device::svd::NoBehavior,
-                >::new(
-                    def, crate::device::svd::NoBehavior
-                )));
-            }
-        } else {
-            mem.attach(Box::new(Adc::adc1_for::<Stm32f030>()));
-        }
+        mem.attach(Box::new(Adc::new_for::<Stm32f030>()));
     }
     if <Stm32f030 as crate::device::svd::Device>::peripheral("SPI1").is_some() {
         mem.attach(Box::new(Spi::spi1_for::<Stm32f030>()));
@@ -788,15 +776,7 @@ pub fn stm32f031() -> BoardMemory {
     if <Stm32f031 as crate::device::svd::Device>::peripheral("ADC1").is_some()
         || <Stm32f031 as crate::device::svd::Device>::peripheral("ADC").is_some()
     {
-        if let Some(def) = crate::device::svd::stm32f031::peripheral("ADC")
-            .or_else(|| crate::device::svd::stm32f031::peripheral("ADC1"))
-        {
-            mem.attach(Box::new(crate::device::svd::RegisterFile::<
-                crate::device::svd::NoBehavior,
-            >::new(
-                def, crate::device::svd::NoBehavior
-            )));
-        }
+        mem.attach(Box::new(Adc::new_for::<Stm32f031>()));
     }
     if <Stm32f031 as crate::device::svd::Device>::peripheral("SPI1").is_some() {
         mem.attach(Box::new(Spi::spi1_for::<Stm32f031>()));

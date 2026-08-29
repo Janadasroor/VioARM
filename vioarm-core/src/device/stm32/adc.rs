@@ -545,7 +545,18 @@ impl Adc {
     pub fn adc3_for<D: Device>() -> Self {
         Self::for_device::<D>("ADC3", "adc3")
     }
-
+    /// Generic `ADC` (F0 `ADC@0x40012400`) — picks `ADC1` if present else `ADC`.
+    #[must_use]
+    pub fn new_for<D: Device>() -> Self {
+        let per = if D::peripheral("ADC1").is_some() {
+            "ADC1"
+        } else if D::peripheral("ADC").is_some() {
+            "ADC"
+        } else {
+            panic!("generated tables contain ADC/ADC1")
+        };
+        Self::for_device::<D>(per, "adc")
+    }
     fn for_device<D: Device>(peripheral: &str, name: &'static str) -> Self {
         let def = D::peripheral(peripheral)
             .unwrap_or_else(|| panic!("generated tables contain {peripheral}"));
