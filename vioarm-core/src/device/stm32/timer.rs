@@ -799,6 +799,16 @@ impl Timer {
             irq_line,
         }
     }
+    /// Generic `TIMx` by name (e.g. `TIM15`) — 16-bit except `TIM2`/`TIM5` 32-bit.
+    #[must_use]
+    pub fn new_for_name<D: Device>(name: &'static str) -> Self {
+        let width = match name {
+            "TIM2" | "TIM5" => u32::MAX,
+            _ => 0xFFFF,
+        };
+        let irq_line = if name == "TIM1" { 1 } else { 0 };
+        Self::for_device::<D>(name, name, width, irq_line)
+    }
 
     /// Current output level for `channel` (1..4), the host-visible pin for
     /// output compare / PWM.

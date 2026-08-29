@@ -1990,11 +1990,14 @@ pub fn stm32h743() -> BoardMemory {
         }
     }
     for name in ["TIM15", "TIM16", "TIM17"] {
-        if let Some(def) = <Stm32h743 as crate::device::svd::Device>::peripheral(name) {
-            if matches!(mem.read(def.base), Err(crate::error::BusError::Reserved)) {
-                mem.attach(Box::new(crate::device::svd::RegisterFile::<
-                    crate::device::svd::NoBehavior,
-                >::new(def, crate::device::svd::NoBehavior)));
+        if <Stm32h743 as crate::device::svd::Device>::peripheral(name).is_some() {
+            if let Some(def) = crate::device::svd::stm32h743::peripheral(name) {
+                if matches!(mem.read(def.base), Err(crate::error::BusError::Reserved)) {
+                    mem.attach(Box::new(
+                        crate::device::stm32::timer::Timer::new_for_name::<Stm32h743>(name),
+                    ));
+                    let _ = def.base;
+                }
             }
         }
     }
