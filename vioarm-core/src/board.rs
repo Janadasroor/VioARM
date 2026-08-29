@@ -1980,6 +1980,30 @@ pub fn stm32h743() -> BoardMemory {
     if <Stm32h743 as crate::device::svd::Device>::peripheral("LPUART1").is_some() {
         mem.attach(Box::new(crate::device::stm32::usart::Usart::lpuart1_for::<Stm32h743>()));
     }
+    for (name, ctor) in [
+        ("UART4", crate::device::stm32::usart::Usart::for_device::<Stm32h743> as fn() -> crate::device::stm32::usart::Usart),
+        ("UART5", crate::device::stm32::usart::Usart::for_device::<Stm32h743> as fn() -> crate::device::stm32::usart::Usart),
+        ("UART7", crate::device::stm32::usart::Usart::for_device::<Stm32h743> as fn() -> crate::device::stm32::usart::Usart),
+        ("UART8", crate::device::stm32::usart::Usart::for_device::<Stm32h743> as fn() -> crate::device::stm32::usart::Usart),
+        ("USART1", crate::device::stm32::usart::Usart::for_device::<Stm32h743> as fn() -> crate::device::stm32::usart::Usart),
+        ("USART2", crate::device::stm32::usart::Usart::usart2_for::<Stm32h743> as fn() -> crate::device::stm32::usart::Usart),
+        ("USART3", crate::device::stm32::usart::Usart::usart3_for::<Stm32h743> as fn() -> crate::device::stm32::usart::Usart),
+        ("USART6", crate::device::stm32::usart::Usart::usart6_for::<Stm32h743> as fn() -> crate::device::stm32::usart::Usart),
+    ] {
+        if <Stm32h743 as crate::device::svd::Device>::peripheral(name).is_some() {
+            // Check if already attached via earlier mounts (e.g., USART1 via previous logic)
+            // Use try to attach
+            // For now, we attempt to attach; if base already taken, skip
+            let def = match <Stm32h743 as crate::device::svd::Device>::peripheral(name) {
+                Some(d) => d,
+                None => continue,
+            };
+            if matches!(mem.read(def.base), Err(crate::error::BusError::Reserved)) {
+                // Use generic Usart for these UARTs
+                mem.attach(Box::new(ctor()));
+            }
+        }
+    }
     // Mount any remaining H7 peripherals as pure latches so the 119-peripheral
     // H743 SVD never faults as Reserved for the 500-chip universe. This closes
     // the 77-peripheral gap (AXI, COMP, DCMI, JPEG, LPTIM, OPAMP etc.) that
