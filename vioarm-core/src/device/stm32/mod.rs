@@ -41,6 +41,7 @@ pub mod syscfg;
 pub mod timer;
 pub mod opamp;
 pub mod rng;
+pub mod spdifrx;
 pub mod tsc;
 pub mod usart;
 pub mod usb;
