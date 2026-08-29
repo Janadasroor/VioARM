@@ -1818,9 +1818,19 @@ pub fn stm32h743() -> BoardMemory {
         )));
     }
     if <Stm32h743 as crate::device::svd::Device>::peripheral("ADC3_Common").is_some() {
-        mem.attach(Box::new(AdcCommon::adc12_common_for::<Stm32h743>(
-            adc3_common_state.clone(),
+        // ADC3_Common shares same offsets as ADC12_Common (CSR 0x0 CDR 0x8)
+        // Use same behavior but with ADC3_Common def (board had bug using ADC12)
+        let def = <Stm32h743 as crate::device::svd::Device>::peripheral("ADC3_Common").unwrap();
+        // Construct via same AdcCommon but with correct def is not exposed; reuse adc12_common_for covers same base 0x58026300 via fallback latch for now
+        // Explicit mount ADC3_Common as NoBehavior latch to avoid Reserved before fallback
+        let _ = def.base;
+        mem.attach(Box::new(crate::device::svd::RegisterFile::<
+            crate::device::svd::NoBehavior,
+        >::new(
+            def, crate::device::svd::NoBehavior
         )));
+        // Keep state for future behavioral promotion
+        let _ = adc3_common_state.clone();
     }
     if <Stm32h743 as crate::device::svd::Device>::peripheral("ADC1").is_some() {
         mem.attach(Box::new(
@@ -1988,6 +1998,50 @@ pub fn stm32h743() -> BoardMemory {
     }
     if <Stm32h743 as crate::device::svd::Device>::peripheral("SWPMI").is_some() {
         mem.attach(Box::new(crate::device::stm32::swpmi::Swpmi::new_for::<Stm32h743>()));
+    }
+    // H743 remaining latch gap: COMP1/CAN_CCU/CRS/CEC/TIM15-17/AXI/DELAY_Block
+    // Promote where behavioral exists, else explicit NoBehavior latch before fallback
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("COMP1").is_some() {
+        // H743 COMP1 at 0x58003800 is H7 comparator with SR/C1VAL, not F0 CSR — latch for now (behavioral COMP covers F0)
+        let def = <Stm32h743 as crate::device::svd::Device>::peripheral("COMP1").unwrap();
+        if matches!(mem.read(def.base), Err(crate::error::BusError::Reserved)) {
+            mem.attach(Box::new(crate::device::svd::RegisterFile::<
+                crate::device::svd::NoBehavior,
+            >::new(def, crate::device::svd::NoBehavior)));
+        }
+    }
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("CRS").is_some() {
+        // Use Crs behavior (CR.CEN@5 → ISR.SYNCOKF) — H743 CRS at 0x40008400 same offsets as F0
+        mem.attach(Box::new(crate::device::stm32::crs::Crs::new_for::<Stm32h743>()));
+    }
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("CEC").is_some() {
+        mem.attach(Box::new(crate::device::stm32::cec::Cec::new_for::<Stm32h743>()));
+    }
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("CAN_CCU").is_some() {
+        let def = <Stm32h743 as crate::device::svd::Device>::peripheral("CAN_CCU").unwrap();
+        if matches!(mem.read(def.base), Err(crate::error::BusError::Reserved)) {
+            mem.attach(Box::new(crate::device::svd::RegisterFile::<
+                crate::device::svd::NoBehavior,
+            >::new(def, crate::device::svd::NoBehavior)));
+        }
+    }
+    for name in ["TIM15", "TIM16", "TIM17"] {
+        if let Some(def) = <Stm32h743 as crate::device::svd::Device>::peripheral(name) {
+            if matches!(mem.read(def.base), Err(crate::error::BusError::Reserved)) {
+                mem.attach(Box::new(crate::device::svd::RegisterFile::<
+                    crate::device::svd::NoBehavior,
+                >::new(def, crate::device::svd::NoBehavior)));
+            }
+        }
+    }
+    for name in ["AXI", "DELAY_Block_SDMMC1"] {
+        if let Some(def) = <Stm32h743 as crate::device::svd::Device>::peripheral(name) {
+            if matches!(mem.read(def.base), Err(crate::error::BusError::Reserved)) {
+                mem.attach(Box::new(crate::device::svd::RegisterFile::<
+                    crate::device::svd::NoBehavior,
+                >::new(def, crate::device::svd::NoBehavior)));
+            }
+        }
     }
     if <Stm32h743 as crate::device::svd::Device>::peripheral("LPUART1").is_some() {
         mem.attach(Box::new(crate::device::stm32::usart::Usart::lpuart1_for::<Stm32h743>()));
