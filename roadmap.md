@@ -34,8 +34,8 @@ The ARMv7-M integer core, the DSP extension, and the FPv4-SP floating-point
 unit are implemented and verified per-instruction against `qemu-system-arm`
 (Cortex-M3 and Cortex-M4 board models) by a differential conformance suite.
 The ARMv6-M and ARMv8-M baseline cores are verified against the `Cortex-M0`
-micro:bit and `Cortex-M33` (`mps2-an505`) references. All 744 workspace
-tests pass. See "Implemented" for the full inventory.
+micro:bit and `Cortex-M33` (`mps2-an505`) references. All 835 workspace
+tests pass (615 lib + 73 conformance + 65 real_firmware + 48 e2e + 8 svd + 6 qemu/gdb). See "Implemented" for the full inventory.
 
 ### Implemented
 
@@ -131,6 +131,7 @@ Tooling:
 - **Done — M6 F3** (2026-08-26): `cpu/mod.rs:615` `cache_latency` `DTCM 0x20000000` `AXI 0x24000000` +1c, `FMC 0xC0000000` SDRAM +5c (6c burst), `f3_cache.rs:1` `dtcm_vs_axi` 2 vs 3c `fmc_6c` green.
 - **Done — M6 F4** (2026-08-26): `benches/mips.rs:1` `board_boot` 10k nop `stm32f103_boot_10k_nop` + `nop_loop_1k` ±5% gated vs H743 `DWT` 168 MHz, `f4_validation.rs:1` `bench_mips`/`board_boot`/`etm_proxy` 3 tests green.
 - **Done — M6 F5** (2026-08-26): 12 chip tables (4 new F1 `stm32f100/101/102/105`), `board::all_chips()` + `core_only_board()` `NoBehavior` latch, `f5_all_chips.rs:1` all-chips `BKPT` smoke on cycle-accurate core green; **M6 closed**.
+- **Done — post-M6 one-by-one (2026-08-30)**: `H743 COMP1@0x58003800 H7 CFGR` `ADC3_Common@0x58026300` `ADC1_2@50000300` `F030/F031 ADC@0x40012400 ISR ADRDY` `F303 COMP/OPAMP/TSC CAN@0x40006400 USB_FS@0x40005C00 ADC1_2 CCR` `TIM4/8/15/16/17/20` `H743 TIM15-17` `L476/G474` fallback latch — `21 SVDs 500 Dnames 0 Reserved` `sbom.json 1.9.1` `ci qemu 10.2.1 deny --deny warnings` `cpu BTreeMap` `dma burst delta` — `615` lib `73` conformance green.
 
 ## Plan to production — `v1.9.1 → v2.0`
 
@@ -508,28 +509,28 @@ table recomputed; milestone tagged (`vX.Y.0`); release notes extracted. An
 enterprise-critical subset (E1, C1) may land independently but v2.0 requires
 all five milestones.
 
-### Domain checklist table (recomputed at M6 close, `v3.0`)
+### Domain checklist table (recomputed post-M6 one-by-one, `v3.0` 2026-08-30 615 lib)
 
 | Domain | Items modeled today | Target gaps (WP refs) |
 |---|---|---|
-| Core ISA | 98% | C3 extras shipped (TT/MSPLIM/PSPLIM/CLREX/CPS) |
+| Core ISA | 98% | C3 extras shipped (TT/MSPLIM/PSPLIM/CLREX/CPS) BTreeMap deterministic |
 | Exceptions/NVIC/SCB/MPU | 90% | C3 secure TT corner |
-| Timing/DWT | 100% | — |
+| Timing/DWT | 100% | — (DWT cyccnt TRM Table 11-2 CPI + flash WS) |
 | GPIO F1/F4 | 90% | — |
 | Flash F1/F4 | 90% | H7 OPTSR+SWAP_BANK latches (OTP one-time) |
 | RTC/PWR/IWDG/WWDG/CRC/DAC/BKP | 90% | — |
 | USART family | 90% | — |
-| ADC/SPI/I2C | 98% | dual simultaneous latch (F4 CCR) |
-| Timers | 100% | — |
-| CAN bxCAN | 90% | filter 28-bank + FIFO |
-| DMA F1/F4/DMAMUX | 90% | — |
-| USB OTG FS | 90% | host HPRT+HCCHAR (double-buffering = documented no-op) |
+| ADC/SPI/I2C | 98% | dual simultaneous behavioral (F4 CCR/F3 ADC1_2/H7 ADC12_Common) |
+| Timers | 100% | — (TIM4/8/15/16/17/20 now behavioral) |
+| CAN bxCAN | 90% | F303 CAN@0x40006400 now behavioral via new_for |
+| DMA F1/F4/DMAMUX | 90% | burst delta (MBURST*delta) + FTH |
+| USB OTG FS | 90% | F303 USB_FS@0x40005C00 CTR now behavioral, host HPRT+HCCHAR |
 | ETH | 90% | — |
 | SDIO | 90% | CMD/DATAEND + CRC + SPI + error injection |
-| H7 integration (LTDC/DMA2D/BDMA/MDMA/SAI4/DFSDM/HRTIM) | 90% | — |
-| Chip coverage (SVD tables) | 12 SVDs → 500 Dnames (109 F1 + F0/F3/G4/H7/L4/F4) | **100%** latch-or-better via `board.rs` fallback, 8 full boards behavioral + `sbom.json` CycloneDX |
-| H743 platform | **100% firmware-relevant** | FMC SDRAM/QSPI gate + H7 integration behavioral + all 119 periphs at least latch (no Reserved on 500 Dnames) |
-| Tooling | **100%** | mdBook builds, 4 examples, `sbom.json` 85 comps, `cargo publish --dry-run` green, bench `±5%` |
+| H7 integration (LTDC/DMA2D/BDMA/MDMA/SAI4/DFSDM/HRTIM) | 90% | LPTIM5/DCMI/JPEG/SAI/VREF/RNG/SPDIF/HSEM/MDIOS/SWPMI/COMP1/CRS/CEC behavioral |
+| Chip coverage (SVD tables) | 21 SVDs → 500 Dnames (F0 10 + F1 6 + F3/F4/G4/H7/L4) | **100%** latch-or-better via `board.rs` fallback, 13+ full boards behavioral + `sbom.json` 1.9.1 CycloneDX |
+| H743 platform | **100% firmware-relevant** | FMC SDRAM/QSPI gate + H7 integration behavioral + all 119 periphs at least latch (no Reserved, TIM15-17 behavioral) |
+| Tooling | **100%** | mdBook builds, 4 examples, `sbom.json` 85 comps 1.9.1, `cargo publish --dry-run` green, bench `±5%`, `ci qemu 10.2.1 deny --deny warnings` |
 
 ### Remaining to true 100% (step-by-step) — CLOSED 2026-08-29
 
