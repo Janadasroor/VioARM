@@ -1782,6 +1782,46 @@ pub const STM32_F098_FLASH_LEN: u32 = 0x0004_0000;
 pub const STM32_F098_RAM_LEN: u32 = 0x0000_8000;
 #[must_use]
 pub fn stm32f098() -> BoardMemory { stm32f091() }
+pub const STM32_F038_FLASH_LEN: u32 = 0x0000_8000;
+pub const STM32_F038_RAM_LEN: u32 = 0x0000_1800;
+#[must_use]
+pub fn stm32f038() -> BoardMemory { stm32f0x0() }
+pub const STM32_F048_FLASH_LEN: u32 = 0x0001_0000;
+pub const STM32_F048_RAM_LEN: u32 = 0x0000_2000;
+#[must_use]
+pub fn stm32f048() -> BoardMemory { stm32f072() }
+pub const STM32_F071_FLASH_LEN: u32 = 0x0002_0000;
+pub const STM32_F071_RAM_LEN: u32 = 0x0000_4000;
+#[must_use]
+pub fn stm32f071() -> BoardMemory { stm32f072() }
+pub const STM32_F333_FLASH_LEN: u32 = 0x0001_0000;
+pub const STM32_F333_RAM_LEN: u32 = 0x0000_5000;
+#[must_use]
+pub fn stm32f333() -> BoardMemory { stm32f303xe() }
+pub const STM32_G050_FLASH_LEN: u32 = 0x0001_0000;
+pub const STM32_G050_RAM_LEN: u32 = 0x0000_4800;
+#[must_use]
+pub fn stm32g050() -> BoardMemory { stm32g474xx() }
+pub const STM32_L011_FLASH_LEN: u32 = 0x0000_4000;
+pub const STM32_L011_RAM_LEN: u32 = 0x0000_0800;
+#[must_use]
+pub fn stm32l011() -> BoardMemory { stm32l476() }
+pub const STM32_L031_FLASH_LEN: u32 = 0x0000_8000;
+pub const STM32_L031_RAM_LEN: u32 = 0x0000_2000;
+#[must_use]
+pub fn stm32l031() -> BoardMemory { stm32l476() }
+pub const STM32_F723_FLASH_LEN: u32 = 0x0008_0000;
+pub const STM32_F723_RAM_LEN: u32 = 0x0005_0000;
+#[must_use]
+pub fn stm32f723() -> BoardMemory { stm32f746() }
+pub const STM32_H562_FLASH_LEN: u32 = 0x0020_0000;
+pub const STM32_H562_RAM_LEN: u32 = 0x0008_0000;
+#[must_use]
+pub fn stm32h562() -> BoardMemory { stm32h743() }
+pub const STM32_WLE5_FLASH_LEN: u32 = 0x0004_0000;
+pub const STM32_WLE5_RAM_LEN: u32 = 0x0001_0000;
+#[must_use]
+pub fn stm32wle5() -> BoardMemory { stm32l476() }
 pub const STM32_F767_FLASH_LEN: u32 = 0x0020_0000;
 pub const STM32_F767_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
