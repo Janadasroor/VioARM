@@ -1495,6 +1495,44 @@ pub fn stm32f401() -> BoardMemory {
     for p in crate::device::svd::stm32f407::PERIPHERALS { if p.base>=0xE000_0000 {continue;} if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)){ mem.attach(Box::new(crate::device::svd::RegisterFile::<crate::device::svd::NoBehavior>::new(p, crate::device::svd::NoBehavior))); } }
     mem.attach(Box::new(Dwt::new())); mem.attach(Box::new(SysTick::new())); mem
 }
+pub const STM32_F411_FLASH_LEN: u32 = 0x0008_0000;
+pub const STM32_F411_RAM_LEN: u32 = 0x0002_0000;
+#[must_use]
+pub fn stm32f411() -> BoardMemory {
+    use crate::device::svd::stm32f407::Stm32f407;
+    let backing = FlatMemory::with_layout(&[FLASH, STM32_MAIN_FLASH, RAM], &[STM32_F411_FLASH_LEN, STM32_F411_FLASH_LEN, STM32_F411_RAM_LEN]);
+    let gate = Arc::new(Mutex::new(FlashGate::new(Region::new(STM32_MAIN_FLASH, STM32_F411_FLASH_LEN), 16*1024)));
+    let mut mem = SystemMemory::new(backing); mem.set_flash_gate(gate.clone());
+    mem.attach(Box::new(FlashF4::for_device::<Stm32f407>(gate))); mem.attach(Box::new(Rcc::for_device::<Stm32f407>()));
+    for (base,name) in [(0x40020000u32,"gpioa"),(0x40020400,"gpiob"),(0x40020800,"gpioc")] { if <Stm32f407 as crate::device::svd::Device>::by_base(base).is_some(){ mem.attach(Box::new(GpioF4::at_in::<Stm32f407>(base,name))); } }
+    mem.attach(Box::new(Usart::for_device::<Stm32f407>())); mem.attach(Box::new(Timer::tim2_for::<Stm32f407>()));
+    let dma=Arc::new(Mutex::new(Vec::new())); mem.set_dma_mailbox(dma.clone());
+    if <Stm32f407 as crate::device::svd::Device>::peripheral("DMA1").is_some(){ mem.attach(Box::new(DmaF4::dma1_for::<Stm32f407>(dma.clone()))); }
+    if <Stm32f407 as crate::device::svd::Device>::peripheral("DMA2").is_some(){ mem.attach(Box::new(DmaF4::dma2_for::<Stm32f407>(dma))); }
+    let wdg=Arc::new(Mutex::new(false)); mem.set_watchdog_reset(wdg.clone());
+    if <Stm32f407 as crate::device::svd::Device>::peripheral("IWDG").is_some(){ mem.attach(Box::new(Iwdg::for_device::<Stm32f407>(wdg.clone()))); }
+    for p in crate::device::svd::stm32f407::PERIPHERALS { if p.base>=0xE000_0000 {continue;} if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)){ mem.attach(Box::new(crate::device::svd::RegisterFile::<crate::device::svd::NoBehavior>::new(p, crate::device::svd::NoBehavior))); } }
+    mem.attach(Box::new(Dwt::new())); mem.attach(Box::new(SysTick::new())); mem
+}
+pub const STM32_F412_FLASH_LEN: u32 = 0x0010_0000;
+pub const STM32_F412_RAM_LEN: u32 = 0x0004_0000;
+#[must_use]
+pub fn stm32f412() -> BoardMemory {
+    use crate::device::svd::stm32f407::Stm32f407;
+    let backing = FlatMemory::with_layout(&[FLASH, STM32_MAIN_FLASH, RAM], &[STM32_F412_FLASH_LEN, STM32_F412_FLASH_LEN, STM32_F412_RAM_LEN]);
+    let gate = Arc::new(Mutex::new(FlashGate::new(Region::new(STM32_MAIN_FLASH, STM32_F412_FLASH_LEN), 16*1024)));
+    let mut mem = SystemMemory::new(backing); mem.set_flash_gate(gate.clone());
+    mem.attach(Box::new(FlashF4::for_device::<Stm32f407>(gate))); mem.attach(Box::new(Rcc::for_device::<Stm32f407>()));
+    for (base,name) in [(0x40020000u32,"gpioa"),(0x40020400,"gpiob"),(0x40020800,"gpioc")] { if <Stm32f407 as crate::device::svd::Device>::by_base(base).is_some(){ mem.attach(Box::new(GpioF4::at_in::<Stm32f407>(base,name))); } }
+    mem.attach(Box::new(Usart::for_device::<Stm32f407>())); mem.attach(Box::new(Timer::tim2_for::<Stm32f407>()));
+    let dma=Arc::new(Mutex::new(Vec::new())); mem.set_dma_mailbox(dma.clone());
+    if <Stm32f407 as crate::device::svd::Device>::peripheral("DMA1").is_some(){ mem.attach(Box::new(DmaF4::dma1_for::<Stm32f407>(dma.clone()))); }
+    if <Stm32f407 as crate::device::svd::Device>::peripheral("DMA2").is_some(){ mem.attach(Box::new(DmaF4::dma2_for::<Stm32f407>(dma))); }
+    let wdg=Arc::new(Mutex::new(false)); mem.set_watchdog_reset(wdg.clone());
+    if <Stm32f407 as crate::device::svd::Device>::peripheral("IWDG").is_some(){ mem.attach(Box::new(Iwdg::for_device::<Stm32f407>(wdg.clone()))); }
+    for p in crate::device::svd::stm32f407::PERIPHERALS { if p.base>=0xE000_0000 {continue;} if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)){ mem.attach(Box::new(crate::device::svd::RegisterFile::<crate::device::svd::NoBehavior>::new(p, crate::device::svd::NoBehavior))); } }
+    mem.attach(Box::new(Dwt::new())); mem.attach(Box::new(SysTick::new())); mem
+}
 
 /// STM32F303xE (F3, Cortex-M4) flash size in bytes (512 KiB).
 pub const STM32_F303XE_FLASH_LEN: u32 = 0x0008_0000;
