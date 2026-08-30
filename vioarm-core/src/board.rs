@@ -1397,6 +1397,18 @@ pub fn stm32f100() -> BoardMemory {
     mem.attach(Box::new(SysTick::new()));
     mem
 }
+pub const STM32_F101_FLASH_LEN: u32 = 0x0002_0000;
+pub const STM32_F101_RAM_LEN: u32 = 0x0000_2000;
+#[must_use]
+pub fn stm32f101() -> BoardMemory { let b = stm32f100(); let _ = (STM32_F101_FLASH_LEN, STM32_F101_RAM_LEN); b }
+pub const STM32_F102_FLASH_LEN: u32 = 0x0002_0000;
+pub const STM32_F102_RAM_LEN: u32 = 0x0000_2000;
+#[must_use]
+pub fn stm32f102() -> BoardMemory { stm32f100() }
+pub const STM32_F105_FLASH_LEN: u32 = 0x0004_0000;
+pub const STM32_F105_RAM_LEN: u32 = 0x0001_0000;
+#[must_use]
+pub fn stm32f105() -> BoardMemory { stm32f107() }
 
 /// STM32F303xE (F3, Cortex-M4) flash size in bytes (512 KiB).
 pub const STM32_F303XE_FLASH_LEN: u32 = 0x0008_0000;
