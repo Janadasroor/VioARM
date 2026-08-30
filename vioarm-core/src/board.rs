@@ -1564,6 +1564,18 @@ pub fn stm32l476() -> BoardMemory {
             mem.attach(Box::new(ctor()));
         }
     }
+    for name in ["TIM1", "TIM3", "TIM4", "TIM5", "TIM7", "TIM8", "TIM15", "TIM16", "TIM17"] {
+        if <Stm32l476 as crate::device::svd::Device>::peripheral(name).is_some() {
+            if let Some(def) = crate::device::svd::stm32l476::peripheral(name) {
+                if matches!(mem.read(def.base), Err(crate::error::BusError::Reserved)) {
+                    mem.attach(Box::new(
+                        crate::device::stm32::timer::Timer::new_for_name::<Stm32l476>(name),
+                    ));
+                    let _ = def.base;
+                }
+            }
+        }
+    }
     if <Stm32l476 as crate::device::svd::Device>::peripheral("EXTI").is_some() {
         mem.attach(Box::new(Exti::for_device::<Stm32l476>()));
     }
@@ -1647,6 +1659,18 @@ pub fn stm32g474xx() -> BoardMemory {
         let base = ctor().ranges()[0].base;
         if <Stm32g474 as crate::device::svd::Device>::by_base(base).is_some() {
             mem.attach(Box::new(ctor()));
+        }
+    }
+    for name in ["TIM1", "TIM3", "TIM4", "TIM5", "TIM7", "TIM8", "TIM15", "TIM16", "TIM17", "TIM20"] {
+        if <Stm32g474 as crate::device::svd::Device>::peripheral(name).is_some() {
+            if let Some(def) = crate::device::svd::stm32g474xx::peripheral(name) {
+                if matches!(mem.read(def.base), Err(crate::error::BusError::Reserved)) {
+                    mem.attach(Box::new(
+                        crate::device::stm32::timer::Timer::new_for_name::<Stm32g474>(name),
+                    ));
+                    let _ = def.base;
+                }
+            }
         }
     }
     let watchdog = Arc::new(Mutex::new(false));
