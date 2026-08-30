@@ -1598,6 +1598,14 @@ pub const STM32_F469_FLASH_LEN: u32 = 0x0020_0000;
 pub const STM32_F469_RAM_LEN: u32 = 0x0006_0000;
 #[must_use]
 pub fn stm32f469() -> BoardMemory { stm32f429() }
+pub const STM32_F722_FLASH_LEN: u32 = 0x0008_0000;
+pub const STM32_F722_RAM_LEN: u32 = 0x0002_0000;
+#[must_use]
+pub fn stm32f722() -> BoardMemory { stm32f746() }
+pub const STM32_H730_FLASH_LEN: u32 = 0x0002_0000;
+pub const STM32_H730_RAM_LEN: u32 = 0x0002_0000;
+#[must_use]
+pub fn stm32h730() -> BoardMemory { stm32h750() }
 pub const STM32_H750_FLASH_LEN: u32 = 0x0002_0000;
 pub const STM32_H750_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
