@@ -1544,8 +1544,6 @@ pub fn stm32f429() -> BoardMemory {
     mem.attach(Box::new(FlashF4::for_device::<Stm32f407>(gate))); mem.attach(Box::new(Rcc::for_device::<Stm32f407>()));
     for (base,name) in [(0x40020000u32,"gpioa"),(0x40020400,"gpiob"),(0x40020800,"gpioc"),(0x40020C00,"gpiod"),(0x40021000,"gpioe"),(0x40021400,"gpiof"),(0x40021800,"gpiog")] { if <Stm32f407 as crate::device::svd::Device>::by_base(base).is_some(){ mem.attach(Box::new(GpioF4::at_in::<Stm32f407>(base,name))); } }
     mem.attach(Box::new(Usart::for_device::<Stm32f407>())); mem.attach(Box::new(Timer::tim2_for::<Stm32f407>()));
-    // F429 LTDC/DMA2D already via fallback latch from F407 PERIPHERALS (F407 SVD lacks LTDC, but add explicit latch for F429 extra)
-    if <Stm32f407 as crate::device::svd::Device>::peripheral("LTDC").is_some(){ mem.attach(Box::new(Ltdc::new_for::<Stm32f407>())); }
     let dma=Arc::new(Mutex::new(Vec::new())); mem.set_dma_mailbox(dma.clone());
     if <Stm32f407 as crate::device::svd::Device>::peripheral("DMA1").is_some(){ mem.attach(Box::new(DmaF4::dma1_for::<Stm32f407>(dma.clone()))); }
     if <Stm32f407 as crate::device::svd::Device>::peripheral("DMA2").is_some(){ mem.attach(Box::new(DmaF4::dma2_for::<Stm32f407>(dma))); }
@@ -1553,6 +1551,19 @@ pub fn stm32f429() -> BoardMemory {
     if <Stm32f407 as crate::device::svd::Device>::peripheral("IWDG").is_some(){ mem.attach(Box::new(Iwdg::for_device::<Stm32f407>(wdg.clone()))); }
     for p in crate::device::svd::stm32f407::PERIPHERALS { if p.base>=0xE000_0000 {continue;} if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)){ mem.attach(Box::new(crate::device::svd::RegisterFile::<crate::device::svd::NoBehavior>::new(p, crate::device::svd::NoBehavior))); } }
     // F429 LTDC/DMA2D (0x50001000/0x5000B000) not in F407 SVD — latch via fallback would miss, but simple firmware doesn't touch them
+    mem.attach(Box::new(Dwt::new())); mem.attach(Box::new(SysTick::new())); mem
+}
+pub const STM32_F746_FLASH_LEN: u32 = 0x0010_0000;
+pub const STM32_F746_RAM_LEN: u32 = 0x0005_0000;
+#[must_use]
+pub fn stm32f746() -> BoardMemory {
+    // F7 1M/320K via H743 SVD (F7 ART 0x40023C00 similar, M7 core) — use F1 flash at 0x40022000 for simple gate
+    use crate::device::svd::stm32h743::Stm32h743;
+    let backing = FlatMemory::with_layout(&[FLASH, STM32_MAIN_FLASH, RAM], &[STM32_F746_FLASH_LEN, STM32_F746_FLASH_LEN, STM32_F746_RAM_LEN]);
+    let gate = Arc::new(Mutex::new(FlashGate::new(Region::new(STM32_MAIN_FLASH, STM32_F746_FLASH_LEN), 32*1024)));
+    let mut mem = SystemMemory::new(backing); mem.set_flash_gate(gate.clone());
+    mem.attach(Box::new(FlashF1::new(gate))); mem.attach(Box::new(Rcc::for_device::<Stm32h743>()));
+    for p in crate::device::svd::stm32h743::PERIPHERALS { if p.base>=0xE000_0000 {continue;} if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)){ mem.attach(Box::new(crate::device::svd::RegisterFile::<crate::device::svd::NoBehavior>::new(p, crate::device::svd::NoBehavior))); } }
     mem.attach(Box::new(Dwt::new())); mem.attach(Box::new(SysTick::new())); mem
 }
 
