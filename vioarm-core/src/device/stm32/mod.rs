@@ -42,6 +42,7 @@ pub mod timer;
 pub mod hsem;
 pub mod i3c;
 pub mod mdios;
+pub mod octospi;
 pub mod otfdec;
 pub mod subghz;
 pub mod opamp;
