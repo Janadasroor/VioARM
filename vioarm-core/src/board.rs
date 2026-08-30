@@ -1578,6 +1578,10 @@ pub fn stm32f756() -> BoardMemory {
     for p in crate::device::svd::stm32h743::PERIPHERALS { if p.base>=0xE000_0000 {continue;} if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)){ mem.attach(Box::new(crate::device::svd::RegisterFile::<crate::device::svd::NoBehavior>::new(p, crate::device::svd::NoBehavior))); } }
     mem.attach(Box::new(Dwt::new())); mem.attach(Box::new(SysTick::new())); mem
 }
+pub const STM32_F405_FLASH_LEN: u32 = 0x0010_0000;
+pub const STM32_F405_RAM_LEN: u32 = 0x0002_0000;
+#[must_use]
+pub fn stm32f405() -> BoardMemory { stm32f407() }
 pub const STM32_H750_FLASH_LEN: u32 = 0x0002_0000;
 pub const STM32_H750_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
