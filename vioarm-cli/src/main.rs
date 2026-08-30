@@ -29,13 +29,17 @@ enum Board {
     Stm32f429,
     Stm32f437,
     Stm32f439,
+    Stm32f446,
     Stm32f469,
     Stm32f722,
     Stm32f746,
     Stm32f756,
     Stm32f765,
+    Stm32f767,
     Stm32h7b0,
     Stm32h730,
+    Stm32h743,
+    Stm32h747,
     Stm32h750,
     Stm32f769,
     Stm32f407,
@@ -52,7 +56,6 @@ enum Board {
     Stm32f303xe,
     Stm32g474xx,
     Stm32l476,
-    Stm32h743,
 }
 
 impl Board {
@@ -73,13 +76,17 @@ impl Board {
             Board::Stm32f429 => board::stm32f429(),
             Board::Stm32f437 => board::stm32f437(),
             Board::Stm32f439 => board::stm32f439(),
+            Board::Stm32f446 => board::stm32f446(),
             Board::Stm32f469 => board::stm32f469(),
             Board::Stm32f722 => board::stm32f722(),
             Board::Stm32f746 => board::stm32f746(),
             Board::Stm32f756 => board::stm32f756(),
             Board::Stm32f765 => board::stm32f765(),
+            Board::Stm32f767 => board::stm32f767(),
             Board::Stm32h7b0 => board::stm32h7b0(),
             Board::Stm32h730 => board::stm32h730(),
+            Board::Stm32h743 => board::stm32h743(),
+            Board::Stm32h747 => board::stm32h747(),
             Board::Stm32h750 => board::stm32h750(),
             Board::Stm32f769 => board::stm32f769(),
             Board::Stm32f407 => board::stm32f407(),
@@ -96,7 +103,6 @@ impl Board {
             Board::Stm32f303xe => board::stm32f303xe(),
             Board::Stm32g474xx => board::stm32g474xx(),
             Board::Stm32l476 => board::stm32l476(),
-            Board::Stm32h743 => board::stm32h743(),
         }
     }
     fn name(self) -> &'static str {
@@ -116,13 +122,17 @@ impl Board {
             Board::Stm32f429 => "stm32f429",
             Board::Stm32f437 => "stm32f437",
             Board::Stm32f439 => "stm32f439",
+            Board::Stm32f446 => "stm32f446",
             Board::Stm32f469 => "stm32f469",
             Board::Stm32f722 => "stm32f722",
             Board::Stm32f746 => "stm32f746",
             Board::Stm32f756 => "stm32f756",
             Board::Stm32f765 => "stm32f765",
+            Board::Stm32f767 => "stm32f767",
             Board::Stm32h7b0 => "stm32h7b0",
             Board::Stm32h730 => "stm32h730",
+            Board::Stm32h743 => "stm32h743",
+            Board::Stm32h747 => "stm32h747",
             Board::Stm32h750 => "stm32h750",
             Board::Stm32f769 => "stm32f769",
             Board::Stm32f407 => "stm32f407",
@@ -139,7 +149,6 @@ impl Board {
             Board::Stm32f303xe => "stm32f303xe",
             Board::Stm32g474xx => "stm32g474xx",
             Board::Stm32l476 => "stm32l476",
-            Board::Stm32h743 => "stm32h743",
         }
     }
 }
