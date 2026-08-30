@@ -1810,6 +1810,18 @@ pub fn stm32h743() -> BoardMemory {
             mem.attach(Box::new(ctor()));
         }
     }
+    for name in ["TIM8", "TIM12", "TIM13", "TIM14"] {
+        if <Stm32h743 as crate::device::svd::Device>::peripheral(name).is_some() {
+            if let Some(def) = crate::device::svd::stm32h743::peripheral(name) {
+                if matches!(mem.read(def.base), Err(crate::error::BusError::Reserved)) {
+                    mem.attach(Box::new(
+                        crate::device::stm32::timer::Timer::new_for_name::<Stm32h743>(name),
+                    ));
+                    let _ = def.base;
+                }
+            }
+        }
+    }
     if <Stm32h743 as crate::device::svd::Device>::peripheral("SPI1").is_some() {
         mem.attach(Box::new(Spi::spi1_for::<Stm32h743>()));
     }
