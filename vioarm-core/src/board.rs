@@ -1378,7 +1378,7 @@ pub fn stm32f303xe() -> BoardMemory {
             mem.attach(Box::new(ctor()));
         }
     }
-    // TIM family (F3 has TIM1/2/3/4/6/7/15/16/17)
+    // TIM family (F3 has TIM1/2/3/4/6/7/8/15/16/17/20)
     for ctor in [
         Timer::tim1_for::<Stm32f303xe>,
         Timer::tim2_for::<Stm32f303xe>,
@@ -1389,6 +1389,18 @@ pub fn stm32f303xe() -> BoardMemory {
         let base = ctor().ranges()[0].base;
         if <Stm32f303xe as crate::device::svd::Device>::by_base(base).is_some() {
             mem.attach(Box::new(ctor()));
+        }
+    }
+    for name in ["TIM4", "TIM8", "TIM15", "TIM16", "TIM17", "TIM20"] {
+        if <Stm32f303xe as crate::device::svd::Device>::peripheral(name).is_some() {
+            if let Some(def) = crate::device::svd::stm32f303xe::peripheral(name) {
+                if matches!(mem.read(def.base), Err(crate::error::BusError::Reserved)) {
+                    mem.attach(Box::new(
+                        crate::device::stm32::timer::Timer::new_for_name::<Stm32f303xe>(name),
+                    ));
+                    let _ = def.base;
+                }
+            }
         }
     }
     if <Stm32f303xe as crate::device::svd::Device>::peripheral("EXTI").is_some() {
