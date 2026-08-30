@@ -1397,12 +1397,18 @@ pub fn stm32f303xe() -> BoardMemory {
     if <Stm32f303xe as crate::device::svd::Device>::peripheral("SYSCFG").is_some() {
         mem.attach(Box::new(Syscfg::for_device::<Stm32f303xe>()));
     }
-    // F3 ADC is the new ADC (ISR/CR) — now behavioral via new_for
+    // F3 ADC is the new ADC (ISR/CR) — now behavioral via new_for with ADC1_2 common
+    let adc12_state = std::sync::Arc::new(std::sync::Mutex::new(AdcCommonState::default()));
+    if <Stm32f303xe as crate::device::svd::Device>::peripheral("ADC1_2").is_some() {
+        mem.attach(Box::new(AdcCommon::adc1_2_common_for::<Stm32f303xe>(
+            adc12_state.clone(),
+        )));
+    }
     if <Stm32f303xe as crate::device::svd::Device>::peripheral("ADC1").is_some() {
-        mem.attach(Box::new(Adc::new_for::<Stm32f303xe>()));
+        mem.attach(Box::new(Adc::new_for::<Stm32f303xe>().with_common(adc12_state.clone())));
     }
     if <Stm32f303xe as crate::device::svd::Device>::peripheral("ADC2").is_some() {
-        mem.attach(Box::new(Adc::adc2_for::<Stm32f303xe>()));
+        mem.attach(Box::new(Adc::adc2_for::<Stm32f303xe>().with_common(adc12_state.clone())));
     }
     if <Stm32f303xe as crate::device::svd::Device>::peripheral("ADC3").is_some() {
         mem.attach(Box::new(Adc::adc3_for::<Stm32f303xe>()));

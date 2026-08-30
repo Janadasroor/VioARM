@@ -710,6 +710,10 @@ impl AdcCommon {
     pub fn adc3_common_for<D: Device>(state: Arc<Mutex<AdcCommonState>>) -> Self {
         Self::for_device::<D>("ADC3_Common", "adc3_common", state)
     }
+    #[must_use]
+    pub fn adc1_2_common_for<D: Device>(state: Arc<Mutex<AdcCommonState>>) -> Self {
+        Self::for_device::<D>("ADC1_2", "adc1_2_common", state)
+    }
 
     fn for_device<D: Device>(
         peripheral: &str,
