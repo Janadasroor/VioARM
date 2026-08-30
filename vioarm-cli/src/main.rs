@@ -16,7 +16,10 @@ use vioarm_core::mem::bus::Bus;
 enum Board {
     Virtual,
     Stm32f100,
+    Stm32f101,
+    Stm32f102,
     Stm32f103,
+    Stm32f105,
     Stm32f107,
     Stm32f407,
     Stm32f072,
@@ -40,7 +43,10 @@ impl Board {
         match self {
             Board::Virtual => board::virtual_board(),
             Board::Stm32f100 => board::stm32f100(),
+            Board::Stm32f101 => board::stm32f101(),
+            Board::Stm32f102 => board::stm32f102(),
             Board::Stm32f103 => board::stm32f103(),
+            Board::Stm32f105 => board::stm32f105(),
             Board::Stm32f107 => board::stm32f107(),
             Board::Stm32f407 => board::stm32f407(),
             Board::Stm32f072 => board::stm32f072(),
@@ -63,7 +69,10 @@ impl Board {
         match self {
             Board::Virtual => "virtual",
             Board::Stm32f100 => "stm32f100",
+            Board::Stm32f101 => "stm32f101",
+            Board::Stm32f102 => "stm32f102",
             Board::Stm32f103 => "stm32f103",
+            Board::Stm32f105 => "stm32f105",
             Board::Stm32f107 => "stm32f107",
             Board::Stm32f407 => "stm32f407",
             Board::Stm32f072 => "stm32f072",
