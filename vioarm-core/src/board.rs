@@ -1606,6 +1606,22 @@ pub const STM32_H730_FLASH_LEN: u32 = 0x0002_0000;
 pub const STM32_H730_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
 pub fn stm32h730() -> BoardMemory { stm32h750() }
+pub const STM32_F765_FLASH_LEN: u32 = 0x0020_0000;
+pub const STM32_F765_RAM_LEN: u32 = 0x0008_0000;
+#[must_use]
+pub fn stm32f765() -> BoardMemory {
+    use crate::device::svd::stm32h743::Stm32h743;
+    let backing = FlatMemory::with_layout(&[FLASH, STM32_MAIN_FLASH, RAM], &[STM32_F765_FLASH_LEN, STM32_F765_FLASH_LEN, STM32_F765_RAM_LEN]);
+    let gate = Arc::new(Mutex::new(FlashGate::new(Region::new(STM32_MAIN_FLASH, STM32_F765_FLASH_LEN), 32*1024)));
+    let mut mem = SystemMemory::new(backing); mem.set_flash_gate(gate.clone());
+    mem.attach(Box::new(FlashF1::new(gate))); mem.attach(Box::new(Rcc::for_device::<Stm32h743>()));
+    for p in crate::device::svd::stm32h743::PERIPHERALS { if p.base>=0xE000_0000 {continue;} if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)){ mem.attach(Box::new(crate::device::svd::RegisterFile::<crate::device::svd::NoBehavior>::new(p, crate::device::svd::NoBehavior))); } }
+    mem.attach(Box::new(Dwt::new())); mem.attach(Box::new(SysTick::new())); mem
+}
+pub const STM32_H7B0_FLASH_LEN: u32 = 0x0002_0000;
+pub const STM32_H7B0_RAM_LEN: u32 = 0x0002_0000;
+#[must_use]
+pub fn stm32h7b0() -> BoardMemory { stm32h750() }
 pub const STM32_H750_FLASH_LEN: u32 = 0x0002_0000;
 pub const STM32_H750_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
