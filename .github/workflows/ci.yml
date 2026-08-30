@@ -23,6 +23,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y qemu-system-arm
           qemu-system-arm --version
+          # ORACLE_VERSION 10.2.1 pinned in vioarm-qemu/src/qemu.rs:128 — verify
+          qemu-system-arm --version | grep -q "10.2.1" || echo "warn: qemu version not 10.2.1, see qemu.rs"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
@@ -54,9 +56,9 @@ jobs:
       - name: Audit
         if: matrix.toolchain == 'stable'
         run: |
-          cargo install cargo-audit cargo-deny --locked || true
+          cargo install cargo-audit cargo-deny --locked
           cargo audit
-          cargo deny check
+          cargo deny check --deny warnings
 
       - name: Coverage
         if: matrix.toolchain == 'stable'

@@ -1,20 +1,20 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.4",
-  "serialNumber": "urn:uuid: vioarm-3.0.0",
+  "serialNumber": "urn:uuid:vioarm-1.9.1",
   "version": 1,
   "metadata": {
     "component": {
       "type": "application",
       "name": "vioarm",
-      "version": "3.0.0",
+      "version": "1.9.1",
       "description": "VioARM full-system simulator"
     },
     "tools": [
       {
         "vendor": "VioARM",
         "name": "cargo-cyclonedx",
-        "version": "generated"
+        "version": "0.5.2"
       }
     ]
   },
