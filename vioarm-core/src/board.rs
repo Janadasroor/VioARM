@@ -652,10 +652,16 @@ pub fn stm32f030() -> BoardMemory {
             )));
         }
     }
-    if <Stm32f030 as crate::device::svd::Device>::peripheral("ADC1").is_some()
-        || <Stm32f030 as crate::device::svd::Device>::peripheral("ADC").is_some()
+    if let Some(def) = crate::device::svd::stm32f030::peripheral("ADC")
+        .or(crate::device::svd::stm32f030::peripheral("ADC1"))
     {
-        mem.attach(Box::new(Adc::new_for::<Stm32f030>()));
+        if def.registers.iter().any(|r| r.name == "SQR1") {
+            mem.attach(Box::new(Adc::new_for::<Stm32f030>()));
+        } else {
+            mem.attach(Box::new(crate::device::svd::RegisterFile::<
+                crate::device::svd::NoBehavior,
+            >::new(def, crate::device::svd::NoBehavior)));
+        }
     }
     if <Stm32f030 as crate::device::svd::Device>::peripheral("SPI1").is_some() {
         mem.attach(Box::new(Spi::spi1_for::<Stm32f030>()));
@@ -773,10 +779,16 @@ pub fn stm32f031() -> BoardMemory {
     if <Stm32f031 as crate::device::svd::Device>::peripheral("SYSCFG").is_some() {
         mem.attach(Box::new(Syscfg::for_device::<Stm32f031>()));
     }
-    if <Stm32f031 as crate::device::svd::Device>::peripheral("ADC1").is_some()
-        || <Stm32f031 as crate::device::svd::Device>::peripheral("ADC").is_some()
+    if let Some(def) = crate::device::svd::stm32f031::peripheral("ADC")
+        .or(crate::device::svd::stm32f031::peripheral("ADC1"))
     {
-        mem.attach(Box::new(Adc::new_for::<Stm32f031>()));
+        if def.registers.iter().any(|r| r.name == "SQR1") {
+            mem.attach(Box::new(Adc::new_for::<Stm32f031>()));
+        } else {
+            mem.attach(Box::new(crate::device::svd::RegisterFile::<
+                crate::device::svd::NoBehavior,
+            >::new(def, crate::device::svd::NoBehavior)));
+        }
     }
     if <Stm32f031 as crate::device::svd::Device>::peripheral("SPI1").is_some() {
         mem.attach(Box::new(Spi::spi1_for::<Stm32f031>()));
@@ -1343,17 +1355,23 @@ pub fn stm32f100() -> BoardMemory {
             mem.attach(Box::new(StmGpio::at_in::<Stm32f100>(base, name)));
         }
     }
-    for ctor in [Usart::for_device::<Stm32f100> as fn() -> Usart, Usart::usart2_for::<Stm32f100>, Usart::usart3_for::<Stm32f100>] {
-        let base = ctor().ranges()[0].base;
-        if <Stm32f100 as crate::device::svd::Device>::by_base(base).is_some() {
-            mem.attach(Box::new(ctor()));
-        }
+    if <Stm32f100 as crate::device::svd::Device>::peripheral("USART1").is_some() {
+        mem.attach(Box::new(Usart::for_device::<Stm32f100>()));
     }
-    for ctor in [Timer::tim2_for::<Stm32f100>, Timer::tim3_for::<Stm32f100>, Timer::tim4_for::<Stm32f100>] {
-        let base = ctor().ranges()[0].base;
-        if <Stm32f100 as crate::device::svd::Device>::by_base(base).is_some() {
-            mem.attach(Box::new(ctor()));
-        }
+    if <Stm32f100 as crate::device::svd::Device>::peripheral("USART2").is_some() {
+        mem.attach(Box::new(Usart::usart2_for::<Stm32f100>()));
+    }
+    if <Stm32f100 as crate::device::svd::Device>::peripheral("USART3").is_some() {
+        mem.attach(Box::new(Usart::usart3_for::<Stm32f100>()));
+    }
+    if <Stm32f100 as crate::device::svd::Device>::peripheral("TIM2").is_some() {
+        mem.attach(Box::new(Timer::tim2_for::<Stm32f100>()));
+    }
+    if <Stm32f100 as crate::device::svd::Device>::peripheral("TIM3").is_some() {
+        mem.attach(Box::new(Timer::tim3_for::<Stm32f100>()));
+    }
+    if <Stm32f100 as crate::device::svd::Device>::peripheral("TIM4").is_some() {
+        mem.attach(Box::new(Timer::tim4_for::<Stm32f100>()));
     }
     if <Stm32f100 as crate::device::svd::Device>::peripheral("EXTI").is_some() {
         mem.attach(Box::new(Exti::for_device::<Stm32f100>()));
@@ -1407,8 +1425,12 @@ pub fn stm32f101() -> BoardMemory {
     let mut mem = SystemMemory::new(backing); mem.set_flash_gate(gate.clone());
     mem.attach(Box::new(FlashF1::for_device::<Stm32f101>(gate))); mem.attach(Box::new(Rcc::for_device::<Stm32f101>()));
     for (base,name) in [(0x40010800u32,"gpioa"),(0x40010C00,"gpiob"),(0x40011000,"gpioc")] { if <Stm32f101 as crate::device::svd::Device>::by_base(base).is_some() { mem.attach(Box::new(StmGpio::at_in::<Stm32f101>(base,name))); } }
-    for ctor in [Usart::for_device::<Stm32f101> as fn()->Usart, Usart::usart2_for::<Stm32f101>, Usart::usart3_for::<Stm32f101>] { let base=ctor().ranges()[0].base; if <Stm32f101 as crate::device::svd::Device>::by_base(base).is_some(){ mem.attach(Box::new(ctor())); } }
-    for ctor in [Timer::tim2_for::<Stm32f101>, Timer::tim3_for::<Stm32f101>, Timer::tim4_for::<Stm32f101>] { let base=ctor().ranges()[0].base; if <Stm32f101 as crate::device::svd::Device>::by_base(base).is_some(){ mem.attach(Box::new(ctor())); } }
+    if <Stm32f101 as crate::device::svd::Device>::peripheral("USART1").is_some() { mem.attach(Box::new(Usart::for_device::<Stm32f101>())); }
+    if <Stm32f101 as crate::device::svd::Device>::peripheral("USART2").is_some() { mem.attach(Box::new(Usart::usart2_for::<Stm32f101>())); }
+    if <Stm32f101 as crate::device::svd::Device>::peripheral("USART3").is_some() { mem.attach(Box::new(Usart::usart3_for::<Stm32f101>())); }
+    if <Stm32f101 as crate::device::svd::Device>::peripheral("TIM2").is_some() { mem.attach(Box::new(Timer::tim2_for::<Stm32f101>())); }
+    if <Stm32f101 as crate::device::svd::Device>::peripheral("TIM3").is_some() { mem.attach(Box::new(Timer::tim3_for::<Stm32f101>())); }
+    if <Stm32f101 as crate::device::svd::Device>::peripheral("TIM4").is_some() { mem.attach(Box::new(Timer::tim4_for::<Stm32f101>())); }
     if <Stm32f101 as crate::device::svd::Device>::peripheral("EXTI").is_some(){ mem.attach(Box::new(Exti::for_device::<Stm32f101>())); }
     if <Stm32f101 as crate::device::svd::Device>::peripheral("AFIO").is_some(){ mem.attach(Box::new(Afio::for_device::<Stm32f101>())); }
     if <Stm32f101 as crate::device::svd::Device>::peripheral("ADC1").is_some(){ mem.attach(Box::new(Adc::adc1_for::<Stm32f101>())); }
@@ -1432,8 +1454,11 @@ pub fn stm32f102() -> BoardMemory {
     let mut mem = SystemMemory::new(backing); mem.set_flash_gate(gate.clone());
     mem.attach(Box::new(FlashF1::for_device::<Stm32f102>(gate))); mem.attach(Box::new(Rcc::for_device::<Stm32f102>()));
     for (base,name) in [(0x40010800u32,"gpioa"),(0x40010C00,"gpiob"),(0x40011000,"gpioc")] { if <Stm32f102 as crate::device::svd::Device>::by_base(base).is_some(){ mem.attach(Box::new(StmGpio::at_in::<Stm32f102>(base,name))); } }
-    for ctor in [Usart::for_device::<Stm32f102> as fn()->Usart, Usart::usart2_for::<Stm32f102>, Usart::usart3_for::<Stm32f102>] { let base=ctor().ranges()[0].base; if <Stm32f102 as crate::device::svd::Device>::by_base(base).is_some(){ mem.attach(Box::new(ctor())); } }
-    for ctor in [Timer::tim2_for::<Stm32f102>, Timer::tim3_for::<Stm32f102>] { let base=ctor().ranges()[0].base; if <Stm32f102 as crate::device::svd::Device>::by_base(base).is_some(){ mem.attach(Box::new(ctor())); } }
+    if <Stm32f102 as crate::device::svd::Device>::peripheral("USART1").is_some() { mem.attach(Box::new(Usart::for_device::<Stm32f102>())); }
+    if <Stm32f102 as crate::device::svd::Device>::peripheral("USART2").is_some() { mem.attach(Box::new(Usart::usart2_for::<Stm32f102>())); }
+    if <Stm32f102 as crate::device::svd::Device>::peripheral("USART3").is_some() { mem.attach(Box::new(Usart::usart3_for::<Stm32f102>())); }
+    if <Stm32f102 as crate::device::svd::Device>::peripheral("TIM2").is_some() { mem.attach(Box::new(Timer::tim2_for::<Stm32f102>())); }
+    if <Stm32f102 as crate::device::svd::Device>::peripheral("TIM3").is_some() { mem.attach(Box::new(Timer::tim3_for::<Stm32f102>())); }
     if <Stm32f102 as crate::device::svd::Device>::peripheral("USB").is_some(){ mem.attach(Box::new(crate::device::stm32::usb_fs::UsbFs::new_for::<Stm32f102>())); }
     if <Stm32f102 as crate::device::svd::Device>::peripheral("EXTI").is_some(){ mem.attach(Box::new(Exti::for_device::<Stm32f102>())); }
     if <Stm32f102 as crate::device::svd::Device>::peripheral("AFIO").is_some(){ mem.attach(Box::new(Afio::for_device::<Stm32f102>())); }
@@ -1458,8 +1483,11 @@ pub fn stm32f105() -> BoardMemory {
     let mut mem = SystemMemory::new(backing); mem.set_flash_gate(gate.clone());
     mem.attach(Box::new(FlashF1::for_device::<Stm32f105>(gate))); mem.attach(Box::new(Rcc::for_device::<Stm32f105>()));
     for (base,name) in [(0x40010800u32,"gpioa"),(0x40010C00,"gpiob"),(0x40011000,"gpioc")] { if <Stm32f105 as crate::device::svd::Device>::by_base(base).is_some(){ mem.attach(Box::new(StmGpio::at_in::<Stm32f105>(base,name))); } }
-    for ctor in [Usart::for_device::<Stm32f105> as fn()->Usart, Usart::usart2_for::<Stm32f105>, Usart::usart3_for::<Stm32f105>] { let base=ctor().ranges()[0].base; if <Stm32f105 as crate::device::svd::Device>::by_base(base).is_some(){ mem.attach(Box::new(ctor())); } }
-    for ctor in [Timer::tim2_for::<Stm32f105>, Timer::tim3_for::<Stm32f105>] { let base=ctor().ranges()[0].base; if <Stm32f105 as crate::device::svd::Device>::by_base(base).is_some(){ mem.attach(Box::new(ctor())); } }
+    if <Stm32f105 as crate::device::svd::Device>::peripheral("USART1").is_some() { mem.attach(Box::new(Usart::for_device::<Stm32f105>())); }
+    if <Stm32f105 as crate::device::svd::Device>::peripheral("USART2").is_some() { mem.attach(Box::new(Usart::usart2_for::<Stm32f105>())); }
+    if <Stm32f105 as crate::device::svd::Device>::peripheral("USART3").is_some() { mem.attach(Box::new(Usart::usart3_for::<Stm32f105>())); }
+    if <Stm32f105 as crate::device::svd::Device>::peripheral("TIM2").is_some() { mem.attach(Box::new(Timer::tim2_for::<Stm32f105>())); }
+    if <Stm32f105 as crate::device::svd::Device>::peripheral("TIM3").is_some() { mem.attach(Box::new(Timer::tim3_for::<Stm32f105>())); }
     if <Stm32f105 as crate::device::svd::Device>::peripheral("CAN1").is_some(){ mem.attach(Box::new(Can::can1_for::<Stm32f105>())); }
     if <Stm32f105 as crate::device::svd::Device>::peripheral("CAN2").is_some(){ mem.attach(Box::new(Can::can2_for::<Stm32f105>())); }
     if <Stm32f105 as crate::device::svd::Device>::peripheral("USB_OTG_FS").is_some(){ mem.attach(Box::new(Usb::otg_fs_for::<Stm32f105>())); }
@@ -2062,6 +2090,206 @@ pub const STM32_H743ZI_FLASH_LEN: u32 = 0x0020_0000;
 pub const STM32_H743ZI_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
 pub fn stm32h743zi() -> BoardMemory { stm32h743() }
+pub const STM32F030C6_FLASH_LEN: u32 = 0x0000_8000;
+pub const STM32F030C6_RAM_LEN: u32 = 0x0000_1000;
+#[must_use]
+pub fn stm32f030c6() -> BoardMemory { stm32f030() }
+pub const STM32F030CC_FLASH_LEN: u32 = 0x0004_0000;
+pub const STM32F030CC_RAM_LEN: u32 = 0x0000_8000;
+#[must_use]
+pub fn stm32f030cc() -> BoardMemory { stm32f030() }
+pub const STM32F042K6_FLASH_LEN: u32 = 0x0000_8000;
+pub const STM32F042K6_RAM_LEN: u32 = 0x0000_1800;
+#[must_use]
+pub fn stm32f042k6() -> BoardMemory { stm32f042() }
+pub const STM32F042T6_FLASH_LEN: u32 = 0x0000_8000;
+pub const STM32F042T6_RAM_LEN: u32 = 0x0000_1800;
+#[must_use]
+pub fn stm32f042t6() -> BoardMemory { stm32f042() }
+pub const STM32F072C8_FLASH_LEN: u32 = 0x0001_0000;
+pub const STM32F072C8_RAM_LEN: u32 = 0x0000_4000;
+#[must_use]
+pub fn stm32f072c8() -> BoardMemory { stm32f072() }
+pub const STM32F091RC_FLASH_LEN: u32 = 0x0004_0000;
+pub const STM32F091RC_RAM_LEN: u32 = 0x0000_8000;
+#[must_use]
+pub fn stm32f091rc() -> BoardMemory { stm32f091() }
+pub const STM32F100C8_FLASH_LEN: u32 = 0x0001_0000;
+pub const STM32F100C8_RAM_LEN: u32 = 0x0000_2000;
+#[must_use]
+pub fn stm32f100c8() -> BoardMemory { stm32f100() }
+pub const STM32F101C8_FLASH_LEN: u32 = 0x0001_0000;
+pub const STM32F101C8_RAM_LEN: u32 = 0x0000_2000;
+#[must_use]
+pub fn stm32f101c8() -> BoardMemory { stm32f101() }
+pub const STM32F102CB_FLASH_LEN: u32 = 0x0002_0000;
+pub const STM32F102CB_RAM_LEN: u32 = 0x0000_2000;
+#[must_use]
+pub fn stm32f102cb() -> BoardMemory { stm32f102() }
+pub const STM32F103C6_FLASH_LEN: u32 = 0x0000_8000;
+pub const STM32F103C6_RAM_LEN: u32 = 0x0000_5000;
+#[must_use]
+pub fn stm32f103c6() -> BoardMemory { stm32f103() }
+pub const STM32F103RE_FLASH_LEN: u32 = 0x0008_0000;
+pub const STM32F103RE_RAM_LEN: u32 = 0x0001_0000;
+#[must_use]
+pub fn stm32f103re() -> BoardMemory { stm32f103() }
+pub const STM32F105RB_FLASH_LEN: u32 = 0x0002_0000;
+pub const STM32F105RB_RAM_LEN: u32 = 0x0001_0000;
+#[must_use]
+pub fn stm32f105rb() -> BoardMemory { stm32f105() }
+pub const STM32F107VC_FLASH_LEN: u32 = 0x0004_0000;
+pub const STM32F107VC_RAM_LEN: u32 = 0x0001_0000;
+#[must_use]
+pub fn stm32f107vc() -> BoardMemory { stm32f107() }
+pub const STM32F205RE_FLASH_LEN: u32 = 0x0008_0000;
+pub const STM32F205RE_RAM_LEN: u32 = 0x0002_0000;
+#[must_use]
+pub fn stm32f205re() -> BoardMemory { stm32f205() }
+pub const STM32F207ZE_FLASH_LEN: u32 = 0x0008_0000;
+pub const STM32F207ZE_RAM_LEN: u32 = 0x0002_0000;
+#[must_use]
+pub fn stm32f207ze() -> BoardMemory { stm32f207() }
+pub const STM32F215RE_FLASH_LEN: u32 = 0x0008_0000;
+pub const STM32F215RE_RAM_LEN: u32 = 0x0002_0000;
+#[must_use]
+pub fn stm32f215re() -> BoardMemory { stm32f215() }
+pub const STM32F217IG_FLASH_LEN: u32 = 0x0010_0000;
+pub const STM32F217IG_RAM_LEN: u32 = 0x0002_0000;
+#[must_use]
+pub fn stm32f217ig() -> BoardMemory { stm32f217() }
+pub const STM32F301K8_FLASH_LEN: u32 = 0x0001_0000;
+pub const STM32F301K8_RAM_LEN: u32 = 0x0000_4000;
+#[must_use]
+pub fn stm32f301k8() -> BoardMemory { stm32f301() }
+pub const STM32F302CB_FLASH_LEN: u32 = 0x0002_0000;
+pub const STM32F302CB_RAM_LEN: u32 = 0x0000_8000;
+#[must_use]
+pub fn stm32f302cb() -> BoardMemory { stm32f302() }
+pub const STM32F303CC_FLASH_LEN: u32 = 0x0004_0000;
+pub const STM32F303CC_RAM_LEN: u32 = 0x0000_8000;
+#[must_use]
+pub fn stm32f303cc() -> BoardMemory { stm32f303() }
+pub const STM32F373CC_FLASH_LEN: u32 = 0x0004_0000;
+pub const STM32F373CC_RAM_LEN: u32 = 0x0000_8000;
+#[must_use]
+pub fn stm32f373cc() -> BoardMemory { stm32f373() }
+pub const STM32F378CC_FLASH_LEN: u32 = 0x0008_0000;
+pub const STM32F378CC_RAM_LEN: u32 = 0x0000_8000;
+#[must_use]
+pub fn stm32f378cc() -> BoardMemory { stm32f378() }
+pub const STM32F401CC_FLASH_LEN: u32 = 0x0004_0000;
+pub const STM32F401CC_RAM_LEN: u32 = 0x0001_8000;
+#[must_use]
+pub fn stm32f401cc() -> BoardMemory { stm32f401() }
+pub const STM32F401CE_FLASH_LEN: u32 = 0x0008_0000;
+pub const STM32F401CE_RAM_LEN: u32 = 0x0001_8000;
+#[must_use]
+pub fn stm32f401ce() -> BoardMemory { stm32f401() }
+pub const STM32F410C8_FLASH_LEN: u32 = 0x0001_0000;
+pub const STM32F410C8_RAM_LEN: u32 = 0x0000_8000;
+#[must_use]
+pub fn stm32f410c8() -> BoardMemory { stm32f410() }
+pub const STM32F412CE_FLASH_LEN: u32 = 0x0008_0000;
+pub const STM32F412CE_RAM_LEN: u32 = 0x0002_0000;
+#[must_use]
+pub fn stm32f412ce() -> BoardMemory { stm32f412() }
+pub const STM32F413CH_FLASH_LEN: u32 = 0x0018_0000;
+pub const STM32F413CH_RAM_LEN: u32 = 0x0005_0000;
+#[must_use]
+pub fn stm32f413ch() -> BoardMemory { stm32f413() }
+pub const STM32F423IH_FLASH_LEN: u32 = 0x0018_0000;
+pub const STM32F423IH_RAM_LEN: u32 = 0x0005_0000;
+#[must_use]
+pub fn stm32f423ih() -> BoardMemory { stm32f423() }
+pub const STM32F427IG_FLASH_LEN: u32 = 0x0010_0000;
+pub const STM32F427IG_RAM_LEN: u32 = 0x0003_0000;
+#[must_use]
+pub fn stm32f427ig() -> BoardMemory { stm32f427() }
+pub const STM32F429IG_FLASH_LEN: u32 = 0x0010_0000;
+pub const STM32F429IG_RAM_LEN: u32 = 0x0003_0000;
+#[must_use]
+pub fn stm32f429ig() -> BoardMemory { stm32f429() }
+pub const STM32F437II_FLASH_LEN: u32 = 0x0020_0000;
+pub const STM32F437II_RAM_LEN: u32 = 0x0004_0000;
+#[must_use]
+pub fn stm32f437ii() -> BoardMemory { stm32f437() }
+pub const STM32F446RE_FLASH_LEN: u32 = 0x0008_0000;
+pub const STM32F446RE_RAM_LEN: u32 = 0x0002_0000;
+#[must_use]
+pub fn stm32f446re() -> BoardMemory { stm32f446() }
+pub const STM32F469AI_FLASH_LEN: u32 = 0x0020_0000;
+pub const STM32F469AI_RAM_LEN: u32 = 0x0006_0000;
+#[must_use]
+pub fn stm32f469ai() -> BoardMemory { stm32f469() }
+pub const STM32F722IE_FLASH_LEN: u32 = 0x0008_0000;
+pub const STM32F722IE_RAM_LEN: u32 = 0x0002_0000;
+#[must_use]
+pub fn stm32f722ie() -> BoardMemory { stm32f722() }
+pub const STM32F723IE_FLASH_LEN: u32 = 0x0008_0000;
+pub const STM32F723IE_RAM_LEN: u32 = 0x0002_0000;
+#[must_use]
+pub fn stm32f723ie() -> BoardMemory { stm32f723() }
+pub const STM32F732IE_FLASH_LEN: u32 = 0x0008_0000;
+pub const STM32F732IE_RAM_LEN: u32 = 0x0004_0000;
+#[must_use]
+pub fn stm32f732ie() -> BoardMemory { stm32f732() }
+pub const STM32F745IE_FLASH_LEN: u32 = 0x0010_0000;
+pub const STM32F745IE_RAM_LEN: u32 = 0x0004_0000;
+#[must_use]
+pub fn stm32f745ie() -> BoardMemory { stm32f745() }
+pub const STM32F746BE_FLASH_LEN: u32 = 0x0010_0000;
+pub const STM32F746BE_RAM_LEN: u32 = 0x0005_0000;
+#[must_use]
+pub fn stm32f746be() -> BoardMemory { stm32f746() }
+pub const STM32F756ZG_FLASH_LEN: u32 = 0x0010_0000;
+pub const STM32F756ZG_RAM_LEN: u32 = 0x0005_0000;
+#[must_use]
+pub fn stm32f756zg() -> BoardMemory { stm32f756() }
+pub const STM32F765BI_FLASH_LEN: u32 = 0x0020_0000;
+pub const STM32F765BI_RAM_LEN: u32 = 0x0008_0000;
+#[must_use]
+pub fn stm32f765bi() -> BoardMemory { stm32f765() }
+pub const STM32F767ZI_FLASH_LEN: u32 = 0x0020_0000;
+pub const STM32F767ZI_RAM_LEN: u32 = 0x0008_0000;
+#[must_use]
+pub fn stm32f767zi() -> BoardMemory { stm32f767() }
+pub const STM32F777AI_FLASH_LEN: u32 = 0x0008_0000;
+pub const STM32F777AI_RAM_LEN: u32 = 0x0008_0000;
+#[must_use]
+pub fn stm32f777ai() -> BoardMemory { stm32f777() }
+pub const STM32G030F6_FLASH_LEN: u32 = 0x0000_8000;
+pub const STM32G030F6_RAM_LEN: u32 = 0x0000_2000;
+#[must_use]
+pub fn stm32g030f6() -> BoardMemory { stm32g030() }
+pub const STM32G031F8_FLASH_LEN: u32 = 0x0001_0000;
+pub const STM32G031F8_RAM_LEN: u32 = 0x0000_2000;
+#[must_use]
+pub fn stm32g031f8() -> BoardMemory { stm32g031() }
+pub const STM32G070RB_FLASH_LEN: u32 = 0x0002_0000;
+pub const STM32G070RB_RAM_LEN: u32 = 0x0000_9000;
+#[must_use]
+pub fn stm32g070rb() -> BoardMemory { stm32g070() }
+pub const STM32G071RB_FLASH_LEN: u32 = 0x0002_0000;
+pub const STM32G071RB_RAM_LEN: u32 = 0x0000_9000;
+#[must_use]
+pub fn stm32g071rb() -> BoardMemory { stm32g071() }
+pub const STM32G474RE_FLASH_LEN: u32 = 0x0008_0000;
+pub const STM32G474RE_RAM_LEN: u32 = 0x0002_0000;
+#[must_use]
+pub fn stm32g474re() -> BoardMemory { stm32g474xx() }
+pub const STM32H743II_FLASH_LEN: u32 = 0x0020_0000;
+pub const STM32H743II_RAM_LEN: u32 = 0x0008_0000;
+#[must_use]
+pub fn stm32h743ii() -> BoardMemory { stm32h743() }
+pub const STM32H753II_FLASH_LEN: u32 = 0x0020_0000;
+pub const STM32H753II_RAM_LEN: u32 = 0x0008_0000;
+#[must_use]
+pub fn stm32h753ii() -> BoardMemory { stm32h753() }
+pub const STM32L476JE_FLASH_LEN: u32 = 0x0010_0000;
+pub const STM32L476JE_RAM_LEN: u32 = 0x0002_0000;
+#[must_use]
+pub fn stm32l476je() -> BoardMemory { stm32l476() }
 pub const STM32_F767_FLASH_LEN: u32 = 0x0020_0000;
 pub const STM32_F767_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
