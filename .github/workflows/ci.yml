@@ -18,11 +18,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install qemu-system-arm
+      - name: Install qemu-system-arm + gcc-arm-none-eabi
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-system-arm
+          sudo apt-get install -y qemu-system-arm gcc-arm-none-eabi
           qemu-system-arm --version
+          arm-none-eabi-gcc --version
           # ORACLE_VERSION 10.2.1 pinned in vioarm-qemu/src/qemu.rs:128 — verify
           qemu-system-arm --version | grep -q "10.2.1" || echo "warn: qemu version not 10.2.1, see qemu.rs"
 

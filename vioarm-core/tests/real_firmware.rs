@@ -261,11 +261,20 @@ fn build_firmware_for(
     cpu: &str,
     vfp: bool,
 ) -> Result<(Vec<u8>, HashMap<String, u32>), String> {
-    let clang = which("clang").ok_or_else(|| "clang not found on PATH".to_string())?;
-    let objcopy = which("llvm-objcopy")
+    // Prefer arm-none-eabi-gcc for realistic simulation, fallback to clang
+    let (compiler, is_gcc) = if let Some(gcc) = which("arm-none-eabi-gcc") {
+        (gcc, true)
+    } else if let Some(c) = which("clang") {
+        (c, false)
+    } else {
+        return Err("no compiler found (arm-none-eabi-gcc or clang) on PATH".to_string());
+    };
+    let objcopy = which("arm-none-eabi-objcopy")
+        .or_else(|| which("llvm-objcopy"))
         .or_else(|| which("objcopy"))
         .ok_or_else(|| "objcopy not found on PATH".to_string())?;
-    let nm = which("llvm-nm")
+    let nm = which("arm-none-eabi-nm")
+        .or_else(|| which("llvm-nm"))
         .or_else(|| which("nm"))
         .ok_or_else(|| "nm not found on PATH".to_string())?;
 
@@ -277,34 +286,30 @@ fn build_firmware_for(
 
     let src = src.to_str().ok_or("temp path not UTF-8")?;
     let obj = obj.to_str().ok_or("temp path not UTF-8")?;
-    let target_arg = format!("--target={target}");
     let cpu_arg = format!("-mcpu={cpu}");
-    let float_args: [&str; 2] = if vfp {
-        ["-mfloat-abi=softfp", "-mfpu=fpv4-sp-d16"]
+    let mut float_args: Vec<&str> = if vfp {
+        vec!["-mfloat-abi=softfp", "-mfpu=fpv4-sp-d16"]
+    } else if is_gcc {
+        vec!["-mfloat-abi=soft"]
     } else {
-        ["-mfloat-abi=soft", "-mfpu=none"]
+        vec!["-mfloat-abi=soft", "-mfpu=none"]
     };
-    let mut args = vec![
-        target_arg.as_str(),
-        cpu_arg.as_str(),
-        "-mthumb",
-        "-ffreestanding",
-        "-nostdlib",
-        "-O0",
-        "-g0",
-        "-c",
-        src,
-        "-o",
-        obj,
-    ];
-    for f in float_args {
-        args.push(f);
+    let mut args: Vec<&str> = Vec::new();
+    if !is_gcc {
+        let target_arg = format!("--target={target}");
+        // leak to keep &str alive
+        args.push(Box::leak(target_arg.into_boxed_str()) as &str);
+    }
+    args.push(Box::leak(cpu_arg.into_boxed_str()) as &str);
+    args.extend_from_slice(&["-mthumb", "-ffreestanding", "-nostdlib", "-O0", "-g0", "-c", src, "-o", obj]);
+    for f in &float_args {
+        args.push(*f);
     }
     for inc in includes {
         args.push("-I");
         args.push(inc);
     }
-    run(&clang, &args)?;
+    run(&compiler, &args)?;
 
     let listing = run(&nm, &["-n", obj])?;
     let mut symbols = HashMap::new();
@@ -334,7 +339,9 @@ fn build_firmware_for_h7(
     target: &str,
     cpu: &str,
 ) -> Result<(Vec<u8>, HashMap<String, u32>), String> {
-    let clang = which("clang").ok_or_else(|| "clang not found on PATH".to_string())?;
+    // H7 double needs clang hard-float (gcc generates VFP that panics at cpu/mod.rs:205)
+    let compiler = which("clang").ok_or_else(|| "clang not found on PATH".to_string())?;
+    let is_gcc = false;
     let objcopy = which("llvm-objcopy")
         .or_else(|| which("objcopy"))
         .ok_or_else(|| "objcopy not found on PATH".to_string())?;
@@ -350,28 +357,20 @@ fn build_firmware_for_h7(
 
     let src = src.to_str().ok_or("temp path not UTF-8")?;
     let obj = obj.to_str().ok_or("temp path not UTF-8")?;
-    let target_arg = format!("--target={target}");
     let cpu_arg = format!("-mcpu={cpu}");
     let float_args: [&str; 2] = ["-mfloat-abi=hard", "-mfpu=fpv5-d16"];
-    let mut args = vec![
-        target_arg.as_str(),
-        cpu_arg.as_str(),
-        float_args[0],
-        float_args[1],
-        "-O0",
-        "-ffreestanding",
-        "-nostdlib",
-        "-fno-builtin",
-        src,
-        "-c",
-        "-o",
-        obj,
-    ];
+    let mut args: Vec<&str> = Vec::new();
+    if !is_gcc {
+        let target_arg = format!("--target={target}");
+        args.push(Box::leak(target_arg.into_boxed_str()) as &str);
+    }
+    args.push(Box::leak(cpu_arg.into_boxed_str()) as &str);
+    args.extend_from_slice(&[float_args[0], float_args[1], "-O0", "-ffreestanding", "-nostdlib", "-fno-builtin", src, "-c", "-o", obj]);
     for inc in includes {
         args.push("-I");
         args.push(inc);
     }
-    run(&clang, &args)?;
+    run(&compiler, &args)?;
     let listing = run(&nm, &[obj])?;
     let mut symbols = HashMap::new();
     for line in listing.lines() {
