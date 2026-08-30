@@ -1420,6 +1420,15 @@ pub fn stm32f303xe() -> BoardMemory {
             }
         }
     }
+    if <Stm32f303xe as crate::device::svd::Device>::peripheral("COMP").is_some() {
+        mem.attach(Box::new(crate::device::stm32::comp::Comp::new_for::<Stm32f303xe>()));
+    }
+    if <Stm32f303xe as crate::device::svd::Device>::peripheral("OPAMP").is_some() {
+        mem.attach(Box::new(crate::device::stm32::opamp::Opamp::new_for::<Stm32f303xe>()));
+    }
+    if <Stm32f303xe as crate::device::svd::Device>::peripheral("TSC").is_some() {
+        mem.attach(Box::new(crate::device::stm32::tsc::Tsc::new_for::<Stm32f303xe>()));
+    }
     if <Stm32f303xe as crate::device::svd::Device>::peripheral("SPI1").is_some() {
         mem.attach(Box::new(Spi::spi1_for::<Stm32f303xe>()));
     }
