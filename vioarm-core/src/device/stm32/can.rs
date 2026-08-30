@@ -648,6 +648,18 @@ impl Can {
     pub fn can1_for<D: Device>() -> Self {
         Self::for_device::<D>("CAN1", "can1", false)
     }
+    /// Generic `CAN` (F303 `CAN@0x40006400`) — picks `CAN1` if present else `CAN`.
+    #[must_use]
+    pub fn new_for<D: Device>() -> Self {
+        let per = if D::peripheral("CAN1").is_some() {
+            "CAN1"
+        } else if D::peripheral("CAN").is_some() {
+            "CAN"
+        } else {
+            panic!("generated tables contain CAN/CAN1")
+        };
+        Self::for_device::<D>(per, "can", false)
+    }
 
     /// A `CAN2` on another chip's device tables (base `0x4000_6800`, IRQ
     /// 63/64/65/66 on the connectivity and F4 lines).

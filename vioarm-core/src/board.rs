@@ -1432,10 +1432,11 @@ pub fn stm32f303xe() -> BoardMemory {
     if <Stm32f303xe as crate::device::svd::Device>::peripheral("I2C2").is_some() {
         mem.attach(Box::new(I2c::i2c2_for::<Stm32f303xe>()));
     }
-    // F3 CAN is "CAN" at 0x40006400, old Can behavior expects "CAN1"; skip for now
-    // if <Stm32f303xe as crate::device::svd::Device>::peripheral("CAN").is_some() {
-    //     mem.attach(Box::new(Can::can1_for::<Stm32f303xe>()));
-    // }
+    if <Stm32f303xe as crate::device::svd::Device>::peripheral("CAN").is_some()
+        || <Stm32f303xe as crate::device::svd::Device>::peripheral("CAN1").is_some()
+    {
+        mem.attach(Box::new(Can::new_for::<Stm32f303xe>()));
+    }
     // F3 USB is "USB" at 0x40005C00, not OTG; skip old Usb behavior
     // if <Stm32f303xe as crate::device::svd::Device>::peripheral("USB").is_some() {
     //     mem.attach(Box::new(Usb::otg_fs_for::<Stm32f303xe>()));
