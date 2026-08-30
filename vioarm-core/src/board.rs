@@ -1446,10 +1446,11 @@ pub fn stm32f303xe() -> BoardMemory {
     {
         mem.attach(Box::new(Can::new_for::<Stm32f303xe>()));
     }
-    // F3 USB is "USB" at 0x40005C00, not OTG; skip old Usb behavior
-    // if <Stm32f303xe as crate::device::svd::Device>::peripheral("USB").is_some() {
-    //     mem.attach(Box::new(Usb::otg_fs_for::<Stm32f303xe>()));
-    // }
+    if <Stm32f303xe as crate::device::svd::Device>::peripheral("USB").is_some()
+        || <Stm32f303xe as crate::device::svd::Device>::peripheral("USB_FS").is_some()
+    {
+        mem.attach(Box::new(crate::device::stm32::usb_fs::UsbFs::new_for::<Stm32f303xe>()));
+    }
     // DMA1/DMA2 – F3 has DMA1 (7 ch) and DMA2 (5 ch) like F1
     if <Stm32f303xe as crate::device::svd::Device>::peripheral("DMA1").is_some() {
         let dma_requests = Arc::new(Mutex::new(DmaRequests::new()));
