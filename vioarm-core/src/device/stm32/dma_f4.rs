@@ -194,9 +194,10 @@ impl Behavior for DmaF4Behavior {
             let dst_inc = if dir == 1 { pinc } else { minc };
             let src_step = if dir == 1 { step } else { unit };
             let dst_step = if dir == 1 { unit } else { step };
-            // Burst/FIFO: transfer burst_len per tick when burst>1, else whole.
+            // Burst/FIFO: transfer burst_len per tick when burst>1, else whole (optimistic M2M).
             let chunk = if burst_len > 1 {
-                burst_len.min(ndt)
+                let bursts = _delta.max(1) as u32;
+                (burst_len * bursts).min(ndt)
             } else {
                 ndt
             };

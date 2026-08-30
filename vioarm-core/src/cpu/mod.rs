@@ -23,7 +23,7 @@ use decode32::{
     VrintOp,
 };
 use registers::{Registers, Xpsr, APSR_FLAGS, APSR_GE, APSR_Q, APSR_QFLAGS, XPSR_T};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 /// Which Thumb architecture the core executes.
 ///
@@ -519,7 +519,7 @@ pub struct Core<B: PeripheralBus> {
     pub secure: bool,
     /// Decode cache: PC+ISA+ITSTATE → decoded instruction + halfwords.
     /// Gated on `benches/mips.rs` headroom; trace-equivalence is the gate.
-    decode_cache: HashMap<u32, CacheEntry>,
+    decode_cache: BTreeMap<u32, CacheEntry>,
     mem: B,
 }
 
@@ -593,7 +593,7 @@ impl<B: PeripheralBus> Core<B> {
             other_ss_msp_lim: 0,
             other_ss_psp_lim: 0,
             secure: isa == Isa::Armv8MBaseline,
-            decode_cache: HashMap::with_capacity(1024),
+            decode_cache: BTreeMap::new(),
             mem,
         }
     }
