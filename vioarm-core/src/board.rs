@@ -1622,6 +1622,14 @@ pub const STM32_H7B0_FLASH_LEN: u32 = 0x0002_0000;
 pub const STM32_H7B0_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
 pub fn stm32h7b0() -> BoardMemory { stm32h750() }
+pub const STM32_F767_FLASH_LEN: u32 = 0x0020_0000;
+pub const STM32_F767_RAM_LEN: u32 = 0x0008_0000;
+#[must_use]
+pub fn stm32f767() -> BoardMemory { stm32f429() }
+pub const STM32_H747_FLASH_LEN: u32 = 0x0020_0000;
+pub const STM32_H747_RAM_LEN: u32 = 0x0008_0000;
+#[must_use]
+pub fn stm32h747() -> BoardMemory { stm32h743() }
 pub const STM32_H750_FLASH_LEN: u32 = 0x0002_0000;
 pub const STM32_H750_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
@@ -2093,8 +2101,14 @@ pub fn stm32h743() -> BoardMemory {
     if <Stm32h743 as crate::device::svd::Device>::peripheral("WWDG").is_some() {
         mem.attach(Box::new(Wwdg::for_device::<Stm32h743>(watchdog)));
     }
-    // RTC - H743 RTC at 0x58004000, may be okay, keep
-    if <Stm32h743 as crate::device::svd::Device>::peripheral("RTC").is_some() {
+    // RTC - H743 RTC at 0x58004000 is new RTC (TR/DR/CR), not PRL/CNT, skip old behavior
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("RTC").is_some()
+        && <Stm32h743 as crate::device::svd::Device>::peripheral("RTC")
+            .unwrap()
+            .registers
+            .iter()
+            .any(|r| r.name == "PRLH")
+    {
         mem.attach(Box::new(Rtc::new_for::<Stm32h743>()));
     }
     // BKP only on F1
