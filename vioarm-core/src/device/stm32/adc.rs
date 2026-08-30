@@ -557,6 +557,10 @@ impl Adc {
         };
         Self::for_device::<D>(per, "adc")
     }
+    #[must_use]
+    pub fn adc4_for<D: Device>() -> Self {
+        Self::for_device::<D>("ADC4", "adc4")
+    }
     fn for_device<D: Device>(peripheral: &str, name: &'static str) -> Self {
         let def = D::peripheral(peripheral)
             .unwrap_or_else(|| panic!("generated tables contain {peripheral}"));

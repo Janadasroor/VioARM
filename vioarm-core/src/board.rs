@@ -1426,17 +1426,7 @@ pub fn stm32f303xe() -> BoardMemory {
         mem.attach(Box::new(Adc::adc3_for::<Stm32f303xe>()));
     }
     if <Stm32f303xe as crate::device::svd::Device>::peripheral("ADC4").is_some() {
-        // ADC4 shares ADC3 peripheral name but at different base 0x50000C00
-        let def = crate::device::svd::stm32f303xe::peripheral("ADC4").unwrap_or_else(|| crate::device::svd::stm32f303xe::peripheral("ADC3").unwrap());
-        if matches!(mem.read(def.base), Err(crate::error::BusError::Reserved)) {
-            // Use ADC4 if available, else latch
-            if <Stm32f303xe as crate::device::svd::Device>::peripheral("ADC4").is_some() {
-                let adc4_def = <Stm32f303xe as crate::device::svd::Device>::peripheral("ADC4").unwrap();
-                if matches!(mem.read(adc4_def.base), Err(crate::error::BusError::Reserved)) {
-                    mem.attach(Box::new(crate::device::svd::RegisterFile::<crate::device::svd::NoBehavior>::new(adc4_def, crate::device::svd::NoBehavior)));
-                }
-            }
-        }
+        mem.attach(Box::new(Adc::adc4_for::<Stm32f303xe>()));
     }
     if <Stm32f303xe as crate::device::svd::Device>::peripheral("COMP").is_some() {
         mem.attach(Box::new(crate::device::stm32::comp::Comp::new_for::<Stm32f303xe>()));
