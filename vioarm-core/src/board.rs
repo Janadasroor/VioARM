@@ -1678,6 +1678,14 @@ pub const STM32_L073_FLASH_LEN: u32 = 0x0003_0000;
 pub const STM32_L073_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
 pub fn stm32l073() -> BoardMemory { stm32l476() }
+pub const STM32_F358_FLASH_LEN: u32 = 0x0001_0000;
+pub const STM32_F358_RAM_LEN: u32 = 0x0000_4000;
+#[must_use]
+pub fn stm32f358() -> BoardMemory { stm32f303xe() }
+pub const STM32_L152_FLASH_LEN: u32 = 0x0004_0000;
+pub const STM32_L152_RAM_LEN: u32 = 0x0001_4000;
+#[must_use]
+pub fn stm32l152() -> BoardMemory { stm32l476() }
 pub const STM32_F767_FLASH_LEN: u32 = 0x0020_0000;
 pub const STM32_F767_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
