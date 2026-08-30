@@ -652,16 +652,11 @@ pub fn stm32f030() -> BoardMemory {
             )));
         }
     }
-    if let Some(def) = crate::device::svd::stm32f030::peripheral("ADC")
+    if crate::device::svd::stm32f030::peripheral("ADC")
         .or(crate::device::svd::stm32f030::peripheral("ADC1"))
+        .is_some()
     {
-        if def.registers.iter().any(|r| r.name == "SQR1") {
-            mem.attach(Box::new(Adc::new_for::<Stm32f030>()));
-        } else {
-            mem.attach(Box::new(crate::device::svd::RegisterFile::<
-                crate::device::svd::NoBehavior,
-            >::new(def, crate::device::svd::NoBehavior)));
-        }
+        mem.attach(Box::new(Adc::new_for::<Stm32f030>()));
     }
     if <Stm32f030 as crate::device::svd::Device>::peripheral("SPI1").is_some() {
         mem.attach(Box::new(Spi::spi1_for::<Stm32f030>()));
@@ -779,16 +774,11 @@ pub fn stm32f031() -> BoardMemory {
     if <Stm32f031 as crate::device::svd::Device>::peripheral("SYSCFG").is_some() {
         mem.attach(Box::new(Syscfg::for_device::<Stm32f031>()));
     }
-    if let Some(def) = crate::device::svd::stm32f031::peripheral("ADC")
+    if crate::device::svd::stm32f031::peripheral("ADC")
         .or(crate::device::svd::stm32f031::peripheral("ADC1"))
+        .is_some()
     {
-        if def.registers.iter().any(|r| r.name == "SQR1") {
-            mem.attach(Box::new(Adc::new_for::<Stm32f031>()));
-        } else {
-            mem.attach(Box::new(crate::device::svd::RegisterFile::<
-                crate::device::svd::NoBehavior,
-            >::new(def, crate::device::svd::NoBehavior)));
-        }
+        mem.attach(Box::new(Adc::new_for::<Stm32f031>()));
     }
     if <Stm32f031 as crate::device::svd::Device>::peripheral("SPI1").is_some() {
         mem.attach(Box::new(Spi::spi1_for::<Stm32f031>()));

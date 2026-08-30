@@ -93,18 +93,21 @@ struct Conversion {
 /// Chip differences the SVD tables express as field layouts.
 #[derive(Clone, Copy, Debug)]
 struct AdcConfig {
-    /// The `CR2.SWSTART` / `CR.ADSTART` bit position (22 on the F1, 30 on the F4, 2 on H7).
+    /// The `CR2.SWSTART` / `CR.ADSTART` bit position (22 on the F1, 30 on the F4, 2 on H7/F0).
     swstart: u32,
     /// Whether `SR.OVR`/`CR1.OVRIE` exist (the F4 overrun pair).
     has_ovr: bool,
-    /// Whether the status register declares `ADRDY` (H7 ISR) — bit 0 there
+    /// Whether the status register declares `ADRDY` (H7/F0 ISR) — bit 0 there
     /// is not the F1 `AWD`.
     has_adrdy: bool,
     /// Whether a second `ADON` write restarts a conversion (F1 legacy).
     adon_restarts: bool,
+    /// Whether the sequence is `CHSELR` (F0) instead of `SQRx` (F1/F4/H7).
+    has_chselr: bool,
     cr_off: u32,
     sr_off: u32,
     sqr1_off: u32,
+    chselr_off: u32,
     dr_off: u32,
     eoc_bit: u32,
     adon_bit: u32,
@@ -155,14 +158,31 @@ impl AdcBehavior {
         }
     }
 
-    /// The number of conversions in the regular sequence (`SQR1.L + 1`).
+    /// The number of conversions in the regular sequence (`SQR1.L + 1` or `CHSELR` popcount).
     fn sequence_len(&self, view: &Registers<&mut [u32]>) -> u32 {
-        ((view.get(self.config.sqr1_off) >> 20) & 0x0F) + 1
+        if self.config.has_chselr {
+            view.get(self.config.chselr_off).count_ones().max(1)
+        } else {
+            ((view.get(self.config.sqr1_off) >> 20) & 0x0F) + 1
+        }
     }
 
     /// The channel at `index` in the regular sequence (`SQR3` SQ1..SQ6,
-    /// `SQR2` SQ7..SQ12, `SQR1` SQ13..SQ16).
+    /// `SQR2` SQ7..SQ12, `SQR1` SQ13..SQ16, or `CHSELR` bitset on F0).
     fn channel_at(&self, view: &Registers<&mut [u32]>, index: u32) -> u8 {
+        if self.config.has_chselr {
+            let bits = view.get(self.config.chselr_off);
+            let mut seen = 0;
+            for ch in 0..32 {
+                if bits & (1 << ch) != 0 {
+                    if seen == index {
+                        return ch as u8;
+                    }
+                    seen += 1;
+                }
+            }
+            return 0;
+        }
         let sqr1 = self.config.sqr1_off;
         let (reg, shift) = match index {
             0..=5 => (sqr1 + 8, index * 5),        // SQR3 = SQR1+8
@@ -422,6 +442,21 @@ impl Behavior for AdcBehavior {
         // The sample completes: land it in DR and latch EOC/STRT.
         self.converting = None;
         self.land_regular(view, conv.channel);
+        // F0 CHSELR: one ADSTART walks all selected channels sequentially.
+        if self.config.has_chselr {
+            let len = self.sequence_len(view);
+            if self.sq_index + 1 < len {
+                self.sq_index += 1;
+                self.converting = Some(Conversion {
+                    channel: self.channel_at(view, self.sq_index),
+                    remaining: u64::from(CONVERSION_CYCLES),
+                });
+            } else {
+                // End of sequence: set EOS (bit 3) for F0 ISR.
+                view.set(self.config.sr_off, view.get(self.config.sr_off) | (1 << 3));
+            }
+            return;
+        }
         // JAUTO: the regular sequence completing auto-starts an injected one.
         let continuous = view.get(self.config.cr_off) & CONT != 0;
         let scan = view.get(CR1) & SCAN != 0;
@@ -828,11 +863,22 @@ fn config_from(def: &'static PeripheralDef) -> AdcConfig {
     // replaced it with `EXTEN`. Where `EXTTRIG` exists, a second `ADON` write
     // restarts the converter.
     let adon_restarts = cr.fields.iter().any(|f| f.name == "EXTTRIG");
-    let sqr1 = def
+    let has_chselr = def.registers.iter().any(|r| r.name == "CHSELR");
+    let chselr_off = def
         .registers
         .iter()
-        .find(|r| r.name == "SQR1")
-        .expect("ADC table contains SQR1");
+        .find(|r| r.name == "CHSELR")
+        .map(|r| r.offset)
+        .unwrap_or(0x28);
+    let sqr1_off = if has_chselr {
+        chselr_off // unused, but keep valid
+    } else {
+        def.registers
+            .iter()
+            .find(|r| r.name == "SQR1")
+            .expect("ADC table contains SQR1")
+            .offset
+    };
     let dr = def
         .registers
         .iter()
@@ -843,9 +889,11 @@ fn config_from(def: &'static PeripheralDef) -> AdcConfig {
         has_ovr,
         has_adrdy,
         adon_restarts,
+        has_chselr,
         cr_off: cr.offset,
         sr_off: sr.offset,
-        sqr1_off: sqr1.offset,
+        sqr1_off,
+        chselr_off,
         dr_off: dr.offset,
         eoc_bit,
         adon_bit,
