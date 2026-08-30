@@ -43,6 +43,7 @@ pub mod hsem;
 pub mod i3c;
 pub mod mdios;
 pub mod otfdec;
+pub mod subghz;
 pub mod opamp;
 pub mod rng;
 pub mod spdifrx;
