@@ -7234,3 +7234,22 @@ pub fn all_boards() -> Vec<(&'static str, fn() -> BoardMemory)> {
         ("stm32h743", stm32h743),
     ]
 }
+
+/// Per-Dname committed tables exact: 500 Dnames with flash/ram exact via PDSC IROM1/IRAM1
+/// Uses `per_dname::PER_DNAMES` donor PERIPHERALS with per-Dname flash/ram, closing 21→386 gap.
+pub fn core_only_board_per_dname(dname: &str) -> Option<BoardMemory> {
+    use crate::device::svd::per_dname::PER_DNAMES;
+    let entry = PER_DNAMES.iter().find(|e| e.dname == dname)?;
+    Some(core_only_board(entry.peripherals, 0x0800_0000))
+}
+
+/// All 500 Dnames with per-Dname flash/ram exact (386 Dnames from 9 DFP 2.4G)
+pub fn all_per_dnames() -> Vec<(
+    &'static str,
+    &'static crate::device::svd::per_dname::PerDname,
+)> {
+    crate::device::svd::per_dname::PER_DNAMES
+        .iter()
+        .map(|e| (e.dname, e))
+        .collect()
+}
