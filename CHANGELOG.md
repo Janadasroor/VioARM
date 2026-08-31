@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0] — 2026-08-31 enterprise-ready M1-M6 v3.0 cycle/peripheral-accurate determinism-first forbid(unsafe_code) 500 alias→real 100% + M5 docs/release v2.0
+
 ## [Unreleased] — v2.0 production (500 alias→real)
 ### Added
 - **500-chip alias→real: `SUBGHZ` wiring** (`board.rs:1842` `stm32wl55/wle5/wle4/wl33` now attach `Subghz::new_wl()` at `0x58001400 CR.EN→SR` and `Octospi::new_wl()` at `0x58004000`, `subghz.rs:31` `new_for_opt` + `new_wl` manual `PeripheralDef`; `SUBGHZ` 0 hits → wired, verified by `chip_cmsis_500::subghz_and_octospi2_are_wired`).
