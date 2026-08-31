@@ -561,6 +561,18 @@ Per `packs/Keil.STM32F0xx_DFP.2.1.0.pack` `CMSIS/SVD/` 10 SVDs vs `vioarm-core/s
 
 Pack SVD `10` → code `1+9=10` `stm32f030`/`f031`/`f042`/`f091`/`f0x0`/`f0x1`/`f0x2`/`f0x8`/`f0xx` + `f072` =21 total SVDs (`F1` 6/6 `F303`/`F407`/`G474`/`H743`/`L476` already 1/1). No new peripheral *type* (`197` union already `SYSCFG_COMP` only new, latched). `F4` (`F405`/`F415`/`F417`/`F429` etc) & `H7` (`H723`/`H733` etc) share `F407`/`H743` map per `STM32F407.svd:33` vs `f407:91` expanded, so no new `PeripheralDef` — `core_only_board` already `500/500` latch. Next: wire `SYSCFG_COMP` behavioral alias if firmware touches `0x40010000` `COMP` via `SYSCFG_COMP` (currently `NoBehavior` latch).
 
+### Deepexplore — 500 alias→real gaps (2026-08-31) `506` funcs `615` lib `9` DFP `2.4G`
+
+- **SVD 21→500:** `vioarm-core/src/device/svd/mod.rs:17` 21 modules (F0x10+F1x6+F3/F4/G4/H7/L4) `vioarm-svd/src/main.rs:71` 12/21 hardened (`f072/f100/f101/f102/f103/f105/f107/f303xe/f407/l476/g474xx/h743`) 9 `F0` `stm32f030/031/042/091/f0x0/f0x1/f0x2/f0x8/f0xx` not CI gated → drift risk; 500 via `board.rs:1500` alias (`stm32f401→f407` `h743` 119 periphs) sharing donor `PERIPHERALS` size → no per-variant register deltas (F405/F415/F429/F746/F765/H723 share donor).
+
+- **Board NoBehavior 86 sites `board.rs:197`:** full `f103` 26:10 `f107` 30:8 `f407` 28:15 `f072` 17:20; alias `F4` ~6:42 `12%` `f401/411/412/429` `1513` `F7/H7` ~2:117 `2%` `h730/h723` `1584` `G4/L4` `g431→g474xx` `1674` — `ADC/SPI/I2C/CAN/SDIO/DAC/RTC/SYSCFG/TIM>2` `H7` `LTDC/DMA2D/BDMA/MDMA/SAI4/DFSDM/HRTIM/OCTOSPI/I3C/OTFDEC/FDCAN/ETH_H7` remain latch via `fallback` `board.rs:1398`.
+
+- **Behavior tick/pending vs latch stub (`stm32/*.rs` 47 files):** full `adc.rs:303` `CHSELR` `bb93dc1` `popcount` `162` `EOS` `456` `dual` `AdcCommon:659` `dma.rs:166` `PL` `dma_f4.rs:103` `burst_len*delta` `180` `FTH` `216` `timer.rs:433` `BDTR/MOE/DTG` `128` `can.rs:453` `28-bank` `fmc.rs:286` `Ltdc` 1-tick vs stub `afio.rs:20` `fdcan.rs:12` `i3c.rs:12` `otfdec.rs:12` `subghz.rs:12` `octospi.rs:12` `tick{}` `pending 0/EVR` `hsem/vrefbuf/comp/opamp/jpeg/spdifrx/swpmi/mdios/lptim/crs/cec/tsc/dcmi/usb_fs` 1-tick latch; `SUBGHZ` 0 hits `board.rs` never wired, `OCTOSPI` no `QspiGate` `octospi.rs:36`.
+
+- **Gaps:** `rcc.rs:43` `HSIRDY/HSE/PLL` `SW→SWS` instant `no PPRE1/2→PCLK` `no gating` `FLASH_ACR` ignored `WP-F2`; `dma.rs:214` 1-unit `Usart` only `TIM/ADC/SPI` not wired `DMAMUX` `fmc.rs:188` never routes `DmaF4`; `adc.rs:590` `F0` `DMAEN/DMASEL` uses `CR bit8` not `CFGR`; `h7` `board.rs:339` `0x08000000` `0x20000000` `0xC0000000` `Fmc+5c` `QspiGate 0x52005000` `fmc.rs:57` `cache_latency` only `h743` alias `FLASH_LEN` mismatch; `cmsis` `e2e` `835` tests `f5_all_chips.rs` `BKPT` only `13` behavioral `500` `NoBehavior` latch.
+
+- **Infra:** `ci.yml:28` `QEMU 10.2.1` `qemu.rs:128` `ORACLE_VERSION` `llvm-cov 85` `deny warnings` `packs/PROVENANCE.md:1` `SLA0044` `SHA256:placeholder` `216MB` `sbom.json:1` `CycloneDX 1.4` `1.9.1` `85` components.
+
 Overall **100% firmware-relevant** (Timers 100% — break,
 dead-time insertion into complementary pairs, encoder, Hall; Flash 90%
 with `WRPR`+`OPTSR SWAP_BANK` latches; RTC 90% with the
