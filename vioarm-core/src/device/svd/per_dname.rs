@@ -227,8 +227,8 @@ pub const PER_DNAMES: &[PerDname] = &[
         dname: "STM32H730",
         flash_len: 0x0002_0000,
         ram_len: 0x0002_0000,
-        peripherals: crate::device::svd::stm32h743::PERIPHERALS,
-        donor: "stm32h743",
+        peripherals: crate::device::svd::stm32h730::PERIPHERALS,
+        donor: "stm32h730",
     },
     PerDname {
         dname: "STM32F765",
@@ -290,8 +290,8 @@ pub const PER_DNAMES: &[PerDname] = &[
         dname: "STM32G431",
         flash_len: 0x0002_0000,
         ram_len: 0x0000_8000,
-        peripherals: crate::device::svd::stm32g474xx::PERIPHERALS,
-        donor: "stm32g474xx",
+        peripherals: crate::device::svd::stm32g431::PERIPHERALS,
+        donor: "stm32g431",
     },
     PerDname {
         dname: "STM32L452",
@@ -388,8 +388,8 @@ pub const PER_DNAMES: &[PerDname] = &[
         dname: "STM32L412",
         flash_len: 0x0008_0000,
         ram_len: 0x0002_8000,
-        peripherals: crate::device::svd::stm32l476::PERIPHERALS,
-        donor: "stm32l476",
+        peripherals: crate::device::svd::stm32l412::PERIPHERALS,
+        donor: "stm32l412",
     },
     PerDname {
         dname: "STM32G031",
@@ -990,8 +990,8 @@ pub const PER_DNAMES: &[PerDname] = &[
         dname: "STM32G431RB",
         flash_len: 0x0002_0000,
         ram_len: 0x0000_8000,
-        peripherals: crate::device::svd::stm32g474xx::PERIPHERALS,
-        donor: "stm32g474xx",
+        peripherals: crate::device::svd::stm32g431::PERIPHERALS,
+        donor: "stm32g431",
     },
     PerDname {
         dname: "STM32L476RG",

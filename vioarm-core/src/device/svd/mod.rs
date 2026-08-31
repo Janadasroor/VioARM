@@ -35,8 +35,11 @@ pub mod stm32f303xe;
 pub mod stm32f405;
 pub mod stm32f407;
 pub mod stm32f415;
+pub mod stm32g431;
 pub mod stm32g474xx;
+pub mod stm32h730;
 pub mod stm32h743;
+pub mod stm32l412;
 pub mod stm32l476;
 
 /// The register access vocabulary used by the supported SVD files.
@@ -1274,6 +1277,9 @@ mod tests {
             super::stm32f405::PERIPHERALS,
             super::stm32f407::PERIPHERALS,
             super::stm32f415::PERIPHERALS,
+            super::stm32g431::PERIPHERALS,
+            super::stm32h730::PERIPHERALS,
+            super::stm32l412::PERIPHERALS,
         ];
         for p in tables.into_iter().flatten() {
             let mut spans: Vec<(u32, u32)> = Vec::new();
