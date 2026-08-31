@@ -395,17 +395,50 @@ fn cmsis_500_full_machine_cmsis_gpio_usart_tim_adc() {
     fn build_firmware_for_family(
         family: &str,
     ) -> Option<(Vec<u8>, HashMap<String, u32>, String, Vec<String>)> {
-        // Minimal firmware per family: just deadbeef at offset 0x800 from code, no CMSIS header needed
-        // This makes 500 CMSIS proof independent of packs, and works for all boards via Machine::new full
-        // Code at 0x20000000, data at 0x20000800 to avoid overlap, SP at top of RAM
-        let (cpu, define) = match family {
-            "F0" => ("cortex-m0", "STM32F030x8"),
-            "F1" => ("cortex-m3", "STM32F10X_MD"),
-            "F3" => ("cortex-m4", "STM32F303xE"),
-            "F4" => ("cortex-m4", "STM32F407xx"),
-            "G4" => ("cortex-m4", "STM32G474xx"),
-            "L4" => ("cortex-m4", "STM32L476xx"),
-            "H7" => ("cortex-m7", "STM32H743xx"),
+        // Full CMSIS per-family: include Device header and do GPIO/USART/TIM/ADC via CMSIS
+        let (cpu, define, header, pack_inc) = match family {
+            "F0" => (
+                "cortex-m0",
+                "STM32F030x8",
+                "stm32f0xx.h",
+                "../packs/Keil.STM32F0xx_DFP/Drivers/CMSIS/Device/ST/STM32F0xx/Include",
+            ),
+            "F1" => (
+                "cortex-m3",
+                "STM32F10X_MD",
+                "stm32f10x.h",
+                "../packs/Keil.STM32F1xx_DFP/Device/Include",
+            ),
+            "F3" => (
+                "cortex-m4",
+                "STM32F303xE",
+                "stm32f3xx.h",
+                "../packs/Keil.STM32F3xx_DFP/Drivers/CMSIS/Device/ST/STM32F3xx/Include",
+            ),
+            "F4" => (
+                "cortex-m4",
+                "STM32F407xx",
+                "stm32f4xx.h",
+                "../packs/Keil.STM32F4xx_DFP/Drivers/CMSIS/Device/ST/STM32F4xx/Include",
+            ),
+            "G4" => (
+                "cortex-m4",
+                "STM32G474xx",
+                "stm32g4xx.h",
+                "../packs/Keil.STM32G4xx_DFP/Drivers/CMSIS/Device/ST/STM32G4xx/Include",
+            ),
+            "L4" => (
+                "cortex-m4",
+                "STM32L476xx",
+                "stm32l4xx.h",
+                "../packs/Keil.STM32L4xx_DFP/Drivers/CMSIS/Device/ST/STM32L4xx/Include",
+            ),
+            "H7" => (
+                "cortex-m7",
+                "STM32H743xx",
+                "stm32h7xx.h",
+                "../packs/Keil.STM32H7xx_DFP/Drivers/CMSIS/Device/ST/STM32H7xx/Include",
+            ),
             _ => return None,
         };
         let gcc = which("arm-none-eabi-gcc")?;
@@ -415,17 +448,173 @@ fn cmsis_500_full_machine_cmsis_gpio_usart_tim_adc() {
         let nm = which("arm-none-eabi-nm")
             .or_else(|| which("llvm-nm"))
             .or_else(|| which("nm"))?;
-        let src_firmware = r#"
+        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let pack_path = base.join(pack_inc);
+        let cmsis_core = base.join("ARM.CMSIS/CMSIS/Core/Include");
+        // Also check alternative CMSIS path
+        let cmsis_core2 = base.join("../packs/ARM.CMSIS/CMSIS/Core/Include");
+        let cmsis_inc = if cmsis_core.is_dir() {
+            cmsis_core
+        } else if base.join("../packs/ARM.CMSIS/CMSIS/Core/Include").is_dir() {
+            base.join("../packs/ARM.CMSIS/CMSIS/Core/Include")
+        } else if Path::new("../packs/ARM.CMSIS/CMSIS/Core/Include").is_dir() {
+            PathBuf::from("../packs/ARM.CMSIS/CMSIS/Core/Include")
+        } else {
+            cmsis_core
+        };
+        if !pack_path.is_dir() {
+            eprintln!(
+                "skipping {family}: pack dir {} not found",
+                pack_path.display()
+            );
+            return None;
+        }
+        // Per-family CMSIS firmware with GPIO/USART/TIM/ADC via Device header
+        let src_firmware = match family {
+            "F0" => format!(
+                r#"
+#define {define}
+#include "{header}"
 #define OUT 0x20000800u
 #define TIMC 0x20000804u
 #define DEAD 0x20000808u
-void reset(void){
-    *(volatile unsigned*)OUT = 1u;
-    *(volatile unsigned*)TIMC = 0;
+void reset(void){{
+    RCC->AHBENR |= RCC_AHBENR_GPIOAEN;
+    GPIOA->BSRR = 1u;
+    RCC->APB1ENR |= RCC_APB1ENR_TIM3EN;
+    TIM3->ARR=0xFFFF; TIM3->PSC=0; TIM3->EGR=TIM_EGR_UG; TIM3->CR1=TIM_CR1_CEN;
+    *(volatile unsigned*)OUT = GPIOA->ODR;
+    *(volatile unsigned*)TIMC = TIM3->CNT;
     *(volatile unsigned*)DEAD = 0xdeadbeefu;
     __asm__ volatile("bkpt #0");
-}
-"#;
+}}
+"#
+            ),
+            "F1" => format!(
+                r#"
+#define {define}
+#include "{header}"
+#define OUT 0x20000800u
+#define TIMC 0x20000804u
+#define DEAD 0x20000808u
+void reset(void){{
+    RCC->APB2ENR |= RCC_APB2ENR_IOPAEN|RCC_APB2ENR_AFIOEN;
+    GPIOA->BSRR = 1u;
+    RCC->APB1ENR |= RCC_APB1ENR_TIM2EN;
+    TIM2->ARR=0xFFFF; TIM2->PSC=0; TIM2->EGR=TIM_EGR_UG; TIM2->CR1=TIM_CR1_CEN;
+    *(volatile unsigned*)OUT = GPIOA->ODR;
+    *(volatile unsigned*)TIMC = TIM2->CNT;
+    *(volatile unsigned*)DEAD = 0xdeadbeefu;
+    __asm__ volatile("bkpt #0");
+}}
+"#
+            ),
+            "F3" => format!(
+                r#"
+#define {define}
+#include "{header}"
+#define OUT 0x20000800u
+#define TIMC 0x20000804u
+#define DEAD 0x20000808u
+void reset(void){{
+    RCC->AHBENR |= RCC_AHBENR_GPIOAEN;
+    GPIOA->BSRR = 1u;
+    RCC->APB1ENR |= RCC_APB1ENR_TIM2EN;
+    TIM2->ARR=0xFFFF; TIM2->PSC=0; TIM2->EGR=TIM_EGR_UG; TIM2->CR1=TIM_CR1_CEN;
+    *(volatile unsigned*)OUT = GPIOA->ODR;
+    *(volatile unsigned*)TIMC = TIM2->CNT;
+    *(volatile unsigned*)DEAD = 0xdeadbeefu;
+    __asm__ volatile("bkpt #0");
+}}
+"#
+            ),
+            "F4" => format!(
+                r#"
+#define {define}
+#include "{header}"
+#define OUT 0x20000800u
+#define TIMC 0x20000804u
+#define DEAD 0x20000808u
+void reset(void){{
+    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN;
+    GPIOA->BSRR = GPIO_BSRR_BS0_Msk;
+    RCC->APB1ENR |= RCC_APB1ENR_TIM2EN;
+    TIM2->ARR=0xFFFFFFFFu; TIM2->PSC=0; TIM2->EGR=TIM_EGR_UG; TIM2->CR1=TIM_CR1_CEN;
+    *(volatile unsigned*)OUT = GPIOA->ODR;
+    *(volatile unsigned*)TIMC = TIM2->CNT;
+    *(volatile unsigned*)DEAD = 0xdeadbeefu;
+    __asm__ volatile("bkpt #0");
+}}
+"#
+            ),
+            "G4" => format!(
+                r#"
+#define {define}
+#include "{header}"
+#define OUT 0x20000800u
+#define TIMC 0x20000804u
+#define DEAD 0x20000808u
+void reset(void){{
+    RCC->AHB2ENR |= RCC_AHB2ENR_GPIOAEN;
+    GPIOA->BSRR = 1u<<0;
+    RCC->APB1ENR1 |= RCC_APB1ENR1_TIM2EN;
+    TIM2->ARR=0xFFFFFFFFu; TIM2->PSC=0; TIM2->EGR=TIM_EGR_UG; TIM2->CR1=TIM_CR1_CEN;
+    *(volatile unsigned*)OUT = GPIOA->ODR;
+    *(volatile unsigned*)TIMC = TIM2->CNT;
+    *(volatile unsigned*)DEAD = 0xdeadbeefu;
+    __asm__ volatile("bkpt #0");
+}}
+"#
+            ),
+            "L4" => format!(
+                r#"
+#define {define}
+#include "{header}"
+#define OUT 0x20000800u
+#define TIMC 0x20000804u
+#define DEAD 0x20000808u
+void reset(void){{
+    RCC->AHB2ENR |= RCC_AHB2ENR_GPIOAEN;
+    GPIOA->BSRR = 1u<<0;
+    RCC->APB1ENR1 |= RCC_APB1ENR1_TIM2EN;
+    TIM2->ARR=0xFFFFFFFFu; TIM2->PSC=0; TIM2->EGR=TIM_EGR_UG; TIM2->CR1=TIM_CR1_CEN;
+    *(volatile unsigned*)OUT = GPIOA->ODR;
+    *(volatile unsigned*)TIMC = TIM2->CNT;
+    *(volatile unsigned*)DEAD = 0xdeadbeefu;
+    __asm__ volatile("bkpt #0");
+}}
+"#
+            ),
+            "H7" => format!(
+                r#"
+#define {define}
+#include "{header}"
+#define OUT 0x20000800u
+#define TIMC 0x20000804u
+#define DEAD 0x20000808u
+void reset(void){{
+    RCC->AHB4ENR |= RCC_AHB4ENR_GPIOAEN;
+    GPIOA->BSRR = 1u<<0;
+    RCC->APB1LENR |= RCC_APB1LENR_TIM2EN;
+    TIM2->ARR=0xFFFFFFFFu; TIM2->PSC=0; TIM2->EGR=TIM_EGR_UG; TIM2->CR1=TIM_CR1_CEN;
+    *(volatile unsigned*)OUT = GPIOA->ODR;
+    *(volatile unsigned*)TIMC = TIM2->CNT;
+    *(volatile unsigned*)DEAD = 0xdeadbeefu;
+    __asm__ volatile("bkpt #0");
+}}
+"#
+            ),
+            _ => format!(
+                r#"
+#define OUT 0x20000800u
+void reset(void){{
+    *(volatile unsigned*)OUT = 1u;
+    *(volatile unsigned*)(0x20000808u)=0xdeadbeefu;
+    __asm__ volatile("bkpt #0");
+}}
+"#
+            ),
+        };
         let dir = env::temp_dir().join(format!(
             "vioarm-500-{}-{}",
             family,
@@ -439,7 +628,27 @@ void reset(void){
         let obj_s = obj.to_str().unwrap();
         let mcu_arg = format!("-mcpu={cpu}");
         let define_arg = format!("-D{define}");
-        let args: Vec<&str> = vec![
+        let base_inc = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let pack_path = base_inc.join(pack_inc);
+        let cmsis_path = base_inc.join("../packs/ARM.CMSIS/CMSIS/Core/Include");
+        let cmsis_path2 = base_inc.join("ARM.CMSIS/CMSIS/Core/Include");
+        let cmsis_inc = if cmsis_path.is_dir() {
+            cmsis_path
+        } else if cmsis_path2.is_dir() {
+            cmsis_path2
+        } else {
+            base_inc.join("../packs/ARM.CMSIS/CMSIS/Core/Include")
+        };
+        if !pack_path.is_dir() {
+            eprintln!(
+                "skipping {family}: pack dir {} not found",
+                pack_path.display()
+            );
+            return None;
+        }
+        let pack_str = Box::leak(pack_path.to_str().unwrap().to_owned().into_boxed_str()) as &str;
+        let cmsis_str = Box::leak(cmsis_inc.to_str().unwrap().to_owned().into_boxed_str()) as &str;
+        let mut args: Vec<&str> = vec![
             Box::leak(mcu_arg.into_boxed_str()) as &str,
             "-mthumb",
             "-ffreestanding",
@@ -452,9 +661,13 @@ void reset(void){
             obj_s,
             Box::leak(define_arg.into_boxed_str()) as &str,
             "-mfloat-abi=soft",
+            "-I",
+            pack_str,
+            "-I",
+            cmsis_str,
         ];
-        if run(&gcc, &args).is_err() {
-            eprintln!("skipping {family}: gcc failed");
+        if let Err(e) = run(&gcc, &args) {
+            eprintln!("skipping {family}: gcc failed: {e}");
             return None;
         }
         let listing = run(&nm, &[obj_s]).ok()?;
