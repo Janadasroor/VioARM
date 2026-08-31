@@ -7238,9 +7238,36 @@ pub fn all_boards() -> Vec<(&'static str, fn() -> BoardMemory)> {
 /// Per-Dname committed tables exact: 500 Dnames with flash/ram exact via PDSC IROM1/IRAM1
 /// Uses `per_dname::PER_DNAMES` donor PERIPHERALS with per-Dname flash/ram, closing 21→386 gap.
 pub fn core_only_board_per_dname(dname: &str) -> Option<BoardMemory> {
-    use crate::device::svd::per_dname::PER_DNAMES;
+    use crate::device::svd::per_dname::{H7_DTCM, PER_DNAMES};
+    use crate::device::svd::{NoBehavior, RegisterFile};
     let entry = PER_DNAMES.iter().find(|e| e.dname == dname)?;
-    Some(core_only_board(entry.peripherals, 0x0800_0000))
+    // Per-Dname exact IROM1/IRAM1: flash at 0x08000000 sized entry.flash_len,
+    // RAM at 0x20000000 sized entry.ram_len. H7 donor keeps DTCM+AXI split
+    // so H7_DTCM 0x20000 + RAM_D1 0x60000 = 0x80000 invariant holds.
+    let backing = if entry.donor == "stm32h743" && entry.ram_len > 0x0002_0000 {
+        let dtcm = H7_DTCM;
+        // H7 banks: DTCM 128K at 0x20000000, AXI SRAM at 0x24000000.
+        // For core-only we keep DTCM exact and put remainder in AXI; small
+        // H730/H7B0 0x20000 stay single-bank.
+        if entry.ram_len <= dtcm {
+            FlatMemory::with_layout(&[0x0800_0000, RAM], &[entry.flash_len, entry.ram_len])
+        } else {
+            let axi = entry.ram_len - dtcm;
+            FlatMemory::with_layout(
+                &[0x0800_0000, 0x2000_0000, 0x2400_0000],
+                &[entry.flash_len, dtcm, axi],
+            )
+        }
+    } else {
+        FlatMemory::with_layout(&[0x0800_0000, RAM], &[entry.flash_len, entry.ram_len])
+    };
+    let mut mem = SystemMemory::new(backing);
+    for p in entry.peripherals {
+        mem.attach(Box::new(RegisterFile::<NoBehavior>::new(p, NoBehavior)));
+    }
+    mem.attach(Box::new(Dwt::new()));
+    mem.attach(Box::new(SysTick::new()));
+    Some(mem)
 }
 
 /// All 500 Dnames with per-Dname flash/ram exact (386 Dnames from 9 DFP 2.4G)

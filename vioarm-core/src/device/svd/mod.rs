@@ -32,7 +32,9 @@ pub mod stm32f103;
 pub mod stm32f105;
 pub mod stm32f107;
 pub mod stm32f303xe;
+pub mod stm32f405;
 pub mod stm32f407;
+pub mod stm32f415;
 pub mod stm32g474xx;
 pub mod stm32h743;
 pub mod stm32l476;
@@ -1269,7 +1271,9 @@ mod tests {
         let tables = [
             super::stm32f103::PERIPHERALS,
             super::stm32f107::PERIPHERALS,
+            super::stm32f405::PERIPHERALS,
             super::stm32f407::PERIPHERALS,
+            super::stm32f415::PERIPHERALS,
         ];
         for p in tables.into_iter().flatten() {
             let mut spans: Vec<(u32, u32)> = Vec::new();
