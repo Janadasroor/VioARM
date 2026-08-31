@@ -6199,6 +6199,308 @@ pub fn stm32h743() -> BoardMemory {
 
     /// Helper: full H7 board with given FLASH/RAM, mounting complete H7 peripheral set.
     /// Used for H7/F7 alias boards to go from latch-only to behavioral.
+
+    fn f100_full_board(flash_len: u32, ram_len: u32) -> BoardMemory {
+        use crate::device::svd::stm32f100::Stm32f100;
+        let backing = FlatMemory::with_layout(
+            &[FLASH, STM32_MAIN_FLASH, RAM],
+            &[flash_len, flash_len, ram_len],
+        );
+        let gate = std::sync::Arc::new(std::sync::Mutex::new(FlashGate::new(
+            Region::new(STM32_MAIN_FLASH, flash_len),
+            1024,
+        )));
+        let mut mem = SystemMemory::new(backing);
+        mem.set_flash_gate(gate.clone());
+        mem.attach(Box::new(FlashF1::for_device::<Stm32f100>(gate)));
+        mem.attach(Box::new(Rcc::for_device::<Stm32f100>()));
+        for (base, name) in [
+            (0x40010800u32, "gpioa"),
+            (0x40010C00, "gpiob"),
+            (0x40011000, "gpioc"),
+        ] {
+            if <Stm32f100 as crate::device::svd::Device>::by_base(base).is_some() {
+                mem.attach(Box::new(StmGpio::at_in::<Stm32f100>(base, name)));
+            }
+        }
+        if <Stm32f100 as crate::device::svd::Device>::peripheral("USART1").is_some() {
+            mem.attach(Box::new(Usart::for_device::<Stm32f100>()));
+        }
+        if <Stm32f100 as crate::device::svd::Device>::peripheral("TIM2").is_some() {
+            mem.attach(Box::new(Timer::tim2_for::<Stm32f100>()));
+        }
+        if <Stm32f100 as crate::device::svd::Device>::peripheral("EXTI").is_some() {
+            mem.attach(Box::new(Exti::for_device::<Stm32f100>()));
+        }
+        if <Stm32f100 as crate::device::svd::Device>::peripheral("AFIO").is_some() {
+            mem.attach(Box::new(Afio::for_device::<Stm32f100>()));
+        }
+        if <Stm32f100 as crate::device::svd::Device>::peripheral("ADC1").is_some() {
+            mem.attach(Box::new(Adc::adc1_for::<Stm32f100>()));
+        }
+        if <Stm32f100 as crate::device::svd::Device>::peripheral("SPI1").is_some() {
+            mem.attach(Box::new(Spi::spi1_for::<Stm32f100>()));
+        }
+        if <Stm32f100 as crate::device::svd::Device>::peripheral("I2C1").is_some() {
+            mem.attach(Box::new(I2c::for_device::<Stm32f100>()));
+        }
+        let req = std::sync::Arc::new(std::sync::Mutex::new(DmaRequests::new()));
+        let dma = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        mem.set_dma_mailbox(dma.clone());
+        if <Stm32f100 as crate::device::svd::Device>::peripheral("DMA1").is_some() {
+            mem.attach(Box::new(DmaF1::dma_for::<Stm32f100>("DMA1", dma, req)));
+        }
+        let wdg = std::sync::Arc::new(std::sync::Mutex::new(false));
+        mem.set_watchdog_reset(wdg.clone());
+        if <Stm32f100 as crate::device::svd::Device>::peripheral("IWDG").is_some() {
+            mem.attach(Box::new(Iwdg::for_device::<Stm32f100>(wdg.clone())));
+        }
+        if <Stm32f100 as crate::device::svd::Device>::peripheral("WWDG").is_some() {
+            mem.attach(Box::new(Wwdg::for_device::<Stm32f100>(wdg)));
+        }
+        for per in crate::device::svd::stm32f100::PERIPHERALS {
+            if per.base >= 0xE000_0000 {
+                continue;
+            }
+            if matches!(mem.read(per.base), Err(crate::error::BusError::Reserved)) {
+                mem.attach(Box::new(crate::device::svd::RegisterFile::<
+                    crate::device::svd::NoBehavior,
+                >::new(
+                    per, crate::device::svd::NoBehavior
+                )));
+            }
+        }
+        mem.attach(Box::new(Dwt::new()));
+        mem.attach(Box::new(SysTick::new()));
+        mem
+    }
+    fn f101_full_board(flash_len: u32, ram_len: u32) -> BoardMemory {
+        use crate::device::svd::stm32f101::Stm32f101;
+        let backing = FlatMemory::with_layout(
+            &[FLASH, STM32_MAIN_FLASH, RAM],
+            &[flash_len, flash_len, ram_len],
+        );
+        let gate = std::sync::Arc::new(std::sync::Mutex::new(FlashGate::new(
+            Region::new(STM32_MAIN_FLASH, flash_len),
+            1024,
+        )));
+        let mut mem = SystemMemory::new(backing);
+        mem.set_flash_gate(gate.clone());
+        mem.attach(Box::new(FlashF1::for_device::<Stm32f101>(gate)));
+        mem.attach(Box::new(Rcc::for_device::<Stm32f101>()));
+        for (base, name) in [
+            (0x40010800u32, "gpioa"),
+            (0x40010C00, "gpiob"),
+            (0x40011000, "gpioc"),
+        ] {
+            if <Stm32f101 as crate::device::svd::Device>::by_base(base).is_some() {
+                mem.attach(Box::new(StmGpio::at_in::<Stm32f101>(base, name)));
+            }
+        }
+        if <Stm32f101 as crate::device::svd::Device>::peripheral("USART1").is_some() {
+            mem.attach(Box::new(Usart::for_device::<Stm32f101>()));
+        }
+        if <Stm32f101 as crate::device::svd::Device>::peripheral("TIM2").is_some() {
+            mem.attach(Box::new(Timer::tim2_for::<Stm32f101>()));
+        }
+        if <Stm32f101 as crate::device::svd::Device>::peripheral("EXTI").is_some() {
+            mem.attach(Box::new(Exti::for_device::<Stm32f101>()));
+        }
+        if <Stm32f101 as crate::device::svd::Device>::peripheral("AFIO").is_some() {
+            mem.attach(Box::new(Afio::for_device::<Stm32f101>()));
+        }
+        if <Stm32f101 as crate::device::svd::Device>::peripheral("ADC1").is_some() {
+            mem.attach(Box::new(Adc::adc1_for::<Stm32f101>()));
+        }
+        if <Stm32f101 as crate::device::svd::Device>::peripheral("SPI1").is_some() {
+            mem.attach(Box::new(Spi::spi1_for::<Stm32f101>()));
+        }
+        if <Stm32f101 as crate::device::svd::Device>::peripheral("I2C1").is_some() {
+            mem.attach(Box::new(I2c::for_device::<Stm32f101>()));
+        }
+        let req = std::sync::Arc::new(std::sync::Mutex::new(DmaRequests::new()));
+        let dma = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        mem.set_dma_mailbox(dma.clone());
+        if <Stm32f101 as crate::device::svd::Device>::peripheral("DMA1").is_some() {
+            mem.attach(Box::new(DmaF1::dma_for::<Stm32f101>("DMA1", dma, req)));
+        }
+        let wdg = std::sync::Arc::new(std::sync::Mutex::new(false));
+        mem.set_watchdog_reset(wdg.clone());
+        if <Stm32f101 as crate::device::svd::Device>::peripheral("IWDG").is_some() {
+            mem.attach(Box::new(Iwdg::for_device::<Stm32f101>(wdg.clone())));
+        }
+        if <Stm32f101 as crate::device::svd::Device>::peripheral("WWDG").is_some() {
+            mem.attach(Box::new(Wwdg::for_device::<Stm32f101>(wdg)));
+        }
+        for per in crate::device::svd::stm32f101::PERIPHERALS {
+            if per.base >= 0xE000_0000 {
+                continue;
+            }
+            if matches!(mem.read(per.base), Err(crate::error::BusError::Reserved)) {
+                mem.attach(Box::new(crate::device::svd::RegisterFile::<
+                    crate::device::svd::NoBehavior,
+                >::new(
+                    per, crate::device::svd::NoBehavior
+                )));
+            }
+        }
+        mem.attach(Box::new(Dwt::new()));
+        mem.attach(Box::new(SysTick::new()));
+        mem
+    }
+    fn f102_full_board(flash_len: u32, ram_len: u32) -> BoardMemory {
+        use crate::device::svd::stm32f102::Stm32f102;
+        let backing = FlatMemory::with_layout(
+            &[FLASH, STM32_MAIN_FLASH, RAM],
+            &[flash_len, flash_len, ram_len],
+        );
+        let gate = std::sync::Arc::new(std::sync::Mutex::new(FlashGate::new(
+            Region::new(STM32_MAIN_FLASH, flash_len),
+            1024,
+        )));
+        let mut mem = SystemMemory::new(backing);
+        mem.set_flash_gate(gate.clone());
+        mem.attach(Box::new(FlashF1::for_device::<Stm32f102>(gate)));
+        mem.attach(Box::new(Rcc::for_device::<Stm32f102>()));
+        for (base, name) in [
+            (0x40010800u32, "gpioa"),
+            (0x40010C00, "gpiob"),
+            (0x40011000, "gpioc"),
+        ] {
+            if <Stm32f102 as crate::device::svd::Device>::by_base(base).is_some() {
+                mem.attach(Box::new(StmGpio::at_in::<Stm32f102>(base, name)));
+            }
+        }
+        if <Stm32f102 as crate::device::svd::Device>::peripheral("USART1").is_some() {
+            mem.attach(Box::new(Usart::for_device::<Stm32f102>()));
+        }
+        if <Stm32f102 as crate::device::svd::Device>::peripheral("TIM2").is_some() {
+            mem.attach(Box::new(Timer::tim2_for::<Stm32f102>()));
+        }
+        if <Stm32f102 as crate::device::svd::Device>::peripheral("EXTI").is_some() {
+            mem.attach(Box::new(Exti::for_device::<Stm32f102>()));
+        }
+        if <Stm32f102 as crate::device::svd::Device>::peripheral("AFIO").is_some() {
+            mem.attach(Box::new(Afio::for_device::<Stm32f102>()));
+        }
+        if <Stm32f102 as crate::device::svd::Device>::peripheral("ADC1").is_some() {
+            mem.attach(Box::new(Adc::adc1_for::<Stm32f102>()));
+        }
+        if <Stm32f102 as crate::device::svd::Device>::peripheral("SPI1").is_some() {
+            mem.attach(Box::new(Spi::spi1_for::<Stm32f102>()));
+        }
+        if <Stm32f102 as crate::device::svd::Device>::peripheral("I2C1").is_some() {
+            mem.attach(Box::new(I2c::for_device::<Stm32f102>()));
+        }
+        let req = std::sync::Arc::new(std::sync::Mutex::new(DmaRequests::new()));
+        let dma = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        mem.set_dma_mailbox(dma.clone());
+        if <Stm32f102 as crate::device::svd::Device>::peripheral("DMA1").is_some() {
+            mem.attach(Box::new(DmaF1::dma_for::<Stm32f102>("DMA1", dma, req)));
+        }
+        let wdg = std::sync::Arc::new(std::sync::Mutex::new(false));
+        mem.set_watchdog_reset(wdg.clone());
+        if <Stm32f102 as crate::device::svd::Device>::peripheral("IWDG").is_some() {
+            mem.attach(Box::new(Iwdg::for_device::<Stm32f102>(wdg.clone())));
+        }
+        if <Stm32f102 as crate::device::svd::Device>::peripheral("WWDG").is_some() {
+            mem.attach(Box::new(Wwdg::for_device::<Stm32f102>(wdg)));
+        }
+        for per in crate::device::svd::stm32f102::PERIPHERALS {
+            if per.base >= 0xE000_0000 {
+                continue;
+            }
+            if matches!(mem.read(per.base), Err(crate::error::BusError::Reserved)) {
+                mem.attach(Box::new(crate::device::svd::RegisterFile::<
+                    crate::device::svd::NoBehavior,
+                >::new(
+                    per, crate::device::svd::NoBehavior
+                )));
+            }
+        }
+        mem.attach(Box::new(Dwt::new()));
+        mem.attach(Box::new(SysTick::new()));
+        mem
+    }
+    fn f3_full_board(flash_len: u32, ram_len: u32) -> BoardMemory {
+        use crate::device::svd::stm32f303xe::Stm32f303xe;
+        let backing = FlatMemory::with_layout(
+            &[FLASH, STM32_MAIN_FLASH, RAM],
+            &[flash_len, flash_len, ram_len],
+        );
+        let gate = std::sync::Arc::new(std::sync::Mutex::new(FlashGate::new(
+            Region::new(STM32_MAIN_FLASH, flash_len),
+            2048,
+        )));
+        let mut mem = SystemMemory::new(backing);
+        mem.set_flash_gate(gate.clone());
+        if <Stm32f303xe as crate::device::svd::Device>::peripheral("FLASH").is_some() {
+            mem.attach(Box::new(FlashF1::for_device::<Stm32f303xe>(gate)));
+        }
+        mem.attach(Box::new(Rcc::for_device::<Stm32f303xe>()));
+        for (base, name) in [
+            (0x4800_0000u32, "gpioa"),
+            (0x4800_0400, "gpiob"),
+            (0x4800_0800, "gpioc"),
+            (0x4800_0c00, "gpiod"),
+            (0x4800_1000, "gpioe"),
+            (0x4800_1400, "gpiof"),
+        ] {
+            if <Stm32f303xe as crate::device::svd::Device>::by_base(base).is_some() {
+                mem.attach(Box::new(GpioF4::at_in::<Stm32f303xe>(base, name)));
+            }
+        }
+        for ctor in [
+            Usart::for_device::<Stm32f303xe> as fn() -> Usart,
+            Usart::usart2_for::<Stm32f303xe>,
+            Usart::usart3_for::<Stm32f303xe>,
+        ] {
+            let base = ctor().ranges()[0].base;
+            if <Stm32f303xe as crate::device::svd::Device>::by_base(base).is_some() {
+                mem.attach(Box::new(ctor()));
+            }
+        }
+        for ctor in [
+            Timer::tim1_for::<Stm32f303xe>,
+            Timer::tim2_for::<Stm32f303xe>,
+            Timer::tim3_for::<Stm32f303xe>,
+        ] {
+            let base = ctor().ranges()[0].base;
+            if <Stm32f303xe as crate::device::svd::Device>::by_base(base).is_some() {
+                mem.attach(Box::new(ctor()));
+            }
+        }
+        if <Stm32f303xe as crate::device::svd::Device>::peripheral("EXTI").is_some() {
+            mem.attach(Box::new(Exti::for_device::<Stm32f303xe>()));
+        }
+        if <Stm32f303xe as crate::device::svd::Device>::peripheral("SYSCFG").is_some() {
+            mem.attach(Box::new(Syscfg::for_device::<Stm32f303xe>()));
+        }
+        let wdg = std::sync::Arc::new(std::sync::Mutex::new(false));
+        mem.set_watchdog_reset(wdg.clone());
+        if <Stm32f303xe as crate::device::svd::Device>::peripheral("IWDG").is_some() {
+            mem.attach(Box::new(Iwdg::for_device::<Stm32f303xe>(wdg.clone())));
+        }
+        if <Stm32f303xe as crate::device::svd::Device>::peripheral("WWDG").is_some() {
+            mem.attach(Box::new(Wwdg::for_device::<Stm32f303xe>(wdg)));
+        }
+        for per in crate::device::svd::stm32f303xe::PERIPHERALS {
+            if per.base >= 0xE000_0000 {
+                continue;
+            }
+            if matches!(mem.read(per.base), Err(crate::error::BusError::Reserved)) {
+                mem.attach(Box::new(crate::device::svd::RegisterFile::<
+                    crate::device::svd::NoBehavior,
+                >::new(
+                    per, crate::device::svd::NoBehavior
+                )));
+            }
+        }
+        mem.attach(Box::new(Dwt::new()));
+        mem.attach(Box::new(SysTick::new()));
+        mem
+    }
+
     fn h7_full_board(flash_len: u32, ram_len: u32) -> BoardMemory {
         use crate::device::svd::stm32h743::Stm32h743;
         // Use H743 memory map but with alias's flash/ram sizes; keep DTCM/AXI etc as in h743 but scale AXI to match ram_len
