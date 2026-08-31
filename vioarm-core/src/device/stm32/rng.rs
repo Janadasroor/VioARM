@@ -11,13 +11,18 @@ const SR_DRDY: u32 = 1 << 0;
 const SR_CECS: u32 = 1 << 1;
 
 #[derive(Clone, Debug, Default)]
-struct RngBehavior { pending: bool, lfsr: u32 }
+struct RngBehavior {
+    pending: bool,
+    lfsr: u32,
+}
 
 impl RngBehavior {
     fn next(&mut self) -> u32 {
         // xorshift
         let mut x = self.lfsr;
-        if x == 0 { x = 0x12345678; }
+        if x == 0 {
+            x = 0x12345678;
+        }
         x ^= x << 13;
         x ^= x >> 17;
         x ^= x << 5;
@@ -27,7 +32,13 @@ impl RngBehavior {
 }
 
 impl Behavior for RngBehavior {
-    fn on_write(&mut self, view: &mut Registers<&mut [u32]>, offset: u32, val: u8, shift: u32) -> u32 {
+    fn on_write(
+        &mut self,
+        view: &mut Registers<&mut [u32]>,
+        offset: u32,
+        val: u8,
+        shift: u32,
+    ) -> u32 {
         let word = view.merged(offset, val, shift);
         if offset == 0x00 {
             let en = word & CR_RNGEN != 0;
@@ -35,8 +46,8 @@ impl Behavior for RngBehavior {
             if en && !was_en {
                 self.pending = true;
                 view.set(0x08, view.get(0x08) & !SR_DRDY); // SR at 0x08? Actually SR at 0x04?
-                // For H7 RNG, SR at 0x04, DR at 0x08
-                // We handle both
+                                                           // For H7 RNG, SR at 0x04, DR at 0x08
+                                                           // We handle both
                 view.set(0x04, view.get(0x04) & !SR_DRDY);
             }
             if !en {
@@ -62,7 +73,11 @@ impl Behavior for RngBehavior {
             // Reading DR clears DRDY
             view.set(offset, value);
             // Actually DR read should clear DRDY in SR
-            let sr_off = if view.try_get(0x04).is_some() { 0x04 } else { 0x08 };
+            let sr_off = if view.try_get(0x04).is_some() {
+                0x04
+            } else {
+                0x08
+            };
             view.set(sr_off, view.get(sr_off) & !SR_DRDY);
             // Schedule next
             if view.get(0x00) & CR_RNGEN != 0 {
@@ -76,8 +91,14 @@ impl Behavior for RngBehavior {
             let sr_off = if view.try_get(0x04).is_some() && view.try_get(0x08).is_some() {
                 // H7: SR at 0x04, DR at 0x08
                 0x04
-            } else { 0x04 };
-            let dr_off = if view.try_get(0x08).is_some() { 0x08 } else { 0x08 };
+            } else {
+                0x04
+            };
+            let dr_off = if view.try_get(0x08).is_some() {
+                0x08
+            } else {
+                0x08
+            };
             let rnd = self.next();
             view.set(sr_off, view.get(sr_off) | SR_DRDY);
             view.set(dr_off, rnd);
@@ -91,49 +112,92 @@ impl Behavior for RngBehavior {
         let ie = (cr >> 3) & 1;
         u32::from(sr & SR_DRDY != 0 && ie != 0)
     }
-    fn reset(&mut self) { self.pending = false; self.lfsr = 0x12345678; }
+    fn reset(&mut self) {
+        self.pending = false;
+        self.lfsr = 0x12345678;
+    }
 }
 
 #[derive(Debug)]
-pub struct Rng { inner: RegisterFile<RngBehavior> }
+pub struct Rng {
+    inner: RegisterFile<RngBehavior>,
+}
 impl Rng {
     #[must_use]
     pub fn new_for<D: Device>() -> Self {
         let def = D::peripheral("RNG").expect("RNG");
-        Self { inner: RegisterFile::new(def, RngBehavior { lfsr: 0x12345678, pending: false }) }
+        Self {
+            inner: RegisterFile::new(
+                def,
+                RngBehavior {
+                    lfsr: 0x12345678,
+                    pending: false,
+                },
+            ),
+        }
     }
 }
 impl Peripheral for Rng {
-    fn ranges(&self) -> &[Region] { self.inner.ranges() }
-    fn read(&mut self, a: u32) -> Result<u8, BusError> { self.inner.read(a) }
-    fn write(&mut self, a: u32, v: u8) -> Result<(), BusError> { self.inner.write(a, v) }
-    fn reset(&mut self) { self.inner.reset(); }
-    fn tick(&mut self, d: u64) { self.inner.tick(d); }
-    fn name(&self) -> &'static str { "rng" }
+    fn ranges(&self) -> &[Region] {
+        self.inner.ranges()
+    }
+    fn read(&mut self, a: u32) -> Result<u8, BusError> {
+        self.inner.read(a)
+    }
+    fn write(&mut self, a: u32, v: u8) -> Result<(), BusError> {
+        self.inner.write(a, v)
+    }
+    fn reset(&mut self) {
+        self.inner.reset();
+    }
+    fn tick(&mut self, d: u64) {
+        self.inner.tick(d);
+    }
+    fn name(&self) -> &'static str {
+        "rng"
+    }
 }
 impl InterruptSource for Rng {
-    fn exception_number(&self) -> Option<u8> { self.inner.exception_number() }
-    fn pending(&self) -> u32 { self.inner.pending() }
-    fn acknowledge(&mut self, l: u32) { self.inner.acknowledge(l); }
+    fn exception_number(&self) -> Option<u8> {
+        self.inner.exception_number()
+    }
+    fn pending(&self) -> u32 {
+        self.inner.pending()
+    }
+    fn acknowledge(&mut self, l: u32) {
+        self.inner.acknowledge(l);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::device::svd::stm32h743::Stm32h743;
-    fn w(c: &mut Rng, off: u32, v: u32) { let b=c.ranges()[0].base; for i in 0..4 { c.write(b+off+i, ((v>>8*i)&0xFF)as u8).unwrap(); } }
-    fn r(c: &mut Rng, off: u32) -> u32 { let b=c.ranges()[0].base; let mut v=0; for i in 0..4 { v|=u32::from(c.read(b+off+i).unwrap())<<8*i; } v }
+    fn w(c: &mut Rng, off: u32, v: u32) {
+        let b = c.ranges()[0].base;
+        for i in 0..4 {
+            c.write(b + off + i, ((v >> 8 * i) & 0xFF) as u8).unwrap();
+        }
+    }
+    fn r(c: &mut Rng, off: u32) -> u32 {
+        let b = c.ranges()[0].base;
+        let mut v = 0;
+        for i in 0..4 {
+            v |= u32::from(c.read(b + off + i).unwrap()) << 8 * i;
+        }
+        v
+    }
     #[test]
     fn rng_enable_latches_drdy() {
         let mut rng = Rng::new_for::<Stm32h743>();
         w(&mut rng, 0x00, CR_RNGEN);
-        assert_eq!(r(&mut rng, 0x04) & SR_DRDY,0);
+        assert_eq!(r(&mut rng, 0x04) & SR_DRDY, 0);
         rng.tick(1);
-        assert_ne!(r(&mut rng, 0x04) & SR_DRDY,0);
+        assert_ne!(r(&mut rng, 0x04) & SR_DRDY, 0);
         let dr = r(&mut rng, 0x08);
-        assert_ne!(dr,0);
+        assert_ne!(dr, 0);
         // Reading DR should clear DRDY and schedule next, but our on_read clears
         // So after read, DRDY cleared
-        assert_eq!(r(&mut rng, 0x04) & SR_DRDY,0, "DR read clears DRDY");
+        assert_eq!(r(&mut rng, 0x04) & SR_DRDY, 0, "DR read clears DRDY");
     }
 }

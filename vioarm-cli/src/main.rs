@@ -1606,9 +1606,7 @@ enum Commands {
         budget: u64,
     },
     /// Show image layout (segments, entry)
-    Info {
-        image: PathBuf,
-    },
+    Info { image: PathBuf },
     /// List all boards (21 SVD tables + 500 Dnames)
     Boards,
     /// Instant terminal docs
@@ -1651,13 +1649,33 @@ fn banner() {
 
 fn load_image_auto(path: &PathBuf, base: u32) -> (LoadedImage, String) {
     let bytes = std::fs::read(path).unwrap_or_else(|e| {
-        eprintln!("{} cannot read {}: {e}", "error:".red().bold(), path.display());
+        eprintln!(
+            "{} cannot read {}: {e}",
+            "error:".red().bold(),
+            path.display()
+        );
         std::process::exit(2);
     });
-    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_ascii_lowercase();
-    let kind = if ext == "elf" { "elf" } else if ext == "hex" { "hex" } else if ext == "bin" { "bin" } else {
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let kind = if ext == "elf" {
+        "elf"
+    } else if ext == "hex" {
+        "hex"
+    } else if ext == "bin" {
+        "bin"
+    } else {
         // auto-detect by magic
-        if bytes.starts_with(b"\x7fELF") { "elf" } else if bytes.starts_with(b":") { "hex" } else { "bin" }
+        if bytes.starts_with(b"\x7fELF") {
+            "elf"
+        } else if bytes.starts_with(b":") {
+            "hex"
+        } else {
+            "bin"
+        }
     };
     let img = match kind {
         "elf" => loader::load_elf(&bytes).unwrap_or_else(|e| {
@@ -1734,7 +1752,11 @@ fn run_quiet(m: &mut Machine<board::BoardMemory>, budget: u64) {
     for device in m.core.mem().devices_mut() {
         let tx = device.drain_output();
         if !tx.is_empty() {
-            println!("{} {}", "uart:".bright_magenta().bold(), String::from_utf8_lossy(&tx));
+            println!(
+                "{} {}",
+                "uart:".bright_magenta().bold(),
+                String::from_utf8_lossy(&tx)
+            );
         }
     }
 }
@@ -1822,28 +1844,40 @@ fn debug_repl(image: PathBuf, board: Board, base: u32) {
         "help".bright_green()
     );
     let (regs, xpsr, _) = m.core.snapshot();
-    println!("{} pc={:#010x} sp={:#010x} xpsr={:#010x}", "attached:".dimmed(), regs.pc, regs.sp, xpsr.get());
+    println!(
+        "{} pc={:#010x} sp={:#010x} xpsr={:#010x}",
+        "attached:".dimmed(),
+        regs.pc,
+        regs.sp,
+        xpsr.get()
+    );
     let mut rl = String::new();
     loop {
         print!("{}", "(vioarm) ".bright_magenta().bold());
         use std::io::Write;
         let _ = std::io::stdout().flush();
         rl.clear();
-        if std::io::stdin().read_line(&mut rl).is_err() { break; }
+        if std::io::stdin().read_line(&mut rl).is_err() {
+            break;
+        }
         let cmd = rl.trim();
         match cmd {
             "help" | "h" | "?" => {
                 println!("{}: step(s)/next(n) continue(c) regs(r) mem <addr> break <pc> budget <n> quit(q)", "commands".bright_green());
             }
-            "step" | "s" | "n" | "next" => {
-                match m.step() {
-                    Ok(_) => {
-                        let (regs, xpsr, cycles) = m.core.snapshot();
-                        println!("{} pc={:#010x} r0={:#010x} xpsr={:#010x} cycles={cycles}", "step".dimmed(), regs.pc, regs.r[0], xpsr.get());
-                    }
-                    Err(e) => println!("{} {e}", "halted:".yellow(), ),
+            "step" | "s" | "n" | "next" => match m.step() {
+                Ok(_) => {
+                    let (regs, xpsr, cycles) = m.core.snapshot();
+                    println!(
+                        "{} pc={:#010x} r0={:#010x} xpsr={:#010x} cycles={cycles}",
+                        "step".dimmed(),
+                        regs.pc,
+                        regs.r[0],
+                        xpsr.get()
+                    );
                 }
-            }
+                Err(e) => println!("{} {e}", "halted:".yellow(),),
+            },
             "regs" | "r" => {
                 let (regs, xpsr, cycles) = m.core.snapshot();
                 println!("pc={:#010x} sp={:#010x} lr={:#010x} r0={:#010x} r1={:#010x} r2={:#010x} r3={:#010x} xpsr={:#010x} cycles={cycles}",
@@ -1856,38 +1890,57 @@ fn debug_repl(image: PathBuf, board: Board, base: u32) {
                         Ok(v) => println!("{a:#010x}: {v:#010x}"),
                         Err(e) => println!("{} {e}", "bus error:".red()),
                     }
-                } else { println!("{} mem <hex addr>", "usage:".yellow()); }
+                } else {
+                    println!("{} mem <hex addr>", "usage:".yellow());
+                }
             }
             c if c.starts_with("break ") => {
                 let pc = c[6..].trim();
                 if let Ok(a) = parse_u32(pc) {
-                    println!("{} break at {a:#010x} — run `continue` to hit BKPT", "break".bright_green());
+                    println!(
+                        "{} break at {a:#010x} — run `continue` to hit BKPT",
+                        "break".bright_green()
+                    );
                     // simple: run until pc
                     let mut hit = false;
                     for _ in 0..1_000_000 {
                         let (regs, _, _) = m.core.snapshot();
-                        if regs.pc == a { hit = true; break; }
-                        if m.step().is_err() { break; }
+                        if regs.pc == a {
+                            hit = true;
+                            break;
+                        }
+                        if m.step().is_err() {
+                            break;
+                        }
                     }
-                    println!("{}", if hit { "hit".green() } else { "not hit in 1M".yellow() });
+                    println!(
+                        "{}",
+                        if hit {
+                            "hit".green()
+                        } else {
+                            "not hit in 1M".yellow()
+                        }
+                    );
                 }
             }
             c if c.starts_with("budget ") => {
                 if let Ok(n) = c[7..].trim().parse::<u64>() {
                     match m.run(n) {
-                        Err(HaltCause::CycleBudgetExhausted) => println!("{}", "budget exhausted".yellow()),
+                        Err(HaltCause::CycleBudgetExhausted) => {
+                            println!("{}", "budget exhausted".yellow())
+                        }
                         Err(e) => println!("{} {e}", "halted:".green()),
                         Ok(()) => {}
                     }
                 }
             }
-            "continue" | "c" | "run" => {
-                match m.run(1_000_000) {
-                    Err(HaltCause::CycleBudgetExhausted) => println!("{}", "budget exhausted — 1M".yellow()),
-                    Err(e) => println!("{} {e}", "halted:".green()),
-                    Ok(()) => {}
+            "continue" | "c" | "run" => match m.run(1_000_000) {
+                Err(HaltCause::CycleBudgetExhausted) => {
+                    println!("{}", "budget exhausted — 1M".yellow())
                 }
-            }
+                Err(e) => println!("{} {e}", "halted:".green()),
+                Ok(()) => {}
+            },
             "quit" | "q" | "exit" => break,
             "" => continue,
             _ => println!("{} — try help", "unknown".red()),
@@ -1899,13 +1952,23 @@ fn main() {
     let cli = Cli::parse();
     if let Some(cmd) = cli.command {
         match cmd {
-            Commands::Run { image, board, base, budget } => {
+            Commands::Run {
+                image,
+                board,
+                base,
+                budget,
+            } => {
                 let (img, _) = load_image_auto(&image, base);
                 let mut m = machine_for(board, &img);
                 banner();
                 run_quiet(&mut m, budget);
             }
-            Commands::Trace { image, board, base, budget } => {
+            Commands::Trace {
+                image,
+                board,
+                base,
+                budget,
+            } => {
                 let (img, _) = load_image_auto(&image, base);
                 let mut m = machine_for(board, &img);
                 banner();
@@ -1917,22 +1980,45 @@ fn main() {
             }
             Commands::Boards => {
                 banner();
-                println!("{}", "Boards — 21 SVD tables → 500 Dnames".bright_cyan().bold());
+                println!(
+                    "{}",
+                    "Boards — 21 SVD tables → 500 Dnames".bright_cyan().bold()
+                );
                 for (name, peris) in board::all_chip_tables() {
-                    println!("  {:12} {:3} periphs {}", name.bright_green(), peris.len().to_string().dimmed(), format!("board::{}", name).dimmed());
+                    println!(
+                        "  {:12} {:3} periphs {}",
+                        name.bright_green(),
+                        peris.len().to_string().dimmed(),
+                        format!("board::{}", name).dimmed()
+                    );
                 }
-                println!("{}", "run: vioarm run firmware.hex --board stm32h743".dimmed());
+                println!(
+                    "{}",
+                    "run: vioarm run firmware.hex --board stm32h743".dimmed()
+                );
             }
             Commands::Docs { topic } => docs_topic(topic),
             Commands::Debug { image, board, base } => debug_repl(image, board, base),
-            Commands::Gdb { image, port, board, base } => {
+            Commands::Gdb {
+                image,
+                port,
+                board,
+                base,
+            } => {
                 let (img, _) = load_image_auto(&image, base);
                 let mut m = machine_for(board, &img);
-                let listener = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap_or_else(|e| {
-                    eprintln!("{} cannot listen on port {port}: {e}", "error:".red().bold());
-                    std::process::exit(3);
-                });
-                println!("{} waiting for gdb on 127.0.0.1:{port}", "gdbserver:".bright_magenta().bold());
+                let listener =
+                    std::net::TcpListener::bind(("127.0.0.1", port)).unwrap_or_else(|e| {
+                        eprintln!(
+                            "{} cannot listen on port {port}: {e}",
+                            "error:".red().bold()
+                        );
+                        std::process::exit(3);
+                    });
+                println!(
+                    "{} waiting for gdb on 127.0.0.1:{port}",
+                    "gdbserver:".bright_magenta().bold()
+                );
                 if let Err(e) = vioarm_gdb::serve(&mut m, &listener) {
                     eprintln!("{} gdb session error: {e}", "error:".red().bold());
                     std::process::exit(3);
@@ -1943,16 +2029,46 @@ fn main() {
     }
     // Legacy flat flags fallback (vioarm --bin/--elf/--hex --board --trace --gdb)
     let img = if let Some(path) = cli.elf {
-        let bytes = std::fs::read(&path).unwrap_or_else(|e| { eprintln!("{} cannot read {}: {e}", "error:".red().bold(), path.display()); std::process::exit(2); });
-        loader::load_elf(&bytes).unwrap_or_else(|e| { eprintln!("{} {}: {e}", "error:".red().bold(), path.display()); std::process::exit(2); })
+        let bytes = std::fs::read(&path).unwrap_or_else(|e| {
+            eprintln!(
+                "{} cannot read {}: {e}",
+                "error:".red().bold(),
+                path.display()
+            );
+            std::process::exit(2);
+        });
+        loader::load_elf(&bytes).unwrap_or_else(|e| {
+            eprintln!("{} {}: {e}", "error:".red().bold(), path.display());
+            std::process::exit(2);
+        })
     } else if let Some(path) = cli.hex {
-        let bytes = std::fs::read(&path).unwrap_or_else(|e| { eprintln!("{} cannot read {}: {e}", "error:".red().bold(), path.display()); std::process::exit(2); });
-        loader::load_hex(&bytes).unwrap_or_else(|e| { eprintln!("{} {}: {e}", "error:".red().bold(), path.display()); std::process::exit(2); })
+        let bytes = std::fs::read(&path).unwrap_or_else(|e| {
+            eprintln!(
+                "{} cannot read {}: {e}",
+                "error:".red().bold(),
+                path.display()
+            );
+            std::process::exit(2);
+        });
+        loader::load_hex(&bytes).unwrap_or_else(|e| {
+            eprintln!("{} {}: {e}", "error:".red().bold(), path.display());
+            std::process::exit(2);
+        })
     } else if let Some(path) = cli.bin {
-        let bytes = std::fs::read(&path).unwrap_or_else(|e| { eprintln!("{} cannot read {}: {e}", "error:".red().bold(), path.display()); std::process::exit(2); });
+        let bytes = std::fs::read(&path).unwrap_or_else(|e| {
+            eprintln!(
+                "{} cannot read {}: {e}",
+                "error:".red().bold(),
+                path.display()
+            );
+            std::process::exit(2);
+        });
         loader::load_flat(cli.base, &bytes)
     } else {
-        eprintln!("{} provide --bin/--elf/--hex or subcommand `run`", "error:".red().bold());
+        eprintln!(
+            "{} provide --bin/--elf/--hex or subcommand `run`",
+            "error:".red().bold()
+        );
         Cli::parse_from(["vioarm", "--help"]);
         std::process::exit(2);
     };
@@ -1961,20 +2077,44 @@ fn main() {
             let end = u32::try_from(bytes.len()).map_or(u32::MAX, |len| addr.saturating_add(len));
             println!("segment: {addr:#010x}..{end:#010x} ({} bytes)", bytes.len());
         }
-        if let Some(entry) = img.entry { println!("entry: {entry:#010x}"); }
+        if let Some(entry) = img.entry {
+            println!("entry: {entry:#010x}");
+        }
         return;
     }
     let mut m = machine_for(cli.board, &img);
     if let Some(port) = cli.gdb {
-        let listener = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap_or_else(|e| { eprintln!("{} cannot listen on port {port}: {e}", "error:".red().bold()); std::process::exit(3); });
-        println!("{} waiting for gdb on 127.0.0.1:{port}", "gdbserver:".bright_magenta().bold());
-        if let Err(e) = vioarm_gdb::serve(&mut m, &listener) { eprintln!("{} gdb session error: {e}", "error:".red().bold()); std::process::exit(3); }
+        let listener = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap_or_else(|e| {
+            eprintln!(
+                "{} cannot listen on port {port}: {e}",
+                "error:".red().bold()
+            );
+            std::process::exit(3);
+        });
+        println!(
+            "{} waiting for gdb on 127.0.0.1:{port}",
+            "gdbserver:".bright_magenta().bold()
+        );
+        if let Err(e) = vioarm_gdb::serve(&mut m, &listener) {
+            eprintln!("{} gdb session error: {e}", "error:".red().bold());
+            std::process::exit(3);
+        }
         return;
     }
     banner();
-    if cli.trace { run_traced(&mut m, cli.budget); } else { run_quiet(&mut m, cli.budget); }
+    if cli.trace {
+        run_traced(&mut m, cli.budget);
+    } else {
+        run_quiet(&mut m, cli.budget);
+    }
     for device in m.core.mem().devices_mut() {
         let tx = device.drain_output();
-        if !tx.is_empty() { println!("{} {}", "uart:".bright_magenta().bold(), String::from_utf8_lossy(&tx)); }
+        if !tx.is_empty() {
+            println!(
+                "{} {}",
+                "uart:".bright_magenta().bold(),
+                String::from_utf8_lossy(&tx)
+            );
+        }
     }
 }

@@ -301,7 +301,17 @@ fn build_firmware_for(
         args.push(Box::leak(target_arg.into_boxed_str()) as &str);
     }
     args.push(Box::leak(cpu_arg.into_boxed_str()) as &str);
-    args.extend_from_slice(&["-mthumb", "-ffreestanding", "-nostdlib", "-O0", "-g0", "-c", src, "-o", obj]);
+    args.extend_from_slice(&[
+        "-mthumb",
+        "-ffreestanding",
+        "-nostdlib",
+        "-O0",
+        "-g0",
+        "-c",
+        src,
+        "-o",
+        obj,
+    ]);
     for f in &float_args {
         args.push(*f);
     }
@@ -365,7 +375,18 @@ fn build_firmware_for_h7(
         args.push(Box::leak(target_arg.into_boxed_str()) as &str);
     }
     args.push(Box::leak(cpu_arg.into_boxed_str()) as &str);
-    args.extend_from_slice(&[float_args[0], float_args[1], "-O0", "-ffreestanding", "-nostdlib", "-fno-builtin", src, "-c", "-o", obj]);
+    args.extend_from_slice(&[
+        float_args[0],
+        float_args[1],
+        "-O0",
+        "-ffreestanding",
+        "-nostdlib",
+        "-fno-builtin",
+        src,
+        "-c",
+        "-o",
+        obj,
+    ]);
     for inc in includes {
         args.push("-I");
         args.push(inc);
@@ -3575,7 +3596,10 @@ fn stm32l476_firmware_shifts_spi() {
         d.drive_inputs(0xA5);
     }
     let err = m.run(50_000);
-    assert!(matches!(err, Err(HaltCause::NonThumbTarget) | Err(HaltCause::CycleBudgetExhausted)));
+    assert!(matches!(
+        err,
+        Err(HaltCause::NonThumbTarget) | Err(HaltCause::CycleBudgetExhausted)
+    ));
     // L476 SPI slave byte may not be latched due to new IP timing; just check no HardFault
     let _rx = m.core.mem().read_word(RAM).unwrap();
 }
@@ -3701,7 +3725,10 @@ fn stm32g474xx_firmware_shifts_spi() {
         d.drive_inputs(0xA5);
     }
     let err = m.run(50_000);
-    assert!(matches!(err, Err(HaltCause::NonThumbTarget) | Err(HaltCause::CycleBudgetExhausted)));
+    assert!(matches!(
+        err,
+        Err(HaltCause::NonThumbTarget) | Err(HaltCause::CycleBudgetExhausted)
+    ));
     let _rx = m.core.mem().read_word(RAM).unwrap();
 }
 

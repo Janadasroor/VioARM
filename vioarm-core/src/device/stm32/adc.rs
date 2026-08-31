@@ -267,7 +267,13 @@ impl AdcBehavior {
         // The analog watchdog guards the regular group (RM0008 §11.7.4):
         // enabled channels outside [LTR, HTR] latch SR.AWD.
         self.run_watchdog(view, channel, value);
-        if view.get(self.config.cr_off) & (1 << 8) != 0 {
+        let dma_enabled = if self.config.has_chselr {
+            // F0 `CFGR.DMAEN` at bit0 (0x0C), not `CR` bit8
+            view.get(0x0C) & 1 != 0
+        } else {
+            view.get(self.config.cr_off) & (1 << 8) != 0
+        };
+        if dma_enabled {
             if let Some((reqs, ctrl, ch)) = self.dma.as_ref() {
                 let reqs = Arc::clone(reqs);
                 reqs.lock()

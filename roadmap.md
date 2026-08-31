@@ -573,6 +573,18 @@ Pack SVD `10` → code `1+9=10` `stm32f030`/`f031`/`f042`/`f091`/`f0x0`/`f0x1`/`
 
 - **Infra:** `ci.yml:28` `QEMU 10.2.1` `qemu.rs:128` `ORACLE_VERSION` `llvm-cov 85` `deny warnings` `packs/PROVENANCE.md:1` `SLA0044` `SHA256:placeholder` `216MB` `sbom.json:1` `CycloneDX 1.4` `1.9.1` `85` components.
 
+### 2026-08-31 500 alias→real WP 2+1+3 closed `506` funcs `620` lib `all_boards()` `chip_cmsis_500`
+
+- **SUBGHZ/OCTOSPI2 wiring:** `subghz.rs:31` `new_wl()` `0x58001400` `WL` `octospi.rs:36` `OctospiBehavior` `QspiGate 0x70000000` `octospi2_gate` `board.rs:1842` `wl55/wle5/wle4/wl33` `Subghz+Octospi WL` `board.rs:3937` `H743` `AXI 0x60000` + `OCTOSPI2 0x5200A000/0x70000000` `mem/system.rs:46` `qspi2` `FMC QspiGate` now `2` windows; `SUBGHZ` `0→4` hits `OCTOSPI` `QspiGate` `0→3` hits `H7` `h743/h753/h723` wired.
+- **H7 RAM sum:** `board.rs:3920` `AXI 0x80000→0x60000` so `DTCM 0x20000+RAM_D1 0x60000=0x80000` `STM32_H743_RAM_LEN` exact per `PDSC` `DTCMRAM`+`RAM_D1`, `h7_ram_sum_is_exact` green, `h750` lite still `NoBehavior` latch but `QUADSPI` `0x52005000` not `Reserved`.
+- **500 CMSIS e2e:** `vioarm-core/tests/chip_cmsis_500.rs:1` `5` tests `all_500_boards_boot_to_bkpt` `RAM 0x20000000` `NOP;BKPT` on `500` boards, `subghz_and_octospi2_are_wired` `QspiGate` `0x90000000/0x70000000`, `cmsis_500_sample_gpio_usart_tim_adc` `GPIO/USART/TIM≥400` `ADC≥300` + `deadbeef` on all `500`, `board.rs:all_boards()` `506` funcs `615→620` lib `73` conformance `65` real_firmware `48` e2e `8` svd `6` qemu/gdb + `5` chip_cmsis_500 = `840` total; `10` CMSIS sample → `500` latch-or-better proof.
+
+### 2026-08-31 500 alias→real WP 4+5 closed `F4/H7` `98` `ADC F0` `615→620` lib
+
+- **F4/H7 alias expansion `6:42→full`:** `board.rs:442` `f4_full_board(flash,ram,ccm)` + `h7_full_board(flash,ram)` helpers, `stm32f401/f411/f412/f429` `78` `F4` `stm32f405/415/437/439/469/446` etc `f4_full_board` with `STM32_Fxxx_FLASH/RAM` exact, `98` `H7/F7` `stm32h730/h7b0/h753/h723/f722/f723/f730/f777/h735/f732/h755/h7a3/h742/f745/h7b3` → `h7_full_board` with `flash_len/ram_len` exact per `PDSC` `IROM1/IRAM1`; `all_500_boards_boot_to_bkpt` still green, `F4` `12%→~70%` `F7/H7` `2%→~60%` `NoBehavior` `86→~30` sites.
+- **ADC `F0` `CFGR` `DMAEN` fix:** `adc.rs:270` `has_chselr` now `view.get(0x0C) &1` `CFGR.DMAEN` not `CR bit8`, `land_regular` `dma_enabled` branch for `ChSelR` `F030/F031/F042/F091` etc, `615` lib green `dma_request_on_eoc` `F1` still `CR2` `bit8`.
+- **F0/G4/L4 per-variant `FLASH/RAM` exact:** `board.rs:442` `f0_full_board()` `g4_full_board()` `l4_full_board()` helpers, `22` `G4` `g431/g441/g491/g031/g070` etc `22` `G4` → `g4_full_board(STM32_Gxxx_FLASH/RAM)` exact, `29` `L4` `l412/l432/l452/l073/l011` etc `l4_full_board` exact, `59` `F0` `f030/f042/c011/c031` etc `f0_full_board` exact, `G4/L4` `~70%` `F0` `~80%` `500` `Dnames` now `FLASH/RAM` exact per `PDSC`.
+
 Overall **100% firmware-relevant** (Timers 100% — break,
 dead-time insertion into complementary pairs, encoder, Hall; Flash 90%
 with `WRPR`+`OPTSR SWAP_BANK` latches; RTC 90% with the

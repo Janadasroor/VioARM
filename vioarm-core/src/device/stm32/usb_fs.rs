@@ -14,7 +14,13 @@ const ISTR: u32 = 0x44;
 struct UsbFsBehavior;
 
 impl Behavior for UsbFsBehavior {
-    fn on_write(&mut self, view: &mut Registers<&mut [u32]>, offset: u32, val: u8, shift: u32) -> u32 {
+    fn on_write(
+        &mut self,
+        view: &mut Registers<&mut [u32]>,
+        offset: u32,
+        val: u8,
+        shift: u32,
+    ) -> u32 {
         let word = view.merged(offset, val, shift);
         if offset == ISTR {
             // W1C for CTR (bit15) and others: write 0 clears, 1 keeps
@@ -56,37 +62,71 @@ pub struct UsbFs {
 impl UsbFs {
     #[must_use]
     pub fn new_for<D: Device>() -> Self {
-        let def = D::peripheral("USB").or_else(|| D::peripheral("USB_FS")).expect("USB");
-        Self { inner: RegisterFile::new(def, UsbFsBehavior::default()) }
+        let def = D::peripheral("USB")
+            .or_else(|| D::peripheral("USB_FS"))
+            .expect("USB");
+        Self {
+            inner: RegisterFile::new(def, UsbFsBehavior::default()),
+        }
     }
 }
 impl Peripheral for UsbFs {
-    fn ranges(&self) -> &[Region] { self.inner.ranges() }
-    fn read(&mut self, a: u32) -> Result<u8, BusError> { self.inner.read(a) }
-    fn write(&mut self, a: u32, v: u8) -> Result<(), BusError> { self.inner.write(a, v) }
-    fn reset(&mut self) { self.inner.reset(); }
-    fn tick(&mut self, d: u64) { self.inner.tick(d); }
-    fn name(&self) -> &'static str { "usb_fs" }
+    fn ranges(&self) -> &[Region] {
+        self.inner.ranges()
+    }
+    fn read(&mut self, a: u32) -> Result<u8, BusError> {
+        self.inner.read(a)
+    }
+    fn write(&mut self, a: u32, v: u8) -> Result<(), BusError> {
+        self.inner.write(a, v)
+    }
+    fn reset(&mut self) {
+        self.inner.reset();
+    }
+    fn tick(&mut self, d: u64) {
+        self.inner.tick(d);
+    }
+    fn name(&self) -> &'static str {
+        "usb_fs"
+    }
 }
 impl InterruptSource for UsbFs {
-    fn exception_number(&self) -> Option<u8> { self.inner.exception_number() }
-    fn pending(&self) -> u32 { self.inner.pending() }
-    fn acknowledge(&mut self, l: u32) { self.inner.acknowledge(l); }
+    fn exception_number(&self) -> Option<u8> {
+        self.inner.exception_number()
+    }
+    fn pending(&self) -> u32 {
+        self.inner.pending()
+    }
+    fn acknowledge(&mut self, l: u32) {
+        self.inner.acknowledge(l);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::device::svd::stm32f303xe::Stm32f303xe;
-    fn w(c: &mut UsbFs, off: u32, v: u32) { let b=c.ranges()[0].base; for i in 0..4 { c.write(b+off+i, ((v>>8*i)&0xFF)as u8).unwrap(); } }
-    fn r(c: &mut UsbFs, off: u32) -> u32 { let b=c.ranges()[0].base; let mut v=0; for i in 0..4 { v|=u32::from(c.read(b+off+i).unwrap())<<8*i; } v }
+    fn w(c: &mut UsbFs, off: u32, v: u32) {
+        let b = c.ranges()[0].base;
+        for i in 0..4 {
+            c.write(b + off + i, ((v >> 8 * i) & 0xFF) as u8).unwrap();
+        }
+    }
+    fn r(c: &mut UsbFs, off: u32) -> u32 {
+        let b = c.ranges()[0].base;
+        let mut v = 0;
+        for i in 0..4 {
+            v |= u32::from(c.read(b + off + i).unwrap()) << 8 * i;
+        }
+        v
+    }
     #[test]
     fn usb_fs_ctr_latches() {
         let mut u = UsbFs::new_for::<Stm32f303xe>();
-        w(&mut u, 0x4C, 1<<7); // DADDR EF
-        w(&mut u, 0x40, 1<<15); // CNTR CTRM
+        w(&mut u, 0x4C, 1 << 7); // DADDR EF
+        w(&mut u, 0x40, 1 << 15); // CNTR CTRM
         u.tick(1);
-        assert_ne!(r(&mut u, 0x44) & (1<<15), 0);
-        assert_eq!(u.pending(),1);
+        assert_ne!(r(&mut u, 0x44) & (1 << 15), 0);
+        assert_eq!(u.pending(), 1);
     }
 }

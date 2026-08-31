@@ -44,6 +44,8 @@ pub struct SystemMemory<M: Bus> {
     /// consumed as `Ok(())` without touching backing, mirroring silicon where
     /// the window is not `BUSY` until `EN`.
     qspi: Option<Arc<Mutex<QspiGate>>>,
+    /// Second QSPI/OCTOSPI2 gate at `0x70000000` (H723 OCTOSPI2).
+    qspi2: Option<Arc<Mutex<QspiGate>>>,
     /// The shared DMA transfer queue, drained after every device tick. DMA
     /// controllers push `(src, dst, len)` units here because they have no view
     /// of the bus; this bus performs the actual copy.
@@ -66,6 +68,7 @@ impl<M: Bus + core::fmt::Debug> core::fmt::Debug for SystemMemory<M> {
             .field("scb", &self.scb)
             .field("flash", &self.flash)
             .field("qspi", &self.qspi)
+            .field("qspi2", &self.qspi2)
             .field("dma_mailbox", &self.dma_mailbox)
             .field("eth_mailbox", &self.eth_mailbox)
             .field("watchdog", &self.watchdog)
@@ -88,6 +91,7 @@ impl<M: Bus> SystemMemory<M> {
             scb: Scb::new(),
             flash: None,
             qspi: None,
+            qspi2: None,
             dma_mailbox: None,
             eth_mailbox: None,
             watchdog: None,
@@ -129,6 +133,11 @@ impl<M: Bus> SystemMemory<M> {
     /// touching backing, mirroring silicon.
     pub fn set_qspi_gate(&mut self, gate: Arc<Mutex<QspiGate>>) {
         self.qspi = Some(gate);
+    }
+
+    /// Install the second QSPI/OCTOSPI2 gate at `0x70000000`.
+    pub fn set_qspi_gate2(&mut self, gate: Arc<Mutex<QspiGate>>) {
+        self.qspi2 = Some(gate);
     }
 
     /// Install the shared DMA transfer queue. Every attached DMA controller
@@ -185,6 +194,9 @@ impl<M: Bus> SystemMemory<M> {
             gate.lock().unwrap_or_else(|e| e.into_inner()).reset();
         }
         if let Some(gate) = &self.qspi {
+            gate.lock().unwrap_or_else(|e| e.into_inner()).reset();
+        }
+        if let Some(gate) = &self.qspi2 {
             gate.lock().unwrap_or_else(|e| e.into_inner()).reset();
         }
         if let Some(latch) = &self.watchdog {
@@ -475,6 +487,12 @@ impl<M: Bus> SystemMemory<M> {
                 return Ok(());
             }
         }
+        if let Some(g) = &self.qspi2 {
+            let guard = g.lock().unwrap_or_else(|e| e.into_inner());
+            if guard.region.contains(addr) && !guard.enabled {
+                return Ok(());
+            }
+        }
         let gate = match &self.flash {
             Some(g)
                 if g.lock()
@@ -493,6 +511,12 @@ impl<M: Bus> SystemMemory<M> {
     /// a just-erased page sees zeros.
     fn read_backing(&mut self, addr: u32) -> Result<u8, BusError> {
         if let Some(g) = &self.qspi {
+            let guard = g.lock().unwrap_or_else(|e| e.into_inner());
+            if guard.region.contains(addr) && !guard.enabled {
+                return Ok(0);
+            }
+        }
+        if let Some(g) = &self.qspi2 {
             let guard = g.lock().unwrap_or_else(|e| e.into_inner());
             if guard.region.contains(addr) && !guard.enabled {
                 return Ok(0);
