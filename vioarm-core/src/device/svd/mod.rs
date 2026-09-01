@@ -33,8 +33,11 @@ pub mod stm32f105;
 pub mod stm32f107;
 pub mod stm32f303xe;
 pub mod stm32f334;
+pub mod stm32f401;
 pub mod stm32f405;
 pub mod stm32f407;
+pub mod stm32f411;
+pub mod stm32f412;
 pub mod stm32f415;
 pub mod stm32f746;
 pub mod stm32g070;
@@ -1284,8 +1287,11 @@ mod tests {
             super::stm32f103::PERIPHERALS,
             super::stm32f107::PERIPHERALS,
             super::stm32f334::PERIPHERALS,
+            super::stm32f401::PERIPHERALS,
             super::stm32f405::PERIPHERALS,
             super::stm32f407::PERIPHERALS,
+            super::stm32f411::PERIPHERALS,
+            super::stm32f412::PERIPHERALS,
             super::stm32f415::PERIPHERALS,
             super::stm32f746::PERIPHERALS,
             super::stm32g070::PERIPHERALS,
