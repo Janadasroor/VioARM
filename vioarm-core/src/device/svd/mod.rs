@@ -32,16 +32,19 @@ pub mod stm32f103;
 pub mod stm32f105;
 pub mod stm32f107;
 pub mod stm32f303xe;
+pub mod stm32f334;
 pub mod stm32f405;
 pub mod stm32f407;
 pub mod stm32f415;
 pub mod stm32f746;
+pub mod stm32g070;
 pub mod stm32g431;
 pub mod stm32g474xx;
 pub mod stm32h723;
 pub mod stm32h730;
 pub mod stm32h743;
 pub mod stm32l412;
+pub mod stm32l452;
 pub mod stm32l476;
 pub mod stm32wl33;
 
@@ -1277,14 +1280,17 @@ mod tests {
         let tables = [
             super::stm32f103::PERIPHERALS,
             super::stm32f107::PERIPHERALS,
+            super::stm32f334::PERIPHERALS,
             super::stm32f405::PERIPHERALS,
             super::stm32f407::PERIPHERALS,
             super::stm32f415::PERIPHERALS,
             super::stm32f746::PERIPHERALS,
+            super::stm32g070::PERIPHERALS,
             super::stm32g431::PERIPHERALS,
             super::stm32h723::PERIPHERALS,
             super::stm32h730::PERIPHERALS,
             super::stm32l412::PERIPHERALS,
+            super::stm32l452::PERIPHERALS,
             super::stm32wl33::PERIPHERALS,
         ];
         for p in tables.into_iter().flatten() {
