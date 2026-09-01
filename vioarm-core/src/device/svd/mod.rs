@@ -39,6 +39,9 @@ pub mod stm32f407;
 pub mod stm32f411;
 pub mod stm32f412;
 pub mod stm32f415;
+pub mod stm32f429;
+pub mod stm32f469;
+pub mod stm32f722;
 pub mod stm32f746;
 pub mod stm32g070;
 pub mod stm32g431;
@@ -1293,6 +1296,9 @@ mod tests {
             super::stm32f411::PERIPHERALS,
             super::stm32f412::PERIPHERALS,
             super::stm32f415::PERIPHERALS,
+            super::stm32f429::PERIPHERALS,
+            super::stm32f469::PERIPHERALS,
+            super::stm32f722::PERIPHERALS,
             super::stm32f746::PERIPHERALS,
             super::stm32g070::PERIPHERALS,
             super::stm32g431::PERIPHERALS,
