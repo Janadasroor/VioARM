@@ -34,6 +34,9 @@ pub mod stm32f100;
 pub mod stm32f101;
 pub mod stm32f102;
 pub mod stm32f103;
+pub mod stm32f103c8;
+pub mod stm32f103rb;
+pub mod stm32f103ze;
 pub mod stm32f105;
 pub mod stm32f107;
 pub mod stm32f205;
@@ -53,18 +56,22 @@ pub mod stm32f373;
 pub mod stm32f378;
 pub mod stm32f398;
 pub mod stm32f401;
+pub mod stm32f401re;
 pub mod stm32f405;
 pub mod stm32f407;
 pub mod stm32f411;
+pub mod stm32f411re;
 pub mod stm32f412;
 pub mod stm32f415;
 pub mod stm32f427;
 pub mod stm32f429;
+pub mod stm32f429zi;
 pub mod stm32f437;
 pub mod stm32f446;
 pub mod stm32f469;
 pub mod stm32f722;
 pub mod stm32f746;
+pub mod stm32f746zg;
 pub mod stm32f765;
 pub mod stm32f777;
 pub mod stm32g030;
@@ -79,6 +86,7 @@ pub mod stm32g081;
 pub mod stm32g0b1;
 pub mod stm32g0c1;
 pub mod stm32g431;
+pub mod stm32g431rb;
 pub mod stm32g441;
 pub mod stm32g474xx;
 pub mod stm32g491;
@@ -87,6 +95,7 @@ pub mod stm32h730;
 pub mod stm32h735;
 pub mod stm32h742;
 pub mod stm32h743;
+pub mod stm32h743zi;
 pub mod stm32h745;
 pub mod stm32h750;
 pub mod stm32h753;
@@ -111,6 +120,7 @@ pub mod stm32l412;
 pub mod stm32l433;
 pub mod stm32l452;
 pub mod stm32l476;
+pub mod stm32l476rg;
 pub mod stm32l552;
 pub mod stm32u535;
 pub mod stm32u575;
@@ -118,10 +128,10 @@ pub mod stm32u585;
 pub mod stm32u595;
 pub mod stm32u5a5;
 pub mod stm32wb55;
-pub mod stm32wl33;
-pub mod stm32wl55;
 pub mod stm32wle4;
 pub mod stm32wle5;
+pub mod stm32wl33;
+pub mod stm32wl55;
 
 /// The register access vocabulary used by the supported SVD files.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1359,6 +1369,9 @@ mod tests {
             super::stm32f071::PERIPHERALS,
             super::stm32f098::PERIPHERALS,
             super::stm32f103::PERIPHERALS,
+            super::stm32f103c8::PERIPHERALS,
+            super::stm32f103rb::PERIPHERALS,
+            super::stm32f103ze::PERIPHERALS,
             super::stm32f107::PERIPHERALS,
             super::stm32f205::PERIPHERALS,
             super::stm32f207::PERIPHERALS,
@@ -1376,18 +1389,22 @@ mod tests {
             super::stm32f378::PERIPHERALS,
             super::stm32f398::PERIPHERALS,
             super::stm32f401::PERIPHERALS,
+            super::stm32f401re::PERIPHERALS,
             super::stm32f405::PERIPHERALS,
             super::stm32f407::PERIPHERALS,
             super::stm32f411::PERIPHERALS,
+            super::stm32f411re::PERIPHERALS,
             super::stm32f412::PERIPHERALS,
             super::stm32f415::PERIPHERALS,
             super::stm32f427::PERIPHERALS,
             super::stm32f429::PERIPHERALS,
+            super::stm32f429zi::PERIPHERALS,
             super::stm32f437::PERIPHERALS,
             super::stm32f446::PERIPHERALS,
             super::stm32f469::PERIPHERALS,
             super::stm32f722::PERIPHERALS,
             super::stm32f746::PERIPHERALS,
+            super::stm32f746zg::PERIPHERALS,
             super::stm32f765::PERIPHERALS,
             super::stm32f777::PERIPHERALS,
             super::stm32g030::PERIPHERALS,
@@ -1402,6 +1419,7 @@ mod tests {
             super::stm32g0b1::PERIPHERALS,
             super::stm32g0c1::PERIPHERALS,
             super::stm32g431::PERIPHERALS,
+            super::stm32g431rb::PERIPHERALS,
             super::stm32g441::PERIPHERALS,
             super::stm32g491::PERIPHERALS,
             super::stm32h723::PERIPHERALS,
@@ -1409,6 +1427,7 @@ mod tests {
             super::stm32h735::PERIPHERALS,
             super::stm32h742::PERIPHERALS,
             super::stm32h743::PERIPHERALS,
+            super::stm32h743zi::PERIPHERALS,
             super::stm32h745::PERIPHERALS,
             super::stm32h750::PERIPHERALS,
             super::stm32h753::PERIPHERALS,
@@ -1432,6 +1451,8 @@ mod tests {
             super::stm32l412::PERIPHERALS,
             super::stm32l433::PERIPHERALS,
             super::stm32l452::PERIPHERALS,
+            super::stm32l476::PERIPHERALS,
+            super::stm32l476rg::PERIPHERALS,
             super::stm32l552::PERIPHERALS,
             super::stm32u535::PERIPHERALS,
             super::stm32u575::PERIPHERALS,
