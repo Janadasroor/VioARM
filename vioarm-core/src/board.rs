@@ -7244,7 +7244,7 @@ pub fn core_only_board_per_dname(dname: &str) -> Option<BoardMemory> {
     // Per-Dname exact IROM1/IRAM1: flash at 0x08000000 sized entry.flash_len,
     // RAM at 0x20000000 sized entry.ram_len. H7 donor keeps DTCM+AXI split
     // so H7_DTCM 0x20000 + RAM_D1 0x60000 = 0x80000 invariant holds.
-    let backing = if entry.donor == "stm32h743" && entry.ram_len > 0x0002_0000 {
+    let backing = if entry.donor.starts_with("stm32h") && entry.ram_len > 0x0002_0000 {
         let dtcm = H7_DTCM;
         // H7 banks: DTCM 128K at 0x20000000, AXI SRAM at 0x24000000.
         // For core-only we keep DTCM exact and put remainder in AXI; small
