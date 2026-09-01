@@ -85,9 +85,14 @@ pub mod stm32g491;
 pub mod stm32h723;
 pub mod stm32h730;
 pub mod stm32h735;
+pub mod stm32h742;
 pub mod stm32h743;
+pub mod stm32h745;
 pub mod stm32h750;
 pub mod stm32h753;
+pub mod stm32h755;
+pub mod stm32h7b0;
+pub mod stm32h7b3;
 pub mod stm32l010;
 pub mod stm32l011;
 pub mod stm32l021;
@@ -107,11 +112,16 @@ pub mod stm32l433;
 pub mod stm32l452;
 pub mod stm32l476;
 pub mod stm32l552;
+pub mod stm32u535;
 pub mod stm32u575;
+pub mod stm32u585;
+pub mod stm32u595;
 pub mod stm32u5a5;
 pub mod stm32wb55;
 pub mod stm32wl33;
 pub mod stm32wl55;
+pub mod stm32wle4;
+pub mod stm32wle5;
 
 /// The register access vocabulary used by the supported SVD files.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1397,9 +1407,14 @@ mod tests {
             super::stm32h723::PERIPHERALS,
             super::stm32h730::PERIPHERALS,
             super::stm32h735::PERIPHERALS,
+            super::stm32h742::PERIPHERALS,
             super::stm32h743::PERIPHERALS,
+            super::stm32h745::PERIPHERALS,
             super::stm32h750::PERIPHERALS,
             super::stm32h753::PERIPHERALS,
+            super::stm32h755::PERIPHERALS,
+            super::stm32h7b0::PERIPHERALS,
+            super::stm32h7b3::PERIPHERALS,
             super::stm32l010::PERIPHERALS,
             super::stm32l011::PERIPHERALS,
             super::stm32l021::PERIPHERALS,
@@ -1418,9 +1433,14 @@ mod tests {
             super::stm32l433::PERIPHERALS,
             super::stm32l452::PERIPHERALS,
             super::stm32l552::PERIPHERALS,
+            super::stm32u535::PERIPHERALS,
             super::stm32u575::PERIPHERALS,
+            super::stm32u585::PERIPHERALS,
+            super::stm32u595::PERIPHERALS,
             super::stm32u5a5::PERIPHERALS,
             super::stm32wb55::PERIPHERALS,
+            super::stm32wle4::PERIPHERALS,
+            super::stm32wle5::PERIPHERALS,
             super::stm32wl33::PERIPHERALS,
             super::stm32wl55::PERIPHERALS,
         ];
