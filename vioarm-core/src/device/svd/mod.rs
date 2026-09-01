@@ -43,9 +43,12 @@ pub mod stm32g474xx;
 pub mod stm32h723;
 pub mod stm32h730;
 pub mod stm32h743;
+pub mod stm32h753;
 pub mod stm32l412;
 pub mod stm32l452;
 pub mod stm32l476;
+pub mod stm32l552;
+pub mod stm32u575;
 pub mod stm32wl33;
 
 /// The register access vocabulary used by the supported SVD files.
@@ -1289,8 +1292,11 @@ mod tests {
             super::stm32g431::PERIPHERALS,
             super::stm32h723::PERIPHERALS,
             super::stm32h730::PERIPHERALS,
+            super::stm32h753::PERIPHERALS,
             super::stm32l412::PERIPHERALS,
             super::stm32l452::PERIPHERALS,
+            super::stm32l552::PERIPHERALS,
+            super::stm32u575::PERIPHERALS,
             super::stm32wl33::PERIPHERALS,
         ];
         for p in tables.into_iter().flatten() {
