@@ -17,9 +17,14 @@ use core::ops::Deref;
 pub mod per_dname;
 pub mod stm32f030;
 pub mod stm32f031;
+pub mod stm32f038;
 pub mod stm32f042;
+pub mod stm32f048;
+pub mod stm32f070;
+pub mod stm32f071;
 pub mod stm32f072;
 pub mod stm32f091;
+pub mod stm32f098;
 pub mod stm32f0x0;
 pub mod stm32f0x1;
 pub mod stm32f0x2;
@@ -33,8 +38,10 @@ pub mod stm32f105;
 pub mod stm32f107;
 pub mod stm32f303;
 pub mod stm32f303xe;
+pub mod stm32f333;
 pub mod stm32f334;
 pub mod stm32f373;
+pub mod stm32f378;
 pub mod stm32f401;
 pub mod stm32f405;
 pub mod stm32f407;
@@ -71,9 +78,12 @@ pub mod stm32l011;
 pub mod stm32l021;
 pub mod stm32l031;
 pub mod stm32l041;
+pub mod stm32l053;
+pub mod stm32l073;
 pub mod stm32l152;
 pub mod stm32l162;
 pub mod stm32l412;
+pub mod stm32l433;
 pub mod stm32l452;
 pub mod stm32l476;
 pub mod stm32l552;
@@ -1313,11 +1323,18 @@ mod tests {
     #[test]
     fn generated_tables_are_internally_consistent() {
         let tables = [
+            super::stm32f038::PERIPHERALS,
+            super::stm32f048::PERIPHERALS,
+            super::stm32f070::PERIPHERALS,
+            super::stm32f071::PERIPHERALS,
+            super::stm32f098::PERIPHERALS,
             super::stm32f103::PERIPHERALS,
             super::stm32f107::PERIPHERALS,
             super::stm32f303::PERIPHERALS,
+            super::stm32f333::PERIPHERALS,
             super::stm32f334::PERIPHERALS,
             super::stm32f373::PERIPHERALS,
+            super::stm32f378::PERIPHERALS,
             super::stm32f401::PERIPHERALS,
             super::stm32f405::PERIPHERALS,
             super::stm32f407::PERIPHERALS,
@@ -1353,9 +1370,12 @@ mod tests {
             super::stm32l021::PERIPHERALS,
             super::stm32l031::PERIPHERALS,
             super::stm32l041::PERIPHERALS,
+            super::stm32l053::PERIPHERALS,
+            super::stm32l073::PERIPHERALS,
             super::stm32l152::PERIPHERALS,
             super::stm32l162::PERIPHERALS,
             super::stm32l412::PERIPHERALS,
+            super::stm32l433::PERIPHERALS,
             super::stm32l452::PERIPHERALS,
             super::stm32l552::PERIPHERALS,
             super::stm32u575::PERIPHERALS,
