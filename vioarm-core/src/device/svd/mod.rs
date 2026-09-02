@@ -181,12 +181,22 @@ pub mod stm32f756;
 pub mod stm32h563;
 pub mod stm32l432;
 pub mod stm32l443;
+pub mod stm32f417;
+pub mod stm32f723;
+pub mod stm32f730;
+pub mod stm32f732;
+pub mod stm32h503;
+pub mod stm32h562;
+pub mod stm32h7a3;
+pub mod stm32l431;
 pub mod stm32l552;
 pub mod stm32u535;
 pub mod stm32u575;
 pub mod stm32u585;
 pub mod stm32u595;
 pub mod stm32u5a5;
+pub mod stm32u5g9;
+pub mod stm32wba52;
 pub mod stm32wb55;
 pub mod stm32wle4;
 pub mod stm32wle5;
@@ -1578,12 +1588,22 @@ mod tests {
             super::stm32f423ih::PERIPHERALS,
             super::stm32f427ig::PERIPHERALS,
             super::stm32f429ig::PERIPHERALS,
+            super::stm32f417::PERIPHERALS,
             super::stm32f439::PERIPHERALS,
             super::stm32f479::PERIPHERALS,
+            super::stm32f723::PERIPHERALS,
+            super::stm32f730::PERIPHERALS,
+            super::stm32f732::PERIPHERALS,
             super::stm32f756::PERIPHERALS,
+            super::stm32h503::PERIPHERALS,
+            super::stm32h562::PERIPHERALS,
             super::stm32h563::PERIPHERALS,
+            super::stm32h7a3::PERIPHERALS,
+            super::stm32l431::PERIPHERALS,
             super::stm32l432::PERIPHERALS,
             super::stm32l443::PERIPHERALS,
+            super::stm32u5g9::PERIPHERALS,
+            super::stm32wba52::PERIPHERALS,
         ];
         for p in tables.into_iter().flatten() {
             let mut spans: Vec<(u32, u32)> = Vec::new();
