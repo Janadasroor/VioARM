@@ -97,12 +97,22 @@ pub mod stm32f429;
 pub mod stm32f429ig;
 pub mod stm32f429zi;
 pub mod stm32f437;
+pub mod stm32f437ii;
 pub mod stm32f446;
+pub mod stm32f446ze;
 pub mod stm32f469;
+pub mod stm32f469ae;
 pub mod stm32f722;
+pub mod stm32f722ze;
+pub mod stm32f732vg;
+pub mod stm32f745vg;
 pub mod stm32f746;
+pub mod stm32f746be;
+pub mod stm32f746ig;
 pub mod stm32f746zg;
+pub mod stm32f756zg;
 pub mod stm32f765;
+pub mod stm32f765bi;
 pub mod stm32f777;
 pub mod stm32g030;
 pub mod stm32g031;
@@ -1440,12 +1450,22 @@ mod tests {
             super::stm32f429::PERIPHERALS,
             super::stm32f429zi::PERIPHERALS,
             super::stm32f437::PERIPHERALS,
+            super::stm32f437ii::PERIPHERALS,
             super::stm32f446::PERIPHERALS,
+            super::stm32f446ze::PERIPHERALS,
             super::stm32f469::PERIPHERALS,
+            super::stm32f469ae::PERIPHERALS,
             super::stm32f722::PERIPHERALS,
+            super::stm32f722ze::PERIPHERALS,
+            super::stm32f732vg::PERIPHERALS,
+            super::stm32f745vg::PERIPHERALS,
             super::stm32f746::PERIPHERALS,
+            super::stm32f746be::PERIPHERALS,
+            super::stm32f746ig::PERIPHERALS,
             super::stm32f746zg::PERIPHERALS,
+            super::stm32f756zg::PERIPHERALS,
             super::stm32f765::PERIPHERALS,
+            super::stm32f765bi::PERIPHERALS,
             super::stm32f777::PERIPHERALS,
             super::stm32g030::PERIPHERALS,
             super::stm32g031::PERIPHERALS,
