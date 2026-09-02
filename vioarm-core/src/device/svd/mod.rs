@@ -73,18 +73,28 @@ pub mod stm32f333;
 pub mod stm32f334;
 pub mod stm32f358;
 pub mod stm32f373;
+pub mod stm32f373cc;
 pub mod stm32f378;
+pub mod stm32f378cc;
 pub mod stm32f398;
 pub mod stm32f401;
+pub mod stm32f401cc;
+pub mod stm32f401ce;
 pub mod stm32f401re;
 pub mod stm32f405;
 pub mod stm32f407;
+pub mod stm32f410c8;
 pub mod stm32f411;
 pub mod stm32f411re;
 pub mod stm32f412;
+pub mod stm32f412ce;
+pub mod stm32f413ch;
 pub mod stm32f415;
+pub mod stm32f423ih;
 pub mod stm32f427;
+pub mod stm32f427ig;
 pub mod stm32f429;
+pub mod stm32f429ig;
 pub mod stm32f429zi;
 pub mod stm32f437;
 pub mod stm32f446;
@@ -148,10 +158,10 @@ pub mod stm32u585;
 pub mod stm32u595;
 pub mod stm32u5a5;
 pub mod stm32wb55;
-pub mod stm32wl33;
-pub mod stm32wl55;
 pub mod stm32wle4;
 pub mod stm32wle5;
+pub mod stm32wl33;
+pub mod stm32wl55;
 
 /// The register access vocabulary used by the supported SVD files.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1504,6 +1514,16 @@ mod tests {
             super::stm32f101c8::PERIPHERALS,
             super::stm32f102cb::PERIPHERALS,
             super::stm32f103c6::PERIPHERALS,
+            super::stm32f373cc::PERIPHERALS,
+            super::stm32f378cc::PERIPHERALS,
+            super::stm32f401cc::PERIPHERALS,
+            super::stm32f401ce::PERIPHERALS,
+            super::stm32f410c8::PERIPHERALS,
+            super::stm32f412ce::PERIPHERALS,
+            super::stm32f413ch::PERIPHERALS,
+            super::stm32f423ih::PERIPHERALS,
+            super::stm32f427ig::PERIPHERALS,
+            super::stm32f429ig::PERIPHERALS,
         ];
         for p in tables.into_iter().flatten() {
             let mut spans: Vec<(u32, u32)> = Vec::new();
