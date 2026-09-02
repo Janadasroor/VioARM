@@ -38,26 +38,36 @@ pub mod stm32f0x8;
 pub mod stm32f0xx;
 pub mod stm32f100;
 pub mod stm32f100c8;
+pub mod stm32f100rb;
 pub mod stm32f101;
 pub mod stm32f101c8;
+pub mod stm32f101re;
 pub mod stm32f102;
 pub mod stm32f102cb;
+pub mod stm32f102re;
 pub mod stm32f103;
 pub mod stm32f103c6;
 pub mod stm32f103c8;
 pub mod stm32f103rb;
 pub mod stm32f103re;
+pub mod stm32f103vd;
+pub mod stm32f103x49;
 pub mod stm32f103ze;
 pub mod stm32f105;
 pub mod stm32f105rb;
+pub mod stm32f105re;
 pub mod stm32f107;
+pub mod stm32f107re;
 pub mod stm32f107vc;
 pub mod stm32f205;
+pub mod stm32f205rb;
 pub mod stm32f205re;
 pub mod stm32f207;
+pub mod stm32f207rb;
 pub mod stm32f207ze;
 pub mod stm32f215;
 pub mod stm32f215re;
+pub mod stm32f215ze;
 pub mod stm32f217;
 pub mod stm32f217ig;
 pub mod stm32f301;
@@ -168,10 +178,10 @@ pub mod stm32u585;
 pub mod stm32u595;
 pub mod stm32u5a5;
 pub mod stm32wb55;
-pub mod stm32wle4;
-pub mod stm32wle5;
 pub mod stm32wl33;
 pub mod stm32wl55;
+pub mod stm32wle4;
+pub mod stm32wle5;
 
 /// The register access vocabulary used by the supported SVD files.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1531,9 +1541,19 @@ mod tests {
             super::stm32f072c8::PERIPHERALS,
             super::stm32f091rc::PERIPHERALS,
             super::stm32f100c8::PERIPHERALS,
+            super::stm32f100rb::PERIPHERALS,
             super::stm32f101c8::PERIPHERALS,
+            super::stm32f101re::PERIPHERALS,
             super::stm32f102cb::PERIPHERALS,
+            super::stm32f102re::PERIPHERALS,
             super::stm32f103c6::PERIPHERALS,
+            super::stm32f103vd::PERIPHERALS,
+            super::stm32f103x49::PERIPHERALS,
+            super::stm32f105re::PERIPHERALS,
+            super::stm32f107re::PERIPHERALS,
+            super::stm32f205rb::PERIPHERALS,
+            super::stm32f207rb::PERIPHERALS,
+            super::stm32f215ze::PERIPHERALS,
             super::stm32f373cc::PERIPHERALS,
             super::stm32f378cc::PERIPHERALS,
             super::stm32f401cc::PERIPHERALS,
