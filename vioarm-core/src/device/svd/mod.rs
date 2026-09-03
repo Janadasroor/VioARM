@@ -232,6 +232,51 @@ pub mod stm32l476je;
 pub mod stm32f030k6;
 pub mod stm32f038k6;
 pub mod stm32f042g6;
+pub mod stm32f777ai;
+pub mod stm32f051g8;
+pub mod stm32f072rb;
+pub mod stm32f091cb;
+pub mod stm32f217ve;
+pub mod stm32f301c8;
+pub mod stm32f302cc;
+pub mod stm32f303re;
+pub mod stm32f373cb;
+pub mod stm32f378be;
+pub mod stm32f401rb;
+pub mod stm32f401ve;
+pub mod stm32f410rb;
+pub mod stm32f412zg;
+pub mod stm32f413rg;
+pub mod stm32f423ze;
+pub mod stm32f427ai;
+pub mod stm32f429be;
+pub mod stm32f437ai;
+pub mod stm32f723ze;
+pub mod stm32f756ig;
+pub mod stm32f765ig;
+pub mod stm32f777vg;
+pub mod stm32g030k6;
+pub mod stm32g031k8;
+pub mod stm32g070cb;
+pub mod stm32g071cb;
+pub mod stm32g474ce;
+pub mod stm32h743xi;
+pub mod stm32h753xi;
+pub mod stm32f042c8;
+pub mod stm32f042r8;
+pub mod stm32f051r8;
+pub mod stm32f072r8;
+pub mod stm32f091rb;
+pub mod stm32f100re;
+pub mod stm32f101rb;
+pub mod stm32f102rb;
+pub mod stm32f103r8;
+pub mod stm32f105rg;
+pub mod stm32f107rg;
+pub mod stm32f205rg;
+pub mod stm32f207rg;
+pub mod stm32f215rg;
+pub mod stm32f217rg;
 /// The register access vocabulary used by the supported SVD files.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Access {
@@ -1472,16 +1517,24 @@ mod tests {
             super::stm32f038::PERIPHERALS,
             super::stm32f038k6::PERIPHERALS,
             super::stm32f042::PERIPHERALS,
+            super::stm32f042c8::PERIPHERALS,
             super::stm32f042g6::PERIPHERALS,
             super::stm32f042k6::PERIPHERALS,
+            super::stm32f042r8::PERIPHERALS,
             super::stm32f042t6::PERIPHERALS,
             super::stm32f048::PERIPHERALS,
             super::stm32f051::PERIPHERALS,
+            super::stm32f051g8::PERIPHERALS,
+            super::stm32f051r8::PERIPHERALS,
             super::stm32f070::PERIPHERALS,
             super::stm32f071::PERIPHERALS,
             super::stm32f072::PERIPHERALS,
             super::stm32f072c8::PERIPHERALS,
+            super::stm32f072r8::PERIPHERALS,
+            super::stm32f072rb::PERIPHERALS,
             super::stm32f091::PERIPHERALS,
+            super::stm32f091cb::PERIPHERALS,
+            super::stm32f091rb::PERIPHERALS,
             super::stm32f091rc::PERIPHERALS,
             super::stm32f098::PERIPHERALS,
             super::stm32f0x0::PERIPHERALS,
@@ -1492,15 +1545,19 @@ mod tests {
             super::stm32f100::PERIPHERALS,
             super::stm32f100c8::PERIPHERALS,
             super::stm32f100rb::PERIPHERALS,
+            super::stm32f100re::PERIPHERALS,
             super::stm32f101::PERIPHERALS,
             super::stm32f101c8::PERIPHERALS,
+            super::stm32f101rb::PERIPHERALS,
             super::stm32f101re::PERIPHERALS,
             super::stm32f102::PERIPHERALS,
             super::stm32f102cb::PERIPHERALS,
+            super::stm32f102rb::PERIPHERALS,
             super::stm32f102re::PERIPHERALS,
             super::stm32f103::PERIPHERALS,
             super::stm32f103c6::PERIPHERALS,
             super::stm32f103c8::PERIPHERALS,
+            super::stm32f103r8::PERIPHERALS,
             super::stm32f103rb::PERIPHERALS,
             super::stm32f103re::PERIPHERALS,
             super::stm32f103vd::PERIPHERALS,
@@ -1509,26 +1566,36 @@ mod tests {
             super::stm32f105::PERIPHERALS,
             super::stm32f105rb::PERIPHERALS,
             super::stm32f105re::PERIPHERALS,
+            super::stm32f105rg::PERIPHERALS,
             super::stm32f107::PERIPHERALS,
             super::stm32f107re::PERIPHERALS,
+            super::stm32f107rg::PERIPHERALS,
             super::stm32f107vc::PERIPHERALS,
             super::stm32f205::PERIPHERALS,
             super::stm32f205rb::PERIPHERALS,
             super::stm32f205re::PERIPHERALS,
+            super::stm32f205rg::PERIPHERALS,
             super::stm32f207::PERIPHERALS,
             super::stm32f207rb::PERIPHERALS,
+            super::stm32f207rg::PERIPHERALS,
             super::stm32f207ze::PERIPHERALS,
             super::stm32f215::PERIPHERALS,
             super::stm32f215re::PERIPHERALS,
+            super::stm32f215rg::PERIPHERALS,
             super::stm32f215ze::PERIPHERALS,
             super::stm32f217::PERIPHERALS,
             super::stm32f217ig::PERIPHERALS,
+            super::stm32f217rg::PERIPHERALS,
+            super::stm32f217ve::PERIPHERALS,
             super::stm32f301::PERIPHERALS,
+            super::stm32f301c8::PERIPHERALS,
             super::stm32f301k8::PERIPHERALS,
             super::stm32f302::PERIPHERALS,
             super::stm32f302cb::PERIPHERALS,
+            super::stm32f302cc::PERIPHERALS,
             super::stm32f303::PERIPHERALS,
             super::stm32f303cc::PERIPHERALS,
+            super::stm32f303re::PERIPHERALS,
             super::stm32f303xe::PERIPHERALS,
             super::stm32f318::PERIPHERALS,
             super::stm32f328::PERIPHERALS,
@@ -1536,34 +1603,45 @@ mod tests {
             super::stm32f334::PERIPHERALS,
             super::stm32f358::PERIPHERALS,
             super::stm32f373::PERIPHERALS,
+            super::stm32f373cb::PERIPHERALS,
             super::stm32f373cc::PERIPHERALS,
             super::stm32f378::PERIPHERALS,
+            super::stm32f378be::PERIPHERALS,
             super::stm32f378cc::PERIPHERALS,
             super::stm32f398::PERIPHERALS,
             super::stm32f401::PERIPHERALS,
             super::stm32f401cc::PERIPHERALS,
             super::stm32f401ce::PERIPHERALS,
+            super::stm32f401rb::PERIPHERALS,
             super::stm32f401re::PERIPHERALS,
+            super::stm32f401ve::PERIPHERALS,
             super::stm32f405::PERIPHERALS,
             super::stm32f407::PERIPHERALS,
             super::stm32f410::PERIPHERALS,
             super::stm32f410c8::PERIPHERALS,
+            super::stm32f410rb::PERIPHERALS,
             super::stm32f411::PERIPHERALS,
             super::stm32f411re::PERIPHERALS,
             super::stm32f412::PERIPHERALS,
             super::stm32f412ce::PERIPHERALS,
+            super::stm32f412zg::PERIPHERALS,
             super::stm32f413::PERIPHERALS,
             super::stm32f413ch::PERIPHERALS,
+            super::stm32f413rg::PERIPHERALS,
             super::stm32f415::PERIPHERALS,
             super::stm32f417::PERIPHERALS,
             super::stm32f423::PERIPHERALS,
             super::stm32f423ih::PERIPHERALS,
+            super::stm32f423ze::PERIPHERALS,
             super::stm32f427::PERIPHERALS,
+            super::stm32f427ai::PERIPHERALS,
             super::stm32f427ig::PERIPHERALS,
             super::stm32f429::PERIPHERALS,
+            super::stm32f429be::PERIPHERALS,
             super::stm32f429ig::PERIPHERALS,
             super::stm32f429zi::PERIPHERALS,
             super::stm32f437::PERIPHERALS,
+            super::stm32f437ai::PERIPHERALS,
             super::stm32f437ii::PERIPHERALS,
             super::stm32f439::PERIPHERALS,
             super::stm32f446::PERIPHERALS,
@@ -1578,6 +1656,7 @@ mod tests {
             super::stm32f722ze::PERIPHERALS,
             super::stm32f723::PERIPHERALS,
             super::stm32f723ie::PERIPHERALS,
+            super::stm32f723ze::PERIPHERALS,
             super::stm32f730::PERIPHERALS,
             super::stm32f732::PERIPHERALS,
             super::stm32f732ie::PERIPHERALS,
@@ -1590,22 +1669,30 @@ mod tests {
             super::stm32f746ig::PERIPHERALS,
             super::stm32f746zg::PERIPHERALS,
             super::stm32f756::PERIPHERALS,
+            super::stm32f756ig::PERIPHERALS,
             super::stm32f756zg::PERIPHERALS,
             super::stm32f765::PERIPHERALS,
             super::stm32f765bi::PERIPHERALS,
+            super::stm32f765ig::PERIPHERALS,
             super::stm32f767zi::PERIPHERALS,
             super::stm32f777::PERIPHERALS,
+            super::stm32f777ai::PERIPHERALS,
+            super::stm32f777vg::PERIPHERALS,
             super::stm32g030::PERIPHERALS,
             super::stm32g030f6::PERIPHERALS,
+            super::stm32g030k6::PERIPHERALS,
             super::stm32g031::PERIPHERALS,
             super::stm32g031f8::PERIPHERALS,
+            super::stm32g031k8::PERIPHERALS,
             super::stm32g041::PERIPHERALS,
             super::stm32g050::PERIPHERALS,
             super::stm32g051::PERIPHERALS,
             super::stm32g061::PERIPHERALS,
             super::stm32g070::PERIPHERALS,
+            super::stm32g070cb::PERIPHERALS,
             super::stm32g070rb::PERIPHERALS,
             super::stm32g071::PERIPHERALS,
+            super::stm32g071cb::PERIPHERALS,
             super::stm32g071rb::PERIPHERALS,
             super::stm32g081::PERIPHERALS,
             super::stm32g0b1::PERIPHERALS,
@@ -1614,6 +1701,7 @@ mod tests {
             super::stm32g431rb::PERIPHERALS,
             super::stm32g441::PERIPHERALS,
             super::stm32g473::PERIPHERALS,
+            super::stm32g474ce::PERIPHERALS,
             super::stm32g474re::PERIPHERALS,
             super::stm32g474xx::PERIPHERALS,
             super::stm32g491::PERIPHERALS,
@@ -1627,11 +1715,13 @@ mod tests {
             super::stm32h742::PERIPHERALS,
             super::stm32h743::PERIPHERALS,
             super::stm32h743ii::PERIPHERALS,
+            super::stm32h743xi::PERIPHERALS,
             super::stm32h743zi::PERIPHERALS,
             super::stm32h745::PERIPHERALS,
             super::stm32h750::PERIPHERALS,
             super::stm32h753::PERIPHERALS,
             super::stm32h753ii::PERIPHERALS,
+            super::stm32h753xi::PERIPHERALS,
             super::stm32h755::PERIPHERALS,
             super::stm32h7a3::PERIPHERALS,
             super::stm32h7b0::PERIPHERALS,
