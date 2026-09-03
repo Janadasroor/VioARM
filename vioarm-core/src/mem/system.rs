@@ -8,6 +8,7 @@
 //! bus.
 
 use crate::cpu::FpuCtx;
+use crate::device::itm::Itm;
 use crate::device::nvic::Nvic;
 use crate::device::scb::Scb;
 use crate::device::stm32::dma::DmaUnit;
@@ -67,6 +68,10 @@ pub struct SystemMemory<M: Bus> {
     /// Fractional-tick accumulators, one per APB domain (index 0 = APB1,
     /// 1 = APB2), for exact rational timer scaling across sync points.
     tim_phase: [u64; 2],
+    /// The ARM ITM stimulus sink (`0xE000_0000`): firmware `printf`
+    /// retargeting lands here when the host enables the unit. Present on
+    /// every board without touching any constructor.
+    itm: Itm,
 }
 
 impl<M: Bus + core::fmt::Debug> core::fmt::Debug for SystemMemory<M> {
@@ -83,6 +88,7 @@ impl<M: Bus + core::fmt::Debug> core::fmt::Debug for SystemMemory<M> {
             .field("watchdog", &self.watchdog)
             .field("clock", &self.clock)
             .field("tim_phase", &self.tim_phase)
+            .field("itm", &self.itm)
             .field(
                 "devices",
                 &self.devices.iter().map(|d| d.name()).collect::<Vec<_>>(),
@@ -108,6 +114,7 @@ impl<M: Bus> SystemMemory<M> {
             watchdog: None,
             clock: None,
             tim_phase: [0, 0],
+            itm: Itm::new(),
         }
     }
 
@@ -208,6 +215,7 @@ impl<M: Bus> SystemMemory<M> {
     pub fn reset_devices(&mut self) {
         self.nvic.reset();
         self.scb.reset();
+        self.itm.reset();
         // Fractional timer phases are simulation bookkeeping, not silicon
         // state, but they restart with the clocks (the `RCC` device resets
         // its shared handle in the loop below).
@@ -696,6 +704,8 @@ impl<M: Bus> Bus for SystemMemory<M> {
             self.scb.read(addr)
         } else if self.nvic.ranges().iter().any(|r| r.contains(addr)) {
             self.nvic.read(addr)
+        } else if self.itm.ranges().iter().any(|r| r.contains(addr)) {
+            self.itm.read(addr)
         } else {
             self.read_backing(addr)
         }
@@ -712,6 +722,8 @@ impl<M: Bus> Bus for SystemMemory<M> {
             self.scb.write(addr, val)
         } else if self.nvic.ranges().iter().any(|r| r.contains(addr)) {
             self.nvic.write(addr, val)
+        } else if self.itm.ranges().iter().any(|r| r.contains(addr)) {
+            self.itm.write(addr, val)
         } else {
             self.write_backing(addr, val)
         }
@@ -743,6 +755,20 @@ impl<M: Bus> PeripheralBus for SystemMemory<M> {
 
     fn reset_peripherals(&mut self) {
         self.reset_devices();
+    }
+
+    /// Drain a named host-output channel: `itm` first, then any attached
+    /// device with a matching [`Peripheral::name`](crate::device::Peripheral::name).
+    fn drain_channel(&mut self, name: &str) -> Vec<u8> {
+        if name == self.itm.name() {
+            return self.itm.drain_output();
+        }
+        for device in &mut self.devices {
+            if device.name() == name {
+                return device.drain_output();
+            }
+        }
+        Vec::new()
     }
 
     /// Whether the SCB or a watchdog has latched a reset request. The generic

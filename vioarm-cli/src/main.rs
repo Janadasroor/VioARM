@@ -1580,6 +1580,9 @@ struct Cli {
     info: bool,
     #[arg(long)]
     gdb: Option<u16>,
+    /// Arm semihosting (`BKPT 0xAB`) plus ITM stimulus capture
+    #[arg(long)]
+    semihost: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -1594,6 +1597,9 @@ enum Commands {
         base: u32,
         #[arg(long, default_value_t = 1_000_000, alias = "max-cycles")]
         budget: u64,
+        /// Arm semihosting (`BKPT 0xAB`) plus ITM stimulus capture
+        #[arg(long)]
+        semihost: bool,
     },
     /// Trace cycle-by-cycle
     Trace {
@@ -1604,6 +1610,9 @@ enum Commands {
         base: u32,
         #[arg(long, default_value_t = 1_000_000, alias = "max-cycles")]
         budget: u64,
+        /// Arm semihosting (`BKPT 0xAB`) plus ITM stimulus capture
+        #[arg(long)]
+        semihost: bool,
     },
     /// Show image layout (segments, entry)
     Info { image: PathBuf },
@@ -1631,6 +1640,9 @@ enum Commands {
         board: Board,
         #[arg(long, default_value_t = 0, value_parser = parse_u32)]
         base: u32,
+        /// Arm semihosting (`BKPT 0xAB`); firmware `SYS_EXIT` ends the session
+        #[arg(long)]
+        semihost: bool,
     },
 }
 
@@ -1758,6 +1770,25 @@ fn run_quiet(m: &mut Machine<board::BoardMemory>, budget: u64) {
                 String::from_utf8_lossy(&tx)
             );
         }
+    }
+    let sh = m.semihost_output();
+    if !sh.is_empty() {
+        println!(
+            "{} {}",
+            "semihost:".bright_magenta().bold(),
+            String::from_utf8_lossy(&sh)
+        );
+    }
+    let itm = m.drain_channel("itm");
+    if !itm.is_empty() {
+        println!(
+            "{} {}",
+            "itm:".bright_magenta().bold(),
+            String::from_utf8_lossy(&itm)
+        );
+    }
+    if let Some(code) = m.semihost_exit() {
+        println!("{} {code}", "exit:".bright_magenta().bold());
     }
 }
 
@@ -1957,9 +1988,11 @@ fn main() {
                 board,
                 base,
                 budget,
+                semihost,
             } => {
                 let (img, _) = load_image_auto(&image, base);
                 let mut m = machine_for(board, &img);
+                m.semihost_enable(semihost);
                 banner();
                 run_quiet(&mut m, budget);
             }
@@ -1968,9 +2001,11 @@ fn main() {
                 board,
                 base,
                 budget,
+                semihost,
             } => {
                 let (img, _) = load_image_auto(&image, base);
                 let mut m = machine_for(board, &img);
+                m.semihost_enable(semihost);
                 banner();
                 run_traced(&mut m, budget);
             }
@@ -2004,9 +2039,11 @@ fn main() {
                 port,
                 board,
                 base,
+                semihost,
             } => {
                 let (img, _) = load_image_auto(&image, base);
                 let mut m = machine_for(board, &img);
+                m.semihost_enable(semihost);
                 let listener =
                     std::net::TcpListener::bind(("127.0.0.1", port)).unwrap_or_else(|e| {
                         eprintln!(
@@ -2083,6 +2120,7 @@ fn main() {
         return;
     }
     let mut m = machine_for(cli.board, &img);
+    m.semihost_enable(cli.semihost);
     if let Some(port) = cli.gdb {
         let listener = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap_or_else(|e| {
             eprintln!(

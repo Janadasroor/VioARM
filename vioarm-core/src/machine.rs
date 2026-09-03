@@ -91,6 +91,9 @@ impl<M: PeripheralBus> Machine<M> {
     /// non-executable or misaligned address.
     pub fn reset(&mut self) -> Result<(), HaltCause> {
         self.core.mem().reset_peripherals();
+        // Host channels are session state: a fresh boot starts with empty
+        // semihost/RTT buffers (the enabled flag survives, it is host config).
+        self.core.semihost.reset_session();
         self.core.reset_from_vector_table()
     }
 
@@ -214,5 +217,44 @@ impl<M: PeripheralBus> Machine<M> {
     #[must_use]
     pub const fn cycles(&self) -> u64 {
         self.core.cycles
+    }
+
+    /// Arm (`true`) or disarm the semihosting `BKPT 0xAB` trap. Disarmed by
+    /// default, preserving QEMU-oracle parity for the conformance suite.
+    pub fn semihost_enable(&mut self, on: bool) {
+        self.core.semihost.set_enabled(on);
+    }
+
+    /// Queue host bytes for semihosting `READC`.
+    pub fn semihost_input(&mut self, bytes: &[u8]) {
+        self.core.semihost.push_input(bytes);
+    }
+
+    /// Take everything firmware emitted through semihosting since the last
+    /// drain (`WRITEC`/`WRITE0`/`WRITE` to fd 1/2).
+    pub fn semihost_output(&mut self) -> Vec<u8> {
+        self.core.semihost.drain_output()
+    }
+
+    /// Take a latched semihosting `EXIT` code, if firmware requested one.
+    pub fn semihost_exit(&mut self) -> Option<i32> {
+        self.core.semihost.take_exit()
+    }
+
+    /// Drain new target→host bytes on RTT channel 0, scanning `len` bytes of
+    /// guest RAM at `base` for the `SEGGER RTT` control block on first use.
+    pub fn rtt_poll(&mut self, ram_base: u32, ram_len: u32) -> Vec<u8> {
+        self.core.rtt_poll(ram_base, ram_len)
+    }
+
+    /// Move host bytes into RTT down-channel 0. Returns bytes accepted.
+    pub fn rtt_inject(&mut self, ram_base: u32, ram_len: u32, bytes: &[u8]) -> usize {
+        self.core.rtt_inject(ram_base, ram_len, bytes)
+    }
+
+    /// Drain a named device output channel (`itm`, `uart`, ...). Unknown
+    /// names drain to empty.
+    pub fn drain_channel(&mut self, name: &str) -> Vec<u8> {
+        self.core.mem().drain_channel(name)
     }
 }

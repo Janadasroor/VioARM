@@ -12,6 +12,7 @@ pub mod registers;
 
 use crate::error::{Exception, HaltCause};
 use crate::mem::{MpuAccess, PeripheralBus, SauHit};
+use crate::semihost::{SemihostOutcome, SemihostState, SEMIHOST_BKPT};
 use decode16::{
     decode16, decode16_v7m, AluOp, ExtendKind, Hint, Inst16, LsImm, LsReg, ReverseKind, Shift,
     ShiftImm,
@@ -520,6 +521,9 @@ pub struct Core<B: PeripheralBus> {
     /// Decode cache: PC+ISA+ITSTATE → decoded instruction + halfwords.
     /// Gated on `benches/mips.rs` headroom; trace-equivalence is the gate.
     decode_cache: BTreeMap<u32, CacheEntry>,
+    /// ARM semihosting session (`BKPT 0xAB` trap). Disabled by default; the
+    /// host arms it per machine. Public so hosts can enable and drain it.
+    pub semihost: SemihostState,
     mem: B,
 }
 
@@ -594,6 +598,7 @@ impl<B: PeripheralBus> Core<B> {
             other_ss_psp_lim: 0,
             secure: isa == Isa::Armv8MBaseline,
             decode_cache: BTreeMap::new(),
+            semihost: SemihostState::default(),
             mem,
         }
     }
@@ -2122,7 +2127,15 @@ impl<B: PeripheralBus> Core<B> {
             // A BKPT when debug is not enabled takes the same path as an
             // undefined instruction: it escalates to HardFault stacking the
             // BKPT's own address (so the handler can skip it), matching QEMU.
-            I::Bkpt { .. } => self.hardfault_on_undefined(pc, 2),
+            // The one exception is `BKPT 0xAB` with semihosting armed: that
+            // traps into the host call handler instead of faulting.
+            I::Bkpt { imm } => {
+                if imm == SEMIHOST_BKPT && self.semihost.enabled() {
+                    self.semihost_call(pc)
+                } else {
+                    self.hardfault_on_undefined(pc, 2)
+                }
+            }
             I::Hint { kind } => {
                 // `WFI` sleeps until an exception pends (the `Machine` peeks
                 // every cycle and wakes the core through `take_exception`).
@@ -4815,6 +4828,36 @@ impl<B: PeripheralBus> Core<B> {
     /// `UNDEFINSTR` and, on escalation, the `FORCED` bit.
     fn hardfault_on_undefined(&mut self, pc: u32, _size: u32) -> Result<Next, HaltCause> {
         self.usage_fault(pc, UFSR_UNDEFINSTR)
+    }
+
+    /// Drain new target→host bytes on RTT channel 0 over `len` bytes of
+    /// guest RAM at `base`.
+    pub fn rtt_poll(&mut self, ram_base: u32, ram_len: u32) -> Vec<u8> {
+        self.semihost.rtt.poll(&mut self.mem, ram_base, ram_len)
+    }
+
+    /// Move host bytes into RTT down-channel 0. Returns bytes accepted.
+    pub fn rtt_inject(&mut self, ram_base: u32, ram_len: u32, bytes: &[u8]) -> usize {
+        self.semihost
+            .rtt
+            .inject(&mut self.mem, ram_base, ram_len, bytes)
+    }
+
+    /// Serve a trapped semihosting call: `r0` selects the operation, `r1`
+    /// carries the parameter, the return value lands back in `r0`, and
+    /// execution resumes past the `BKPT`.
+    fn semihost_call(&mut self, pc: u32) -> Result<Next, HaltCause> {
+        let op = self.regs.read(0);
+        let param = self.regs.read(1);
+        let cyccnt = self.cyccnt;
+        match self.semihost.handle(&mut self.mem, op, param, cyccnt) {
+            SemihostOutcome::Return(v) => {
+                self.regs.write(0, v);
+                self.regs.pc = pc.wrapping_add(2);
+                Ok(Next::Advance(self.regs.pc))
+            }
+            SemihostOutcome::Exit(code) => Err(HaltCause::SemihostExit { code }),
+        }
     }
 
     /// Whether an escalated HardFault targets `Secure` state, mirroring QEMU's

@@ -16,6 +16,9 @@ pub enum HaltCause {
     FetchAbort,
     /// The CPU executed a `bkpt` instruction.
     Breakpoint,
+    /// Firmware requested process exit through the semihosting `SYS_EXIT`
+    /// call (`BKPT 0xAB` with semihosting enabled).
+    SemihostExit { code: i32 },
     /// The CPU attempted to take an exception the simulator does not model,
     /// or executed a system instruction it cannot service.
     UnhandledException,
@@ -42,6 +45,7 @@ impl fmt::Display for HaltCause {
             Self::NonThumbTarget => f.write_str("non-thumb branch target"),
             Self::FetchAbort => f.write_str("instruction fetch abort"),
             Self::Breakpoint => f.write_str("breakpoint"),
+            Self::SemihostExit { code } => write!(f, "semihost exit({code})"),
             Self::CycleBudgetExhausted => f.write_str("cycle budget exhausted"),
             Self::UnhandledException => f.write_str("unsupported system exception"),
             Self::BusFault { address } => write!(f, "bus fault at {address:#010x}"),

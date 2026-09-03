@@ -15,6 +15,7 @@ use crate::mem::bus::Region;
 
 pub mod dwt;
 pub mod gpio;
+pub mod itm;
 pub mod nvic;
 pub mod scb;
 pub mod stm32;

@@ -226,6 +226,13 @@ pub trait PeripheralBus: Bus {
     /// Reset all peripheral state.
     fn reset_peripherals(&mut self) {}
 
+    /// Host-side output channel: drain bytes the named device emitted since
+    /// the last drain (see [`Peripheral::drain_output`](crate::device::Peripheral::drain_output)).
+    /// Default: no named channels (plain memory).
+    fn drain_channel(&mut self, _name: &str) -> Vec<u8> {
+        Vec::new()
+    }
+
     /// Whether the system control block has latched `AIRCR.SYSRESETREQ`; the
     /// machine performs a full reset when set. Default: no such request.
     fn reset_requested(&self) -> bool {

@@ -75,7 +75,15 @@ const fn gdb_signal(cause: HaltCause) -> u8 {
             11
         }
         HaltCause::UnhandledException => 6,
+        // Exits report through the `W` packet, not a signal; the stop-signal
+        // fallback is only for contexts that cannot carry an exit.
+        HaltCause::SemihostExit { .. } => 5,
     }
+}
+
+/// A semihosting exit code clamped to the one byte RSP carries.
+fn exit_byte(code: i32) -> u8 {
+    u8::try_from(code).unwrap_or(1)
 }
 
 /// The value of a single hex nibble.
@@ -135,6 +143,8 @@ enum Outcome {
 /// Why a resumed machine came back to the debugger.
 enum Stop {
     Signal(u8),
+    /// Firmware exited through semihosting; the byte is the exit code.
+    Exited(u8),
     /// The client closed the connection while the machine was running.
     Disconnect,
 }
@@ -528,6 +538,7 @@ impl<'a, M: PeripheralBus> Session<'a, M> {
                     None
                 }
             }
+            Err(HaltCause::SemihostExit { code }) => Some(Stop::Exited(exit_byte(code))),
             Err(cause) => {
                 self.last_signal = gdb_signal(cause);
                 Some(Stop::Signal(self.last_signal))
@@ -551,6 +562,9 @@ impl<'a, M: PeripheralBus> Session<'a, M> {
                         self.last_signal = 5;
                         return Ok(Stop::Signal(self.last_signal));
                     }
+                }
+                Err(HaltCause::SemihostExit { code }) => {
+                    return Ok(Stop::Exited(exit_byte(code)));
                 }
                 Err(cause) => {
                     // A software breakpoint is the bkpt instruction swapped
@@ -632,6 +646,10 @@ pub fn serve<M: PeripheralBus>(machine: &mut Machine<M>, listener: &TcpListener)
                 let stop = session.resume(&stream, step, addr)?;
                 match stop {
                     Stop::Signal(sig) => send_packet(&mut stream, &format!("S{sig:02x}"))?,
+                    Stop::Exited(code) => {
+                        send_packet(&mut stream, &format!("W{code:02x}"))?;
+                        return Ok(());
+                    }
                     Stop::Disconnect => return Ok(()),
                 }
             }
@@ -776,6 +794,33 @@ mod tests {
         thread.join().unwrap();
         assert_eq!(machine.core.regs.pc, 0x102);
         assert_eq!(machine.core.regs.read(0), 1);
+    }
+
+    /// A semihosting `SYS_EXIT` under continue ends the session with a `W`
+    /// packet carrying the exit code.
+    #[test]
+    fn semihost_exit_reports_w_packet() {
+        use vioarm_core::mem::Bus as _;
+        if !loopback_available() {
+            eprintln!("skipping: loopback connect unavailable in this environment");
+            return;
+        }
+        let mut machine = test_machine();
+        machine.semihost_enable(true);
+        write_half(&mut machine, 0x100, 0x2018); // movs r0, #0x18 (SYS_EXIT)
+        write_half(&mut machine, 0x102, 0x4901); // ldr r1, [pc, #4] -> 0x108
+        write_half(&mut machine, 0x104, 0xBEAB); // bkpt 0xAB
+        machine.core.mem().write_word(0x108, 0x110).unwrap();
+        machine.core.mem().write_word(0x110, 0x20026).unwrap(); // ADP_EXIT
+        machine.core.mem().write_word(0x114, 0).unwrap();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let thread = std::thread::spawn(move || {
+            let mut c = std::net::TcpStream::connect(addr).unwrap();
+            assert_eq!(exch(&mut c, "c"), "W00");
+        });
+        serve(&mut machine, &listener).unwrap();
+        thread.join().unwrap();
     }
 
     /// A continue into an infinite loop is interruptible with Ctrl-C.

@@ -13,3 +13,4 @@ pub mod error;
 pub mod loader;
 pub mod machine;
 pub mod mem;
+pub mod semihost;
