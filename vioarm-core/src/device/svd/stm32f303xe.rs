@@ -26071,7 +26071,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
     PeripheralDef {
         name: "COMP",
         base: 0x4001_001c,
-        window: 0x0000_0019,
+        window: 0x0000_001C,
         irqs: &[
             IrqDef {
                 number: 64,
@@ -53655,7 +53655,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
     PeripheralDef {
         name: "ADC1_2",
         base: 0x5000_0300,
-        window: 0x0000_000d,
+        window: 0x0000_0010,
         irqs: &[],
         registers: &[
             RegisterDef {
@@ -53882,7 +53882,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
     PeripheralDef {
         name: "ADC3_4",
         base: 0x5000_0700,
-        window: 0x0000_000d,
+        window: 0x0000_0010,
         irqs: &[],
         registers: &[
             RegisterDef {
@@ -54109,7 +54109,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
     PeripheralDef {
         name: "SYSCFG",
         base: 0x4001_0000,
-        window: 0x0000_0019,
+        window: 0x0000_001C,
         irqs: &[],
         registers: &[
             RegisterDef {
