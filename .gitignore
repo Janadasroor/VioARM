@@ -1,5 +1,6 @@
 /packs/
 /target/
 /.opencode/
+/docs/book/
 fuzz/target/
 fuzz/Cargo.lock

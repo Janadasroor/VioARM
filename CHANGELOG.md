@@ -52,6 +52,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `DMAMUX` behavior scaffold, `RCC` per-family `HSIRDY`, `QspiGate` gated-at-reset.
 - Verification: `CI` hardened (`deny` strict, `llvm-cov --fail-under-lines 85`, `clippy -D warnings`, QEMU 10.2.1 pinned, `ORACLE_VERSION`), `fuzz` crate (elf/hex/decode/rsp), `determinism` twice-run test.
 - Bench `benches/mips.rs` baseline, `packs/PROVENANCE.md` + `xtask` fetch/verify.
+- **Per-Dname delta model** (`svd/per_dname.rs`): the 486 per-variant `stm32*.rs` copies (proven byte-identical to donor-minus-`removed`, 39,131 blocks, 0 mismatches) are deleted; each of the 505 Dnames is now `{donor, removed}` over the 21 donor `PERIPHERALS`, filtered at runtime with identical behavior. `svd/` 1.3G→32M, `cargo check` 10m→12s, new `per_dname_deltas_are_consistent` regression test (505 entries, 40062 total anchor, spot checks).
+- **RCC clock tree drives APB timer ratios** (`rcc.rs` `ClockState`, `mem/system.rs` tick scaling, all 35 boards wired): `CFGR` (F1/F4) and `D1CFGR`/`D2CFGR` (H7) prescaler writes decode into a shared handle; general timers advance by the timer-kernel/core ratio with the ×2 rule and exact fractional carry. `FLASH_ACR` wait states and H7 `AXI`/`FMC` latency stay in `Core::step` (an early revision double-counted them and was reverted). Full suite 861 green.
 ### Changed
 - `QspiGate` now gated at reset, `RCC` `HSIRDY` per-family, `CAN` dead code removed.
 - `USB` FIFO window enlarged, `SDIO` data path uses card image, `H7` LTDC/DMA2D etc. descoped to latch-only (B6).
