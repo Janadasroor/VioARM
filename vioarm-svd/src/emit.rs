@@ -92,7 +92,19 @@ fn emit_peripheral(out: &mut String, p: &Peripheral) {
     w(out, "    PeripheralDef {");
     w(out, &format!("        name: {:?},", p.name));
     w(out, &format!("        base: {},", hex(p.base)));
-    w(out, &format!("        window: {},", hex(p.window)));
+    // Some vendor SVDs declare an `addressBlock` smaller than the registers
+    // they actually describe (F303 COMP/ADC/SYSCFG); widen the window to
+    // cover the last register so the table is internally consistent.
+    let reg_end = p
+        .registers
+        .iter()
+        .map(|r| r.offset + r.size / 8)
+        .max()
+        .unwrap_or(0);
+    w(
+        out,
+        &format!("        window: {},", hex(p.window.max(reg_end))),
+    );
     if p.irqs.is_empty() {
         w(out, "        irqs: &[],");
     } else if p.irqs.len() == 1 {

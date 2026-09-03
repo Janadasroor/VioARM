@@ -7235,12 +7235,14 @@ pub fn all_boards() -> Vec<(&'static str, fn() -> BoardMemory)> {
     ]
 }
 
-/// Per-Dname committed tables exact: 500 Dnames with flash/ram exact via PDSC IROM1/IRAM1
-/// Uses `per_dname::PER_DNAMES` donor PERIPHERALS with per-Dname flash/ram, closing 21→386 gap.
+/// Per-Dname committed tables exact: 505 Dnames with flash/ram exact via PDSC IROM1/IRAM1.
+/// Uses `per_dname::PER_DNAMES` 21-donor-plus-removal views with per-Dname flash/ram.
 pub fn core_only_board_per_dname(dname: &str) -> Option<BoardMemory> {
     use crate::device::svd::per_dname::{H7_DTCM, PER_DNAMES};
     use crate::device::svd::{NoBehavior, RegisterFile};
     let entry = PER_DNAMES.iter().find(|e| e.dname == dname)?;
+    let removed = entry.removed;
+    let donor = crate::device::svd::per_dname::donor_peripherals(entry.donor);
     // Per-Dname exact IROM1/IRAM1: flash at 0x08000000 sized entry.flash_len,
     // RAM at 0x20000000 sized entry.ram_len. H7 donor keeps DTCM+AXI split
     // so H7_DTCM 0x20000 + RAM_D1 0x60000 = 0x80000 invariant holds.
@@ -7262,7 +7264,7 @@ pub fn core_only_board_per_dname(dname: &str) -> Option<BoardMemory> {
         FlatMemory::with_layout(&[0x0800_0000, RAM], &[entry.flash_len, entry.ram_len])
     };
     let mut mem = SystemMemory::new(backing);
-    for p in entry.peripherals {
+    for p in donor.iter().filter(|p| !removed.contains(&p.name)) {
         mem.attach(Box::new(RegisterFile::<NoBehavior>::new(p, NoBehavior)));
     }
     mem.attach(Box::new(Dwt::new()));
@@ -7270,7 +7272,7 @@ pub fn core_only_board_per_dname(dname: &str) -> Option<BoardMemory> {
     Some(mem)
 }
 
-/// All 500 Dnames with per-Dname flash/ram exact (386 Dnames from 9 DFP 2.4G)
+/// All 505 Dnames with per-Dname flash/ram exact (donor + removal deltas over 21 SVD donors)
 pub fn all_per_dnames() -> Vec<(
     &'static str,
     &'static crate::device::svd::per_dname::PerDname,
