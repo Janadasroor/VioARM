@@ -33,7 +33,7 @@ use crate::device::stm32::gpio::Gpio as StmGpio;
 use crate::device::stm32::gpio_f4::GpioF4;
 use crate::device::stm32::i2c::I2c;
 use crate::device::stm32::pwr::Pwr;
-use crate::device::stm32::rcc::Rcc;
+use crate::device::stm32::rcc::{ClockState, Rcc};
 use crate::device::stm32::rtc::Rtc;
 use crate::device::stm32::sdio::Sdio;
 use crate::device::stm32::spi::Spi;
@@ -128,8 +128,10 @@ pub fn stm32f103() -> BoardMemory {
     let dma_requests = Arc::new(Mutex::new(DmaRequests::new()));
     let mut mem = SystemMemory::new(backing);
     mem.set_flash_gate(gate.clone());
+    let clock = ClockState::shared();
+    mem.set_clock(clock.clone());
     mem.attach(Box::new(FlashF1::new(gate)));
-    mem.attach(Box::new(Rcc::new()));
+    mem.attach(Box::new(Rcc::new().with_clock(clock.clone())));
     mem.attach(Box::new(Pwr::new_for::<
         crate::device::svd::stm32f103::Stm32f103,
     >()));
@@ -234,8 +236,12 @@ pub fn stm32f107() -> BoardMemory {
     )));
     let mut mem = SystemMemory::new(backing);
     mem.set_flash_gate(gate.clone());
+    let clock = ClockState::shared();
+    mem.set_clock(clock.clone());
     mem.attach(Box::new(FlashF1::for_device::<Stm32f107>(gate)));
-    mem.attach(Box::new(Rcc::for_device::<Stm32f107>()));
+    mem.attach(Box::new(
+        Rcc::for_device::<Stm32f107>().with_clock(clock.clone()),
+    ));
     mem.attach(Box::new(Pwr::new_for::<Stm32f107>()));
     mem.attach(Box::new(Crc::new_for::<Stm32f107>()));
     mem.attach(Box::new(Dac::new_for::<Stm32f107>()));
@@ -363,8 +369,12 @@ pub fn stm32f407() -> BoardMemory {
     )));
     let mut mem = SystemMemory::new(backing);
     mem.set_flash_gate(gate.clone());
+    let clock = ClockState::shared();
+    mem.set_clock(clock.clone());
     mem.attach(Box::new(FlashF4::for_device::<Stm32f407>(gate)));
-    mem.attach(Box::new(Rcc::for_device::<Stm32f407>()));
+    mem.attach(Box::new(
+        Rcc::for_device::<Stm32f407>().with_clock(clock.clone()),
+    ));
     mem.attach(Box::new(Pwr::new_for::<Stm32f407>()));
     mem.attach(Box::new(Crc::new_for::<Stm32f407>()));
     mem.attach(Box::new(Dac::new_for::<Stm32f407>()));
@@ -463,8 +473,12 @@ fn f4_full_board(flash_len: u32, ram_len: u32, ccm_len: u32) -> BoardMemory {
     )));
     let mut mem = SystemMemory::new(backing);
     mem.set_flash_gate(gate.clone());
+    let clock = ClockState::shared();
+    mem.set_clock(clock.clone());
     mem.attach(Box::new(FlashF4::for_device::<Stm32f407>(gate)));
-    mem.attach(Box::new(Rcc::for_device::<Stm32f407>()));
+    mem.attach(Box::new(
+        Rcc::for_device::<Stm32f407>().with_clock(clock.clone()),
+    ));
     mem.attach(Box::new(Pwr::new_for::<Stm32f407>()));
     mem.attach(Box::new(Crc::new_for::<Stm32f407>()));
     mem.attach(Box::new(Dac::new_for::<Stm32f407>()));
@@ -585,10 +599,14 @@ fn f0_full_board(flash_len: u32, ram_len: u32) -> BoardMemory {
     )));
     let mut mem = SystemMemory::new(backing);
     mem.set_flash_gate(gate.clone());
+    let clock = ClockState::shared();
+    mem.set_clock(clock.clone());
     if <Stm32f072 as crate::device::svd::Device>::peripheral("FLASH").is_some() {
         mem.attach(Box::new(FlashF1::for_device::<Stm32f072>(gate)));
     }
-    mem.attach(Box::new(Rcc::for_device::<Stm32f072>()));
+    mem.attach(Box::new(
+        Rcc::for_device::<Stm32f072>().with_clock(clock.clone()),
+    ));
     if <Stm32f072 as crate::device::svd::Device>::peripheral("PWR").is_some() {
         mem.attach(Box::new(Pwr::new_for::<Stm32f072>()));
     }
@@ -698,10 +716,14 @@ fn g4_full_board(flash_len: u32, ram_len: u32) -> BoardMemory {
     )));
     let mut mem = SystemMemory::new(backing);
     mem.set_flash_gate(gate.clone());
+    let clock = ClockState::shared();
+    mem.set_clock(clock.clone());
     if <Stm32g474 as crate::device::svd::Device>::peripheral("FLASH").is_some() {
         mem.attach(Box::new(FlashF1::for_device::<Stm32g474>(gate)));
     }
-    mem.attach(Box::new(Rcc::for_device::<Stm32g474>()));
+    mem.attach(Box::new(
+        Rcc::for_device::<Stm32g474>().with_clock(clock.clone()),
+    ));
     if <Stm32g474 as crate::device::svd::Device>::peripheral("PWR").is_some() {
         mem.attach(Box::new(Pwr::new_for::<Stm32g474>()));
     }
@@ -784,10 +806,14 @@ fn l4_full_board(flash_len: u32, ram_len: u32) -> BoardMemory {
     )));
     let mut mem = SystemMemory::new(backing);
     mem.set_flash_gate(gate.clone());
+    let clock = ClockState::shared();
+    mem.set_clock(clock.clone());
     if <Stm32l476 as crate::device::svd::Device>::peripheral("FLASH").is_some() {
         mem.attach(Box::new(FlashF1::for_device::<Stm32l476>(gate)));
     }
-    mem.attach(Box::new(Rcc::for_device::<Stm32l476>()));
+    mem.attach(Box::new(
+        Rcc::for_device::<Stm32l476>().with_clock(clock.clone()),
+    ));
     for (base, name) in [
         (0x4800_0000u32, "gpioa"),
         (0x4800_0400, "gpiob"),
@@ -869,10 +895,14 @@ pub fn stm32f072() -> BoardMemory {
     )));
     let mut mem = SystemMemory::new(backing);
     mem.set_flash_gate(gate.clone());
+    let clock = ClockState::shared();
+    mem.set_clock(clock.clone());
     if <Stm32f072 as crate::device::svd::Device>::peripheral("FLASH").is_some() {
         mem.attach(Box::new(FlashF1::for_device::<Stm32f072>(gate)));
     }
-    mem.attach(Box::new(Rcc::for_device::<Stm32f072>()));
+    mem.attach(Box::new(
+        Rcc::for_device::<Stm32f072>().with_clock(clock.clone()),
+    ));
     if <Stm32f072 as crate::device::svd::Device>::peripheral("PWR").is_some() {
         mem.attach(Box::new(Pwr::new_for::<Stm32f072>()));
     }
@@ -1014,10 +1044,14 @@ pub fn stm32f030() -> BoardMemory {
     )));
     let mut mem = SystemMemory::new(backing);
     mem.set_flash_gate(gate.clone());
+    let clock = ClockState::shared();
+    mem.set_clock(clock.clone());
     if <Stm32f030 as crate::device::svd::Device>::peripheral("FLASH").is_some() {
         mem.attach(Box::new(FlashF1::for_device::<Stm32f030>(gate)));
     }
-    mem.attach(Box::new(Rcc::for_device::<Stm32f030>()));
+    mem.attach(Box::new(
+        Rcc::for_device::<Stm32f030>().with_clock(clock.clone()),
+    ));
     if <Stm32f030 as crate::device::svd::Device>::peripheral("PWR").is_some() {
         mem.attach(Box::new(Pwr::new_for::<Stm32f030>()));
     }
@@ -1136,10 +1170,14 @@ pub fn stm32f031() -> BoardMemory {
     )));
     let mut mem = SystemMemory::new(backing);
     mem.set_flash_gate(gate.clone());
+    let clock = ClockState::shared();
+    mem.set_clock(clock.clone());
     if <Stm32f031 as crate::device::svd::Device>::peripheral("FLASH").is_some() {
         mem.attach(Box::new(FlashF1::for_device::<Stm32f031>(gate)));
     }
-    mem.attach(Box::new(Rcc::for_device::<Stm32f031>()));
+    mem.attach(Box::new(
+        Rcc::for_device::<Stm32f031>().with_clock(clock.clone()),
+    ));
     if <Stm32f031 as crate::device::svd::Device>::peripheral("PWR").is_some() {
         mem.attach(Box::new(Pwr::new_for::<Stm32f031>()));
     }
@@ -1256,10 +1294,14 @@ pub fn stm32f042() -> BoardMemory {
     )));
     let mut mem = SystemMemory::new(backing);
     mem.set_flash_gate(gate.clone());
+    let clock = ClockState::shared();
+    mem.set_clock(clock.clone());
     if <Stm32f042 as crate::device::svd::Device>::peripheral("FLASH").is_some() {
         mem.attach(Box::new(FlashF1::for_device::<Stm32f042>(gate)));
     }
-    mem.attach(Box::new(Rcc::for_device::<Stm32f042>()));
+    mem.attach(Box::new(
+        Rcc::for_device::<Stm32f042>().with_clock(clock.clone()),
+    ));
     if <Stm32f042 as crate::device::svd::Device>::peripheral("PWR").is_some() {
         mem.attach(Box::new(Pwr::new_for::<Stm32f042>()));
     }
@@ -1359,10 +1401,14 @@ pub fn stm32f0x0() -> BoardMemory {
     )));
     let mut mem = SystemMemory::new(backing);
     mem.set_flash_gate(gate.clone());
+    let clock = ClockState::shared();
+    mem.set_clock(clock.clone());
     if <Stm32f0x0 as crate::device::svd::Device>::peripheral("FLASH").is_some() {
         mem.attach(Box::new(FlashF1::for_device::<Stm32f0x0>(gate)));
     }
-    mem.attach(Box::new(Rcc::for_device::<Stm32f0x0>()));
+    mem.attach(Box::new(
+        Rcc::for_device::<Stm32f0x0>().with_clock(clock.clone()),
+    ));
     for (base, name) in [(0x4800_0000u32, "gpioa"), (0x4800_0400, "gpiob")] {
         if <Stm32f0x0 as crate::device::svd::Device>::by_base(base).is_some() {
             mem.attach(Box::new(GpioF4::at_in::<Stm32f0x0>(base, name)));
@@ -1427,10 +1473,14 @@ pub fn stm32f091() -> BoardMemory {
     )));
     let mut mem = SystemMemory::new(backing);
     mem.set_flash_gate(gate.clone());
+    let clock = ClockState::shared();
+    mem.set_clock(clock.clone());
     if <Stm32f091 as crate::device::svd::Device>::peripheral("FLASH").is_some() {
         mem.attach(Box::new(FlashF1::for_device::<Stm32f091>(gate)));
     }
-    mem.attach(Box::new(Rcc::for_device::<Stm32f091>()));
+    mem.attach(Box::new(
+        Rcc::for_device::<Stm32f091>().with_clock(clock.clone()),
+    ));
     if <Stm32f091 as crate::device::svd::Device>::peripheral("PWR").is_some() {
         mem.attach(Box::new(Pwr::new_for::<Stm32f091>()));
     }
@@ -1550,10 +1600,14 @@ pub fn stm32f0x1() -> BoardMemory {
     )));
     let mut mem = SystemMemory::new(backing);
     mem.set_flash_gate(gate.clone());
+    let clock = ClockState::shared();
+    mem.set_clock(clock.clone());
     if <Stm32f0x1 as crate::device::svd::Device>::peripheral("FLASH").is_some() {
         mem.attach(Box::new(FlashF1::for_device::<Stm32f0x1>(gate)));
     }
-    mem.attach(Box::new(Rcc::for_device::<Stm32f0x1>()));
+    mem.attach(Box::new(
+        Rcc::for_device::<Stm32f0x1>().with_clock(clock.clone()),
+    ));
     for p in crate::device::svd::stm32f0x1::PERIPHERALS {
         if p.base >= 0xE000_0000 {
             continue;
@@ -1598,10 +1652,14 @@ pub fn stm32f0x2() -> BoardMemory {
     )));
     let mut mem = SystemMemory::new(backing);
     mem.set_flash_gate(gate.clone());
+    let clock = ClockState::shared();
+    mem.set_clock(clock.clone());
     if <Stm32f0x2 as crate::device::svd::Device>::peripheral("FLASH").is_some() {
         mem.attach(Box::new(FlashF1::for_device::<Stm32f0x2>(gate)));
     }
-    mem.attach(Box::new(Rcc::for_device::<Stm32f0x2>()));
+    mem.attach(Box::new(
+        Rcc::for_device::<Stm32f0x2>().with_clock(clock.clone()),
+    ));
     for p in crate::device::svd::stm32f0x2::PERIPHERALS {
         if p.base >= 0xE000_0000 {
             continue;
@@ -1646,10 +1704,14 @@ pub fn stm32f0x8() -> BoardMemory {
     )));
     let mut mem = SystemMemory::new(backing);
     mem.set_flash_gate(gate.clone());
+    let clock = ClockState::shared();
+    mem.set_clock(clock.clone());
     if <Stm32f0x8 as crate::device::svd::Device>::peripheral("FLASH").is_some() {
         mem.attach(Box::new(FlashF1::for_device::<Stm32f0x8>(gate)));
     }
-    mem.attach(Box::new(Rcc::for_device::<Stm32f0x8>()));
+    mem.attach(Box::new(
+        Rcc::for_device::<Stm32f0x8>().with_clock(clock.clone()),
+    ));
     for p in crate::device::svd::stm32f0x8::PERIPHERALS {
         if p.base >= 0xE000_0000 {
             continue;
@@ -1694,10 +1756,14 @@ pub fn stm32f0xx() -> BoardMemory {
     )));
     let mut mem = SystemMemory::new(backing);
     mem.set_flash_gate(gate.clone());
+    let clock = ClockState::shared();
+    mem.set_clock(clock.clone());
     if <Stm32f0 as crate::device::svd::Device>::peripheral("FLASH").is_some() {
         mem.attach(Box::new(FlashF1::for_device::<Stm32f0>(gate)));
     }
-    mem.attach(Box::new(Rcc::for_device::<Stm32f0>()));
+    mem.attach(Box::new(
+        Rcc::for_device::<Stm32f0>().with_clock(clock.clone()),
+    ));
     for p in crate::device::svd::stm32f0xx::PERIPHERALS {
         if p.base >= 0xE000_0000 {
             continue;
@@ -1742,8 +1808,12 @@ pub fn stm32f100() -> BoardMemory {
     )));
     let mut mem = SystemMemory::new(backing);
     mem.set_flash_gate(gate.clone());
+    let clock = ClockState::shared();
+    mem.set_clock(clock.clone());
     mem.attach(Box::new(FlashF1::for_device::<Stm32f100>(gate)));
-    mem.attach(Box::new(Rcc::for_device::<Stm32f100>()));
+    mem.attach(Box::new(
+        Rcc::for_device::<Stm32f100>().with_clock(clock.clone()),
+    ));
     if <Stm32f100 as crate::device::svd::Device>::peripheral("PWR").is_some() {
         mem.attach(Box::new(Pwr::new_for::<Stm32f100>()));
     }
@@ -1848,8 +1918,12 @@ pub fn stm32f101() -> BoardMemory {
     )));
     let mut mem = SystemMemory::new(backing);
     mem.set_flash_gate(gate.clone());
+    let clock = ClockState::shared();
+    mem.set_clock(clock.clone());
     mem.attach(Box::new(FlashF1::for_device::<Stm32f101>(gate)));
-    mem.attach(Box::new(Rcc::for_device::<Stm32f101>()));
+    mem.attach(Box::new(
+        Rcc::for_device::<Stm32f101>().with_clock(clock.clone()),
+    ));
     for (base, name) in [
         (0x40010800u32, "gpioa"),
         (0x40010C00, "gpiob"),
@@ -1945,8 +2019,12 @@ pub fn stm32f102() -> BoardMemory {
     )));
     let mut mem = SystemMemory::new(backing);
     mem.set_flash_gate(gate.clone());
+    let clock = ClockState::shared();
+    mem.set_clock(clock.clone());
     mem.attach(Box::new(FlashF1::for_device::<Stm32f102>(gate)));
-    mem.attach(Box::new(Rcc::for_device::<Stm32f102>()));
+    mem.attach(Box::new(
+        Rcc::for_device::<Stm32f102>().with_clock(clock.clone()),
+    ));
     for (base, name) in [
         (0x40010800u32, "gpioa"),
         (0x40010C00, "gpiob"),
@@ -2044,8 +2122,12 @@ pub fn stm32f105() -> BoardMemory {
     )));
     let mut mem = SystemMemory::new(backing);
     mem.set_flash_gate(gate.clone());
+    let clock = ClockState::shared();
+    mem.set_clock(clock.clone());
     mem.attach(Box::new(FlashF1::for_device::<Stm32f105>(gate)));
-    mem.attach(Box::new(Rcc::for_device::<Stm32f105>()));
+    mem.attach(Box::new(
+        Rcc::for_device::<Stm32f105>().with_clock(clock.clone()),
+    ));
     for (base, name) in [
         (0x40010800u32, "gpioa"),
         (0x40010C00, "gpiob"),
@@ -2176,8 +2258,12 @@ pub fn stm32f746() -> BoardMemory {
     )));
     let mut mem = SystemMemory::new(backing);
     mem.set_flash_gate(gate.clone());
+    let clock = ClockState::shared();
+    mem.set_clock(clock.clone());
     mem.attach(Box::new(FlashF1::new(gate)));
-    mem.attach(Box::new(Rcc::for_device::<Stm32h743>()));
+    mem.attach(Box::new(
+        Rcc::for_device::<Stm32h743>().with_clock(clock.clone()),
+    ));
     for p in crate::device::svd::stm32h743::PERIPHERALS {
         if p.base >= 0xE000_0000 {
             continue;
@@ -2213,8 +2299,12 @@ pub fn stm32f756() -> BoardMemory {
     )));
     let mut mem = SystemMemory::new(backing);
     mem.set_flash_gate(gate.clone());
+    let clock = ClockState::shared();
+    mem.set_clock(clock.clone());
     mem.attach(Box::new(FlashF1::new(gate)));
-    mem.attach(Box::new(Rcc::for_device::<Stm32h743>()));
+    mem.attach(Box::new(
+        Rcc::for_device::<Stm32h743>().with_clock(clock.clone()),
+    ));
     for p in crate::device::svd::stm32h743::PERIPHERALS {
         if p.base >= 0xE000_0000 {
             continue;
@@ -2298,8 +2388,12 @@ pub fn stm32f765() -> BoardMemory {
     )));
     let mut mem = SystemMemory::new(backing);
     mem.set_flash_gate(gate.clone());
+    let clock = ClockState::shared();
+    mem.set_clock(clock.clone());
     mem.attach(Box::new(FlashF1::new(gate)));
-    mem.attach(Box::new(Rcc::for_device::<Stm32h743>()));
+    mem.attach(Box::new(
+        Rcc::for_device::<Stm32h743>().with_clock(clock.clone()),
+    ));
     for p in crate::device::svd::stm32h743::PERIPHERALS {
         if p.base >= 0xE000_0000 {
             continue;
@@ -5172,8 +5266,12 @@ pub fn stm32h750() -> BoardMemory {
     )));
     let mut mem = SystemMemory::new(backing);
     mem.set_flash_gate(gate.clone());
+    let clock = ClockState::shared();
+    mem.set_clock(clock.clone());
     mem.attach(Box::new(FlashF1::new(gate)));
-    mem.attach(Box::new(Rcc::for_device::<Stm32h743>()));
+    mem.attach(Box::new(
+        Rcc::for_device::<Stm32h743>().with_clock(clock.clone()),
+    ));
     for p in crate::device::svd::stm32h743::PERIPHERALS {
         if p.base >= 0xE000_0000 {
             continue;
@@ -5220,11 +5318,15 @@ pub fn stm32f303xe() -> BoardMemory {
     )));
     let mut mem = SystemMemory::new(backing);
     mem.set_flash_gate(gate.clone());
+    let clock = ClockState::shared();
+    mem.set_clock(clock.clone());
     // F3 flash is F1-gated at 0x40022000
     if <Stm32f303xe as crate::device::svd::Device>::peripheral("FLASH").is_some() {
         mem.attach(Box::new(FlashF1::for_device::<Stm32f303xe>(gate)));
     }
-    mem.attach(Box::new(Rcc::for_device::<Stm32f303xe>()));
+    mem.attach(Box::new(
+        Rcc::for_device::<Stm32f303xe>().with_clock(clock.clone()),
+    ));
     if <Stm32f303xe as crate::device::svd::Device>::peripheral("PWR").is_some() {
         mem.attach(Box::new(Pwr::new_for::<Stm32f303xe>()));
     }
@@ -5419,11 +5521,15 @@ pub fn stm32l476() -> BoardMemory {
     )));
     let mut mem = SystemMemory::new(backing);
     mem.set_flash_gate(gate.clone());
+    let clock = ClockState::shared();
+    mem.set_clock(clock.clone());
     // L4 flash is at 0x40022000 like F1, use FlashF1
     if <Stm32l476 as crate::device::svd::Device>::peripheral("FLASH").is_some() {
         mem.attach(Box::new(FlashF1::for_device::<Stm32l476>(gate)));
     }
-    mem.attach(Box::new(Rcc::for_device::<Stm32l476>()));
+    mem.attach(Box::new(
+        Rcc::for_device::<Stm32l476>().with_clock(clock.clone()),
+    ));
     if <Stm32l476 as crate::device::svd::Device>::peripheral("PWR").is_some() {
         mem.attach(Box::new(Pwr::new_for::<Stm32l476>()));
     }
@@ -5526,10 +5632,14 @@ pub fn stm32g474xx() -> BoardMemory {
     )));
     let mut mem = SystemMemory::new(backing);
     mem.set_flash_gate(gate.clone());
+    let clock = ClockState::shared();
+    mem.set_clock(clock.clone());
     if <Stm32g474 as crate::device::svd::Device>::peripheral("FLASH").is_some() {
         mem.attach(Box::new(FlashF1::for_device::<Stm32g474>(gate)));
     }
-    mem.attach(Box::new(Rcc::for_device::<Stm32g474>()));
+    mem.attach(Box::new(
+        Rcc::for_device::<Stm32g474>().with_clock(clock.clone()),
+    ));
     if <Stm32g474 as crate::device::svd::Device>::peripheral("PWR").is_some() {
         mem.attach(Box::new(Pwr::new_for::<Stm32g474>()));
     }
@@ -5664,12 +5774,16 @@ pub fn stm32h743() -> BoardMemory {
     let dma_requests = Arc::new(Mutex::new(DmaRequests::new()));
     let mut mem = SystemMemory::new(backing);
     mem.set_flash_gate(gate.clone());
+    let clock = ClockState::shared();
+    mem.set_clock(clock.clone());
     mem.set_qspi_gate(qspi_gate.clone());
     mem.set_qspi_gate2(octospi2_gate.clone());
     if <Stm32h743 as crate::device::svd::Device>::peripheral("FLASH").is_some() {
         mem.attach(Box::new(FlashF1::for_device::<Stm32h743>(gate)));
     }
-    mem.attach(Box::new(Rcc::for_device::<Stm32h743>()));
+    mem.attach(Box::new(
+        Rcc::for_device::<Stm32h743>().with_clock(clock.clone()),
+    ));
     if <Stm32h743 as crate::device::svd::Device>::peripheral("PWR").is_some() {
         mem.attach(Box::new(Pwr::new_for::<Stm32h743>()));
     }
@@ -6212,8 +6326,12 @@ pub fn stm32h743() -> BoardMemory {
         )));
         let mut mem = SystemMemory::new(backing);
         mem.set_flash_gate(gate.clone());
+        let clock = ClockState::shared();
+        mem.set_clock(clock.clone());
         mem.attach(Box::new(FlashF1::for_device::<Stm32f100>(gate)));
-        mem.attach(Box::new(Rcc::for_device::<Stm32f100>()));
+        mem.attach(Box::new(
+            Rcc::for_device::<Stm32f100>().with_clock(clock.clone()),
+        ));
         for (base, name) in [
             (0x40010800u32, "gpioa"),
             (0x40010C00, "gpiob"),
@@ -6286,8 +6404,12 @@ pub fn stm32h743() -> BoardMemory {
         )));
         let mut mem = SystemMemory::new(backing);
         mem.set_flash_gate(gate.clone());
+        let clock = ClockState::shared();
+        mem.set_clock(clock.clone());
         mem.attach(Box::new(FlashF1::for_device::<Stm32f101>(gate)));
-        mem.attach(Box::new(Rcc::for_device::<Stm32f101>()));
+        mem.attach(Box::new(
+            Rcc::for_device::<Stm32f101>().with_clock(clock.clone()),
+        ));
         for (base, name) in [
             (0x40010800u32, "gpioa"),
             (0x40010C00, "gpiob"),
@@ -6360,8 +6482,12 @@ pub fn stm32h743() -> BoardMemory {
         )));
         let mut mem = SystemMemory::new(backing);
         mem.set_flash_gate(gate.clone());
+        let clock = ClockState::shared();
+        mem.set_clock(clock.clone());
         mem.attach(Box::new(FlashF1::for_device::<Stm32f102>(gate)));
-        mem.attach(Box::new(Rcc::for_device::<Stm32f102>()));
+        mem.attach(Box::new(
+            Rcc::for_device::<Stm32f102>().with_clock(clock.clone()),
+        ));
         for (base, name) in [
             (0x40010800u32, "gpioa"),
             (0x40010C00, "gpiob"),
@@ -6434,10 +6560,14 @@ pub fn stm32h743() -> BoardMemory {
         )));
         let mut mem = SystemMemory::new(backing);
         mem.set_flash_gate(gate.clone());
+        let clock = ClockState::shared();
+        mem.set_clock(clock.clone());
         if <Stm32f303xe as crate::device::svd::Device>::peripheral("FLASH").is_some() {
             mem.attach(Box::new(FlashF1::for_device::<Stm32f303xe>(gate)));
         }
-        mem.attach(Box::new(Rcc::for_device::<Stm32f303xe>()));
+        mem.attach(Box::new(
+            Rcc::for_device::<Stm32f303xe>().with_clock(clock.clone()),
+        ));
         for (base, name) in [
             (0x4800_0000u32, "gpioa"),
             (0x4800_0400, "gpiob"),
@@ -6528,8 +6658,12 @@ pub fn stm32h743() -> BoardMemory {
             )));
             let mut mem = SystemMemory::new(backing);
             mem.set_flash_gate(gate.clone());
+            let clock = ClockState::shared();
+            mem.set_clock(clock.clone());
             mem.attach(Box::new(FlashF1::new(gate)));
-            mem.attach(Box::new(Rcc::for_device::<Stm32h743>()));
+            mem.attach(Box::new(
+                Rcc::for_device::<Stm32h743>().with_clock(clock.clone()),
+            ));
             for per in crate::device::svd::stm32h743::PERIPHERALS {
                 if per.base >= 0xE000_0000 {
                     continue;
@@ -6589,12 +6723,16 @@ pub fn stm32h743() -> BoardMemory {
         ))));
         let mut mem = SystemMemory::new(backing);
         mem.set_flash_gate(gate.clone());
+        let clock = ClockState::shared();
+        mem.set_clock(clock.clone());
         mem.set_qspi_gate(qspi_gate.clone());
         mem.set_qspi_gate2(octo_gate.clone());
         if <Stm32h743 as crate::device::svd::Device>::peripheral("FLASH").is_some() {
             mem.attach(Box::new(FlashF1::for_device::<Stm32h743>(gate)));
         }
-        mem.attach(Box::new(Rcc::for_device::<Stm32h743>()));
+        mem.attach(Box::new(
+            Rcc::for_device::<Stm32h743>().with_clock(clock.clone()),
+        ));
         // Mount minimal set plus all H7 peripherals via loop (like stm32h743)
         // For brevity, just mount all PERIPHERALS as NoBehavior then upgrade key ones to behavioral via full h743 logic
         // Instead, we can call stm32h743 and then adjust backing sizes? Simpler: reuse stm32h743's mounts but with different gate sizes

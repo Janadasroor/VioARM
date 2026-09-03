@@ -14,6 +14,7 @@ use crate::device::stm32::dma::DmaUnit;
 use crate::device::stm32::eth::{EthMailbox, EthMemOp};
 use crate::device::stm32::flash::{FlashErase, FlashGate};
 use crate::device::stm32::fmc::QspiGate;
+use crate::device::stm32::rcc::ClockState;
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
 use crate::mem::bus::{Bus, IdauAttribution, MpuAccess, MpuLookup, PeripheralBus, Region, SauHit};
@@ -58,6 +59,14 @@ pub struct SystemMemory<M: Bus> {
     /// counter underflows; `reset_requested()` folds it into the SCB's latch so
     /// the `Machine` performs a full reset, and `reset_devices()` clears it.
     watchdog: Option<Arc<Mutex<bool>>>,
+    /// The shared RCC prescaler state, written by the `RCC` device on
+    /// `CFGR`/`D1CFGR`/`D2CFGR` writes. When present, `tick_devices` scales
+    /// general-timer deltas by the APB timer-kernel ratio (including the ×2
+    /// rule); without it every timer runs at core rate, the old behavior.
+    clock: Option<Arc<Mutex<ClockState>>>,
+    /// Fractional-tick accumulators, one per APB domain (index 0 = APB1,
+    /// 1 = APB2), for exact rational timer scaling across sync points.
+    tim_phase: [u64; 2],
 }
 
 impl<M: Bus + core::fmt::Debug> core::fmt::Debug for SystemMemory<M> {
@@ -72,6 +81,8 @@ impl<M: Bus + core::fmt::Debug> core::fmt::Debug for SystemMemory<M> {
             .field("dma_mailbox", &self.dma_mailbox)
             .field("eth_mailbox", &self.eth_mailbox)
             .field("watchdog", &self.watchdog)
+            .field("clock", &self.clock)
+            .field("tim_phase", &self.tim_phase)
             .field(
                 "devices",
                 &self.devices.iter().map(|d| d.name()).collect::<Vec<_>>(),
@@ -95,6 +106,8 @@ impl<M: Bus> SystemMemory<M> {
             dma_mailbox: None,
             eth_mailbox: None,
             watchdog: None,
+            clock: None,
+            tim_phase: [0, 0],
         }
     }
 
@@ -165,6 +178,14 @@ impl<M: Bus> SystemMemory<M> {
         self.watchdog = Some(latch);
     }
 
+    /// Install the shared RCC prescaler state. The attached `RCC` device must
+    /// be built with a clone of the same `Arc` (see `Rcc::with_clock`); this
+    /// bus then scales general-timer tick deltas by the APB timer-kernel
+    /// ratio. `None` (the default) runs every timer at core rate.
+    pub fn set_clock(&mut self, clock: Arc<Mutex<ClockState>>) {
+        self.clock = Some(clock);
+    }
+
     /// The attached devices, in attach order.
     pub fn devices(&self) -> &[Box<dyn InterruptSource>] {
         &self.devices
@@ -187,6 +208,10 @@ impl<M: Bus> SystemMemory<M> {
     pub fn reset_devices(&mut self) {
         self.nvic.reset();
         self.scb.reset();
+        // Fractional timer phases are simulation bookkeeping, not silicon
+        // state, but they restart with the clocks (the `RCC` device resets
+        // its shared handle in the loop below).
+        self.tim_phase = [0, 0];
         for device in &mut self.devices {
             device.reset();
         }
@@ -216,22 +241,71 @@ impl<M: Bus> SystemMemory<M> {
                 .is_some_and(|latch| *latch.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
+    /// The APB domain of a general timer by device name (`TIM1`/`tim1` and
+    /// friends live on APB2, every other `TIMx` on APB1), or `None` for
+    /// non-timer devices. Matches F1/F4 and H7 (whose APB1 timers are
+    /// `TIM2-7/12-14` and APB2 ones `TIM1/8/15-17`); families with a single
+    /// APB read the APB2 prescaler as /1, which is their undivided bus.
+    fn tim_apb(name: &str) -> Option<u8> {
+        let rest = name
+            .strip_prefix("tim")
+            .or_else(|| name.strip_prefix("TIM"))?;
+        match rest {
+            "1" | "8" | "9" | "10" | "11" | "15" | "16" | "17" | "20" => Some(2),
+            _ if rest.bytes().all(|b| b.is_ascii_digit()) => Some(1),
+            _ => None,
+        }
+    }
+
     /// Advance every un-gated device by exactly `delta` cycles, then latch any
     /// freshly-asserted interrupt lines into the NVIC's pending register.
     /// Called at a synchronization point with the true elapsed delta; gated
     /// devices skip time entirely, mirroring a powered-down clock domain whose
-    /// counters froze.
+    /// counters froze. General timers (`tim*`) advance by the APB
+    /// timer-kernel ratio instead (see `tim_apb`): with prescalers at /1 this
+    /// is exactly `delta`, so unwired boards behave as before.
     pub fn tick_devices(&mut self, delta: u64) {
+        // Sample the clock once per sync point; every timer in one APB domain
+        // shares the ratio and the fractional accumulator, which keeps the
+        // scaling exact across arbitrarily chunked deltas.
+        let (ratio1, phase1) = self.tim_scaled(delta, 1);
+        let (ratio2, phase2) = self.tim_scaled(delta, 2);
+        self.tim_phase = [phase1, phase2];
         for device in &mut self.devices {
-            if !device.gated() {
-                device.tick(delta);
+            if device.gated() {
+                continue;
             }
+            let delta = match Self::tim_apb(device.name()) {
+                Some(1) => ratio1,
+                Some(2) => ratio2,
+                _ => delta,
+            };
+            device.tick(delta);
         }
         // DMA units queued by the controllers above land on this bus now.
         self.drain_dma_units();
         // So do the Ethernet controller's descriptor reads and frame writes.
         self.drain_eth_ops();
         self.latch_device_asserts();
+    }
+
+    /// Scale `delta` core cycles into APB-domain timer ticks: `delta * num /
+    /// den` with the fractional remainder carried in this bus's accumulator
+    /// (returned alongside the scaled delta). Without a clock handle or with
+    /// /1 prescalers this is the identity.
+    fn tim_scaled(&self, delta: u64, apb: u8) -> (u64, u64) {
+        let Some(clock) = &self.clock else {
+            return (delta, self.tim_phase[usize::from(apb - 1)]);
+        };
+        let clock = clock.lock().unwrap_or_else(|e| e.into_inner());
+        let (num, den) = clock.tim_factor(apb);
+        drop(clock);
+        let acc = self.tim_phase[usize::from(apb - 1)] as u128 + delta as u128 * num as u128;
+        #[allow(clippy::cast_possible_truncation)]
+        let scaled = (acc / den as u128) as u64;
+        #[allow(clippy::cast_possible_truncation)]
+        let phase = (acc % den as u128) as u64;
+        (scaled, phase)
     }
 
     /// Perform the copies queued by the DMA controllers. Reads and writes go
@@ -1433,5 +1507,117 @@ mod tests {
             0x0706_0504,
             "the next four bytes landed"
         );
+    }
+
+    /// A tick-counting device with a caller-chosen name, so `tick_devices`
+    /// clock scaling can be observed per APB domain through one shared total.
+    struct Ticker {
+        ranges: [Region; 1],
+        name: &'static str,
+        seen: std::sync::Arc<std::sync::Mutex<u64>>,
+    }
+
+    impl Ticker {
+        fn named(base: u32, name: &'static str) -> (Self, std::sync::Arc<std::sync::Mutex<u64>>) {
+            let seen = std::sync::Arc::new(std::sync::Mutex::new(0));
+            (
+                Self {
+                    ranges: [Region::new(base, 4)],
+                    name,
+                    seen: seen.clone(),
+                },
+                seen,
+            )
+        }
+    }
+
+    impl Peripheral for Ticker {
+        fn ranges(&self) -> &[Region] {
+            &self.ranges
+        }
+
+        fn read(&mut self, _addr: u32) -> Result<u8, BusError> {
+            Err(BusError::Reserved)
+        }
+
+        fn write(&mut self, _addr: u32, _val: u8) -> Result<(), BusError> {
+            Err(BusError::Reserved)
+        }
+
+        fn tick(&mut self, delta: u64) {
+            // NOTE: bind one guard — two `lock()`s in one statement deadlocks.
+            let mut seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
+            *seen = seen.wrapping_add(delta);
+        }
+
+        fn name(&self) -> &'static str {
+            self.name
+        }
+    }
+
+    impl InterruptSource for Ticker {}
+
+    fn timed_system() -> (
+        SystemMemory<FlatMemory>,
+        std::sync::Arc<std::sync::Mutex<crate::device::stm32::rcc::ClockState>>,
+        std::sync::Arc<std::sync::Mutex<u64>>,
+        std::sync::Arc<std::sync::Mutex<u64>>,
+        std::sync::Arc<std::sync::Mutex<u64>>,
+    ) {
+        use crate::device::stm32::rcc::ClockState;
+        let clock = ClockState::shared();
+        let mut sys = SystemMemory::new(ram());
+        sys.set_clock(clock.clone());
+        let (apb1, seen1) = Ticker::named(0x4000_0000, "tim2");
+        let (apb2, seen2) = Ticker::named(0x4001_0000, "tim1");
+        let (plain, seen3) = Ticker::named(0x4002_0000, "beacon");
+        sys.attach(Box::new(apb1));
+        sys.attach(Box::new(apb2));
+        sys.attach(Box::new(plain));
+        (sys, clock, seen1, seen2, seen3)
+    }
+
+    fn seen_total(seen: &std::sync::Arc<std::sync::Mutex<u64>>) -> u64 {
+        *seen.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[test]
+    fn tim_apb_routes_advanced_timers_to_apb2() {
+        assert_eq!(SystemMemory::<FlatMemory>::tim_apb("tim1"), Some(2));
+        assert_eq!(SystemMemory::<FlatMemory>::tim_apb("TIM8"), Some(2));
+        assert_eq!(SystemMemory::<FlatMemory>::tim_apb("tim17"), Some(2));
+        assert_eq!(SystemMemory::<FlatMemory>::tim_apb("tim2"), Some(1));
+        assert_eq!(SystemMemory::<FlatMemory>::tim_apb("tim14"), Some(1));
+        assert_eq!(SystemMemory::<FlatMemory>::tim_apb("gpioa"), None);
+        assert_eq!(SystemMemory::<FlatMemory>::tim_apb("usart1"), None);
+    }
+
+    #[test]
+    fn timers_scale_with_apb_ratios_and_carry_fractions() {
+        let (mut sys, clock, seen1, seen2, seen3) = timed_system();
+        // PPRE1=/4 (×2 rule → 1/2 rate), PPRE2=/1 (full rate).
+        clock.lock().unwrap_or_else(|e| e.into_inner()).ppre1 = 4;
+        sys.tick_devices(10);
+        assert_eq!(seen_total(&seen1), 5, "APB1 timer at half rate");
+        assert_eq!(seen_total(&seen2), 10, "APB2 timer at full rate");
+        assert_eq!(seen_total(&seen3), 10, "non-timer unscaled");
+        // Fractional carry: 1+1 core cycles at half rate make exactly 1 tick.
+        sys.tick_devices(1);
+        assert_eq!(seen_total(&seen1), 5);
+        sys.tick_devices(1);
+        assert_eq!(seen_total(&seen1), 6);
+        // Reset clears the fractional phase.
+        sys.reset_devices();
+        sys.tick_devices(1);
+        assert_eq!(seen_total(&seen1), 6, "phase restarted, no carry yet");
+    }
+
+    #[test]
+    fn timers_run_at_core_rate_without_a_clock() {
+        let mut sys = SystemMemory::new(ram());
+        let (tim, seen) = Ticker::named(0x4000_0000, "tim2");
+        sys.attach(Box::new(tim));
+        sys.tick_devices(7);
+        assert_eq!(seen_total(&seen), 7);
     }
 }

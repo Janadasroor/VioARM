@@ -33,3 +33,29 @@ fn golden_traces_per_board_boot() {
         );
     }
 }
+
+#[test]
+fn flash_wait_states_stall_fetches() {
+    // Four NOPs planted in the `0x0` flash alias (writes there bypass the
+    // locked flash gate); fetches from flash cost `1 + LATENCY` core cycles
+    // (`cyccnt`) while the retired-instruction count is unaffected.
+    let code = [0x00, 0xBF, 0x00, 0xBF, 0x00, 0xBF, 0x00, 0xBF]; // 4x nop
+    let mut m = Machine::new(board::stm32f103());
+    m.load_image(&load_flat(0x0000_0000, &code));
+    m.core.regs.pc = 0x0000_0001;
+    for _ in 0..4 {
+        m.step().unwrap();
+    }
+    assert_eq!(m.core.cyccnt, 4, "unwaited flash fetches cost one cycle");
+    // Same sled with `ACR.LATENCY=2`: each fetch costs three core cycles.
+    let mut m = Machine::new(board::stm32f103());
+    m.load_image(&load_flat(0x0000_0000, &code));
+    m.core.mem().write_word(0x4002_2000, 2).unwrap(); // FLASH_ACR.LATENCY
+    m.core.regs.pc = 0x0000_0001;
+    for _ in 0..4 {
+        m.step().unwrap();
+    }
+    assert_eq!(m.core.cyccnt, 12, "LATENCY=2 triples fetch cost");
+    let (_, _, cycles) = m.core.snapshot();
+    assert_eq!(cycles, 4, "wait states do not retire extra instructions");
+}
