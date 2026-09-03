@@ -213,6 +213,15 @@ pub mod stm32wle5;
 pub mod stm32wl33;
 pub mod stm32wl55;
 
+pub mod stm32mp157;
+pub mod stm32f446re;
+pub mod stm32f469ai;
+pub mod stm32f722ie;
+pub mod stm32f723ie;
+pub mod stm32f732ie;
+pub mod stm32f745ie;
+pub mod stm32f767zi;
+pub mod stm32g030f6;
 /// The register access vocabulary used by the supported SVD files.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Access {
@@ -1545,17 +1554,23 @@ mod tests {
             super::stm32f437ii::PERIPHERALS,
             super::stm32f439::PERIPHERALS,
             super::stm32f446::PERIPHERALS,
+            super::stm32f446re::PERIPHERALS,
             super::stm32f446ze::PERIPHERALS,
             super::stm32f469::PERIPHERALS,
             super::stm32f469ae::PERIPHERALS,
+            super::stm32f469ai::PERIPHERALS,
             super::stm32f479::PERIPHERALS,
             super::stm32f722::PERIPHERALS,
+            super::stm32f722ie::PERIPHERALS,
             super::stm32f722ze::PERIPHERALS,
             super::stm32f723::PERIPHERALS,
+            super::stm32f723ie::PERIPHERALS,
             super::stm32f730::PERIPHERALS,
             super::stm32f732::PERIPHERALS,
+            super::stm32f732ie::PERIPHERALS,
             super::stm32f732vg::PERIPHERALS,
             super::stm32f745::PERIPHERALS,
+            super::stm32f745ie::PERIPHERALS,
             super::stm32f745vg::PERIPHERALS,
             super::stm32f746::PERIPHERALS,
             super::stm32f746be::PERIPHERALS,
@@ -1565,8 +1580,10 @@ mod tests {
             super::stm32f756zg::PERIPHERALS,
             super::stm32f765::PERIPHERALS,
             super::stm32f765bi::PERIPHERALS,
+            super::stm32f767zi::PERIPHERALS,
             super::stm32f777::PERIPHERALS,
             super::stm32g030::PERIPHERALS,
+            super::stm32g030f6::PERIPHERALS,
             super::stm32g031::PERIPHERALS,
             super::stm32g041::PERIPHERALS,
             super::stm32g050::PERIPHERALS,
@@ -1626,6 +1643,7 @@ mod tests {
             super::stm32l476rg::PERIPHERALS,
             super::stm32l552::PERIPHERALS,
             super::stm32l562::PERIPHERALS,
+            super::stm32mp157::PERIPHERALS,
             super::stm32u535::PERIPHERALS,
             super::stm32u575::PERIPHERALS,
             super::stm32u585::PERIPHERALS,
