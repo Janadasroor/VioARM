@@ -21,7 +21,7 @@
 
 use std::time::Duration;
 use vioarm_qemu::asm::{Asm, Image, CODE_BASE, SP};
-use vioarm_qemu::qemu::{run_until_pc as qemu_run, QemuMachine};
+use vioarm_qemu::qemu::{run_until_pc as qemu_run, QemuMachine, ORACLE_VERSION};
 use vioarm_qemu::vioarm::run_until_pc as vio_run;
 use vioarm_qemu::vioarm::run_until_pc_v6m as vio_run_v6m;
 use vioarm_qemu::vioarm::run_until_pc_v7em as vio_run_v7em;
@@ -103,54 +103,52 @@ fn sync_flags(a: &mut Asm) {
     a.adds_imm8(0, 0);
 }
 
-fn qemu() -> Option<QemuMachine> {
-    let mt = QemuMachine::detect();
-    if mt.is_none() {
-        eprintln!("skipping conformance tests: `qemu-system-arm` not found on PATH");
+/// Keep a detected oracle only when it is the pinned one: traces are
+/// comparable against [`ORACLE_VERSION`] alone, so a missing *or* foreign
+/// QEMU skips the oracle tests instead of failing them.
+fn gate(mt: Option<QemuMachine>, what: &str) -> Option<QemuMachine> {
+    match mt {
+        None => {
+            eprintln!("skipping {what}conformance tests: `qemu-system-arm` not found on PATH");
+            None
+        }
+        Some(m) if !vioarm_qemu::qemu::qemu_is_oracle(&m.exe) => {
+            eprintln!(
+                "skipping {what}conformance tests: oracle is `{ORACLE_VERSION}`, found `{}`",
+                vioarm_qemu::qemu::qemu_version(&m.exe).unwrap_or_default()
+            );
+            None
+        }
+        mt => mt,
     }
-    mt
+}
+
+fn qemu() -> Option<QemuMachine> {
+    gate(QemuMachine::detect(), "")
 }
 
 /// An ARMv7E-M (Cortex-M4) QEMU reference, for the DSP zone that faults on the
-/// M3 board. Returns `None` when `qemu-system-arm` is missing.
+/// M3 board. Returns `None` when `qemu-system-arm` is missing or foreign.
 fn qemu_m4() -> Option<QemuMachine> {
-    let mt = QemuMachine::detect_m4();
-    if mt.is_none() {
-        eprintln!("skipping ARMv7E-M conformance tests: `qemu-system-arm` not found on PATH");
-    }
-    mt
+    gate(QemuMachine::detect_m4(), "ARMv7E-M ")
 }
 
 /// An ARMv6-M (Cortex-M0, BBC micro:bit) QEMU reference. Returns `None` when
-/// `qemu-system-arm` is missing.
+/// `qemu-system-arm` is missing or foreign.
 fn qemu_m0() -> Option<QemuMachine> {
-    let mt = QemuMachine::detect_m0();
-    if mt.is_none() {
-        eprintln!("skipping ARMv6-M conformance tests: `qemu-system-arm` not found on PATH");
-    }
-    mt
+    gate(QemuMachine::detect_m0(), "ARMv6-M ")
 }
 
 /// An ARMv8-M mainline (Cortex-M33, mps2-an505) QEMU reference, the oracle for
 /// the ARMv8-M baseline subset. Returns `None` when `qemu-system-arm` is
 /// missing.
 fn qemu_m33() -> Option<QemuMachine> {
-    let mt = QemuMachine::detect_m33();
-    if mt.is_none() {
-        eprintln!(
-            "skipping ARMv8-M baseline conformance tests: `qemu-system-arm` not found on PATH"
-        );
-    }
-    mt
+    gate(QemuMachine::detect_m33(), "ARMv8-M baseline ")
 }
 
 /// An ARMv7E-M (Cortex-M7) QEMU reference with FPv5-D16, for double tests.
 fn qemu_m7() -> Option<QemuMachine> {
-    let mt = QemuMachine::detect_m7();
-    if mt.is_none() {
-        eprintln!("skipping ARMv7E-M conformance tests: `qemu-system-arm` not found on PATH");
-    }
-    mt
+    gate(QemuMachine::detect_m7(), "ARMv7E-M/FPv5 ")
 }
 
 /// The ARMv6-M variant of [`conformance`]: runs `a` through the v6m VioARM

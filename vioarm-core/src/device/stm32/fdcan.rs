@@ -1436,7 +1436,7 @@ mod tests {
     /// Serve one bus drain by hand: reads come from `ram`, writes land there.
     fn drain(mb: &Arc<Mutex<FdcanMailbox>>, ram: &mut [u8], base: u32) {
         let mut mb = mb.lock().unwrap();
-        let reads: Vec<FdcanRead> = mb.reads.drain(..).collect();
+        let reads: Vec<FdcanRead> = core::mem::take(&mut mb.reads);
         for r in reads {
             let off = r.addr.wrapping_sub(base) as usize;
             mb.results.push_back(FdcanResult {
@@ -1445,7 +1445,7 @@ mod tests {
                 bytes: ram[off..off + r.len as usize].to_vec(),
             });
         }
-        let writes: Vec<(u32, Vec<u8>)> = mb.writes.drain(..).collect();
+        let writes: Vec<(u32, Vec<u8>)> = core::mem::take(&mut mb.writes);
         for (addr, bytes) in writes {
             let off = addr.wrapping_sub(base) as usize;
             ram[off..off + bytes.len()].copy_from_slice(&bytes);
@@ -1565,7 +1565,7 @@ mod tests {
     /// Serve one bus drain against `ram` at `base`.
     fn cut_drain(mb: &Arc<Mutex<FdcanMailbox>>, ram: &mut [u8], base: u32) {
         let mut mb = mb.lock().unwrap();
-        let reads: Vec<FdcanRead> = mb.reads.drain(..).collect();
+        let reads: Vec<FdcanRead> = core::mem::take(&mut mb.reads);
         for r in reads {
             let off = r.addr.wrapping_sub(base) as usize;
             mb.results.push_back(FdcanResult {
@@ -1574,7 +1574,7 @@ mod tests {
                 bytes: ram[off..off + r.len as usize].to_vec(),
             });
         }
-        let writes: Vec<(u32, Vec<u8>)> = mb.writes.drain(..).collect();
+        let writes: Vec<(u32, Vec<u8>)> = core::mem::take(&mut mb.writes);
         for (addr, bytes) in writes {
             let off = addr.wrapping_sub(base) as usize;
             ram[off..off + bytes.len()].copy_from_slice(&bytes);

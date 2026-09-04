@@ -516,9 +516,7 @@ impl Behavior for AdcBehavior {
 
     fn drive_inputs(&mut self, _view: &mut Registers<&mut [u32]>, value: u32) {
         let level = (value & 0x0FFF) as u16;
-        for a in &mut self.analog {
-            *a = level;
-        }
+        self.analog.fill(level);
     }
 }
 

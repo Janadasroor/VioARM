@@ -46,10 +46,8 @@ const FIFO0: u32 = FS + 0x1000;
 
 #[allow(clippy::cast_possible_truncation)]
 fn wr(u: &mut Usb, addr: u32, val: u32) {
-    let mut a = addr;
-    for shift in [0u32, 8, 16, 24] {
+    for (a, shift) in (addr..).zip([0u32, 8, 16, 24]) {
         u.write(a, ((val >> shift) & 0xFF) as u8).unwrap();
-        a += 1;
     }
 }
 

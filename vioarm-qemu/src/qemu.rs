@@ -133,6 +133,26 @@ pub fn find_qemu() -> Option<PathBuf> {
     qemu_candidates().into_iter().find(|p| p.is_file())
 }
 
+/// The `--version` first line of the QEMU at `exe`, if it runs.
+#[must_use]
+pub fn qemu_version(exe: &std::path::Path) -> Option<String> {
+    let out = std::process::Command::new(exe)
+        .arg("--version")
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    text.lines().next().map(str::to_string)
+}
+
+/// Whether the QEMU at `exe` is the pinned oracle. Traces are only
+/// comparable against [`ORACLE_VERSION`]: anything else (a distro or brew
+/// build at another version) must skip the oracle tests, not fail them.
+#[must_use]
+pub fn qemu_is_oracle(exe: &std::path::Path) -> bool {
+    let want = ORACLE_VERSION.split_whitespace().last().unwrap_or("10.2.1");
+    qemu_version(exe).is_some_and(|v| v.contains(want))
+}
+
 /// The QEMU invocation parameters for one conformance run. Defaults to an
 /// ARMv7-M Cortex-M3 board (`mps2-an385`), the machine that matches
 /// `Machine::armv7m` on the VioARM side. `fpu` adds the `fpu` log item so the
@@ -515,6 +535,20 @@ pub fn run_until_pc(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oracle_gate_passes_the_pinned_qemu_and_rejects_garbage() {
+        // A missing binary has no version and is never the oracle.
+        let missing = std::path::Path::new("/nonexistent/qemu-system-arm");
+        assert_eq!(qemu_version(missing), None);
+        assert!(!qemu_is_oracle(missing));
+        // The local oracle (when installed) reports its first `--version`
+        // line and matches the pin; either way the predicates agree.
+        if let Some(exe) = find_qemu() {
+            let v = qemu_version(&exe).expect("installed qemu reports a version");
+            assert_eq!(qemu_is_oracle(&exe), v.contains("10.2.1"));
+        }
+    }
 
     #[test]
     fn parses_a_state_dump() {
