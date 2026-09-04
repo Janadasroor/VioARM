@@ -741,6 +741,11 @@ impl AdcCommon {
     pub fn c_adc(state: Arc<Mutex<AdcCommonState>>) -> Self {
         Self::c_adc_for::<stm32f103::Stm32f103>(state)
     }
+    /// F2/F767 `ADC_Common` shared by their ADCs.
+    #[must_use]
+    pub fn adc_common_for<D: Device>(state: Arc<Mutex<AdcCommonState>>) -> Self {
+        Self::for_device::<D>("ADC_Common", "adc_common", state)
+    }
     /// H7 `ADC12_Common` (also covers `ADC3_Common` layout).
     #[must_use]
     pub fn adc12_common_for<D: Device>(state: Arc<Mutex<AdcCommonState>>) -> Self {
@@ -785,7 +790,7 @@ impl AdcCommon {
         let dual_field = ccr
             .fields
             .iter()
-            .find(|f| f.name == "MULT" || f.name == "DUAL")
+            .find(|f| f.name == "MULT" || f.name == "MULTI" || f.name == "DUAL")
             .expect("CCR has MULT/DUAL");
         let cfg = AdcCommonConfig {
             ccr_off: ccr.offset,

@@ -8,7 +8,7 @@ fn main() {
         return;
     }
     if args.iter().any(|a| a == "--verify") {
-        println!("Verify: cargo test -p vioarm-svd --test committed_tables_regenerate_identically -- 21 SVD 197 union 386 Dnames 500 alias 100% H7 DTCM 0x20000+RAM_D1 0x60000");
+        println!("Verify: cargo test -p vioarm-svd --test committed_tables_regenerate_identically -- 32 SVD 505 Dnames true-generation donors H7 DTCM 0x20000+RAM_D1 0x60000");
         let status = std::process::Command::new("cargo")
             .args(["test", "-p", "vioarm-svd", "--", "committed_tables_regenerate_identically"])
             .status()
@@ -17,5 +17,5 @@ fn main() {
     }
     println!("Usage: cargo xtask packs --fetch | --verify");
     println!("  --fetch  : document fetch URLs per packs/PROVENANCE.md (SLA0044, 9 DFP 2.4G, 386 Dnames)");
-    println!("  --verify : cargo test committed_tables_regenerate_identically 21 SVD 197 union 386 Dnames H7 DTCM");
+    println!("  --verify : cargo test committed_tables_regenerate_identically 32 SVD 505 Dnames H7 DTCM");
 }

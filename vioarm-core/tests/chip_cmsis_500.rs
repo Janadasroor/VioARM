@@ -439,6 +439,21 @@ fn cmsis_500_full_machine_cmsis_gpio_usart_tim_adc() {
                 "stm32h7xx.h",
                 "../packs/Keil.STM32H7xx_DFP/Drivers/CMSIS/Device/ST/STM32H7xx/Include",
             ),
+            // F2 has no vendored device headers (SVD-only DFP), so it stays
+            // out of the compile matrix; its boards are covered by the latch
+            // proof and run under `Machine::armv7m` like F4.
+            "F7" => (
+                "cortex-m7",
+                "STM32F746xx",
+                "stm32f7xx.h",
+                "../packs/Keil.STM32F7xx_DFP/Drivers/CMSIS/Device/ST/STM32F7xx/Include",
+            ),
+            "G0" => (
+                "cortex-m0plus",
+                "STM32G070xx",
+                "stm32g0xx.h",
+                "../packs/Keil.STM32G0xx_DFP/Drivers/CMSIS/Device/ST/STM32G0xx/Include",
+            ),
             _ => return None,
         };
         let gcc = which("arm-none-eabi-gcc")?;
@@ -695,7 +710,7 @@ void reset(void){{
         Some((bytes, symbols, define.to_string(), vec![]))
     }
 
-    let families = ["F0", "F1", "F3", "F4", "G4", "L4", "H7"];
+    let families = ["F0", "F1", "F3", "F4", "G4", "L4", "H7", "F7", "G0"];
     let mut built: HashMap<String, (Vec<u8>, HashMap<String, u32>)> = HashMap::new();
     for fam in families {
         if let Some((code, syms, _, _)) = build_firmware_for_family(fam) {

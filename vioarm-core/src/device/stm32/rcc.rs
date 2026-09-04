@@ -46,6 +46,10 @@ const CFGR_F4_OFFSET: u32 = 0x08;
 const PLLCFGR_F4_OFFSET: u32 = 0x04;
 /// H7 `CFGR` (SW/SWS/`TIMPRE`) at `0x10`.
 const CFGR_H7_OFFSET: u32 = 0x10;
+/// G0 `CFGR` (3-bit SW/SWS, `HPRE` at 11:8, single `PPRE` at 14:12) at `0x08`,
+/// plus `PLLSYSCFGR` (PLLSRC/PLLM/PLLN/PLLR) at `0x0C`.
+const CFGR_G0_OFFSET: u32 = 0x08;
+const PLLSYSCFGR_OFFSET: u32 = 0x0C;
 /// H7 `D1CFGR`/`D2CFGR` live at `0x18`/`0x1C` (HPRE/D1CPRE/D1PPRE, D2PPRE1/2).
 const D1CFGR_OFFSET: u32 = 0x18;
 const D2CFGR_OFFSET: u32 = 0x1C;
@@ -67,7 +71,8 @@ pub const HSI_H7_HZ: u32 = 64_000_000;
 /// Which `CFGR`/`PLL` register layout (and `HSI` rate) an `RCC` decodes.
 /// Detected from the mounted tables in [`Rcc::for_device`]: H7 by base,
 /// F4 by the `PLLCFGR` window, G4/L4 by `AHB2ENR` (F4 positions, 16 MHz
-/// `HSI`), everything else (F0/F1/F3) by the F1 layout at 8 MHz.
+/// `HSI`), G0 by `PLLSYSCFGR` (own layout, 16 MHz `HSI`), everything else
+/// (F0/F1/F3) by the F1 layout at 8 MHz.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum RccFamily {
     /// F0/F1/F3: `CFGR` at `0x04`, `HSI` 8 MHz.
@@ -77,6 +82,9 @@ pub enum RccFamily {
     F4,
     /// H7: `CFGR` at `0x10` + `D1CFGR`/`D2CFGR` + PLL1, `HSI` 64 MHz.
     H7,
+    /// G0: `CFGR` at `0x08` (HPRE at 11:8, single PPRE) + `PLLSYSCFGR`
+    /// (the `R` output drives `SYSCLK`), `HSI` 16 MHz.
+    G0,
 }
 
 /// AHB/APB prescaler and frequency state decoded from RCC clock-configuration
@@ -259,6 +267,9 @@ struct RccBehavior {
     pll_f4: (u32, u32, u32, bool),
     /// H7 PLL1 inputs: `PLLSRC`, `DIVM1`, `DIVN1`, `DIVP1`.
     pll_h7: (u32, u32, u32, u32),
+    /// G0 PLL inputs: `PLLSRC`, `PLLM` (factor), `PLLN` (factor), `PLLR`
+    /// (factor driving `SYSCLK`).
+    pll_g0: (u32, u32, u32, u32),
 }
 
 impl Default for RccBehavior {
@@ -272,6 +283,7 @@ impl Default for RccBehavior {
             pll_f1: (false, false, 0),
             pll_f4: (16, 192, 2, false),
             pll_h7: (0, 32, 128, 1),
+            pll_g0: (1, 1, 16, 1),
         }
     }
 }
@@ -339,6 +351,21 @@ impl RccBehavior {
                 }
                 _ => HSI_H7_HZ,
             },
+            RccFamily::G0 => match self.sw {
+                // G0 `SYSCLK` runs the PLL `R` output; M/P/R are +1 encoded,
+                // N direct (RM0444). LSI fallback is outside the model.
+                1 => HSE_HZ,
+                2 => {
+                    let (pllsrc, m, n, r) = self.pll_g0;
+                    let src = match pllsrc {
+                        2 => HSE_HZ,
+                        _ => HSI_F4_HZ,
+                    };
+                    let vco = src / m.max(1) * n.max(1);
+                    vco / r.max(1)
+                }
+                _ => HSI_F4_HZ,
+            },
         };
         self.push(|clock| clock.sysclk_hz = sysclk);
     }
@@ -393,6 +420,30 @@ impl RccBehavior {
         self.push_sysclk();
     }
 
+    /// G0 `CFGR` at `0x08`: 3-bit SW, `HPRE` at 11:8, one `PPRE` at 14:12
+    /// driving both APB domains (G0 has a single APB for timers).
+    fn note_cfgr_g0(&mut self, word: u32) {
+        self.sw = word & 0x7;
+        let ppre = decode_ppre((word >> 12) & 0x7);
+        self.push(|clock| {
+            clock.hpre = decode_hpre((word >> 8) & 0xF);
+            clock.ppre1 = ppre;
+            clock.ppre2 = ppre;
+        });
+        self.push_sysclk();
+    }
+
+    /// G0 `PLLSYSCFGR` at `0x0C`: PLLSRC/PLLM(+1)/PLLN/PLLR(+1).
+    fn note_pllsyscfgr(&mut self, word: u32) {
+        self.pll_g0 = (
+            word & 0x3,
+            ((word >> 4) & 0x7) + 1,
+            (word >> 8) & 0x7F,
+            ((word >> 29) & 0x7) + 1,
+        );
+        self.push_sysclk();
+    }
+
     /// H7 `PLLCKSELR` at `0x28`: PLLSRC/DIVM1.
     fn note_pllckselr(&mut self, word: u32) {
         let (_, _, divn, divp) = self.pll_h7;
@@ -438,7 +489,7 @@ impl Behavior for RccBehavior {
             // SW selects SYSCLK; SWS reports it. Oscillators/PLL lock
             // instantly, so SWS follows SW on the next read.
             match self.family {
-                RccFamily::H7 => {
+                RccFamily::H7 | RccFamily::G0 => {
                     let sw = value & 0x7;
                     (value & !0x38) | (sw << 3)
                 }
@@ -472,6 +523,8 @@ impl Behavior for RccBehavior {
             (RccFamily::H7, D2CFGR_OFFSET) => self.note_d2cfgr(word),
             (RccFamily::H7, PLLCKSELR_OFFSET) => self.note_pllckselr(word),
             (RccFamily::H7, PLL1DIVR_OFFSET) => self.note_pll1divr(word),
+            (RccFamily::G0, CFGR_G0_OFFSET) => self.note_cfgr_g0(word),
+            (RccFamily::G0, PLLSYSCFGR_OFFSET) => self.note_pllsyscfgr(word),
             _ => {}
         }
         word
@@ -485,6 +538,7 @@ impl RccBehavior {
             RccFamily::F1 => CFGR_F1_OFFSET,
             RccFamily::F4 => CFGR_F4_OFFSET,
             RccFamily::H7 => CFGR_H7_OFFSET,
+            RccFamily::G0 => CFGR_G0_OFFSET,
         }
     }
 }
@@ -519,11 +573,14 @@ impl Rcc {
         let h7 = def.base == 0x5802_4400;
         let hsi_rdy = if h7 { HSIRDY_H7 } else { HSIRDY_F1 };
         // `CFGR` layout follows the family: H7 by base, F4 by its `PLLCFGR`
-        // window, G4/L4 by `AHB2ENR` (F4 positions, 16 MHz `HSI`), the rest
-        // (F0/F1/F3) by the F1 layout at 8 MHz.
+        // window, G4/L4 by `AHB2ENR` (F4 positions, 16 MHz `HSI`), G0 by
+        // `PLLSYSCFGR` (own layout, 16 MHz `HSI`), the rest (F0/F1/F3) by
+        // the F1 layout at 8 MHz.
         let has = |name: &str| def.registers.iter().any(|r| r.name == name);
         let family = if h7 {
             RccFamily::H7
+        } else if has("PLLSYSCFGR") {
+            RccFamily::G0
         } else if has("PLLCFGR") || has("AHB2ENR") {
             RccFamily::F4
         } else {
@@ -555,7 +612,7 @@ impl Rcc {
         // handle is reused.
         let hsi_hz = match family {
             RccFamily::F1 => HSI_F1_HZ,
-            RccFamily::F4 => HSI_F4_HZ,
+            RccFamily::F4 | RccFamily::G0 => HSI_F4_HZ,
             RccFamily::H7 => HSI_H7_HZ,
         };
         let mut clock = clock.lock().unwrap_or_else(|e| e.into_inner());
@@ -818,6 +875,25 @@ mod tests {
         write_word(&mut r, H7 + super::PLL1DIVR_OFFSET, 240);
         write_word(&mut r, H7 + super::CFGR_H7_OFFSET, 3);
         assert_eq!(clock.lock().unwrap().sysclk_hz, 240_000_000);
+    }
+
+    #[test]
+    fn g0_pll_r_programs_sysclk() {
+        use super::ClockState;
+        use crate::device::svd::stm32g081::Stm32g081;
+        const G0: u32 = 0x4002_1000;
+        let clock = ClockState::shared();
+        let mut r = Rcc::for_device::<Stm32g081>().with_clock(clock.clone());
+        assert_eq!(clock.lock().unwrap().sysclk_hz, super::HSI_F4_HZ);
+        // HSI 16 MHz / M=1 x N=16 / R=2 = 128 MHz. SW=PLL.
+        write_word(&mut r, G0 + 0x0C, 1 | (16 << 8) | (1 << 29));
+        write_word(&mut r, G0 + 0x08, 2);
+        let c = clock.lock().unwrap();
+        assert_eq!(c.sysclk_hz, 128_000_000);
+        assert_eq!(
+            (c.cpu_hz(), c.pclk1_hz(), c.pclk2_hz()),
+            (128_000_000, 128_000_000, 128_000_000)
+        );
     }
 
     #[test]

@@ -18,6 +18,7 @@ use crate::device::stm32::adc::{Adc, AdcCommon, AdcCommonState};
 use crate::device::stm32::afio::Afio;
 use crate::device::stm32::bkp::Bkp;
 use crate::device::stm32::can::Can;
+use crate::device::stm32::cec::Cec;
 use crate::device::stm32::crc::Crc;
 use crate::device::stm32::dac::Dac;
 use crate::device::stm32::dma::{DmaF1, DmaRequests};
@@ -34,6 +35,7 @@ use crate::device::stm32::gpio_f4::GpioF4;
 use crate::device::stm32::i2c::I2c;
 use crate::device::stm32::pwr::Pwr;
 use crate::device::stm32::rcc::{ClockState, Rcc};
+use crate::device::stm32::rng::Rng;
 use crate::device::stm32::rtc::Rtc;
 use crate::device::stm32::sdio::Sdio;
 use crate::device::stm32::spi::Spi;
@@ -41,6 +43,7 @@ use crate::device::stm32::syscfg::Syscfg;
 use crate::device::stm32::timer::Timer;
 use crate::device::stm32::usart::Usart;
 use crate::device::stm32::usb::Usb;
+use crate::device::stm32::usb_fs::UsbFs;
 use crate::device::stm32::watchdog::{Iwdg, Wwdg};
 use crate::device::systick::SysTick;
 use crate::device::uart::UartTx;
@@ -574,6 +577,342 @@ fn f4_full_board(flash_len: u32, ram_len: u32, ccm_len: u32) -> BoardMemory {
     mem.attach(Box::new(Wwdg::for_device::<Stm32f407>(watchdog)));
     for p in crate::device::svd::stm32f407::PERIPHERALS {
         if p.base >= 0xE000_0000 {
+            continue;
+        }
+        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
+            mem.attach(Box::new(crate::device::svd::RegisterFile::<
+                crate::device::svd::NoBehavior,
+            >::new(
+                p, crate::device::svd::NoBehavior
+            )));
+        }
+    }
+    mem.attach(Box::new(Dwt::new()));
+    mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
+    mem
+}
+
+/// F2/F7 peripheral set on own-generation tables: F4-generation peripherals
+/// (F2 has no FPU, F7 is M7 — the board is memory, the host runs the matching
+/// core). `skip` drops donor windows the die lacks, `latch` is the donor's
+/// table for the exact-window fallback loop.
+fn f4gen_full_board<D: crate::device::svd::Device>(
+    flash_len: u32,
+    ram_len: u32,
+    skip: &[&str],
+    latch: &'static [crate::device::svd::PeripheralDef],
+) -> BoardMemory {
+    let backing = FlatMemory::with_layout(
+        &[FLASH, STM32_MAIN_FLASH, RAM],
+        &[flash_len, flash_len, ram_len],
+    );
+    let gate = std::sync::Arc::new(std::sync::Mutex::new(FlashGate::new(
+        Region::new(STM32_MAIN_FLASH, flash_len),
+        16 * 1024,
+    )));
+    let mut mem = SystemMemory::new(backing);
+    mem.set_flash_gate(gate.clone());
+    let clock = ClockState::shared();
+    mem.set_clock(clock.clone());
+    let live = |name: &str| !skip.contains(&name) && D::peripheral(name).is_some();
+    // F767's SVD names the controller `Flash`: no behavior there, the window
+    // stays a latch (same standing as F0 `Flash` boards).
+    if live("FLASH") {
+        mem.attach(Box::new(FlashF4::for_device::<D>(gate)));
+    }
+    mem.attach(Box::new(Rcc::for_device::<D>().with_clock(clock.clone())));
+    if live("PWR") {
+        mem.attach(Box::new(Pwr::new_for::<D>()));
+    }
+    if live("CRC") {
+        mem.attach(Box::new(Crc::new_for::<D>()));
+    }
+    if live("DAC") {
+        mem.attach(Box::new(Dac::new_for::<D>()));
+    }
+    if live("RTC") {
+        mem.attach(Box::new(Rtc::new_for::<D>()));
+    }
+    if live("SDIO") {
+        mem.attach(Box::new(Sdio::new_for::<D>()));
+    }
+    for (base, name) in [
+        (0x4002_0000u32, "gpioa"),
+        (0x4002_0400, "gpiob"),
+        (0x4002_0800, "gpioc"),
+        (0x4002_0c00, "gpiod"),
+        (0x4002_1000, "gpioe"),
+        (0x4002_1400, "gpiof"),
+        (0x4002_1800, "gpiog"),
+        (0x4002_1c00, "gpioh"),
+        (0x4002_1e00, "gpioi"),
+    ] {
+        // A skipped window (die lacks it) never mounts, even as a latch.
+        let skipped_base = skip
+            .iter()
+            .any(|s| D::peripheral(s).is_some_and(|def| def.base == base));
+        if !skipped_base
+            && D::by_base(base).is_some()
+            && matches!(mem.read(base), Err(crate::error::BusError::Reserved))
+        {
+            mem.attach(Box::new(GpioF4::at_in::<D>(base, name)));
+        }
+    }
+    for (ctor, peripheral) in [
+        (Usart::for_device::<D> as fn() -> Usart, "USART1"),
+        (Usart::usart2_for::<D>, "USART2"),
+        (Usart::usart3_for::<D>, "USART3"),
+        (Usart::uart4_for::<D>, "UART4"),
+        (Usart::uart5_for::<D>, "UART5"),
+        (Usart::usart6_for::<D>, "USART6"),
+    ] {
+        if live(peripheral) {
+            mem.attach(Box::new(ctor()));
+        }
+    }
+    for (ctor, peripheral) in [
+        (Timer::tim1_for::<D> as fn() -> Timer, "TIM1"),
+        (Timer::tim2_for::<D>, "TIM2"),
+        (Timer::tim4_for::<D>, "TIM4"),
+        (Timer::tim5_for::<D>, "TIM5"),
+        (Timer::tim6_for::<D>, "TIM6"),
+        (Timer::tim7_for::<D>, "TIM7"),
+    ] {
+        if live(peripheral) {
+            mem.attach(Box::new(ctor()));
+        }
+    }
+    for name in ["TIM8", "TIM9", "TIM10", "TIM11", "TIM12", "TIM13", "TIM14"] {
+        if live(name) {
+            if let Some(def) = D::peripheral(name) {
+                if matches!(mem.read(def.base), Err(crate::error::BusError::Reserved)) {
+                    mem.attach(Box::new(
+                        crate::device::stm32::timer::Timer::new_for_name::<D>(name),
+                    ));
+                }
+            }
+        }
+    }
+    if live("EXTI") {
+        mem.attach(Box::new(Exti::for_device::<D>()));
+    }
+    if live("SYSCFG") {
+        mem.attach(Box::new(Syscfg::for_device::<D>()));
+    }
+    if D::peripheral("ADC_Common").is_some() {
+        let adc_common = std::sync::Arc::new(std::sync::Mutex::new(AdcCommonState::default()));
+        mem.attach(Box::new(AdcCommon::adc_common_for::<D>(adc_common.clone())));
+        for (ctor, peripheral) in [
+            (Adc::adc1_for::<D> as fn() -> Adc, "ADC1"),
+            (Adc::adc2_for::<D>, "ADC2"),
+            (Adc::adc3_for::<D>, "ADC3"),
+        ] {
+            if live(peripheral) {
+                mem.attach(Box::new(ctor().with_common(adc_common.clone())));
+            }
+        }
+    }
+    for (ctor, peripheral) in [
+        (Spi::spi1_for::<D> as fn() -> Spi, "SPI1"),
+        (Spi::spi2_for::<D>, "SPI2"),
+        (Spi::spi3_for::<D>, "SPI3"),
+    ] {
+        if live(peripheral) {
+            mem.attach(Box::new(ctor()));
+        }
+    }
+    for (ctor, peripheral) in [
+        (I2c::for_device::<D> as fn() -> I2c, "I2C1"),
+        (I2c::i2c2_for::<D>, "I2C2"),
+        (I2c::i2c3_for::<D>, "I2C3"),
+    ] {
+        if live(peripheral) {
+            mem.attach(Box::new(ctor()));
+        }
+    }
+    if live("CAN1") {
+        mem.attach(Box::new(Can::can1_for::<D>()));
+    }
+    if live("CAN2") {
+        mem.attach(Box::new(Can::can2_for::<D>()));
+    }
+    if live("OTG_FS_GLOBAL") {
+        mem.attach(Box::new(Usb::otg_fs_for::<D>()));
+    }
+    if live("OTG_HS_GLOBAL") {
+        mem.attach(Box::new(Usb::otg_hs_for::<D>()));
+    }
+    if live("Ethernet_MAC") {
+        let eth_mailbox = std::sync::Arc::new(std::sync::Mutex::new(EthMailbox::default()));
+        mem.set_eth_mailbox(eth_mailbox.clone());
+        mem.attach(Box::new(Eth::for_device::<D>(eth_mailbox)));
+    }
+    let dma = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    mem.set_dma_mailbox(dma.clone());
+    if live("DMA1") {
+        mem.attach(Box::new(DmaF4::dma1_for::<D>(dma.clone())));
+    }
+    if live("DMA2") {
+        mem.attach(Box::new(DmaF4::dma2_for::<D>(dma)));
+    }
+    let watchdog = std::sync::Arc::new(std::sync::Mutex::new(false));
+    mem.set_watchdog_reset(watchdog.clone());
+    if live("IWDG") {
+        mem.attach(Box::new(Iwdg::for_device::<D>(watchdog.clone())));
+    }
+    if live("WWDG") {
+        mem.attach(Box::new(Wwdg::for_device::<D>(watchdog)));
+    }
+    for p in latch {
+        if p.base >= 0xE000_0000 || skip.contains(&p.name) {
+            continue;
+        }
+        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
+            mem.attach(Box::new(crate::device::svd::RegisterFile::<
+                crate::device::svd::NoBehavior,
+            >::new(
+                p, crate::device::svd::NoBehavior
+            )));
+        }
+    }
+    mem.attach(Box::new(Dwt::new()));
+    mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
+    mem
+}
+
+/// G0 peripheral set: behaviors mount from the name-compatible `Stm32g031`
+/// tables (M0+, new-generation USART/ADC/RTC), `latch` is the die's own donor
+/// table for the exact-window fallback loop. Deliberate approximations: the
+/// `FLASH` controller runs the F1 behavior (unlock/program basics match; G0
+/// option bytes do not), `I2C`/`LPTIM`/`FDCAN`-beyond-stub stay latches, and
+/// `DMAMUX` sync/trigger fields are latched no-ops.
+fn g0_full_board<L: crate::device::svd::Device>(
+    flash_len: u32,
+    ram_len: u32,
+    skip: &[&str],
+    latch: &'static [crate::device::svd::PeripheralDef],
+) -> BoardMemory {
+    use crate::device::svd::stm32g031::Stm32g031;
+    use crate::device::svd::Device as _;
+    type B = Stm32g031;
+    let backing = FlatMemory::with_layout(
+        &[FLASH, STM32_MAIN_FLASH, RAM],
+        &[flash_len, flash_len, ram_len],
+    );
+    let gate = std::sync::Arc::new(std::sync::Mutex::new(FlashGate::new(
+        Region::new(STM32_MAIN_FLASH, flash_len),
+        2048,
+    )));
+    let mut mem = SystemMemory::new(backing);
+    mem.set_flash_gate(gate.clone());
+    let clock = ClockState::shared();
+    mem.set_clock(clock.clone());
+    let live_b = |name: &str| !skip.contains(&name) && B::peripheral(name).is_some();
+    let live_l = |name: &str| !skip.contains(&name) && L::peripheral(name).is_some();
+    // No FLASH controller behavior: the F1 behavior's fixed SR/CR offsets do
+    // not match the G0 layout, so the window stays a latch (the write gate
+    // above still guards the region) until a G0 flash model lands.
+    mem.attach(Box::new(Rcc::for_device::<B>().with_clock(clock.clone())));
+    if live_b("PWR") {
+        mem.attach(Box::new(Pwr::new_for::<B>()));
+    }
+    if live_b("CRC") {
+        mem.attach(Box::new(Crc::new_for::<B>()));
+    }
+    if live_b("RTC") {
+        mem.attach(Box::new(Rtc::new_for::<B>()));
+    }
+    for (base, name) in [
+        (0x5000_0000u32, "gpioa"),
+        (0x5000_0400, "gpiob"),
+        (0x5000_0800, "gpioc"),
+        (0x5000_0c00, "gpiod"),
+        (0x5000_1000, "gpioe"),
+        (0x5000_1400, "gpiof"),
+    ] {
+        if B::by_base(base).is_some()
+            && matches!(mem.read(base), Err(crate::error::BusError::Reserved))
+        {
+            mem.attach(Box::new(GpioF4::at_in::<B>(base, name)));
+        }
+    }
+    for (ctor, peripheral) in [
+        (Usart::for_device::<B> as fn() -> Usart, "USART1"),
+        (Usart::usart2_for::<B>, "USART2"),
+        (Usart::usart3_for::<B>, "USART3"),
+        (Usart::uart4_for::<B>, "UART4"),
+    ] {
+        if live_b(peripheral) {
+            mem.attach(Box::new(ctor()));
+        }
+    }
+    for (ctor, peripheral) in [
+        (Timer::tim1_for::<B> as fn() -> Timer, "TIM1"),
+        (Timer::tim2_for::<B>, "TIM2"),
+        (Timer::tim3_for::<B>, "TIM3"),
+        (Timer::tim6_for::<B>, "TIM6"),
+        (Timer::tim7_for::<B>, "TIM7"),
+    ] {
+        if live_b(peripheral) {
+            mem.attach(Box::new(ctor()));
+        }
+    }
+    for name in ["TIM14", "TIM15", "TIM16", "TIM17"] {
+        if live_b(name) {
+            if let Some(def) = B::peripheral(name) {
+                if matches!(mem.read(def.base), Err(crate::error::BusError::Reserved)) {
+                    mem.attach(Box::new(
+                        crate::device::stm32::timer::Timer::new_for_name::<B>(name),
+                    ));
+                }
+            }
+        }
+    }
+    // No EXTI/SYSCFG/I2C behaviors: their fixed F0/F1 offsets do not match
+    // the G0 layouts (EXTICR1 at 0x60, new-gen I2C), so those windows stay
+    // latches until G0-native models land.
+    if live_b("ADC") {
+        mem.attach(Box::new(Adc::new_for::<B>()));
+    }
+    if live_b("SPI1") {
+        mem.attach(Box::new(Spi::spi1_for::<B>()));
+    }
+    if live_b("SPI2") {
+        mem.attach(Box::new(Spi::spi2_for::<B>()));
+    }
+    if live_l("FDCAN1") {
+        mem.attach(Box::new(Fdcan::fdcan1_for::<L>()));
+    }
+    if live_l("FDCAN2") {
+        mem.attach(Box::new(Fdcan::fdcan2_for::<L>()));
+    }
+    if live_b("RNG") {
+        mem.attach(Box::new(Rng::new_for::<B>()));
+    }
+    if live_b("HDMI_CEC") {
+        mem.attach(Box::new(Cec::new_for::<B>()));
+    }
+    if live_l("USB") {
+        mem.attach(Box::new(UsbFs::new_for::<L>()));
+    }
+    // DMA from the die's own tables (5 channels on G031-group, 7 on G081;
+    // G050/G061/G0B1/G0C1 have no `DMA` window — DMA1/DMA2 stay latches).
+    if live_l("DMA") {
+        let req = std::sync::Arc::new(std::sync::Mutex::new(DmaRequests::new()));
+        let dma = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        mem.set_dma_mailbox(dma.clone());
+        mem.attach(Box::new(DmaF1::dma_for::<L>("DMA", dma, req)));
+    }
+    let wdg = std::sync::Arc::new(std::sync::Mutex::new(false));
+    mem.set_watchdog_reset(wdg.clone());
+    if live_b("IWDG") {
+        mem.attach(Box::new(Iwdg::for_device::<B>(wdg.clone())));
+    }
+    if live_b("WWDG") {
+        mem.attach(Box::new(Wwdg::for_device::<B>(wdg)));
+    }
+    for p in latch {
+        if p.base >= 0xE000_0000 || skip.contains(&p.name) {
             continue;
         }
         if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
@@ -2244,84 +2583,25 @@ pub const STM32_F746_FLASH_LEN: u32 = 0x0010_0000;
 pub const STM32_F746_RAM_LEN: u32 = 0x0005_0000;
 #[must_use]
 pub fn stm32f746() -> BoardMemory {
-    // F7 1M/320K via H743 SVD (F7 ART 0x40023C00 similar, M7 core) — use F1 flash at 0x40022000 for simple gate
-    use crate::device::svd::stm32h743::Stm32h743;
-    let backing = FlatMemory::with_layout(
-        &[FLASH, STM32_MAIN_FLASH, RAM],
-        &[
-            STM32_F746_FLASH_LEN,
-            STM32_F746_FLASH_LEN,
-            STM32_F746_RAM_LEN,
-        ],
-    );
-    let gate = Arc::new(Mutex::new(FlashGate::new(
-        Region::new(STM32_MAIN_FLASH, STM32_F746_FLASH_LEN),
-        32 * 1024,
-    )));
-    let mut mem = SystemMemory::new(backing);
-    mem.set_flash_gate(gate.clone());
-    let clock = ClockState::shared();
-    mem.set_clock(clock.clone());
-    mem.attach(Box::new(FlashF1::new(gate)));
-    mem.attach(Box::new(
-        Rcc::for_device::<Stm32h743>().with_clock(clock.clone()),
-    ));
-    for p in crate::device::svd::stm32h743::PERIPHERALS {
-        if p.base >= 0xE000_0000 {
-            continue;
-        }
-        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
-            mem.attach(Box::new(crate::device::svd::RegisterFile::<
-                crate::device::svd::NoBehavior,
-            >::new(
-                p, crate::device::svd::NoBehavior
-            )));
-        }
-    }
-    mem.attach(Box::new(Dwt::new()));
-    mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
-    mem
+    // F7 high line (M7) on own tables.
+    f4gen_full_board::<crate::device::svd::stm32f746::Stm32f746>(
+        STM32_F746_FLASH_LEN,
+        STM32_F746_RAM_LEN,
+        &[],
+        crate::device::svd::stm32f746::PERIPHERALS,
+    )
 }
 pub const STM32_F756_FLASH_LEN: u32 = 0x0020_0000;
 pub const STM32_F756_RAM_LEN: u32 = 0x0005_0000;
 #[must_use]
 pub fn stm32f756() -> BoardMemory {
-    use crate::device::svd::stm32h743::Stm32h743;
-    let backing = FlatMemory::with_layout(
-        &[FLASH, STM32_MAIN_FLASH, RAM],
-        &[
-            STM32_F756_FLASH_LEN,
-            STM32_F756_FLASH_LEN,
-            STM32_F756_RAM_LEN,
-        ],
-    );
-    let gate = Arc::new(Mutex::new(FlashGate::new(
-        Region::new(STM32_MAIN_FLASH, STM32_F756_FLASH_LEN),
-        32 * 1024,
-    )));
-    let mut mem = SystemMemory::new(backing);
-    mem.set_flash_gate(gate.clone());
-    let clock = ClockState::shared();
-    mem.set_clock(clock.clone());
-    mem.attach(Box::new(FlashF1::new(gate)));
-    mem.attach(Box::new(
-        Rcc::for_device::<Stm32h743>().with_clock(clock.clone()),
-    ));
-    for p in crate::device::svd::stm32h743::PERIPHERALS {
-        if p.base >= 0xE000_0000 {
-            continue;
-        }
-        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
-            mem.attach(Box::new(crate::device::svd::RegisterFile::<
-                crate::device::svd::NoBehavior,
-            >::new(
-                p, crate::device::svd::NoBehavior
-            )));
-        }
-    }
-    mem.attach(Box::new(Dwt::new()));
-    mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
-    mem
+    // F7 high line (M7) on own F746 tables.
+    f4gen_full_board::<crate::device::svd::stm32f746::Stm32f746>(
+        STM32_F756_FLASH_LEN,
+        STM32_F756_RAM_LEN,
+        &[],
+        crate::device::svd::stm32f746::PERIPHERALS,
+    )
 }
 pub const STM32_F405_FLASH_LEN: u32 = 0x0010_0000;
 pub const STM32_F405_RAM_LEN: u32 = 0x0002_0000;
@@ -2363,7 +2643,13 @@ pub const STM32_F722_FLASH_LEN: u32 = 0x0008_0000;
 pub const STM32_F722_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
 pub fn stm32f722() -> BoardMemory {
-    stm32f746()
+    // F7 value line (M7) on own tables.
+    f4gen_full_board::<crate::device::svd::stm32f722::Stm32f722>(
+        STM32_F722_FLASH_LEN,
+        STM32_F722_RAM_LEN,
+        &[],
+        crate::device::svd::stm32f722::PERIPHERALS,
+    )
 }
 pub const STM32_H730_FLASH_LEN: u32 = 0x0002_0000;
 pub const STM32_H730_RAM_LEN: u32 = 0x0002_0000;
@@ -2375,42 +2661,13 @@ pub const STM32_F765_FLASH_LEN: u32 = 0x0020_0000;
 pub const STM32_F765_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
 pub fn stm32f765() -> BoardMemory {
-    use crate::device::svd::stm32h743::Stm32h743;
-    let backing = FlatMemory::with_layout(
-        &[FLASH, STM32_MAIN_FLASH, RAM],
-        &[
-            STM32_F765_FLASH_LEN,
-            STM32_F765_FLASH_LEN,
-            STM32_F765_RAM_LEN,
-        ],
-    );
-    let gate = Arc::new(Mutex::new(FlashGate::new(
-        Region::new(STM32_MAIN_FLASH, STM32_F765_FLASH_LEN),
-        32 * 1024,
-    )));
-    let mut mem = SystemMemory::new(backing);
-    mem.set_flash_gate(gate.clone());
-    let clock = ClockState::shared();
-    mem.set_clock(clock.clone());
-    mem.attach(Box::new(FlashF1::new(gate)));
-    mem.attach(Box::new(
-        Rcc::for_device::<Stm32h743>().with_clock(clock.clone()),
-    ));
-    for p in crate::device::svd::stm32h743::PERIPHERALS {
-        if p.base >= 0xE000_0000 {
-            continue;
-        }
-        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
-            mem.attach(Box::new(crate::device::svd::RegisterFile::<
-                crate::device::svd::NoBehavior,
-            >::new(
-                p, crate::device::svd::NoBehavior
-            )));
-        }
-    }
-    mem.attach(Box::new(Dwt::new()));
-    mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
-    mem
+    // F7 high line (M7) on own F746 tables; no dual-ADC common block.
+    f4gen_full_board::<crate::device::svd::stm32f746::Stm32f746>(
+        STM32_F765_FLASH_LEN,
+        STM32_F765_RAM_LEN,
+        &["C_ADC"],
+        crate::device::svd::stm32f746::PERIPHERALS,
+    )
 }
 pub const STM32_H7B0_FLASH_LEN: u32 = 0x0002_0000;
 pub const STM32_H7B0_RAM_LEN: u32 = 0x0002_0000;
@@ -2524,7 +2781,13 @@ pub const STM32_G070_FLASH_LEN: u32 = 0x0001_0000;
 pub const STM32_G070_RAM_LEN: u32 = 0x0000_4000;
 #[must_use]
 pub fn stm32g070() -> BoardMemory {
-    stm32g474xx()
+    // G070 (M0+) on G081 tables; AES absent there.
+    g0_full_board::<crate::device::svd::stm32g081::Stm32g081>(
+        STM32_G070_FLASH_LEN,
+        STM32_G070_RAM_LEN,
+        &["AES"],
+        crate::device::svd::stm32g081::PERIPHERALS,
+    )
 }
 pub const STM32_F378_FLASH_LEN: u32 = 0x0008_0000;
 pub const STM32_F378_RAM_LEN: u32 = 0x0000_8000;
@@ -2548,13 +2811,25 @@ pub const STM32_G031_FLASH_LEN: u32 = 0x0001_0000;
 pub const STM32_G031_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
 pub fn stm32g031() -> BoardMemory {
-    stm32g474xx()
+    // G0 (M0+) on own tables.
+    g0_full_board::<crate::device::svd::stm32g031::Stm32g031>(
+        STM32_G031_FLASH_LEN,
+        STM32_G031_RAM_LEN,
+        &[],
+        crate::device::svd::stm32g031::PERIPHERALS,
+    )
 }
 pub const STM32_G071_FLASH_LEN: u32 = 0x0002_0000;
 pub const STM32_G071_RAM_LEN: u32 = 0x0000_6000;
 #[must_use]
 pub fn stm32g071() -> BoardMemory {
-    stm32g474xx()
+    // G071 (M0+) on G081 tables; AES absent there.
+    g0_full_board::<crate::device::svd::stm32g081::Stm32g081>(
+        STM32_G071_FLASH_LEN,
+        STM32_G071_RAM_LEN,
+        &["AES"],
+        crate::device::svd::stm32g081::PERIPHERALS,
+    )
 }
 pub const STM32_F301_FLASH_LEN: u32 = 0x0001_0000;
 pub const STM32_F301_RAM_LEN: u32 = 0x0000_4000;
@@ -2602,19 +2877,37 @@ pub const STM32_F207_FLASH_LEN: u32 = 0x0010_0000;
 pub const STM32_F207_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
 pub fn stm32f207() -> BoardMemory {
-    stm32f407()
+    // F2 connectivity (M3) on own tables.
+    f4gen_full_board::<crate::device::svd::stm32f207::Stm32f207>(
+        STM32_F207_FLASH_LEN,
+        STM32_F207_RAM_LEN,
+        &[],
+        crate::device::svd::stm32f207::PERIPHERALS,
+    )
 }
 pub const STM32_G030_FLASH_LEN: u32 = 0x0001_0000;
 pub const STM32_G030_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
 pub fn stm32g030() -> BoardMemory {
-    stm32g474xx()
+    // G0 (M0+) on G031 behavior tables + own-tables latch loop.
+    g0_full_board::<crate::device::svd::stm32g031::Stm32g031>(
+        STM32_G030_FLASH_LEN,
+        STM32_G030_RAM_LEN,
+        &[],
+        crate::device::svd::stm32g031::PERIPHERALS,
+    )
 }
 pub const STM32_G041_FLASH_LEN: u32 = 0x0000_8000;
 pub const STM32_G041_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
 pub fn stm32g041() -> BoardMemory {
-    stm32g474xx()
+    // G041 (M0+) on G031 tables; AES/RNG windows absent there.
+    g0_full_board::<crate::device::svd::stm32g031::Stm32g031>(
+        STM32_G041_FLASH_LEN,
+        STM32_G041_RAM_LEN,
+        &[],
+        crate::device::svd::stm32g031::PERIPHERALS,
+    )
 }
 pub const STM32_L010_FLASH_LEN: u32 = 0x0000_4000;
 pub const STM32_L010_RAM_LEN: u32 = 0x0000_0800;
@@ -2680,7 +2973,13 @@ pub const STM32_G050_FLASH_LEN: u32 = 0x0001_0000;
 pub const STM32_G050_RAM_LEN: u32 = 0x0000_4800;
 #[must_use]
 pub fn stm32g050() -> BoardMemory {
-    stm32g474xx()
+    // G050 (M0+) on own tables.
+    g0_full_board::<crate::device::svd::stm32g050::Stm32g050>(
+        STM32_G050_FLASH_LEN,
+        STM32_G050_RAM_LEN,
+        &[],
+        crate::device::svd::stm32g050::PERIPHERALS,
+    )
 }
 pub const STM32_L011_FLASH_LEN: u32 = 0x0000_4000;
 pub const STM32_L011_RAM_LEN: u32 = 0x0000_0800;
@@ -2698,7 +2997,13 @@ pub const STM32_F723_FLASH_LEN: u32 = 0x0008_0000;
 pub const STM32_F723_RAM_LEN: u32 = 0x0005_0000;
 #[must_use]
 pub fn stm32f723() -> BoardMemory {
-    stm32f746()
+    // F7 value line (M7) on own tables.
+    f4gen_full_board::<crate::device::svd::stm32f722::Stm32f722>(
+        STM32_F723_FLASH_LEN,
+        STM32_F723_RAM_LEN,
+        &[],
+        crate::device::svd::stm32f722::PERIPHERALS,
+    )
 }
 pub const STM32_H562_FLASH_LEN: u32 = 0x0020_0000;
 pub const STM32_H562_RAM_LEN: u32 = 0x0008_0000;
@@ -2724,13 +3029,31 @@ pub const STM32_F215_FLASH_LEN: u32 = 0x0008_0000;
 pub const STM32_F215_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
 pub fn stm32f215() -> BoardMemory {
-    stm32f407()
+    // F2 high-temp foundation (M3, no Ethernet/DCMI) on own F217 tables.
+    f4gen_full_board::<crate::device::svd::stm32f217::Stm32f217>(
+        STM32_F215_FLASH_LEN,
+        STM32_F215_RAM_LEN,
+        &[
+            "DCMI",
+            "Ethernet_DMA",
+            "Ethernet_MAC",
+            "Ethernet_MMC",
+            "Ethernet_PTP",
+        ],
+        crate::device::svd::stm32f217::PERIPHERALS,
+    )
 }
 pub const STM32_F217_FLASH_LEN: u32 = 0x0008_0000;
 pub const STM32_F217_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
 pub fn stm32f217() -> BoardMemory {
-    stm32f407()
+    // F2 connectivity (M3) on own tables.
+    f4gen_full_board::<crate::device::svd::stm32f217::Stm32f217>(
+        STM32_F217_FLASH_LEN,
+        STM32_F217_RAM_LEN,
+        &[],
+        crate::device::svd::stm32f217::PERIPHERALS,
+    )
 }
 pub const STM32_F328_FLASH_LEN: u32 = 0x0001_0000;
 pub const STM32_F328_RAM_LEN: u32 = 0x0000_5000;
@@ -2742,13 +3065,25 @@ pub const STM32_G081_FLASH_LEN: u32 = 0x0001_0000;
 pub const STM32_G081_RAM_LEN: u32 = 0x0000_4800;
 #[must_use]
 pub fn stm32g081() -> BoardMemory {
-    stm32g474xx()
+    // G081 (M0+) on own tables.
+    g0_full_board::<crate::device::svd::stm32g081::Stm32g081>(
+        STM32_G081_FLASH_LEN,
+        STM32_G081_RAM_LEN,
+        &[],
+        crate::device::svd::stm32g081::PERIPHERALS,
+    )
 }
 pub const STM32_G0B1_FLASH_LEN: u32 = 0x0002_0000;
 pub const STM32_G0B1_RAM_LEN: u32 = 0x0000_9000;
 #[must_use]
 pub fn stm32g0b1() -> BoardMemory {
-    stm32g474xx()
+    // G0B1 (M0+) on G0C1 tables; AES/RNG absent there.
+    g0_full_board::<crate::device::svd::stm32g0c1::Stm32g0c1>(
+        STM32_G0B1_FLASH_LEN,
+        STM32_G0B1_RAM_LEN,
+        &["AES", "RNG"],
+        crate::device::svd::stm32g0c1::PERIPHERALS,
+    )
 }
 pub const STM32_L052_FLASH_LEN: u32 = 0x0001_0000;
 pub const STM32_L052_RAM_LEN: u32 = 0x0000_2000;
@@ -2766,7 +3101,13 @@ pub const STM32_F730_FLASH_LEN: u32 = 0x0001_0000;
 pub const STM32_F730_RAM_LEN: u32 = 0x0000_4000;
 #[must_use]
 pub fn stm32f730() -> BoardMemory {
-    stm32f746()
+    // F730 (M7) on own tables.
+    f4gen_full_board::<crate::device::svd::stm32f730::Stm32f730>(
+        STM32_F730_FLASH_LEN,
+        STM32_F730_RAM_LEN,
+        &[],
+        crate::device::svd::stm32f730::PERIPHERALS,
+    )
 }
 pub const STM32_H503_FLASH_LEN: u32 = 0x0002_0000;
 pub const STM32_H503_RAM_LEN: u32 = 0x0002_0000;
@@ -2784,7 +3125,19 @@ pub const STM32_F205_FLASH_LEN: u32 = 0x0002_0000;
 pub const STM32_F205_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
 pub fn stm32f205() -> BoardMemory {
-    stm32f407()
+    // F2 foundation (M3, no Ethernet/DCMI) on own F207 tables.
+    f4gen_full_board::<crate::device::svd::stm32f207::Stm32f207>(
+        STM32_F205_FLASH_LEN,
+        STM32_F205_RAM_LEN,
+        &[
+            "DCMI",
+            "Ethernet_DMA",
+            "Ethernet_MAC",
+            "Ethernet_MMC",
+            "Ethernet_PTP",
+        ],
+        crate::device::svd::stm32f207::PERIPHERALS,
+    )
 }
 pub const STM32_F427_FLASH_LEN: u32 = 0x0010_0000;
 pub const STM32_F427_RAM_LEN: u32 = 0x0003_0000;
@@ -2814,7 +3167,13 @@ pub const STM32_F777_FLASH_LEN: u32 = 0x0008_0000;
 pub const STM32_F777_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
 pub fn stm32f777() -> BoardMemory {
-    stm32f746()
+    // F7 high line, large (M7, Ethernet) on own F767 tables.
+    f4gen_full_board::<crate::device::svd::stm32f767::Stm32f767>(
+        STM32_F777_FLASH_LEN,
+        STM32_F777_RAM_LEN,
+        &[],
+        crate::device::svd::stm32f767::PERIPHERALS,
+    )
 }
 pub const STM32_H735_FLASH_LEN: u32 = 0x0008_0000;
 pub const STM32_H735_RAM_LEN: u32 = 0x0008_0000;
@@ -2857,13 +3216,25 @@ pub const STM32_F732_FLASH_LEN: u32 = 0x0008_0000;
 pub const STM32_F732_RAM_LEN: u32 = 0x0004_0000;
 #[must_use]
 pub fn stm32f732() -> BoardMemory {
-    stm32f746()
+    // F7 value line (M7) on own tables.
+    f4gen_full_board::<crate::device::svd::stm32f722::Stm32f722>(
+        STM32_F732_FLASH_LEN,
+        STM32_F732_RAM_LEN,
+        &[],
+        crate::device::svd::stm32f722::PERIPHERALS,
+    )
 }
 pub const STM32_G0C1_FLASH_LEN: u32 = 0x0002_0000;
 pub const STM32_G0C1_RAM_LEN: u32 = 0x0000_9000;
 #[must_use]
 pub fn stm32g0c1() -> BoardMemory {
-    stm32g474xx()
+    // G0C1 (M0+) on own tables.
+    g0_full_board::<crate::device::svd::stm32g0c1::Stm32g0c1>(
+        STM32_G0C1_FLASH_LEN,
+        STM32_G0C1_RAM_LEN,
+        &[],
+        crate::device::svd::stm32g0c1::PERIPHERALS,
+    )
 }
 pub const STM32_L431_FLASH_LEN: u32 = 0x0004_0000;
 pub const STM32_L431_RAM_LEN: u32 = 0x0001_0000;
@@ -2911,7 +3282,13 @@ pub const STM32_G061_FLASH_LEN: u32 = 0x0000_8000;
 pub const STM32_G061_RAM_LEN: u32 = 0x0000_4800;
 #[must_use]
 pub fn stm32g061() -> BoardMemory {
-    stm32g474xx()
+    // G061 (M0+) on own tables.
+    g0_full_board::<crate::device::svd::stm32g061::Stm32g061>(
+        STM32_G061_FLASH_LEN,
+        STM32_G061_RAM_LEN,
+        &[],
+        crate::device::svd::stm32g061::PERIPHERALS,
+    )
 }
 pub const STM32_G473_FLASH_LEN: u32 = 0x0008_0000;
 pub const STM32_G473_RAM_LEN: u32 = 0x0001_8000;
@@ -2972,7 +3349,13 @@ pub const STM32_F745_FLASH_LEN: u32 = 0x0010_0000;
 pub const STM32_F745_RAM_LEN: u32 = 0x0004_0000;
 #[must_use]
 pub fn stm32f745() -> BoardMemory {
-    stm32f746()
+    // F7 high line (M7) on own F746 tables.
+    f4gen_full_board::<crate::device::svd::stm32f746::Stm32f746>(
+        STM32_F745_FLASH_LEN,
+        STM32_F745_RAM_LEN,
+        &[],
+        crate::device::svd::stm32f746::PERIPHERALS,
+    )
 }
 pub const STM32_C011_FLASH_LEN: u32 = 0x0000_8000;
 pub const STM32_C011_RAM_LEN: u32 = 0x0000_3000;
@@ -5241,7 +5624,13 @@ pub const STM32_F767_FLASH_LEN: u32 = 0x0020_0000;
 pub const STM32_F767_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
 pub fn stm32f767() -> BoardMemory {
-    stm32f429()
+    // F7 high line, large (M7, Ethernet) on own tables.
+    f4gen_full_board::<crate::device::svd::stm32f767::Stm32f767>(
+        STM32_F767_FLASH_LEN,
+        STM32_F767_RAM_LEN,
+        &[],
+        crate::device::svd::stm32f767::PERIPHERALS,
+    )
 }
 pub const STM32_H747_FLASH_LEN: u32 = 0x0020_0000;
 pub const STM32_H747_RAM_LEN: u32 = 0x0008_0000;
@@ -5294,7 +5683,13 @@ pub const STM32_F769_FLASH_LEN: u32 = 0x0020_0000;
 pub const STM32_F769_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
 pub fn stm32f769() -> BoardMemory {
-    stm32f429()
+    // F769 (M7) on F767 tables; DBG/LTDC renamed DBGMCU/LTCD there.
+    f4gen_full_board::<crate::device::svd::stm32f767::Stm32f767>(
+        STM32_F769_FLASH_LEN,
+        STM32_F769_RAM_LEN,
+        &["DBGMCU", "LTCD"],
+        crate::device::svd::stm32f767::PERIPHERALS,
+    )
 }
 
 /// STM32F303xE (F3, Cortex-M4) flash size in bytes (512 KiB).
@@ -7408,7 +7803,12 @@ pub fn core_only_board_per_dname(dname: &str) -> Option<BoardMemory> {
     let mut mem = SystemMemory::new(backing);
     let clock = ClockState::shared();
     mem.set_clock(clock.clone());
-    for p in donor.iter().filter(|p| !removed.contains(&p.name)) {
+    // System peripherals live in the bus already (NVIC/SCB/SysTick/DWT): a
+    // latched SVD window would shadow the real devices, so never mount them.
+    for p in donor
+        .iter()
+        .filter(|p| !removed.contains(&p.name) && p.base < 0xE000_0000)
+    {
         mem.attach(Box::new(RegisterFile::<NoBehavior>::new(p, NoBehavior)));
     }
     mem.attach(Box::new(Dwt::new()));
@@ -7416,7 +7816,7 @@ pub fn core_only_board_per_dname(dname: &str) -> Option<BoardMemory> {
     Some(mem)
 }
 
-/// All 505 Dnames with per-Dname flash/ram exact (donor + removal deltas over 21 SVD donors)
+/// All 505 Dnames with per-Dname flash/ram exact (donor + removal deltas over 32 SVD donors)
 pub fn all_per_dnames() -> Vec<(
     &'static str,
     &'static crate::device::svd::per_dname::PerDname,

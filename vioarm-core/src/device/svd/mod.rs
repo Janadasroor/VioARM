@@ -31,8 +31,19 @@ pub mod stm32f102;
 pub mod stm32f103;
 pub mod stm32f105;
 pub mod stm32f107;
+pub mod stm32f207;
+pub mod stm32f217;
 pub mod stm32f303xe;
 pub mod stm32f407;
+pub mod stm32f722;
+pub mod stm32f730;
+pub mod stm32f746;
+pub mod stm32f767;
+pub mod stm32g031;
+pub mod stm32g050;
+pub mod stm32g061;
+pub mod stm32g081;
+pub mod stm32g0c1;
 pub mod stm32g474xx;
 pub mod stm32h743;
 pub mod stm32l476;
@@ -1351,7 +1362,9 @@ mod tests {
             total += kept;
         }
         // Regression anchor: sum of filtered peripheral instances over all Dnames.
-        assert_eq!(total, 40062);
+        // (40062 with 21 donors; 35691 after F2/F7/G0 moved to own-generation
+        // donors, which are smaller than the oversized foreign assignments.)
+        assert_eq!(total, 35691);
         // Spot checks: known deltas from the (deleted) per-variant tables.
         let f405 = PER_DNAMES.iter().find(|e| e.dname == "STM32F405").unwrap();
         assert!(f405.peripheral("GPIOA").is_some());
@@ -1378,5 +1391,70 @@ mod tests {
         let f103 = PER_DNAMES.iter().find(|e| e.dname == "STM32F103").unwrap();
         assert!(f103.removed.is_empty());
         assert_eq!(f103.len(), super::stm32f103::PERIPHERALS.len());
+    }
+
+    #[test]
+    fn wp4_generation_donors_serve_f2_f7_g0() {
+        use super::per_dname::PER_DNAMES;
+        // No F2/F7/G0 Dname may point at the old foreign donors: every served
+        // die was diffed name-exact against its own-generation donor (WP4).
+        // Documented name gaps: F769 DBG/LTDC, G041 AES/RNG, F765 ADC_Common.
+        for e in PER_DNAMES {
+            let d = e.dname;
+            let is_f2 = d.starts_with("STM32F2");
+            let is_f7 = d.starts_with("STM32F7");
+            let is_g0 = d.starts_with("STM32G0");
+            if !(is_f2 || is_f7 || is_g0) {
+                continue;
+            }
+            assert!(
+                !["stm32f407", "stm32h743", "stm32g474xx"].contains(&e.donor),
+                "{d} still on foreign donor {}",
+                e.donor
+            );
+            if is_f2 {
+                assert!(
+                    ["stm32f207", "stm32f217"].contains(&e.donor),
+                    "{d} on {}",
+                    e.donor
+                );
+            } else if is_f7 {
+                assert!(
+                    ["stm32f722", "stm32f730", "stm32f746", "stm32f767"].contains(&e.donor),
+                    "{d} on {}",
+                    e.donor
+                );
+            } else {
+                assert!(
+                    [
+                        "stm32g031",
+                        "stm32g050",
+                        "stm32g061",
+                        "stm32g081",
+                        "stm32g0c1"
+                    ]
+                    .contains(&e.donor),
+                    "{d} on {}",
+                    e.donor
+                );
+            }
+        }
+        // Spot checks with teeth: generation peripherals the old assignment
+        // lacked entirely.
+        let f207 = PER_DNAMES.iter().find(|e| e.dname == "STM32F207").unwrap();
+        assert_eq!(f207.donor, "stm32f207");
+        let f767 = PER_DNAMES.iter().find(|e| e.dname == "STM32F767").unwrap();
+        assert_eq!(f767.donor, "stm32f767");
+        assert!(f767.peripheral("CAN1").is_some());
+        assert!(f767.peripheral("OTG_FS_GLOBAL").is_some());
+        assert!(f767.peripheral("HASH").is_some());
+        let g070 = PER_DNAMES.iter().find(|e| e.dname == "STM32G070").unwrap();
+        assert_eq!(g070.donor, "stm32g081");
+        assert!(g070.peripheral("LPUART").is_some());
+        assert!(g070.peripheral("DMA").is_some());
+        // G041's documented gaps: AES/RNG exist on silicon, not in donor.
+        let g041 = PER_DNAMES.iter().find(|e| e.dname == "STM32G041").unwrap();
+        assert_eq!(g041.donor, "stm32g031");
+        assert!(g041.peripheral("AES").is_none());
     }
 }

@@ -153,10 +153,62 @@ mod tests {
                 "packs/Keil.STM32H7xx_DFP/SVD/STM32H743.svd",
                 "vioarm-core/src/device/svd/stm32h743.rs",
             ),
+            (
+                "packs/Keil.STM32F2xx_DFP/CMSIS/SVD/STM32F207.svd",
+                "vioarm-core/src/device/svd/stm32f207.rs",
+            ),
+            (
+                "packs/Keil.STM32F2xx_DFP/CMSIS/SVD/STM32F217.svd",
+                "vioarm-core/src/device/svd/stm32f217.rs",
+            ),
+            (
+                "packs/Keil.STM32F7xx_DFP/CMSIS/SVD/STM32F722.svd",
+                "vioarm-core/src/device/svd/stm32f722.rs",
+            ),
+            (
+                "packs/Keil.STM32F7xx_DFP/CMSIS/SVD/STM32F730.svd",
+                "vioarm-core/src/device/svd/stm32f730.rs",
+            ),
+            (
+                "packs/Keil.STM32F7xx_DFP/CMSIS/SVD/STM32F746.svd",
+                "vioarm-core/src/device/svd/stm32f746.rs",
+            ),
+            (
+                "packs/Keil.STM32F7xx_DFP/CMSIS/SVD/STM32F767.svd",
+                "vioarm-core/src/device/svd/stm32f767.rs",
+            ),
+            (
+                "packs/Keil.STM32G0xx_DFP/CMSIS/SVD/STM32G031.svd",
+                "vioarm-core/src/device/svd/stm32g031.rs",
+            ),
+            (
+                "packs/Keil.STM32G0xx_DFP/CMSIS/SVD/STM32G050.svd",
+                "vioarm-core/src/device/svd/stm32g050.rs",
+            ),
+            (
+                "packs/Keil.STM32G0xx_DFP/CMSIS/SVD/STM32G061.svd",
+                "vioarm-core/src/device/svd/stm32g061.rs",
+            ),
+            (
+                "packs/Keil.STM32G0xx_DFP/CMSIS/SVD/STM32G081.svd",
+                "vioarm-core/src/device/svd/stm32g081.rs",
+            ),
+            (
+                "packs/Keil.STM32G0xx_DFP/CMSIS/SVD/STM32G0C1.svd",
+                "vioarm-core/src/device/svd/stm32g0c1.rs",
+            ),
         ];
+        let mut checked = 0;
         for (svd_rel, out_rel) in pairs {
             let svd_path = workspace.join(svd_rel);
             let out_path = workspace.join(out_rel);
+            // Packs are gitignored: on machines without them (CI) skip the
+            // pair instead of failing; `xtask packs --fetch` restores it.
+            if !svd_path.is_file() {
+                eprintln!("skipping {svd_rel}: packs not vendored here");
+                continue;
+            }
+            checked += 1;
             let xml = fs::read_to_string(&svd_path)
                 .unwrap_or_else(|e| panic!("cannot read {}: {e}", svd_path.display()));
             let model =
@@ -172,6 +224,7 @@ mod tests {
                 "{out_rel} is stale: regenerate it with `cargo run -p vioarm-svd -- {svd_rel} {out_rel}`"
             );
         }
+        eprintln!("checked {checked} committed tables against packs");
     }
 
     /// Strip the `//!` header so the regenerated table can be compared with a

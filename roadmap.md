@@ -528,7 +528,7 @@ all five milestones.
 | ETH | 90% | — |
 | SDIO | 90% | CMD/DATAEND + CRC + SPI + error injection |
 | H7 integration (LTDC/DMA2D/BDMA/MDMA/SAI4/DFSDM/HRTIM) | 90% | LPTIM5/DCMI/JPEG/SAI/VREF/RNG/SPDIF/HSEM/MDIOS/SWPMI/COMP1/CRS/CEC behavioral |
-| Chip coverage (SVD tables) | 21 SVDs → 500 Dnames (F0 10 + F1 6 + F3/F4/G4/H7/L4) | **100%** latch-or-better via `board.rs` fallback, 13+ full boards behavioral + `sbom.json` 1.9.1 CycloneDX |
+| Chip coverage (SVD tables) | 32 SVDs → 505 Dnames (F0 10 + F1 6 + F2 2 + F3/F4/G4/H7/L4 + F7 4 + G0 5) | **100%** latch-or-better via `board.rs` fallback, F2/F7/G0 own-generation behavioral boards + `sbom.json` 1.9.1 CycloneDX |
 | H743 platform | **100% firmware-relevant** | FMC SDRAM/QSPI gate + H7 integration behavioral + all 119 periphs at least latch (no Reserved, TIM15-17 behavioral) |
 | Tooling | **100%** | mdBook builds, 4 examples, `sbom.json` 85 comps 1.9.1, `cargo publish --dry-run` green, bench `±5%`, `ci qemu 10.2.1 deny --deny warnings` |
 
@@ -701,6 +701,20 @@ claimed (see Non-goals).
   touching a peripheral, and faulting unclocked accesses would churn the
   500-board suite for no firmware-visible gain; the `gated()` dispatch hook
   stays for a future strict mode.
+- F2/F7/G0 generation donors (WP4): every served die is name-exact against
+  its donor; the only name gaps are `F769` `DBG`/`LTDC` (renamed `DBGMCU`/
+  `LTCD` in the F767 donor), `G041` `AES`/`RNG`, and `F765` `ADC_Common`
+  (dual-ADC common unmodeled there). Register/field-level partials inside
+  shared windows are inventoried, not hidden: `F205`/`F215` `TIM7`,
+  `F745` `CRC` (basic layout), `F756` `TIM7` (freeze bits),
+  `F765` `ADC3`+`CRC`, `F769` `TIM1`/`TIM8`/`DFSDM`,
+  `G030`/`G041` `SYSCFG_ITLINE`, `G070` `ADC`/`TIM15` + `G071` `MPU`
+  (SVD-revision renames, offsets match), `G0B1` `RCC` (fields). G0
+  approximations: `FLASH`/`I2C`/`EXTI`/`SYSCFG` are latches (fixed-offset
+  behaviors do not match the G0 layouts), `FLASH` writes stay gate-rejected,
+  `DMA` IRQ mapping follows F0, `G050`/`G061`/`G0B1`/`G0C1` DMA stays latched,
+  F7 `DTCM`/`ITCM` timing is not split out (single RAM), F2 has no vendored
+  device headers so it stays out of the CMSIS compile matrix.
 
 ## Open questions
 
