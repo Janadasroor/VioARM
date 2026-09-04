@@ -83,6 +83,36 @@ jobs:
         if: always() && matrix.toolchain == 'stable' && matrix.os == 'ubuntu-latest'
         run: cargo llvm-cov report
 
+  windows:
+    name: Build and lint (windows-latest, stable)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      # No fmt (platform-independent, covered on ubuntu) and no tests
+      # (Windows has no qemu-system-arm / arm-none-eabi-gcc provisioning
+      # worth trusting); this leg guards against platform compile breaks.
+      - name: Build
+        run: cargo build --workspace
+
+      - name: Lint
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
   book:
     name: Build the mdbook
     runs-on: ubuntu-latest
