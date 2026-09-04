@@ -547,11 +547,14 @@ mod tests {
         let missing = std::path::Path::new("/nonexistent/qemu-system-arm");
         assert_eq!(qemu_version(missing), None);
         assert!(!qemu_is_oracle(missing));
-        // The local oracle (when installed) reports its first `--version`
-        // line and matches the pin; either way the predicates agree.
+        // Any installed QEMU agrees with the gate exactly when its version
+        // line names a proven oracle.
         if let Some(exe) = find_qemu() {
             let v = qemu_version(&exe).expect("installed qemu reports a version");
-            assert_eq!(qemu_is_oracle(&exe), v.contains("10.2.1"));
+            assert_eq!(
+                qemu_is_oracle(&exe),
+                ORACLE_VERSIONS.iter().any(|w| v.contains(w))
+            );
         }
     }
 
