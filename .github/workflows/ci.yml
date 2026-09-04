@@ -120,6 +120,32 @@ jobs:
       - name: Lint
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+  bench:
+    name: Benchmarks (ubuntu-latest, stable)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ubuntu-bench-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      # Correctness of the benches (cycle assertions), not wall-time
+      # gating: shared runners are too noisy for that (see
+      # vioarm-core/benches/BENCHMARKS.md for the regression policy).
+      - name: Run benches
+        run: cargo bench -p vioarm-core --bench mips -- --sample-size 10 --measurement-time 2 --warm-up-time 1
+
   book:
     name: Build the mdbook
     runs-on: ubuntu-latest
