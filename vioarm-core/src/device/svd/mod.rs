@@ -424,6 +424,23 @@ impl<B: Behavior> RegisterFile<B> {
         self.regs[idx]
     }
 
+    /// Store one byte lane directly, bypassing both the access flags and the
+    /// behavior hook. For tables whose SVD marks a functionally writable
+    /// register read-only (FDCAN `TEST`/`IR`/`IE`); the caller implements the
+    /// silicon gating (test-mode enable, write-1-to-clear).
+    pub(crate) fn write_raw(&mut self, addr: u32, val: u8) -> Result<(), BusError> {
+        let off = self.offset_in_window(addr)?;
+        let (reg, _idx) = self.reg_at(off)?;
+        let shift = Self::byte_shift(reg, off);
+        let mut view = Registers::new(self.def, &mut self.regs[..]);
+        let cur = view.get(reg.offset);
+        view.set(
+            reg.offset,
+            (cur & !(0xFF << shift)) | (u32::from(val) << shift),
+        );
+        Ok(())
+    }
+
     /// The exception number for the named interrupt line, if the table lists
     /// it. Some SVDs group several lines under one peripheral (EXTI lists
     /// `TAMPER`, `EXTI0`, ...); this picks the one the behavior actually wires.

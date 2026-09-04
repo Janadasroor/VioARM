@@ -468,6 +468,22 @@ impl Usart {
         )
     }
 
+    /// Share peripheral-request lines with explicit routing `(controller, tx,
+    /// rx)` (F4 boards address DMA1/2 streams by number; F1 boards use the
+    /// baked `*_for_device_with_dma` constructors instead).
+    #[must_use]
+    pub fn with_dma_routed(
+        mut self,
+        requests: Arc<Mutex<DmaRequests>>,
+        controller: u8,
+        tx: u8,
+        rx: u8,
+    ) -> Self {
+        self.inner.behavior_mut().requests = Some(requests);
+        self.inner.behavior_mut().dma = Some((controller, tx, rx));
+        self
+    }
+
     /// A new `USART3` on another chip's device tables, wired to its DMA
     /// controller through the F1 request routing (TX on DMA1 channel 2, RX on
     /// DMA1 channel 3).

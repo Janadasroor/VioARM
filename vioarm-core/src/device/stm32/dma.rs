@@ -84,6 +84,13 @@ impl DmaRequests {
             self.from_periph &= !bit;
         }
     }
+
+    /// Whether either direction is asserted for (`controller`, `channel`).
+    #[must_use]
+    pub fn asserted(&self, controller: u8, channel: u8) -> bool {
+        let bit = Self::bit(controller, channel);
+        self.to_periph & bit != 0 || self.from_periph & bit != 0
+    }
 }
 
 impl Default for DmaRequests {

@@ -20,7 +20,7 @@
 //! IRQ. Peripheral-request modes are thus complete without a wired request
 //! source, which firmware observes as an immediate transfer.
 
-use crate::device::stm32::dma::DmaUnit;
+use crate::device::stm32::dma::{DmaRequests, DmaUnit};
 use crate::device::svd::{Behavior, Device, RegisterFile, Registers};
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
@@ -92,11 +92,39 @@ const fn tcif_bit(stream: u32) -> u32 {
 struct DmaF4Behavior {
     /// The shared queue of pending transfer units, drained by `SystemMemory`.
     mailbox: Arc<Mutex<Vec<DmaUnit>>>,
+    /// Peripheral-request lines, shared with request sources (TIM/ADC/SPI/
+    /// USART/DAC). Bit `8 * controller + stream` asserted means the source
+    /// wants one transfer step on that stream. `None` (boards that wire no
+    /// sources) keeps the legacy optimistic whole-transfer behavior.
+    requests: Option<(Arc<Mutex<DmaRequests>>, u8)>,
 }
 
 impl DmaF4Behavior {
     const fn new(mailbox: Arc<Mutex<Vec<DmaUnit>>>) -> Self {
-        Self { mailbox }
+        Self {
+            mailbox,
+            requests: None,
+        }
+    }
+
+    /// Whether stream `s` may transfer this tick: always, unless request
+    /// lines are wired, in which case its bit must be asserted.
+    fn requested(&self, s: u8) -> bool {
+        let Some((reqs, controller)) = &self.requests else {
+            return true;
+        };
+        reqs.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .asserted(*controller, s)
+    }
+
+    /// Consume one request assertion on stream `s`.
+    fn consume(&self, s: u8) {
+        if let Some((reqs, controller)) = &self.requests {
+            let mut reqs = reqs.lock().unwrap_or_else(|e| e.into_inner());
+            reqs.release(*controller, s, true);
+            reqs.release(*controller, s, false);
+        }
     }
 }
 
@@ -194,8 +222,18 @@ impl Behavior for DmaF4Behavior {
             let dst_inc = if dir == 1 { pinc } else { minc };
             let src_step = if dir == 1 { step } else { unit };
             let dst_step = if dir == 1 { unit } else { step };
+            // Peripheral-request directions pace against the source when request
+            // lines are wired: one burst per asserted request, consuming it.
+            // Memory-to-memory (and unwired controllers) stay optimistic.
+            let paced = dir != 2 && self.requests.is_some();
+            if paced && !self.requested(stream) {
+                continue;
+            }
+            if paced {
+                self.consume(stream);
+            }
             // Burst/FIFO: transfer burst_len per tick when burst>1, else whole (optimistic M2M).
-            let chunk = if burst_len > 1 {
+            let chunk = if paced || burst_len > 1 {
                 let bursts = _delta.max(1) as u32;
                 (burst_len * bursts).min(ndt)
             } else {
@@ -317,6 +355,17 @@ impl DmaF4 {
         Self {
             inner: RegisterFile::new(def, DmaF4Behavior::new(mailbox)),
         }
+    }
+
+    /// Share peripheral-request lines: streams in peripheral-request
+    /// directions then advance one burst per asserted request instead of
+    /// completing optimistically. `controller` is 0 for DMA1, 1 for DMA2;
+    /// sources address streams by number. Boards wire the conventional
+    /// routes (see the board constructors); `CHSEL` remapping is not modeled.
+    #[must_use]
+    pub fn with_requests(mut self, requests: Arc<Mutex<DmaRequests>>, controller: u8) -> Self {
+        self.inner.behavior_mut().requests = Some((requests, controller));
+        self
     }
 }
 
@@ -567,6 +616,54 @@ mod tests {
         let mut d = DmaF4::dma1_for::<Stm32f407>(m);
         assert!(matches!(d.read(D1 + 0x400), Err(BusError::Reserved)));
         assert!(matches!(d.write(D1 - 1, 0), Err(BusError::Reserved)));
+    }
+
+    #[test]
+    fn peripheral_request_paces_one_burst_per_tick() {
+        use crate::device::stm32::dma::DmaRequests;
+        let m = mailbox();
+        let reqs = Arc::new(Mutex::new(DmaRequests::new()));
+        let mut d = DmaF4::dma1_for::<Stm32f407>(m.clone()).with_requests(reqs.clone(), 0);
+        // Stream 2, memory-to-peripheral, 8 units, single transfers.
+        write_word(&mut d, D1 + s_par(2), 0x4001_1404);
+        write_word(&mut d, D1 + s_m0ar(2), 0x2000_0000);
+        write_word(&mut d, D1 + s_ndtr(2), 8);
+        write_word(
+            &mut d,
+            D1 + s_cr(2),
+            EN | TCIE | (1 << 6) | (1 << 9) | (1 << 10),
+        );
+        // No request asserted: the stream stalls, nothing queued.
+        d.tick(1);
+        assert_eq!(read_word(&mut d, D1 + s_ndtr(2)), 8);
+        assert!(m.lock().unwrap_or_else(|e| e.into_inner()).is_empty());
+        // One assertion moves exactly one burst and is consumed.
+        reqs.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .request(0, 2, true);
+        d.tick(1);
+        assert_eq!(read_word(&mut d, D1 + s_ndtr(2)), 7);
+        assert_eq!(m.lock().unwrap_or_else(|e| e.into_inner()).len(), 1);
+        assert!(!reqs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .asserted(0, 2));
+        // Stalls again until the next assertion.
+        d.tick(1);
+        assert_eq!(read_word(&mut d, D1 + s_ndtr(2)), 7);
+        reqs.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .request(0, 2, false);
+        d.tick(1);
+        assert_eq!(read_word(&mut d, D1 + s_ndtr(2)), 6);
+        assert_eq!(m.lock().unwrap_or_else(|e| e.into_inner()).len(), 2);
+        // Memory-to-memory on the same wired controller stays optimistic.
+        write_word(&mut d, D1 + s_par(3), 0x2000_1000);
+        write_word(&mut d, D1 + s_m0ar(3), 0x2000_2000);
+        write_word(&mut d, D1 + s_ndtr(3), 4);
+        write_word(&mut d, D1 + s_cr(3), EN | (2 << 6));
+        d.tick(1);
+        assert_eq!(read_word(&mut d, D1 + s_ndtr(3)), 0);
     }
 
     #[test]

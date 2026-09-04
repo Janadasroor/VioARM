@@ -67,6 +67,51 @@ fn tim2_counts_when_enabled() {
 }
 
 #[test]
+fn fdcan_loopback_roundtrip() {
+    // Cut-down fixed layout: filters at RAM+0, RX FIFO0 at RAM+176,
+    // TX buffers at RAM+632; TXBAR is at 0xCC here, not 0xD0.
+    let mut m = u575();
+    const FDCAN1: u32 = 0x4000_A400;
+    const RAM: u32 = 0x4000_AC00;
+    // INIT + CCE + test mode; RXGFC: one standard filter, accept rest FIFO0.
+    m.core.mem().write_word(FDCAN1 + 0x18, 0x83).unwrap();
+    m.core
+        .mem()
+        .write_word(FDCAN1 + 0x80, (1 << 16) | (1 << 4))
+        .unwrap();
+    m.core.mem().write_word(FDCAN1 + 0x10, 1 << 4).unwrap();
+    // TX buffer 0 at RAM+632: std ID 0x123 (T0[28:18]), DLC=8.
+    for (i, b) in [0x00u8, 0x00, 0x8C, 0x04, 0x00, 0x00, 0x08, 0x00]
+        .into_iter()
+        .chain([0xAA, 0xBB, 0xCC, 0xDD, 0x11, 0x22, 0x33, 0x44])
+        .enumerate()
+    {
+        m.core.mem().write(RAM + 632 + i as u32, b).unwrap();
+    }
+    m.core.mem().write_word(FDCAN1 + 0xCC, 1).unwrap();
+    for _ in 0..10 {
+        m.step().unwrap();
+        if m.core.mem().read_word(FDCAN1 + 0xD4).unwrap() & 1 != 0 {
+            break;
+        }
+    }
+    assert_ne!(m.core.mem().read_word(FDCAN1 + 0xD4).unwrap() & 1, 0);
+    for _ in 0..10 {
+        m.step().unwrap();
+        if m.core.mem().read_word(FDCAN1 + 0x90).unwrap() & 0xF != 0 {
+            break;
+        }
+    }
+    // Loopback frame in FIFO0 with its payload in message RAM.
+    assert_eq!(m.core.mem().read_word(FDCAN1 + 0x90).unwrap() & 0xF, 1);
+    let mut payload = vec![0u8; 8];
+    for (i, b) in payload.iter_mut().enumerate() {
+        *b = m.core.mem().read(RAM + 176 + 8 + i as u32).unwrap();
+    }
+    assert_eq!(payload, &[0xAA, 0xBB, 0xCC, 0xDD, 0x11, 0x22, 0x33, 0x44]);
+}
+
+#[test]
 fn rtc_unlock_and_init_flow() {
     let mut m = u575();
     let mem = m.core.mem();

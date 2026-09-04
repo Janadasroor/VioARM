@@ -13,6 +13,7 @@ use crate::device::nvic::Nvic;
 use crate::device::scb::Scb;
 use crate::device::stm32::dma::DmaUnit;
 use crate::device::stm32::eth::{EthMailbox, EthMemOp};
+use crate::device::stm32::fdcan::{FdcanMailbox, FdcanResult};
 use crate::device::stm32::flash::{FlashErase, FlashGate};
 use crate::device::stm32::fmc::QspiGate;
 use crate::device::stm32::rcc::ClockState;
@@ -56,6 +57,10 @@ pub struct SystemMemory<M: Bus> {
     /// controller pushes read/write requests here because it has no view of the
     /// bus; this bus performs them, appending read results to the mailbox.
     eth_mailbox: Option<Arc<Mutex<EthMailbox>>>,
+    /// The shared FDCAN mailbox, drained after every device tick. The
+    /// controllers push message-RAM reads and received-frame writes here;
+    /// this bus performs them, appending correlated read results.
+    fdcan_mailbox: Option<Arc<Mutex<FdcanMailbox>>>,
     /// The shared watchdog reset latch. The IWDG/WWDG devices set it when their
     /// counter underflows; `reset_requested()` folds it into the SCB's latch so
     /// the `Machine` performs a full reset, and `reset_devices()` clears it.
@@ -85,6 +90,7 @@ impl<M: Bus + core::fmt::Debug> core::fmt::Debug for SystemMemory<M> {
             .field("qspi2", &self.qspi2)
             .field("dma_mailbox", &self.dma_mailbox)
             .field("eth_mailbox", &self.eth_mailbox)
+            .field("fdcan_mailbox", &self.fdcan_mailbox)
             .field("watchdog", &self.watchdog)
             .field("clock", &self.clock)
             .field("tim_phase", &self.tim_phase)
@@ -111,6 +117,7 @@ impl<M: Bus> SystemMemory<M> {
             qspi2: None,
             dma_mailbox: None,
             eth_mailbox: None,
+            fdcan_mailbox: None,
             watchdog: None,
             clock: None,
             tim_phase: [0, 0],
@@ -175,6 +182,14 @@ impl<M: Bus> SystemMemory<M> {
     /// reach memory.
     pub fn set_eth_mailbox(&mut self, mailbox: Arc<Mutex<EthMailbox>>) {
         self.eth_mailbox = Some(mailbox);
+    }
+
+    /// Install the shared FDCAN mailbox. The attached FDCAN controllers must
+    /// push through the same `Arc`; this bus performs their message-RAM reads
+    /// and received-frame writes after each device tick. `None` (the default)
+    /// leaves FDCAN payloads unable to move (flags still update).
+    pub fn set_fdcan_mailbox(&mut self, mailbox: Arc<Mutex<FdcanMailbox>>) {
+        self.fdcan_mailbox = Some(mailbox);
     }
 
     /// Install the shared watchdog reset latch. The `IWDG`/`WWDG` devices must
@@ -294,6 +309,8 @@ impl<M: Bus> SystemMemory<M> {
         self.drain_dma_units();
         // So do the Ethernet controller's descriptor reads and frame writes.
         self.drain_eth_ops();
+        // And the FDCAN controllers' message-RAM traffic.
+        self.drain_fdcan_ops();
         self.latch_device_asserts();
     }
 
@@ -368,6 +385,44 @@ impl<M: Bus> SystemMemory<M> {
                         );
                     }
                 }
+            }
+        }
+    }
+
+    /// Perform the FDCAN controllers' queued message-RAM traffic. Reads go
+    /// through the full bus path and their bytes are appended as correlated
+    /// results, in request order; writes are performed directly. A request
+    /// whose addresses are reserved is dropped (short result).
+    fn drain_fdcan_ops(&mut self) {
+        let Some(mailbox) = self.fdcan_mailbox.clone() else {
+            return;
+        };
+        let reads = core::mem::take(&mut mailbox.lock().unwrap_or_else(|e| e.into_inner()).reads);
+        for r in reads {
+            let mut bytes = Vec::with_capacity(usize::from(r.len));
+            for i in 0..r.len {
+                let Some(byte) = self.read(r.addr.wrapping_add(u32::from(i))).ok() else {
+                    break;
+                };
+                bytes.push(byte);
+            }
+            mailbox
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .results
+                .push_back(FdcanResult {
+                    kind: r.kind,
+                    index: r.index,
+                    bytes,
+                });
+        }
+        let writes = core::mem::take(&mut mailbox.lock().unwrap_or_else(|e| e.into_inner()).writes);
+        for (addr, bytes) in writes {
+            for (i, byte) in bytes.iter().enumerate() {
+                let _ = self.write(
+                    addr.wrapping_add(u32::try_from(i).unwrap_or(u32::MAX)),
+                    *byte,
+                );
             }
         }
     }

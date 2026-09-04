@@ -25,7 +25,7 @@ use crate::device::stm32::dma::{DmaF1, DmaRequests};
 use crate::device::stm32::dma_f4::DmaF4;
 use crate::device::stm32::eth::{Eth, EthH7, EthMailbox};
 use crate::device::stm32::exti::Exti;
-use crate::device::stm32::fdcan::Fdcan;
+use crate::device::stm32::fdcan::{Fdcan, FdcanCut, FdcanMailbox, FdcanRam, FdcanStub};
 use crate::device::stm32::flash::{FlashF1, FlashF4, FlashGate};
 use crate::device::stm32::fmc::{
     Bdma, Dfsdm, Dma2d, Dmamux, Fmc, Hrtim, Ltdc, Mdma, Qspi, QspiGate, Sai4,
@@ -249,7 +249,10 @@ pub fn stm32f107() -> BoardMemory {
     ));
     mem.attach(Box::new(Pwr::new_for::<Stm32f107>()));
     mem.attach(Box::new(Crc::new_for::<Stm32f107>()));
-    mem.attach(Box::new(Dac::new_for::<Stm32f107>()));
+    let dma_requests = Arc::new(Mutex::new(DmaRequests::new()));
+    mem.attach(Box::new(Dac::new_with_dma::<Stm32f107>(
+        dma_requests.clone(),
+    )));
     mem.attach(Box::new(Rtc::new_for::<Stm32f107>()));
     mem.attach(Box::new(Bkp::new_for::<Stm32f107>()));
     if <Stm32f107 as crate::device::svd::Device>::peripheral("SDIO").is_some() {
@@ -265,7 +268,11 @@ pub fn stm32f107() -> BoardMemory {
     mem.attach(Box::new(Usart::usart3_for::<Stm32f107>()));
     mem.attach(Box::new(Usart::uart4_for::<Stm32f107>()));
     mem.attach(Box::new(Usart::uart5_for::<Stm32f107>()));
-    mem.attach(Box::new(Timer::tim2_for::<Stm32f107>()));
+    mem.attach(Box::new(Timer::tim2_for::<Stm32f107>().with_dma_update(
+        dma_requests.clone(),
+        0,
+        2,
+    ))); // DMA1 ch2: TIM2_UP (RM0008 §13.3.7 Table 78)
     mem.attach(Box::new(Timer::tim3_for::<Stm32f107>()));
     mem.attach(Box::new(Timer::tim1_for::<Stm32f107>()));
     mem.attach(Box::new(Timer::tim4_for::<Stm32f107>()));
@@ -274,9 +281,16 @@ pub fn stm32f107() -> BoardMemory {
     mem.attach(Box::new(Timer::tim7_for::<Stm32f107>()));
     mem.attach(Box::new(Exti::for_device::<Stm32f107>()));
     mem.attach(Box::new(Afio::for_device::<Stm32f107>()));
-    mem.attach(Box::new(Adc::adc1_for::<Stm32f107>()));
+    mem.attach(Box::new(Adc::adc1_for::<Stm32f107>().with_dma(
+        dma_requests.clone(),
+        0,
+        1,
+    ))); // DMA1 ch1: ADC1
     mem.attach(Box::new(Adc::adc2_for::<Stm32f107>()));
-    mem.attach(Box::new(Spi::spi1_for::<Stm32f107>()));
+    mem.attach(Box::new(Spi::spi1_for::<Stm32f107>().with_dma(
+        Some((dma_requests.clone(), 0, 3)),
+        Some((dma_requests.clone(), 0, 2)),
+    ))); // DMA1 ch3/ch2: SPI1_TX/RX
     mem.attach(Box::new(Spi::spi2_for::<Stm32f107>()));
     mem.attach(Box::new(Spi::spi3_for::<Stm32f107>()));
     mem.attach(Box::new(I2c::for_device::<Stm32f107>()));
@@ -287,7 +301,6 @@ pub fn stm32f107() -> BoardMemory {
     let eth_mailbox = Arc::new(Mutex::new(EthMailbox::default()));
     mem.set_eth_mailbox(eth_mailbox.clone());
     mem.attach(Box::new(Eth::for_device::<Stm32f107>(eth_mailbox)));
-    let dma_requests = Arc::new(Mutex::new(DmaRequests::new()));
     mem.attach(Box::new(Usart::for_device_with_dma::<Stm32f107>(
         dma_requests.clone(),
     )));
@@ -390,14 +403,58 @@ pub fn stm32f407() -> BoardMemory {
     mem.attach(Box::new(GpioF4::at_in::<Stm32f407>(0x4002_0800, "gpioc")));
     mem.attach(Box::new(GpioF4::at_in::<Stm32f407>(0x4002_0C00, "gpiod")));
     mem.attach(Box::new(GpioF4::at_in::<Stm32f407>(0x4002_1000, "gpioe")));
-    mem.attach(Box::new(Usart::for_device::<Stm32f407>()));
-    mem.attach(Box::new(Usart::usart2_for::<Stm32f407>()));
-    mem.attach(Box::new(Usart::usart3_for::<Stm32f407>()));
-    mem.attach(Box::new(Usart::uart4_for::<Stm32f407>()));
-    mem.attach(Box::new(Usart::uart5_for::<Stm32f407>()));
-    mem.attach(Box::new(Usart::usart6_for::<Stm32f407>()));
-    mem.attach(Box::new(Timer::tim2_for::<Stm32f407>()));
-    mem.attach(Box::new(Timer::tim1_for::<Stm32f407>()));
+    // DMA request routing (board convention, streams as channels; CHSEL
+    // remapping is not modeled): DMA1 S0/S1 SPI1 RX/TX, S2/S3 USART3 RX/TX
+    // (+USART2 shared), S4/S5 UART4 RX/TX, S6 TIM update, S7 ADC; DMA2 S0/S1
+    // USART1 RX/TX, S2/S3 USART6 RX/TX, S4/S5 SPI2 RX/TX (+SPI3 shared),
+    // S6/S7 UART5 RX/TX.
+    let dma_requests = Arc::new(Mutex::new(DmaRequests::new()));
+    mem.attach(Box::new(Usart::for_device::<Stm32f407>().with_dma_routed(
+        dma_requests.clone(),
+        1,
+        1,
+        0,
+    )));
+    mem.attach(Box::new(Usart::usart2_for::<Stm32f407>().with_dma_routed(
+        dma_requests.clone(),
+        0,
+        3,
+        2,
+    )));
+    mem.attach(Box::new(Usart::usart3_for::<Stm32f407>().with_dma_routed(
+        dma_requests.clone(),
+        0,
+        3,
+        2,
+    )));
+    mem.attach(Box::new(Usart::uart4_for::<Stm32f407>().with_dma_routed(
+        dma_requests.clone(),
+        0,
+        5,
+        4,
+    )));
+    mem.attach(Box::new(Usart::uart5_for::<Stm32f407>().with_dma_routed(
+        dma_requests.clone(),
+        1,
+        7,
+        6,
+    )));
+    mem.attach(Box::new(Usart::usart6_for::<Stm32f407>().with_dma_routed(
+        dma_requests.clone(),
+        1,
+        3,
+        2,
+    )));
+    mem.attach(Box::new(Timer::tim2_for::<Stm32f407>().with_dma_update(
+        dma_requests.clone(),
+        0,
+        6,
+    )));
+    mem.attach(Box::new(Timer::tim1_for::<Stm32f407>().with_dma_update(
+        dma_requests.clone(),
+        0,
+        6,
+    )));
     mem.attach(Box::new(Timer::tim4_for::<Stm32f407>()));
     mem.attach(Box::new(Timer::tim5_for::<Stm32f407>()));
     mem.attach(Box::new(Timer::tim6_for::<Stm32f407>()));
@@ -409,17 +466,32 @@ pub fn stm32f407() -> BoardMemory {
         adc_common.clone(),
     )));
     mem.attach(Box::new(
-        Adc::adc1_for::<Stm32f407>().with_common(adc_common.clone()),
+        Adc::adc1_for::<Stm32f407>()
+            .with_common(adc_common.clone())
+            .with_dma(dma_requests.clone(), 0, 7),
     ));
     mem.attach(Box::new(
-        Adc::adc2_for::<Stm32f407>().with_common(adc_common.clone()),
+        Adc::adc2_for::<Stm32f407>()
+            .with_common(adc_common.clone())
+            .with_dma(dma_requests.clone(), 0, 7),
     ));
     mem.attach(Box::new(
-        Adc::adc3_for::<Stm32f407>().with_common(adc_common.clone()),
+        Adc::adc3_for::<Stm32f407>()
+            .with_common(adc_common.clone())
+            .with_dma(dma_requests.clone(), 0, 7),
     ));
-    mem.attach(Box::new(Spi::spi1_for::<Stm32f407>()));
-    mem.attach(Box::new(Spi::spi2_for::<Stm32f407>()));
-    mem.attach(Box::new(Spi::spi3_for::<Stm32f407>()));
+    mem.attach(Box::new(Spi::spi1_for::<Stm32f407>().with_dma(
+        Some((dma_requests.clone(), 0, 1)),
+        Some((dma_requests.clone(), 0, 0)),
+    )));
+    mem.attach(Box::new(Spi::spi2_for::<Stm32f407>().with_dma(
+        Some((dma_requests.clone(), 1, 5)),
+        Some((dma_requests.clone(), 1, 4)),
+    )));
+    mem.attach(Box::new(Spi::spi3_for::<Stm32f407>().with_dma(
+        Some((dma_requests.clone(), 1, 5)),
+        Some((dma_requests.clone(), 1, 4)),
+    )));
     mem.attach(Box::new(I2c::for_device::<Stm32f407>()));
     mem.attach(Box::new(I2c::i2c2_for::<Stm32f407>()));
     mem.attach(Box::new(I2c::i2c3_for::<Stm32f407>()));
@@ -432,8 +504,12 @@ pub fn stm32f407() -> BoardMemory {
     mem.attach(Box::new(Eth::for_device::<Stm32f407>(eth_mailbox)));
     let dma = Arc::new(Mutex::new(Vec::new()));
     mem.set_dma_mailbox(dma.clone());
-    mem.attach(Box::new(DmaF4::dma1_for::<Stm32f407>(dma.clone())));
-    mem.attach(Box::new(DmaF4::dma2_for::<Stm32f407>(dma)));
+    mem.attach(Box::new(
+        DmaF4::dma1_for::<Stm32f407>(dma.clone()).with_requests(dma_requests.clone(), 0),
+    ));
+    mem.attach(Box::new(
+        DmaF4::dma2_for::<Stm32f407>(dma).with_requests(dma_requests.clone(), 1),
+    ));
     let watchdog = Arc::new(Mutex::new(false));
     mem.set_watchdog_reset(watchdog.clone());
     mem.attach(Box::new(Iwdg::for_device::<Stm32f407>(watchdog.clone())));
@@ -510,14 +586,58 @@ fn f4_full_board(flash_len: u32, ram_len: u32, ccm_len: u32) -> BoardMemory {
             }
         }
     }
-    mem.attach(Box::new(Usart::for_device::<Stm32f407>()));
-    mem.attach(Box::new(Usart::usart2_for::<Stm32f407>()));
-    mem.attach(Box::new(Usart::usart3_for::<Stm32f407>()));
-    mem.attach(Box::new(Usart::uart4_for::<Stm32f407>()));
-    mem.attach(Box::new(Usart::uart5_for::<Stm32f407>()));
-    mem.attach(Box::new(Usart::usart6_for::<Stm32f407>()));
-    mem.attach(Box::new(Timer::tim2_for::<Stm32f407>()));
-    mem.attach(Box::new(Timer::tim1_for::<Stm32f407>()));
+    // DMA request routing (board convention, streams as channels; CHSEL
+    // remapping is not modeled): DMA1 S0/S1 SPI1 RX/TX, S2/S3 USART3 RX/TX
+    // (+USART2 shared), S4/S5 UART4 RX/TX, S6 TIM update, S7 ADC; DMA2 S0/S1
+    // USART1 RX/TX, S2/S3 USART6 RX/TX, S4/S5 SPI2 RX/TX (+SPI3 shared),
+    // S6/S7 UART5 RX/TX.
+    let dma_requests = Arc::new(Mutex::new(DmaRequests::new()));
+    mem.attach(Box::new(Usart::for_device::<Stm32f407>().with_dma_routed(
+        dma_requests.clone(),
+        1,
+        1,
+        0,
+    )));
+    mem.attach(Box::new(Usart::usart2_for::<Stm32f407>().with_dma_routed(
+        dma_requests.clone(),
+        0,
+        3,
+        2,
+    )));
+    mem.attach(Box::new(Usart::usart3_for::<Stm32f407>().with_dma_routed(
+        dma_requests.clone(),
+        0,
+        3,
+        2,
+    )));
+    mem.attach(Box::new(Usart::uart4_for::<Stm32f407>().with_dma_routed(
+        dma_requests.clone(),
+        0,
+        5,
+        4,
+    )));
+    mem.attach(Box::new(Usart::uart5_for::<Stm32f407>().with_dma_routed(
+        dma_requests.clone(),
+        1,
+        7,
+        6,
+    )));
+    mem.attach(Box::new(Usart::usart6_for::<Stm32f407>().with_dma_routed(
+        dma_requests.clone(),
+        1,
+        3,
+        2,
+    )));
+    mem.attach(Box::new(Timer::tim2_for::<Stm32f407>().with_dma_update(
+        dma_requests.clone(),
+        0,
+        6,
+    )));
+    mem.attach(Box::new(Timer::tim1_for::<Stm32f407>().with_dma_update(
+        dma_requests.clone(),
+        0,
+        6,
+    )));
     mem.attach(Box::new(Timer::tim4_for::<Stm32f407>()));
     mem.attach(Box::new(Timer::tim5_for::<Stm32f407>()));
     mem.attach(Box::new(Timer::tim6_for::<Stm32f407>()));
@@ -546,17 +666,32 @@ fn f4_full_board(flash_len: u32, ram_len: u32, ccm_len: u32) -> BoardMemory {
         adc_common.clone(),
     )));
     mem.attach(Box::new(
-        Adc::adc1_for::<Stm32f407>().with_common(adc_common.clone()),
+        Adc::adc1_for::<Stm32f407>()
+            .with_common(adc_common.clone())
+            .with_dma(dma_requests.clone(), 0, 7),
     ));
     mem.attach(Box::new(
-        Adc::adc2_for::<Stm32f407>().with_common(adc_common.clone()),
+        Adc::adc2_for::<Stm32f407>()
+            .with_common(adc_common.clone())
+            .with_dma(dma_requests.clone(), 0, 7),
     ));
     mem.attach(Box::new(
-        Adc::adc3_for::<Stm32f407>().with_common(adc_common.clone()),
+        Adc::adc3_for::<Stm32f407>()
+            .with_common(adc_common.clone())
+            .with_dma(dma_requests.clone(), 0, 7),
     ));
-    mem.attach(Box::new(Spi::spi1_for::<Stm32f407>()));
-    mem.attach(Box::new(Spi::spi2_for::<Stm32f407>()));
-    mem.attach(Box::new(Spi::spi3_for::<Stm32f407>()));
+    mem.attach(Box::new(Spi::spi1_for::<Stm32f407>().with_dma(
+        Some((dma_requests.clone(), 0, 1)),
+        Some((dma_requests.clone(), 0, 0)),
+    )));
+    mem.attach(Box::new(Spi::spi2_for::<Stm32f407>().with_dma(
+        Some((dma_requests.clone(), 1, 5)),
+        Some((dma_requests.clone(), 1, 4)),
+    )));
+    mem.attach(Box::new(Spi::spi3_for::<Stm32f407>().with_dma(
+        Some((dma_requests.clone(), 1, 5)),
+        Some((dma_requests.clone(), 1, 4)),
+    )));
     mem.attach(Box::new(I2c::for_device::<Stm32f407>()));
     mem.attach(Box::new(I2c::i2c2_for::<Stm32f407>()));
     mem.attach(Box::new(I2c::i2c3_for::<Stm32f407>()));
@@ -569,8 +704,12 @@ fn f4_full_board(flash_len: u32, ram_len: u32, ccm_len: u32) -> BoardMemory {
     mem.attach(Box::new(Eth::for_device::<Stm32f407>(eth_mailbox)));
     let dma = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     mem.set_dma_mailbox(dma.clone());
-    mem.attach(Box::new(DmaF4::dma1_for::<Stm32f407>(dma.clone())));
-    mem.attach(Box::new(DmaF4::dma2_for::<Stm32f407>(dma)));
+    mem.attach(Box::new(
+        DmaF4::dma1_for::<Stm32f407>(dma.clone()).with_requests(dma_requests.clone(), 0),
+    ));
+    mem.attach(Box::new(
+        DmaF4::dma2_for::<Stm32f407>(dma).with_requests(dma_requests.clone(), 1),
+    ));
     let watchdog = std::sync::Arc::new(std::sync::Mutex::new(false));
     mem.set_watchdog_reset(watchdog.clone());
     mem.attach(Box::new(Iwdg::for_device::<Stm32f407>(watchdog.clone())));
@@ -615,6 +754,9 @@ fn f4gen_full_board<D: crate::device::svd::Device>(
     let clock = ClockState::shared();
     mem.set_clock(clock.clone());
     let live = |name: &str| !skip.contains(&name) && D::peripheral(name).is_some();
+    // DMA request routing: the same board convention as the F407 boards
+    // (streams as channels; CHSEL remapping is not modeled).
+    let dma_requests = std::sync::Arc::new(std::sync::Mutex::new(DmaRequests::new()));
     // F767's SVD names the controller `Flash`: no behavior there, the window
     // stays a latch (same standing as F0 `Flash` boards).
     if live("FLASH") {
@@ -658,28 +800,47 @@ fn f4gen_full_board<D: crate::device::svd::Device>(
             mem.attach(Box::new(GpioF4::at_in::<D>(base, name)));
         }
     }
-    for (ctor, peripheral) in [
-        (Usart::for_device::<D> as fn() -> Usart, "USART1"),
-        (Usart::usart2_for::<D>, "USART2"),
-        (Usart::usart3_for::<D>, "USART3"),
-        (Usart::uart4_for::<D>, "UART4"),
-        (Usart::uart5_for::<D>, "UART5"),
-        (Usart::usart6_for::<D>, "USART6"),
+    // USART request routes: USART1 (DMA2 S0/S1), USART2/USART3 (DMA1
+    // S2/S3 shared), UART4 (DMA1 S4/S5), UART5 (DMA2 S6/S7), USART6
+    // (DMA2 S2/S3). Each tuple is (controller, tx stream, rx stream).
+    for (ctor, route, peripheral) in [
+        (
+            Usart::for_device::<D> as fn() -> Usart,
+            (1u8, 1u8, 0u8),
+            "USART1",
+        ),
+        (Usart::usart2_for::<D>, (0, 3, 2), "USART2"),
+        (Usart::usart3_for::<D>, (0, 3, 2), "USART3"),
+        (Usart::uart4_for::<D>, (0, 5, 4), "UART4"),
+        (Usart::uart5_for::<D>, (1, 7, 6), "UART5"),
+        (Usart::usart6_for::<D>, (1, 3, 2), "USART6"),
     ] {
         if live(peripheral) {
-            mem.attach(Box::new(ctor()));
+            mem.attach(Box::new(ctor().with_dma_routed(
+                dma_requests.clone(),
+                route.0,
+                route.1,
+                route.2,
+            )));
         }
     }
-    for (ctor, peripheral) in [
-        (Timer::tim1_for::<D> as fn() -> Timer, "TIM1"),
-        (Timer::tim2_for::<D>, "TIM2"),
-        (Timer::tim4_for::<D>, "TIM4"),
-        (Timer::tim5_for::<D>, "TIM5"),
-        (Timer::tim6_for::<D>, "TIM6"),
-        (Timer::tim7_for::<D>, "TIM7"),
+    // TIM update routes: TIM1/TIM2/TIM4 share DMA1 S6; TIM5/6/7 stay
+    // unwired (no stream left in the board convention).
+    for (ctor, routed, peripheral) in [
+        (Timer::tim1_for::<D> as fn() -> Timer, true, "TIM1"),
+        (Timer::tim2_for::<D>, true, "TIM2"),
+        (Timer::tim4_for::<D>, true, "TIM4"),
+        (Timer::tim5_for::<D>, false, "TIM5"),
+        (Timer::tim6_for::<D>, false, "TIM6"),
+        (Timer::tim7_for::<D>, false, "TIM7"),
     ] {
         if live(peripheral) {
-            mem.attach(Box::new(ctor()));
+            let timer = ctor();
+            mem.attach(Box::new(if routed {
+                timer.with_dma_update(dma_requests.clone(), 0, 6)
+            } else {
+                timer
+            }));
         }
     }
     for name in ["TIM8", "TIM9", "TIM10", "TIM11", "TIM12", "TIM13", "TIM14"] {
@@ -708,17 +869,26 @@ fn f4gen_full_board<D: crate::device::svd::Device>(
             (Adc::adc3_for::<D>, "ADC3"),
         ] {
             if live(peripheral) {
-                mem.attach(Box::new(ctor().with_common(adc_common.clone())));
+                mem.attach(Box::new(ctor().with_common(adc_common.clone()).with_dma(
+                    dma_requests.clone(),
+                    0,
+                    7,
+                )));
             }
         }
     }
-    for (ctor, peripheral) in [
-        (Spi::spi1_for::<D> as fn() -> Spi, "SPI1"),
-        (Spi::spi2_for::<D>, "SPI2"),
-        (Spi::spi3_for::<D>, "SPI3"),
+    // SPI request routes: SPI1 (DMA1 S0/S1), SPI2/SPI3 (DMA2 S4/S5 shared).
+    // Each tuple is (controller, tx stream, rx stream).
+    for (ctor, route, peripheral) in [
+        (Spi::spi1_for::<D> as fn() -> Spi, (0u8, 1u8, 0u8), "SPI1"),
+        (Spi::spi2_for::<D>, (1, 5, 4), "SPI2"),
+        (Spi::spi3_for::<D>, (1, 5, 4), "SPI3"),
     ] {
         if live(peripheral) {
-            mem.attach(Box::new(ctor()));
+            mem.attach(Box::new(ctor().with_dma(
+                Some((dma_requests.clone(), route.0, route.1)),
+                Some((dma_requests.clone(), route.0, route.2)),
+            )));
         }
     }
     for (ctor, peripheral) in [
@@ -750,10 +920,14 @@ fn f4gen_full_board<D: crate::device::svd::Device>(
     let dma = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     mem.set_dma_mailbox(dma.clone());
     if live("DMA1") {
-        mem.attach(Box::new(DmaF4::dma1_for::<D>(dma.clone())));
+        mem.attach(Box::new(
+            DmaF4::dma1_for::<D>(dma.clone()).with_requests(dma_requests.clone(), 0),
+        ));
     }
     if live("DMA2") {
-        mem.attach(Box::new(DmaF4::dma2_for::<D>(dma)));
+        mem.attach(Box::new(
+            DmaF4::dma2_for::<D>(dma).with_requests(dma_requests.clone(), 1),
+        ));
     }
     let watchdog = std::sync::Arc::new(std::sync::Mutex::new(false));
     mem.set_watchdog_reset(watchdog.clone());
@@ -772,6 +946,13 @@ fn f4gen_full_board<D: crate::device::svd::Device>(
                 crate::device::svd::NoBehavior,
             >::new(
                 p, crate::device::svd::NoBehavior
+            )));
+        }
+    }
+    for name in ["LPTIM1"] {
+        if live(name) {
+            mem.attach(Box::new(crate::device::stm32::lptim::Lptim::new_for::<D>(
+                name,
             )));
         }
     }
@@ -880,11 +1061,26 @@ fn g0_full_board<L: crate::device::svd::Device>(
     if live_b("SPI2") {
         mem.attach(Box::new(Spi::spi2_for::<B>()));
     }
-    if live_l("FDCAN1") {
-        mem.attach(Box::new(Fdcan::fdcan1_for::<L>()));
-    }
-    if live_l("FDCAN2") {
-        mem.attach(Box::new(Fdcan::fdcan2_for::<L>()));
+    // Cut-down FDCAN on verified CAN RAM (G0/G4 0x4000B400/0x4000A400 from
+    // CMSIS; G0C1/G0B1 carry FDCAN1/2): stubs where no base is known.
+    if live_l("FDCAN1") || live_l("FDCAN2") {
+        let fdcan = std::sync::Arc::new(std::sync::Mutex::new(FdcanMailbox::default()));
+        mem.set_fdcan_mailbox(fdcan.clone());
+        // 0x800 covers both instances' 848-byte regions (FDCAN2 follows
+        // FDCAN1, per the HAL layout).
+        mem.attach(Box::new(FdcanRam::at(0x4000_B400, 0x800)));
+        if live_l("FDCAN1") {
+            mem.attach(Box::new(FdcanCut::fdcan1_for::<L>(
+                fdcan.clone(),
+                0x4000_B400,
+            )));
+        }
+        if live_l("FDCAN2") {
+            mem.attach(Box::new(FdcanCut::fdcan2_for::<L>(
+                fdcan,
+                0x4000_B400 + 848,
+            )));
+        }
     }
     if live_b("RNG") {
         mem.attach(Box::new(Rng::new_for::<B>()));
@@ -920,6 +1116,13 @@ fn g0_full_board<L: crate::device::svd::Device>(
                 crate::device::svd::NoBehavior,
             >::new(
                 p, crate::device::svd::NoBehavior
+            )));
+        }
+    }
+    for name in ["LPTIM1", "LPTIM2"] {
+        if live_b(name) {
+            mem.attach(Box::new(crate::device::stm32::lptim::Lptim::new_for::<B>(
+                name,
             )));
         }
     }
@@ -1011,11 +1214,56 @@ fn m33_full_board<D: crate::device::svd::Device>(
     if live("CRC") {
         mem.attach(Box::new(Crc::new_for::<D>()));
     }
-    if live("FDCAN1") {
-        mem.attach(Box::new(Fdcan::fdcan1_for::<D>()));
+    // Message-RAM windows: flat storage shared between secure/nonsecure
+    // view pairs (the SVD lists controller registers inside them, which
+    // would fault element traffic as reserved).
+    {
+        use std::collections::HashMap;
+        let mut backings: HashMap<&str, FdcanRam> = HashMap::new();
+        let mut rams: Vec<(&str, u32, u32)> = latch
+            .iter()
+            .filter(|p| p.name.contains("RAM") && p.name.contains("FDCAN"))
+            .map(|p| (p.name, p.base, p.window))
+            .collect();
+        rams.sort();
+        for (name, base, len) in rams {
+            let key = name.strip_prefix("SEC_").unwrap_or(name);
+            if skip.contains(&name) {
+                continue;
+            }
+            if let Some(shared) = backings.get(key) {
+                mem.attach(Box::new(shared.alias(base, len)));
+            } else {
+                let ram = FdcanRam::at(base, len);
+                mem.attach(Box::new(ram.clone()));
+                backings.insert(key, ram);
+            }
+        }
     }
-    if live("FDCAN2") {
-        mem.attach(Box::new(Fdcan::fdcan2_for::<D>()));
+    // FDCAN: cut-down behavior on verified CAN RAM (U5: SVD RAM windows;
+    // RAM storage attaches in the window block above); stubs where no base
+    // is known (H5/L5).
+    if live("FDCAN1") || live("FDCAN2") || live("FDCAN3") {
+        let fdcan = std::sync::Arc::new(std::sync::Mutex::new(FdcanMailbox::default()));
+        mem.set_fdcan_mailbox(fdcan.clone());
+        // CAN RAM base: the FDCANn_RAM window where the SVD carries it.
+        let ram_base = |n: u32| {
+            D::peripheral(if n == 1 { "FDCAN1_RAM" } else { "FDCAN2_RAM" }).map(|ram| ram.base)
+        };
+        if live("FDCAN1") {
+            if let Some(base) = ram_base(1) {
+                mem.attach(Box::new(FdcanCut::fdcan1_for::<D>(fdcan.clone(), base)));
+            } else {
+                mem.attach(Box::new(FdcanStub::fdcan1_stub_for::<D>()));
+            }
+        }
+        if live("FDCAN2") {
+            if let Some(base) = ram_base(2) {
+                mem.attach(Box::new(FdcanCut::fdcan2_for::<D>(fdcan.clone(), base)));
+            } else {
+                mem.attach(Box::new(FdcanStub::fdcan2_stub_for::<D>()));
+            }
+        }
     }
     // ADC only where the tables use plain CR/ISR names (L5): U5/H5/WBA
     // prefix them (`ADC_ISR`) with anonymous fields, which the behavior
@@ -1046,6 +1294,13 @@ fn m33_full_board<D: crate::device::svd::Device>(
                 crate::device::svd::NoBehavior,
             >::new(
                 p, crate::device::svd::NoBehavior
+            )));
+        }
+    }
+    for name in ["LPTIM1", "LPTIM2", "LPTIM3", "LPTIM4", "LPTIM5", "LPTIM6"] {
+        if live(name) {
+            mem.attach(Box::new(crate::device::stm32::lptim::Lptim::new_for::<D>(
+                name,
             )));
         }
     }
@@ -1257,6 +1512,32 @@ fn g4_full_board(flash_len: u32, ram_len: u32) -> BoardMemory {
             )));
         }
     }
+    for name in ["LPTIMER1"] {
+        if <Stm32g474 as crate::device::svd::Device>::peripheral(name).is_some() {
+            mem.attach(Box::new(crate::device::stm32::lptim::Lptim::new_for::<
+                Stm32g474,
+            >(name)));
+        }
+    }
+    // Cut-down FDCAN1/2/3 on verified CAN RAM (CMSIS SRAMCAN_BASE
+    // 0x4000A400). The fourth `FDCAN` window there is a duplicate of the
+    // controller map, not a controller (3 FDCANs per datasheet); the RAM
+    // attach shadows it, which the fallback loop then skips.
+    if <Stm32g474 as crate::device::svd::Device>::peripheral("FDCAN1").is_some() {
+        let fdcan = std::sync::Arc::new(std::sync::Mutex::new(FdcanMailbox::default()));
+        mem.set_fdcan_mailbox(fdcan.clone());
+        mem.attach(Box::new(FdcanRam::at(0x4000_A400, 0x800)));
+        mem.attach(Box::new(FdcanCut::fdcan1_for::<Stm32g474>(
+            fdcan.clone(),
+            0x4000_A400,
+        )));
+        if <Stm32g474 as crate::device::svd::Device>::peripheral("FDCAN2").is_some() {
+            mem.attach(Box::new(FdcanCut::fdcan2_for::<Stm32g474>(
+                fdcan.clone(),
+                0x4000_A400 + 848,
+            )));
+        }
+    }
     mem.attach(Box::new(Dwt::new()));
     mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
     mem
@@ -1332,6 +1613,13 @@ fn l4_full_board(flash_len: u32, ram_len: u32) -> BoardMemory {
             >::new(
                 p, crate::device::svd::NoBehavior
             )));
+        }
+    }
+    for name in ["LPTIM1", "LPTIM2"] {
+        if <Stm32l476 as crate::device::svd::Device>::peripheral(name).is_some() {
+            mem.attach(Box::new(crate::device::stm32::lptim::Lptim::new_for::<
+                Stm32l476,
+            >(name)));
         }
     }
     mem.attach(Box::new(Dwt::new()));
@@ -6513,29 +6801,46 @@ pub fn stm32h743() -> BoardMemory {
             mem.attach(Box::new(GpioF4::at_in::<Stm32h743>(base, name)));
         }
     }
-    for ctor in [
-        Usart::for_device::<Stm32h743> as fn() -> Usart,
-        Usart::usart2_for::<Stm32h743>,
-        Usart::usart3_for::<Stm32h743>,
-        Usart::usart6_for::<Stm32h743>,
+    // DMA request routing follows the F407 board convention (streams as
+    // channels); the H7 DMAMUX is not modeled, so request IDs are the
+    // stream numbers. Each tuple is (controller, tx stream, rx stream).
+    for (ctor, route) in [
+        (
+            Usart::for_device::<Stm32h743> as fn() -> Usart,
+            (1u8, 1u8, 0u8),
+        ),
+        (Usart::usart2_for::<Stm32h743>, (0, 3, 2)),
+        (Usart::usart3_for::<Stm32h743>, (0, 3, 2)),
+        (Usart::usart6_for::<Stm32h743>, (1, 3, 2)),
     ] {
         let base = ctor().ranges()[0].base;
         if <Stm32h743 as crate::device::svd::Device>::by_base(base).is_some() {
-            mem.attach(Box::new(ctor()));
+            mem.attach(Box::new(ctor().with_dma_routed(
+                dma_requests.clone(),
+                route.0,
+                route.1,
+                route.2,
+            )));
         }
     }
-    for ctor in [
-        Timer::tim2_for::<Stm32h743>,
-        Timer::tim6_for::<Stm32h743>,
-        Timer::tim7_for::<Stm32h743>,
-        Timer::tim1_for::<Stm32h743>,
-        Timer::tim3_for::<Stm32h743>,
-        Timer::tim4_for::<Stm32h743>,
-        Timer::tim5_for::<Stm32h743>,
+    // TIM update routes: TIM1/2/3/4 share DMA1 S6; TIM5/6/7 stay unwired.
+    for (ctor, routed) in [
+        (Timer::tim2_for::<Stm32h743> as fn() -> Timer, true),
+        (Timer::tim6_for::<Stm32h743>, false),
+        (Timer::tim7_for::<Stm32h743>, false),
+        (Timer::tim1_for::<Stm32h743>, true),
+        (Timer::tim3_for::<Stm32h743>, true),
+        (Timer::tim4_for::<Stm32h743>, true),
+        (Timer::tim5_for::<Stm32h743>, false),
     ] {
         let base = ctor().ranges()[0].base;
         if <Stm32h743 as crate::device::svd::Device>::by_base(base).is_some() {
-            mem.attach(Box::new(ctor()));
+            let timer = ctor();
+            mem.attach(Box::new(if routed {
+                timer.with_dma_update(dma_requests.clone(), 0, 6)
+            } else {
+                timer
+            }));
         }
     }
     for name in ["TIM8", "TIM12", "TIM13", "TIM14"] {
@@ -6551,13 +6856,22 @@ pub fn stm32h743() -> BoardMemory {
         }
     }
     if <Stm32h743 as crate::device::svd::Device>::peripheral("SPI1").is_some() {
-        mem.attach(Box::new(Spi::spi1_for::<Stm32h743>()));
+        mem.attach(Box::new(Spi::spi1_for::<Stm32h743>().with_dma(
+            Some((dma_requests.clone(), 0, 1)),
+            Some((dma_requests.clone(), 0, 0)),
+        )));
     }
     if <Stm32h743 as crate::device::svd::Device>::peripheral("SPI2").is_some() {
-        mem.attach(Box::new(Spi::spi2_for::<Stm32h743>()));
+        mem.attach(Box::new(Spi::spi2_for::<Stm32h743>().with_dma(
+            Some((dma_requests.clone(), 1, 5)),
+            Some((dma_requests.clone(), 1, 4)),
+        )));
     }
     if <Stm32h743 as crate::device::svd::Device>::peripheral("SPI3").is_some() {
-        mem.attach(Box::new(Spi::spi3_for::<Stm32h743>()));
+        mem.attach(Box::new(Spi::spi3_for::<Stm32h743>().with_dma(
+            Some((dma_requests.clone(), 1, 5)),
+            Some((dma_requests.clone(), 1, 4)),
+        )));
     }
     if <Stm32h743 as crate::device::svd::Device>::peripheral("SPI4").is_some() {
         mem.attach(Box::new(Spi::spi4_for::<Stm32h743>()));
@@ -6596,27 +6910,38 @@ pub fn stm32h743() -> BoardMemory {
     }
     if <Stm32h743 as crate::device::svd::Device>::peripheral("ADC1").is_some() {
         mem.attach(Box::new(
-            Adc::adc1_for::<Stm32h743>().with_common(adc12_common_state.clone()),
+            Adc::adc1_for::<Stm32h743>()
+                .with_common(adc12_common_state.clone())
+                .with_dma(dma_requests.clone(), 0, 7),
         ));
     }
     if <Stm32h743 as crate::device::svd::Device>::peripheral("ADC2").is_some() {
         mem.attach(Box::new(
-            Adc::adc2_for::<Stm32h743>().with_common(adc12_common_state.clone()),
+            Adc::adc2_for::<Stm32h743>()
+                .with_common(adc12_common_state.clone())
+                .with_dma(dma_requests.clone(), 0, 7),
         ));
     }
     if <Stm32h743 as crate::device::svd::Device>::peripheral("ADC3").is_some() {
         mem.attach(Box::new(
-            Adc::adc3_for::<Stm32h743>().with_common(adc3_common_state.clone()),
+            Adc::adc3_for::<Stm32h743>()
+                .with_common(adc3_common_state.clone())
+                .with_dma(dma_requests.clone(), 0, 7),
         ));
     }
-    // DMA - H7 uses stream DMA like F4 plus DMAMUX; use DmaF4 with Vec mailbox
+    // DMA - H7 uses stream DMA like F4 plus DMAMUX; use DmaF4 with Vec mailbox.
+    // The DMAMUX itself stays a latch: sources use the F407 stream convention.
     let dma = Arc::new(Mutex::new(Vec::new()));
     mem.set_dma_mailbox(dma.clone());
     if <Stm32h743 as crate::device::svd::Device>::peripheral("DMA1").is_some() {
-        mem.attach(Box::new(DmaF4::dma1_for::<Stm32h743>(dma.clone())));
+        mem.attach(Box::new(
+            DmaF4::dma1_for::<Stm32h743>(dma.clone()).with_requests(dma_requests.clone(), 0),
+        ));
     }
     if <Stm32h743 as crate::device::svd::Device>::peripheral("DMA2").is_some() {
-        mem.attach(Box::new(DmaF4::dma2_for::<Stm32h743>(dma)));
+        mem.attach(Box::new(
+            DmaF4::dma2_for::<Stm32h743>(dma).with_requests(dma_requests.clone(), 1),
+        ));
     }
     if <Stm32h743 as crate::device::svd::Device>::peripheral("DMAMUX1").is_some() {
         mem.attach(Box::new(Dmamux::new_for::<Stm32h743>()));
@@ -6670,12 +6995,18 @@ pub fn stm32h743() -> BoardMemory {
         // Use EthH7 stub (NoBehavior) so HAL probing (MACCR etc.) does not fault
         mem.attach(Box::new(EthH7::new_for::<Stm32h743>()));
     }
-    // FDCAN
+    // FDCAN1 behavior on verified CAN RAM (CMSIS SRAMCAN_BASE 0x4000AC00);
+    // FDCAN2 stays a stub (its RAM base is not verifiable from artifacts).
     if <Stm32h743 as crate::device::svd::Device>::peripheral("FDCAN1").is_some() {
-        mem.attach(Box::new(Fdcan::fdcan1_for::<Stm32h743>()));
+        let fdcan = std::sync::Arc::new(std::sync::Mutex::new(FdcanMailbox::default()));
+        mem.set_fdcan_mailbox(fdcan.clone());
+        mem.attach(Box::new(FdcanRam::at(0x4000_AC00, 0x400)));
+        mem.attach(Box::new(
+            Fdcan::fdcan1_for::<Stm32h743>(fdcan).with_msg_ram(0x4000_AC00),
+        ));
     }
     if <Stm32h743 as crate::device::svd::Device>::peripheral("FDCAN2").is_some() {
-        mem.attach(Box::new(Fdcan::fdcan2_for::<Stm32h743>()));
+        mem.attach(Box::new(FdcanStub::fdcan2_stub_for::<Stm32h743>()));
     }
     // FMC / QUADSPI control windows (do not fault on config writes)
     // USB - H743 has OTG1_HS at 0x40040000 and OTG2_HS at 0x40080000 (FS via HS)

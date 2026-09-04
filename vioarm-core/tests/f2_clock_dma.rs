@@ -140,9 +140,82 @@ fn f103_board_tim2_update_dma_moves_units() {
     ww(&mut mem, D1 + 0x08 + 0x14, 1 | (1 << 7) | 0x2); // EN|MINC|TCIE
 
     // Two overflows -> two units land via CMAR2.
-    for i in 0..4 {
+    for _ in 0..4 {
         mem.tick_devices(1);
     }
     assert_eq!(rd(&mut mem, D1 + 0x0C + 0x14), 0, "CNDTR exhausted");
     assert_ne!(rd(&mut mem, D1 + 0x00) & 0x30, 0, "GIF2|TCIF2 latched");
+}
+
+#[test]
+fn f407_board_tim2_update_dma_paces_stream6() {
+    use std::sync::{Arc, Mutex};
+    use vioarm_core::device::stm32::dma::{DmaRequests, DmaUnit};
+    use vioarm_core::device::stm32::dma_f4::DmaF4;
+    use vioarm_core::device::stm32::timer::Timer;
+    use vioarm_core::device::svd::stm32f407::Stm32f407;
+    use vioarm_core::mem::flat::FlatMemory;
+    use vioarm_core::mem::system::SystemMemory;
+    use vioarm_core::mem::Bus;
+
+    fn ww(p: &mut SystemMemory<FlatMemory>, addr: u32, val: u32) {
+        for (i, b) in val.to_le_bytes().iter().enumerate() {
+            p.write(addr + i as u32, *b).unwrap();
+        }
+    }
+    fn rd(p: &mut SystemMemory<FlatMemory>, addr: u32) -> u32 {
+        let mut v = 0u32;
+        for i in 0..4u32 {
+            v |= u32::from(p.read(addr + i).unwrap()) << (8 * i);
+        }
+        v
+    }
+
+    let requests = Arc::new(Mutex::new(DmaRequests::new()));
+    let mailbox = Arc::new(Mutex::new(Vec::<DmaUnit>::new()));
+
+    // The F407 board convention: TIM2 update drives DMA1 stream 6.
+    let backing = FlatMemory::with_layout(&[0x4000_0000, 0x4002_6000], &[0x4000, 0x400]);
+    let mut mem = SystemMemory::new(backing);
+    mem.set_dma_mailbox(mailbox.clone());
+    mem.attach(Box::new(Timer::tim2_for::<Stm32f407>().with_dma_update(
+        requests.clone(),
+        0,
+        6,
+    )));
+    mem.attach(Box::new(
+        DmaF4::dma1_for::<Stm32f407>(mailbox).with_requests(requests, 0),
+    ));
+
+    const T2: u32 = 0x4000_0000;
+    const D1: u32 = 0x4002_6000;
+    const S6: u32 = 0x10 + 6 * 0x18; // stream 6 register block
+                                     // TIM2: UDE + CEN (ARR reset 0 -> overflow every tick).
+    ww(&mut mem, T2 + 0x0C, 1 << 8);
+    ww(&mut mem, T2, 1);
+    // DMA1 stream 6, memory-to-peripheral, NDTR=2.
+    ww(&mut mem, D1 + S6 + 0x08, 0x4001_1404); // PAR
+    ww(&mut mem, D1 + S6 + 0x0C, 0x2000_0000); // M0AR
+    ww(&mut mem, D1 + S6 + 0x04, 2); // NDTR
+    ww(
+        &mut mem,
+        D1 + S6,
+        1 | (1 << 4) | (1 << 6) | (1 << 9) | (1 << 10),
+    ); // EN|TCIE|M2P|PINC|MINC
+
+    // One burst per overflow, never the optimistic whole transfer.
+    mem.tick_devices(1);
+    assert!(
+        rd(&mut mem, D1 + S6 + 0x04) >= 1,
+        "stream 6 paces one burst per request"
+    );
+    for _ in 0..8 {
+        mem.tick_devices(1);
+    }
+    assert_eq!(rd(&mut mem, D1 + S6 + 0x04), 0, "NDTR exhausted");
+    assert_ne!(
+        rd(&mut mem, D1 + 0x04) & (1 << 21),
+        0,
+        "HISR stream-6 TCIF latched"
+    );
 }
