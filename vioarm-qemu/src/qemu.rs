@@ -127,6 +127,12 @@ fn qemu_candidates() -> Vec<PathBuf> {
 /// QEMU oracle version pinned in CI (`ci.yml`).
 pub const ORACLE_VERSION: &str = "qemu-system-arm 10.2.1";
 
+/// Every QEMU version the conformance traces are proven against: the
+/// canonical pin above (local dev) plus CI realities (Ubuntu apt ships
+/// 8.2.2, and the suite is green against it). Anything else (e.g. a brew
+/// build with divergent `BKPT` handling) must skip the oracle tests.
+pub const ORACLE_VERSIONS: &[&str] = &["10.2.1", "8.2.2"];
+
 /// Locate a usable `qemu-system-arm`.
 #[must_use]
 pub fn find_qemu() -> Option<PathBuf> {
@@ -144,13 +150,12 @@ pub fn qemu_version(exe: &std::path::Path) -> Option<String> {
     text.lines().next().map(str::to_string)
 }
 
-/// Whether the QEMU at `exe` is the pinned oracle. Traces are only
-/// comparable against [`ORACLE_VERSION`]: anything else (a distro or brew
+/// Whether the QEMU at `exe` is a proven oracle. Traces are only
+/// comparable against [`ORACLE_VERSIONS`]: anything else (a distro or brew
 /// build at another version) must skip the oracle tests, not fail them.
 #[must_use]
 pub fn qemu_is_oracle(exe: &std::path::Path) -> bool {
-    let want = ORACLE_VERSION.split_whitespace().last().unwrap_or("10.2.1");
-    qemu_version(exe).is_some_and(|v| v.contains(want))
+    qemu_version(exe).is_some_and(|v| ORACLE_VERSIONS.iter().any(|w| v.contains(w)))
 }
 
 /// The QEMU invocation parameters for one conformance run. Defaults to an

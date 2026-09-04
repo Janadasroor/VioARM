@@ -27,8 +27,10 @@ jobs:
           sudo apt-get install -y qemu-system-arm gcc-arm-none-eabi
           qemu-system-arm --version
           arm-none-eabi-gcc --version
-          # ORACLE_VERSION 10.2.1 pinned in vioarm-qemu/src/qemu.rs — verify
-          qemu-system-arm --version | grep -q "10.2.1" || echo "warn: qemu version not 10.2.1, see qemu.rs"
+          # Canonical oracle is 10.2.1 but apt ships 8.2.2, which the suite
+          # is proven against (both are in ORACLE_VERSIONS in
+          # vioarm-qemu/src/qemu.rs); anything else skips the oracle tests.
+          qemu-system-arm --version | grep -Eq "10\.2\.1|8\.2\.2" || echo "warn: foreign qemu, oracle tests will skip"
 
       - name: Install qemu + gcc-arm-embedded (macos)
         if: matrix.os == 'macos-latest'

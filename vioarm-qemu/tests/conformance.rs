@@ -21,7 +21,7 @@
 
 use std::time::Duration;
 use vioarm_qemu::asm::{Asm, Image, CODE_BASE, SP};
-use vioarm_qemu::qemu::{run_until_pc as qemu_run, QemuMachine, ORACLE_VERSION};
+use vioarm_qemu::qemu::{run_until_pc as qemu_run, QemuMachine, ORACLE_VERSIONS};
 use vioarm_qemu::vioarm::run_until_pc as vio_run;
 use vioarm_qemu::vioarm::run_until_pc_v6m as vio_run_v6m;
 use vioarm_qemu::vioarm::run_until_pc_v7em as vio_run_v7em;
@@ -103,8 +103,8 @@ fn sync_flags(a: &mut Asm) {
     a.adds_imm8(0, 0);
 }
 
-/// Keep a detected oracle only when it is the pinned one: traces are
-/// comparable against [`ORACLE_VERSION`] alone, so a missing *or* foreign
+/// Keep a detected oracle only when it is a proven one: traces are
+/// comparable against [`ORACLE_VERSIONS`] alone, so a missing *or* foreign
 /// QEMU skips the oracle tests instead of failing them.
 fn gate(mt: Option<QemuMachine>, what: &str) -> Option<QemuMachine> {
     match mt {
@@ -114,7 +114,8 @@ fn gate(mt: Option<QemuMachine>, what: &str) -> Option<QemuMachine> {
         }
         Some(m) if !vioarm_qemu::qemu::qemu_is_oracle(&m.exe) => {
             eprintln!(
-                "skipping {what}conformance tests: oracle is `{ORACLE_VERSION}`, found `{}`",
+                "skipping {what}conformance tests: proven oracles are `[{}]`, found `{}`",
+                ORACLE_VERSIONS.join(", "),
                 vioarm_qemu::qemu::qemu_version(&m.exe).unwrap_or_default()
             );
             None
