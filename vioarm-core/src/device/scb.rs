@@ -241,7 +241,7 @@ impl MpuRegion {
             2 => privileged,  // PRIV rw / UNPRIV ro
             3 => true,        // rw/rw
             7 => !privileged, // PRIV ro / UNPRIV rw (per the matrix)
-            0 | 4 | 5 | 6 | _ => false,
+            _ => false,       // AP 0/4/5/6 are reserved: no access either way
         }
     }
 }

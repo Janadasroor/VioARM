@@ -897,6 +897,9 @@ impl Asm {
     /// selects `LDRD`, `index` the pre-indexed (writeback) over the plain
     /// offset form, `post` the post-indexed form, `negative` the `U == 0`
     /// subtract form; `imm` is in bytes.
+    // Nine operands is the encoding: every bit of the T1 form is a caller
+    // choice, and bundling them would hide the bit mapping.
+    #[allow(clippy::too_many_arguments)]
     fn dual_mem(
         &mut self,
         load: bool,

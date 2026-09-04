@@ -6289,9 +6289,10 @@ pub fn stm32f303xe() -> BoardMemory {
     if <Stm32f303xe as crate::device::svd::Device>::peripheral("CRC").is_some() {
         mem.attach(Box::new(Crc::new_for::<Stm32f303xe>()));
     }
-    if <Stm32f303xe as crate::device::svd::Device>::peripheral("DAC1").is_some() {
-        mem.attach(Box::new(Dac::new_for::<Stm32f303xe>()));
-    } else if <Stm32f303xe as crate::device::svd::Device>::peripheral("DAC").is_some() {
+    // F3 names the window `DAC1` on some dies, `DAC` on others.
+    if <Stm32f303xe as crate::device::svd::Device>::peripheral("DAC1").is_some()
+        || <Stm32f303xe as crate::device::svd::Device>::peripheral("DAC").is_some()
+    {
         mem.attach(Box::new(Dac::new_for::<Stm32f303xe>()));
     }
     // F3 GPIO is F4-style (MODER)
@@ -7309,10 +7310,8 @@ pub fn stm32h743() -> BoardMemory {
         }
     }
     mem.attach(Box::new(Dwt::new()));
-
     /// Helper: full H7 board with given FLASH/RAM, mounting complete H7 peripheral set.
     /// Used for H7/F7 alias boards to go from latch-only to behavioral.
-
     fn f100_full_board(flash_len: u32, ram_len: u32) -> BoardMemory {
         use crate::device::svd::stm32f100::Stm32f100;
         let backing = FlatMemory::with_layout(
@@ -7861,9 +7860,12 @@ pub fn all_chips() -> Vec<Chip> {
         .collect()
 }
 
+/// One enumerated board: its short name plus its constructor.
+pub type BoardEntry = (&'static str, fn() -> BoardMemory);
+
 /// Every board function (506) enumerated for 500-chip CMSIS coverage.
 #[must_use]
-pub fn all_boards() -> Vec<(&'static str, fn() -> BoardMemory)> {
+pub fn all_boards() -> Vec<BoardEntry> {
     vec![
         ("stm32f103", stm32f103),
         ("stm32f107", stm32f107),

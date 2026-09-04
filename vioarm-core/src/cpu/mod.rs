@@ -305,6 +305,12 @@ pub struct FpuCtx {
     pub fpdscr: u32,
 }
 
+impl Default for FpuCtx {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FpuCtx {
     /// Reset state: automatic context switching on, lazy stacking on, the
     /// default FP control bits (round-to-nearest, no traps) all clear.
@@ -987,32 +993,28 @@ impl<B: PeripheralBus> Core<B> {
                         }
                     }
                 }
-            } else {
-                if let Ok(inst) = match self.isa {
-                    Isa::Armv6M => decode16(h0),
-                    Isa::Armv7M | Isa::Armv7EM | Isa::Armv8MMainline => decode16_v7m(h0),
-                    Isa::Armv8MBaseline => decode16(h0),
-                } {
-                    let addr = match inst {
-                        Inst16::LsReg { rn, rm, .. } => {
-                            self.regs.read(rn).wrapping_add(self.regs.read(rm))
-                        }
-                        Inst16::LsImm { rn, imm, .. } => {
-                            self.regs.read(rn).wrapping_add(imm as u32)
-                        }
-                        Inst16::LdrLiteral { imm, .. } => {
-                            (pc & !3).wrapping_add(4).wrapping_add(imm as u32)
-                        }
-                        Inst16::LsSp { .. } => self.regs.sp,
-                        Inst16::LdmStm { rn, .. } => self.regs.read(rn),
-                        _ => 0,
-                    };
-                    if addr != 0 {
-                        if (0x2400_0000..0x2408_0000).contains(&addr) {
-                            extra += 1;
-                        } else if (0xC000_0000..0xC800_0000).contains(&addr) {
-                            extra += 5;
-                        }
+            } else if let Ok(inst) = match self.isa {
+                Isa::Armv6M => decode16(h0),
+                Isa::Armv7M | Isa::Armv7EM | Isa::Armv8MMainline => decode16_v7m(h0),
+                Isa::Armv8MBaseline => decode16(h0),
+            } {
+                let addr = match inst {
+                    Inst16::LsReg { rn, rm, .. } => {
+                        self.regs.read(rn).wrapping_add(self.regs.read(rm))
+                    }
+                    Inst16::LsImm { rn, imm, .. } => self.regs.read(rn).wrapping_add(imm as u32),
+                    Inst16::LdrLiteral { imm, .. } => {
+                        (pc & !3).wrapping_add(4).wrapping_add(imm as u32)
+                    }
+                    Inst16::LsSp { .. } => self.regs.sp,
+                    Inst16::LdmStm { rn, .. } => self.regs.read(rn),
+                    _ => 0,
+                };
+                if addr != 0 {
+                    if (0x2400_0000..0x2408_0000).contains(&addr) {
+                        extra += 1;
+                    } else if (0xC000_0000..0xC800_0000).contains(&addr) {
+                        extra += 5;
                     }
                 }
             }
@@ -1037,7 +1039,7 @@ impl<B: PeripheralBus> Core<B> {
                 let cached = self.decode_cache.get(&key).and_then(|e| {
                     if e.h0 == hw && e.h1 == lo {
                         if let CachedDecoded::V32(inst) = &e.decoded {
-                            Some(inst.clone())
+                            Some(*inst)
                         } else {
                             None
                         }
@@ -1058,7 +1060,7 @@ impl<B: PeripheralBus> Core<B> {
                             CacheEntry {
                                 h0: hw,
                                 h1: lo,
-                                decoded: CachedDecoded::V32(inst.clone()),
+                                decoded: CachedDecoded::V32(inst),
                             },
                         );
                         self.exec32(pc, inst)
@@ -1071,45 +1073,43 @@ impl<B: PeripheralBus> Core<B> {
                     Err(_) => self.hardfault_on_undefined(pc, 4),
                 }
             }
-        } else {
-            if pc < 0x2000_0000 {
-                let key = pc ^ ((self.isa as u32) << 28) ^ ((self.itstate as u32) << 20);
-                let cached = self.decode_cache.get(&key).and_then(|e| {
-                    if e.h0 == hw && e.h1 == 0 {
-                        if let CachedDecoded::V16(inst) = &e.decoded {
-                            Some(inst.clone())
-                        } else {
-                            None
-                        }
+        } else if pc < 0x2000_0000 {
+            let key = pc ^ ((self.isa as u32) << 28) ^ ((self.itstate as u32) << 20);
+            let cached = self.decode_cache.get(&key).and_then(|e| {
+                if e.h0 == hw && e.h1 == 0 {
+                    if let CachedDecoded::V16(inst) = &e.decoded {
+                        Some(*inst)
                     } else {
                         None
                     }
-                });
-                if let Some(inst) = cached {
-                    return self.exec(pc, inst);
+                } else {
+                    None
                 }
-                match decode16(hw) {
-                    Ok(inst) => {
-                        if self.decode_cache.len() > 2048 {
-                            self.decode_cache.clear();
-                        }
-                        self.decode_cache.insert(
-                            key,
-                            CacheEntry {
-                                h0: hw,
-                                h1: 0,
-                                decoded: CachedDecoded::V16(inst.clone()),
-                            },
-                        );
-                        self.exec(pc, inst)
+            });
+            if let Some(inst) = cached {
+                return self.exec(pc, inst);
+            }
+            match decode16(hw) {
+                Ok(inst) => {
+                    if self.decode_cache.len() > 2048 {
+                        self.decode_cache.clear();
                     }
-                    Err(_) => self.hardfault_on_undefined(pc, 2),
+                    self.decode_cache.insert(
+                        key,
+                        CacheEntry {
+                            h0: hw,
+                            h1: 0,
+                            decoded: CachedDecoded::V16(inst),
+                        },
+                    );
+                    self.exec(pc, inst)
                 }
-            } else {
-                match decode16(hw) {
-                    Ok(inst) => self.exec(pc, inst),
-                    Err(_) => self.hardfault_on_undefined(pc, 2),
-                }
+                Err(_) => self.hardfault_on_undefined(pc, 2),
+            }
+        } else {
+            match decode16(hw) {
+                Ok(inst) => self.exec(pc, inst),
+                Err(_) => self.hardfault_on_undefined(pc, 2),
             }
         }
     }
@@ -1139,7 +1139,7 @@ impl<B: PeripheralBus> Core<B> {
                 let cached = self.decode_cache.get(&key).and_then(|e| {
                     if e.h0 == h0 && e.h1 == h1 {
                         if let CachedDecoded::V32(inst) = &e.decoded {
-                            Some(inst.clone())
+                            Some(*inst)
                         } else {
                             None
                         }
@@ -1165,7 +1165,7 @@ impl<B: PeripheralBus> Core<B> {
                             CacheEntry {
                                 h0,
                                 h1,
-                                decoded: CachedDecoded::V32(inst.clone()),
+                                decoded: CachedDecoded::V32(inst),
                             },
                         );
                         self.exec_it_step(pc, 4, |s| s.exec32(pc, inst))
@@ -1183,45 +1183,43 @@ impl<B: PeripheralBus> Core<B> {
                     Err(_) => self.hardfault_on_undefined(pc, 4),
                 }
             }
-        } else {
-            if pc < 0x2000_0000 {
-                let key = pc ^ ((self.isa as u32) << 28) ^ ((self.itstate as u32) << 20);
-                let cached = self.decode_cache.get(&key).and_then(|e| {
-                    if e.h0 == h0 && e.h1 == 0 {
-                        if let CachedDecoded::V16(inst) = &e.decoded {
-                            Some(inst.clone())
-                        } else {
-                            None
-                        }
+        } else if pc < 0x2000_0000 {
+            let key = pc ^ ((self.isa as u32) << 28) ^ ((self.itstate as u32) << 20);
+            let cached = self.decode_cache.get(&key).and_then(|e| {
+                if e.h0 == h0 && e.h1 == 0 {
+                    if let CachedDecoded::V16(inst) = &e.decoded {
+                        Some(*inst)
                     } else {
                         None
                     }
-                });
-                if let Some(inst) = cached {
-                    return self.exec_it_step(pc, 2, |s| s.exec(pc, inst));
+                } else {
+                    None
                 }
-                match decode16_v7m(h0) {
-                    Ok(inst) => {
-                        if self.decode_cache.len() > 2048 {
-                            self.decode_cache.clear();
-                        }
-                        self.decode_cache.insert(
-                            key,
-                            CacheEntry {
-                                h0,
-                                h1: 0,
-                                decoded: CachedDecoded::V16(inst.clone()),
-                            },
-                        );
-                        self.exec_it_step(pc, 2, |s| s.exec(pc, inst))
+            });
+            if let Some(inst) = cached {
+                return self.exec_it_step(pc, 2, |s| s.exec(pc, inst));
+            }
+            match decode16_v7m(h0) {
+                Ok(inst) => {
+                    if self.decode_cache.len() > 2048 {
+                        self.decode_cache.clear();
                     }
-                    Err(_) => self.hardfault_on_undefined(pc, 2),
+                    self.decode_cache.insert(
+                        key,
+                        CacheEntry {
+                            h0,
+                            h1: 0,
+                            decoded: CachedDecoded::V16(inst),
+                        },
+                    );
+                    self.exec_it_step(pc, 2, |s| s.exec(pc, inst))
                 }
-            } else {
-                match decode16_v7m(h0) {
-                    Ok(inst) => self.exec_it_step(pc, 2, |s| s.exec(pc, inst)),
-                    Err(_) => self.hardfault_on_undefined(pc, 2),
-                }
+                Err(_) => self.hardfault_on_undefined(pc, 2),
+            }
+        } else {
+            match decode16_v7m(h0) {
+                Ok(inst) => self.exec_it_step(pc, 2, |s| s.exec(pc, inst)),
+                Err(_) => self.hardfault_on_undefined(pc, 2),
             }
         }
     }
@@ -1274,7 +1272,7 @@ impl<B: PeripheralBus> Core<B> {
                 let cached = self.decode_cache.get(&key).and_then(|e| {
                     if e.h0 == h0 && e.h1 == h1 {
                         if let CachedDecoded::V32(inst) = &e.decoded {
-                            Some(inst.clone())
+                            Some(*inst)
                         } else {
                             None
                         }
@@ -1298,7 +1296,7 @@ impl<B: PeripheralBus> Core<B> {
                             CacheEntry {
                                 h0,
                                 h1,
-                                decoded: CachedDecoded::V32(inst.clone()),
+                                decoded: CachedDecoded::V32(inst),
                             },
                         );
                         self.exec32(pc, inst)
@@ -1312,7 +1310,7 @@ impl<B: PeripheralBus> Core<B> {
                             CacheEntry {
                                 h0,
                                 h1,
-                                decoded: CachedDecoded::V32(inst.clone()),
+                                decoded: CachedDecoded::V32(inst),
                             },
                         );
                         self.exec_it_step(pc, 4, |s| s.exec32(pc, inst))
@@ -1326,48 +1324,46 @@ impl<B: PeripheralBus> Core<B> {
                     Err(_) => self.hardfault_on_undefined(pc, 4),
                 }
             }
-        } else {
-            if pc < 0x2000_0000 {
-                let key = pc
-                    ^ ((self.isa as u32) << 28)
-                    ^ ((self.itstate as u32) << 20)
-                    ^ ((self.secure as u32) << 19);
-                let cached = self.decode_cache.get(&key).and_then(|e| {
-                    if e.h0 == h0 && e.h1 == 0 {
-                        if let CachedDecoded::V16(inst) = &e.decoded {
-                            Some(inst.clone())
-                        } else {
-                            None
-                        }
+        } else if pc < 0x2000_0000 {
+            let key = pc
+                ^ ((self.isa as u32) << 28)
+                ^ ((self.itstate as u32) << 20)
+                ^ ((self.secure as u32) << 19);
+            let cached = self.decode_cache.get(&key).and_then(|e| {
+                if e.h0 == h0 && e.h1 == 0 {
+                    if let CachedDecoded::V16(inst) = &e.decoded {
+                        Some(*inst)
                     } else {
                         None
                     }
-                });
-                if let Some(inst) = cached {
-                    return self.exec_it_step(pc, 2, |s| s.exec(pc, inst));
+                } else {
+                    None
                 }
-                match decode16_v7m(h0) {
-                    Ok(inst) => {
-                        if self.decode_cache.len() > 2048 {
-                            self.decode_cache.clear();
-                        }
-                        self.decode_cache.insert(
-                            key,
-                            CacheEntry {
-                                h0,
-                                h1: 0,
-                                decoded: CachedDecoded::V16(inst.clone()),
-                            },
-                        );
-                        self.exec_it_step(pc, 2, |s| s.exec(pc, inst))
+            });
+            if let Some(inst) = cached {
+                return self.exec_it_step(pc, 2, |s| s.exec(pc, inst));
+            }
+            match decode16_v7m(h0) {
+                Ok(inst) => {
+                    if self.decode_cache.len() > 2048 {
+                        self.decode_cache.clear();
                     }
-                    Err(_) => self.hardfault_on_undefined(pc, 2),
+                    self.decode_cache.insert(
+                        key,
+                        CacheEntry {
+                            h0,
+                            h1: 0,
+                            decoded: CachedDecoded::V16(inst),
+                        },
+                    );
+                    self.exec_it_step(pc, 2, |s| s.exec(pc, inst))
                 }
-            } else {
-                match decode16_v7m(h0) {
-                    Ok(inst) => self.exec_it_step(pc, 2, |s| s.exec(pc, inst)),
-                    Err(_) => self.hardfault_on_undefined(pc, 2),
-                }
+                Err(_) => self.hardfault_on_undefined(pc, 2),
+            }
+        } else {
+            match decode16_v7m(h0) {
+                Ok(inst) => self.exec_it_step(pc, 2, |s| s.exec(pc, inst)),
+                Err(_) => self.hardfault_on_undefined(pc, 2),
             }
         }
     }

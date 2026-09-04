@@ -285,7 +285,7 @@ impl TimerBehavior {
             return;
         }
         let arr = view.get(ARR) & self.width_mask;
-        let cnt = view.get(CNT) & self.width_mask as u32;
+        let cnt = view.get(CNT) & self.width_mask;
         let next = if delta > 0 {
             if cnt >= arr {
                 0

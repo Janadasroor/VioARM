@@ -44,7 +44,6 @@ const NG_WPR: u32 = 0x24;
 const NG_TR_RESET_BASE: u32 = 0;
 /// `TR` reset base (reserved bits read as written; keep zero).
 #[allow(dead_code)]
-
 /// `ISR` bit positions.
 const NG_ISR_WUTWF: u32 = 1 << 2;
 const NG_ISR_INITS: u32 = 1 << 4;

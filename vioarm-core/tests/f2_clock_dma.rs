@@ -2,7 +2,6 @@ use vioarm_core::device::stm32::dma_f4::DmaF4;
 use vioarm_core::device::stm32::rcc::Rcc;
 use vioarm_core::device::stm32::timer::Timer;
 use vioarm_core::device::Peripheral;
-use vioarm_core::mem::Bus;
 
 fn write_word<P: Peripheral>(p: &mut P, base: u32, off: u32, val: u32) {
     for (i, b) in val.to_le_bytes().iter().enumerate() {
@@ -96,7 +95,6 @@ fn f103_board_tim2_update_dma_moves_units() {
     use vioarm_core::device::stm32::dma::{DmaF1, DmaRequests, DmaUnit};
     use vioarm_core::device::stm32::timer::Timer;
     use vioarm_core::device::svd::stm32f103::Stm32f103;
-    use vioarm_core::device::Peripheral;
     use vioarm_core::mem::flat::FlatMemory;
     use vioarm_core::mem::system::SystemMemory;
     use vioarm_core::mem::Bus;
@@ -132,7 +130,7 @@ fn f103_board_tim2_update_dma_moves_units() {
     const D1: u32 = 0x4002_0000;
     // TIM2: UDE + CEN (ARR reset 0 -> overflow every tick).
     ww(&mut mem, T2 + 0x0C, 1 << 8);
-    ww(&mut mem, T2 + 0x00, 1);
+    ww(&mut mem, T2, 1);
     // DMA1 ch2 (index 1): MINC, TCIE, NDTR=2.
     ww(&mut mem, D1 + 0x14 + 0x14, 0x2000); // CMAR2
     ww(&mut mem, D1 + 0x10 + 0x14, 0x2000); // CPAR2
@@ -144,7 +142,7 @@ fn f103_board_tim2_update_dma_moves_units() {
         mem.tick_devices(1);
     }
     assert_eq!(rd(&mut mem, D1 + 0x0C + 0x14), 0, "CNDTR exhausted");
-    assert_ne!(rd(&mut mem, D1 + 0x00) & 0x30, 0, "GIF2|TCIF2 latched");
+    assert_ne!(rd(&mut mem, D1) & 0x30, 0, "GIF2|TCIF2 latched");
 }
 
 #[test]

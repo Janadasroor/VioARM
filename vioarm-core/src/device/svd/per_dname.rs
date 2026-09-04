@@ -97,6 +97,12 @@ impl PerDname {
     pub fn len(&self) -> usize {
         self.peripherals().count()
     }
+
+    /// Whether filtering removed every peripheral.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.peripherals().next().is_none()
+    }
 }
 
 pub const PER_DNAMES: &[PerDname] = &[

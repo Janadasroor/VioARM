@@ -9,6 +9,8 @@
 //! [`FloatStatus`] which carries the rounding mode, flush settings and the
 //! sticky exception flags.
 
+use core::cmp::Ordering;
+
 /// Decomposition binary point: the fraction is normalized with an implicit
 /// bit at bit 63, i.e. `frac in [2^63, 2^64)` for normal numbers.
 pub const DECOMPOSED_BINARY_POINT: i32 = 63;
@@ -654,11 +656,13 @@ fn parts_pick_nan_muladd<'p>(
 /// QEMU's `parts64_add_normal`.
 fn parts_add_normal(a: &mut Parts, b: &mut Parts) {
     let exp_diff = a.exp - b.exp;
-    if exp_diff > 0 {
-        frac_shrjam(&mut b.frac, exp_diff);
-    } else if exp_diff < 0 {
-        frac_shrjam(&mut a.frac, -exp_diff);
-        a.exp = b.exp;
+    match exp_diff.cmp(&0) {
+        Ordering::Greater => frac_shrjam(&mut b.frac, exp_diff),
+        Ordering::Less => {
+            frac_shrjam(&mut a.frac, -exp_diff);
+            a.exp = b.exp;
+        }
+        Ordering::Equal => {}
     }
 
     if frac_add(&mut a.frac, b.frac) {
@@ -867,11 +871,13 @@ fn wide_shrjam(frac: &mut u128, c: i32) {
 /// QEMU's `parts64_add_normal` on wide (128-bit) parts.
 fn wide_add_normal(a: &mut WideParts, b: &mut WideParts) {
     let exp_diff = a.exp - b.exp;
-    if exp_diff > 0 {
-        wide_shrjam(&mut b.frac, exp_diff);
-    } else if exp_diff < 0 {
-        wide_shrjam(&mut a.frac, -exp_diff);
-        a.exp = b.exp;
+    match exp_diff.cmp(&0) {
+        Ordering::Greater => wide_shrjam(&mut b.frac, exp_diff),
+        Ordering::Less => {
+            wide_shrjam(&mut a.frac, -exp_diff);
+            a.exp = b.exp;
+        }
+        Ordering::Equal => {}
     }
 
     let (r, carry) = a.frac.overflowing_add(b.frac);
@@ -888,22 +894,26 @@ fn wide_add_normal(a: &mut WideParts, b: &mut WideParts) {
 fn wide_sub_normal(a: &mut WideParts, b: &mut WideParts) -> bool {
     let exp_diff = a.exp - b.exp;
 
-    if exp_diff > 0 {
-        wide_shrjam(&mut b.frac, exp_diff);
-        a.frac = a.frac.wrapping_sub(b.frac);
-    } else if exp_diff < 0 {
-        a.exp = b.exp;
-        a.sign ^= true;
-        wide_shrjam(&mut a.frac, -exp_diff);
-        // frac_sub(a, b, a) computes a = b - a.
-        a.frac = b.frac.wrapping_sub(a.frac);
-    } else {
-        let (r, borrow) = a.frac.overflowing_sub(b.frac);
-        a.frac = r;
-        if borrow {
-            // Overflow means A was less than B.
-            a.frac = a.frac.wrapping_neg();
+    match exp_diff.cmp(&0) {
+        Ordering::Greater => {
+            wide_shrjam(&mut b.frac, exp_diff);
+            a.frac = a.frac.wrapping_sub(b.frac);
+        }
+        Ordering::Less => {
+            a.exp = b.exp;
             a.sign ^= true;
+            wide_shrjam(&mut a.frac, -exp_diff);
+            // frac_sub(a, b, a) computes a = b - a.
+            a.frac = b.frac.wrapping_sub(a.frac);
+        }
+        Ordering::Equal => {
+            let (r, borrow) = a.frac.overflowing_sub(b.frac);
+            a.frac = r;
+            if borrow {
+                // Overflow means A was less than B.
+                a.frac = a.frac.wrapping_neg();
+                a.sign ^= true;
+            }
         }
     }
 
@@ -1553,12 +1563,10 @@ fn parts_compare(
                 FloatRelation::Greater
             };
         } else if a.exp == b.exp {
-            if a.frac == b.frac {
-                FloatRelation::Equal
-            } else if a.frac < b.frac {
-                FloatRelation::Less
-            } else {
-                FloatRelation::Greater
+            match a.frac.cmp(&b.frac) {
+                Ordering::Equal => FloatRelation::Equal,
+                Ordering::Less => FloatRelation::Less,
+                Ordering::Greater => FloatRelation::Greater,
             }
         } else if a.exp < b.exp {
             FloatRelation::Less

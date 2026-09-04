@@ -4,7 +4,7 @@
 //! `COMPxOUT` is read-only and reflects the comparator output (driven high when enabled for determinism).
 //! H7 `COMP1` uses `CFGR1@0xC EN@0 / CFGR2@0x10 EN@0` with `SR C1VAL@0/C2VAL@1 C1IF@16/C2IF@17` and `ICFR CCxIF@16`.
 
-use crate::device::svd::{Behavior, Device, PeripheralDef, RegisterFile, Registers};
+use crate::device::svd::{Behavior, Device, RegisterFile, Registers};
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
 use crate::mem::bus::Region;
@@ -44,7 +44,7 @@ impl Behavior for CompBehavior {
             let en1 = word & CSR_EN1 != 0;
             let en2 = word & CSR_EN2 != 0;
             // Clear OUT immediately on disable, schedule set on enable
-            let mut cur = word & !(CSR_OUT1 | CSR_OUT2);
+            let cur = word & !(CSR_OUT1 | CSR_OUT2);
             if !en1 {
                 self.pending_out1 = false;
             } else if view.get(0x00) & CSR_EN1 == 0 {
@@ -152,8 +152,10 @@ impl Comp {
             .or_else(|| D::peripheral("COMP1"))
             .expect("COMP/comp peripheral");
         let is_h7 = def.name == "COMP1";
-        let mut beh = CompBehavior::default();
-        beh.is_h7 = is_h7;
+        let beh = CompBehavior {
+            is_h7,
+            ..CompBehavior::default()
+        };
         Self {
             inner: RegisterFile::new(def, beh),
             name: "comp",

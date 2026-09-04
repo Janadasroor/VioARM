@@ -45,7 +45,7 @@ fn usart_transmits_byte() {
     assert_ne!(mem.read_word(USART1 + 0x1C).unwrap() & (1 << 7), 0);
     mem.write_word(USART1 + 0x28, b'Z' as u32).unwrap();
     // The byte queues for output; TC reads set while UE holds.
-    drop(mem);
+    let _ = mem;
     assert_eq!(m.drain_channel("usart1"), b"Z");
     assert_ne!(m.core.mem().read_word(USART1 + 0x1C).unwrap() & (1 << 6), 0);
 }
@@ -58,7 +58,7 @@ fn tim2_counts_when_enabled() {
     mem.write_word(TIM2 + 0x2C, 0xFFFF).unwrap(); // ARR
     mem.write_word(TIM2, 0x1).unwrap(); // CEN
     let c0 = mem.read_word(TIM2 + 0x24).unwrap();
-    drop(mem);
+    let _ = mem;
     for _ in 0..10 {
         m.step().unwrap();
     }

@@ -541,21 +541,11 @@ impl InterruptSource for Dma2d {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct BdmaBehavior {
     active: [bool; 8],
     ticks: [u8; 8],
     pending: u32,
-}
-
-impl Default for BdmaBehavior {
-    fn default() -> Self {
-        Self {
-            active: [false; 8],
-            ticks: [0; 8],
-            pending: 0,
-        }
-    }
 }
 
 impl Behavior for BdmaBehavior {
@@ -590,13 +580,12 @@ impl Behavior for BdmaBehavior {
             if ch < 8 {
                 let en = word & 1 != 0;
                 if en && !self.active[ch] {
-                    // check CNDTR >0
-                    let cndtr_off = offset + 4;
-                    let cndtr = view.try_get(cndtr_off).unwrap_or(0) & 0xFFFF;
-                    if cndtr != 0 || true {
-                        self.active[ch] = true;
-                        self.ticks[ch] = 1;
-                    }
+                    // Optimistic completion: enable latches the channel for
+                    // a 1-tick transfer even with `CNDTR == 0` (no unit
+                    // moves, but `GIF`/`TCIF` still latch, as
+                    // `bdma_channel0_en_completes` pins).
+                    self.active[ch] = true;
+                    self.ticks[ch] = 1;
                 } else if !en {
                     self.active[ch] = false;
                     self.ticks[ch] = 0;
@@ -705,21 +694,11 @@ impl InterruptSource for Bdma {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct MdmaBehavior {
     active: [bool; 16],
     ticks: [u8; 16],
     pending: u32,
-}
-
-impl Default for MdmaBehavior {
-    fn default() -> Self {
-        Self {
-            active: [false; 16],
-            ticks: [0; 16],
-            pending: 0,
-        }
-    }
 }
 
 impl Behavior for MdmaBehavior {
@@ -733,7 +712,7 @@ impl Behavior for MdmaBehavior {
         let word = view.merged(offset, val, shift);
         // GISR0 0x00, ISR per channel at 0x40+0x40*ch, IFCR at +0x04, CR at +0x0C (0x4C)
         // Check IFCR writes to clear ISR
-        if offset >= 0x44 && offset < 0x400 && (offset - 0x44) % 0x40 == 0 {
+        if (0x44..0x400).contains(&offset) && (offset - 0x44) % 0x40 == 0 {
             // C0IFCR 0x44, C1IFCR 0x84 etc
             let ch = ((offset - 0x44) / 0x40) as usize;
             let isr_off = 0x40 + (ch as u32) * 0x40;
@@ -757,7 +736,7 @@ impl Behavior for MdmaBehavior {
             return view.get(offset);
         }
         // CCR check: C0CR 0x4C
-        if offset >= 0x4C && offset < 0x400 && (offset - 0x4C) % 0x40 == 0 {
+        if (0x4C..0x400).contains(&offset) && (offset - 0x4C) % 0x40 == 0 {
             let ch = ((offset - 0x4C) / 0x40) as usize;
             if ch < 16 {
                 let en = word & 1 != 0;
@@ -1274,9 +1253,9 @@ impl InterruptSource for Hrtim {
 
 #[cfg(test)]
 mod tests {
-    use super::{Bdma, Dma2d, Dmamux, DmamuxBehavior, Hrtim, Ltdc, Mdma, Sai4};
+    use super::{Bdma, Dma2d, Dmamux, Hrtim, Ltdc, Mdma, Sai4};
     use crate::device::svd::stm32h743::Stm32h743;
-    use crate::device::{svd::Device, InterruptSource, Peripheral};
+    use crate::device::{InterruptSource, Peripheral};
 
     fn write_word<P: Peripheral>(p: &mut P, addr: u32, val: u32) {
         for i in 0..4 {
@@ -1328,9 +1307,9 @@ mod tests {
         let mut d = Dma2d::new_for::<Stm32h743>();
         let base = d.ranges()[0].base;
         // TCIE
-        write_word(&mut d, base + 0x00, 1 << 9);
+        write_word(&mut d, base, 1 << 9);
         // START
-        write_word(&mut d, base + 0x00, (1 << 9) | 1);
+        write_word(&mut d, base, (1 << 9) | 1);
         assert_eq!(d.pending(), 0);
         d.tick(1);
         assert_eq!(read_word(&mut d, base + 0x04) & (1 << 1), 1 << 1);
@@ -1344,7 +1323,7 @@ mod tests {
         // enable TCIE then EN
         write_word(&mut b, base + 0x08, (1 << 1) | 1);
         b.tick(1);
-        let isr = read_word(&mut b, base + 0x00);
+        let isr = read_word(&mut b, base);
         assert_eq!(isr & 0x3, 0x3); // GIF0 + TCIF0
         assert_eq!(b.pending(), 1);
     }
@@ -1364,7 +1343,7 @@ mod tests {
     fn hrtim_master_en_pends() {
         let mut h = Hrtim::master_for::<Stm32h743>();
         let base = h.ranges()[0].base;
-        write_word(&mut h, base + 0x00, 1);
+        write_word(&mut h, base, 1);
         h.tick(1);
         assert_eq!(h.pending(), 1);
     }

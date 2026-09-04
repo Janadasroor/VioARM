@@ -15,6 +15,12 @@ pub struct Dwt {
     count: u64,
 }
 
+impl Default for Dwt {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Dwt {
     #[must_use]
     pub const fn new() -> Self {
@@ -67,7 +73,7 @@ impl Peripheral for Dwt {
                 let shift = (off & 0x3) * 8;
                 let mut v = (self.count & 0xFFFF_FFFF) as u32;
                 v = (v & !(0xFF << shift)) | (u32::from(val) << shift);
-                self.count = (self.count & 0xFFFF_FFFF_00000000) | u64::from(v);
+                self.count = (self.count & 0xFFFF_FFFF_0000_0000) | u64::from(v);
                 Ok(())
             }
             _ => Err(BusError::Reserved),
@@ -104,8 +110,8 @@ mod tests {
         assert_eq!(d.read(BASE).unwrap(), 1);
         d.tick(5);
         let mut w = [0u8; 4];
-        for i in 0..4 {
-            w[i] = d.read(BASE + 4 + i as u32).unwrap();
+        for (i, b) in w.iter_mut().enumerate() {
+            *b = d.read(BASE + 4 + i as u32).unwrap();
         }
         assert_eq!(u32::from_le_bytes(w), 5);
         // Write CYCCNT
@@ -113,22 +119,22 @@ mod tests {
             d.write(BASE + 4 + i as u32, *b).unwrap();
         }
         let mut w2 = [0u8; 4];
-        for i in 0..4 {
-            w2[i] = d.read(BASE + 4 + i as u32).unwrap();
+        for (i, b) in w2.iter_mut().enumerate() {
+            *b = d.read(BASE + 4 + i as u32).unwrap();
         }
         assert_eq!(u32::from_le_bytes(w2), 0xAABBCCDD);
         d.tick(1);
         let mut w3 = [0u8; 4];
-        for i in 0..4 {
-            w3[i] = d.read(BASE + 4 + i as u32).unwrap();
+        for (i, b) in w3.iter_mut().enumerate() {
+            *b = d.read(BASE + 4 + i as u32).unwrap();
         }
         assert_eq!(u32::from_le_bytes(w3), 0xAABBCCDE);
         // Disabled does not count
         d.write(BASE, 0).unwrap();
         d.tick(10);
         let mut w4 = [0u8; 4];
-        for i in 0..4 {
-            w4[i] = d.read(BASE + 4 + i as u32).unwrap();
+        for (i, b) in w4.iter_mut().enumerate() {
+            *b = d.read(BASE + 4 + i as u32).unwrap();
         }
         assert_eq!(u32::from_le_bytes(w4), 0xAABBCCDE);
     }

@@ -123,7 +123,7 @@ mod tests {
     fn w(c: &mut Tsc, off: u32, val: u32) {
         let base = c.ranges()[0].base;
         for i in 0..4 {
-            c.write(base + off + i, ((val >> 8 * i) & 0xFF) as u8)
+            c.write(base + off + i, ((val >> (8 * i)) & 0xFF) as u8)
                 .unwrap();
         }
     }
@@ -131,7 +131,7 @@ mod tests {
         let base = c.ranges()[0].base;
         let mut v = 0;
         for i in 0..4 {
-            v |= u32::from(c.read(base + off + i).unwrap()) << 8 * i;
+            v |= u32::from(c.read(base + off + i).unwrap()) << (8 * i);
         }
         v
     }

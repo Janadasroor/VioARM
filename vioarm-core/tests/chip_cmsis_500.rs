@@ -392,9 +392,10 @@ fn cmsis_500_full_machine_cmsis_gpio_usart_tim_adc() {
         }
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
-    fn build_firmware_for_family(
-        family: &str,
-    ) -> Option<(Vec<u8>, HashMap<String, u32>, String, Vec<String>)> {
+    /// Built firmware: bytes, symbol table, CPU flag, and include dirs.
+    type FamilyFirmware = (Vec<u8>, HashMap<String, u32>, String, Vec<String>);
+
+    fn build_firmware_for_family(family: &str) -> Option<FamilyFirmware> {
         // Full CMSIS per-family: include Device header and do GPIO/USART/TIM/ADC via CMSIS
         let (cpu, define, header, pack_inc) = match family {
             "F0" => (
@@ -619,16 +620,15 @@ void reset(void){{
 }}
 "#
             ),
-            _ => format!(
-                r#"
+            _ => r#"
 #define OUT 0x20000800u
-void reset(void){{
+void reset(void){
     *(volatile unsigned*)OUT = 1u;
     *(volatile unsigned*)(0x20000808u)=0xdeadbeefu;
     __asm__ volatile("bkpt #0");
-}}
+}
 "#
-            ),
+            .to_string(),
         };
         let dir = env::temp_dir().join(format!(
             "vioarm-500-{}-{}",
@@ -663,7 +663,7 @@ void reset(void){{
         }
         let pack_str = Box::leak(pack_path.to_str().unwrap().to_owned().into_boxed_str()) as &str;
         let cmsis_str = Box::leak(cmsis_inc.to_str().unwrap().to_owned().into_boxed_str()) as &str;
-        let mut args: Vec<&str> = vec![
+        let args: Vec<&str> = vec![
             Box::leak(mcu_arg.into_boxed_str()) as &str,
             "-mthumb",
             "-ffreestanding",

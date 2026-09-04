@@ -10,22 +10,32 @@ env:
 
 jobs:
   build:
-    name: Build, test, and lint (${{ matrix.toolchain }})
-    runs-on: ubuntu-latest
+    name: Build, test, and lint (${{ matrix.os }}, ${{ matrix.toolchain }})
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
-        toolchain: ["1.75", "stable"]
+        os: [ubuntu-latest, macos-latest]
+        toolchain: ["1.83", "stable"]
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install qemu-system-arm + gcc-arm-none-eabi
+      - name: Install qemu-system-arm + gcc-arm-none-eabi (ubuntu)
+        if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
           sudo apt-get install -y qemu-system-arm gcc-arm-none-eabi
           qemu-system-arm --version
           arm-none-eabi-gcc --version
-          # ORACLE_VERSION 10.2.1 pinned in vioarm-qemu/src/qemu.rs:128 — verify
+          # ORACLE_VERSION 10.2.1 pinned in vioarm-qemu/src/qemu.rs — verify
           qemu-system-arm --version | grep -q "10.2.1" || echo "warn: qemu version not 10.2.1, see qemu.rs"
+
+      - name: Install qemu + gcc-arm-embedded (macos)
+        if: matrix.os == 'macos-latest'
+        run: |
+          brew install qemu gcc-arm-embedded
+          qemu-system-arm --version || echo "warn: qemu-system-arm not on PATH, oracle tests skip"
+          arm-none-eabi-gcc --version || echo "warn: arm-none-eabi-gcc not on PATH, CMSIS tests skip"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
@@ -40,7 +50,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ matrix.toolchain }}-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Format
         run: cargo fmt --check
@@ -55,14 +65,43 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Audit
-        if: matrix.toolchain == 'stable'
+        if: matrix.toolchain == 'stable' && matrix.os == 'ubuntu-latest'
         run: |
           cargo install cargo-audit cargo-deny --locked
           cargo audit
           cargo deny check --deny warnings
 
       - name: Coverage
-        if: matrix.toolchain == 'stable'
+        if: matrix.toolchain == 'stable' && matrix.os == 'ubuntu-latest'
         run: |
           cargo install cargo-llvm-cov --locked || true
           cargo llvm-cov --workspace --lcov --output-path lcov.info --fail-under-lines 85
+
+  book:
+    name: Build the mdbook
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mdbook
+        run: cargo install mdbook --locked
+
+      - name: Build book
+        run: mdbook build docs
+
+  publish:
+    name: Publish dry-run (vioarm-core)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Dry-run publish
+        # vioarm-core first: gdb/qemu/cli depend on it from crates.io, so
+        # they can only dry-run after core is really published (order and
+        # tokens are in RELEASING.md).
+        run: cargo publish --dry-run -p vioarm-core

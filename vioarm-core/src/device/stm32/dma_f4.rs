@@ -533,7 +533,7 @@ mod tests {
         write_word(&mut d, D1 + s_par(2), 0x4000_0400); // USART DR
         write_word(&mut d, D1 + s_m0ar(2), 0x2000_1000);
         write_word(&mut d, D1 + s_ndtr(2), 2);
-        write_word(&mut d, D1 + s_cr(2), (EN | TCIE | (1 << 9) | (1 << 10)));
+        write_word(&mut d, D1 + s_cr(2), EN | TCIE | (1 << 9) | (1 << 10));
         d.tick(1);
         assert_eq!(m.lock().unwrap_or_else(|e| e.into_inner()).len(), 2);
         assert_eq!(

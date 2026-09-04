@@ -30,11 +30,9 @@ impl Behavior for JpegBehavior {
             }
             return 0; // W1, reads 0
         }
-        if offset == 0x30 {
-            if word & CR_JCEN == 0 {
-                self.pending = false;
-                view.set(0x34, view.get(0x34) & !SR_EOCF);
-            }
+        if offset == 0x30 && word & CR_JCEN == 0 {
+            self.pending = false;
+            view.set(0x34, view.get(0x34) & !SR_EOCF);
         }
         if offset == 0x38 {
             // CFR at 0x38: CEOCF
@@ -114,14 +112,14 @@ mod tests {
     fn w(c: &mut Jpeg, off: u32, v: u32) {
         let b = c.ranges()[0].base;
         for i in 0..4 {
-            c.write(b + off + i, ((v >> 8 * i) & 0xFF) as u8).unwrap();
+            c.write(b + off + i, ((v >> (8 * i)) & 0xFF) as u8).unwrap();
         }
     }
     fn r(c: &mut Jpeg, off: u32) -> u32 {
         let b = c.ranges()[0].base;
         let mut v = 0;
         for i in 0..4 {
-            v |= u32::from(c.read(b + off + i).unwrap()) << 8 * i;
+            v |= u32::from(c.read(b + off + i).unwrap()) << (8 * i);
         }
         v
     }

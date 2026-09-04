@@ -9,6 +9,7 @@ use std::fmt;
 
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::Reader;
+use quick_xml::XmlVersion;
 
 /// The access vocabulary used by the supported SVD files.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -169,7 +170,9 @@ pub fn parse(xml: &str) -> Result<Model, ParseError> {
             }
             Ok(Event::Text(e)) => {
                 if capturing {
-                    let s = e.unescape().map_err(|e| ParseError(format!("xml: {e}")))?;
+                    let s = e
+                        .xml_content(XmlVersion::Implicit1_0)
+                        .map_err(|e| ParseError(format!("xml: {e}")))?;
                     text.push_str(&s);
                 }
             }
@@ -253,7 +256,7 @@ fn attr(e: &BytesStart<'_>, key: &[u8]) -> Option<String> {
     e.attributes()
         .flatten()
         .find(|a| a.key.as_ref() == key)
-        .and_then(|a| a.unescape_value().ok())
+        .and_then(|a| a.normalized_value(XmlVersion::Implicit1_0).ok())
         .map(|s| s.to_string())
 }
 

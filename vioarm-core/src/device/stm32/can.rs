@@ -90,12 +90,12 @@ const DLC: u32 = 0b1111;
 // Filter window layout (RM0008 §24.7, RM0090 §41.7). Offsets relative to
 // filter base 0x200: FMR 0x00, FM1R 0x04, FS1R 0x0C, FFA1R 0x14, FA1R 0x1C,
 // banks at 0x40 + 8*n (FR1, FR2). Indexes in the 0x80-word window.
-const FMR_IDX: usize = 0x00 / 4;
-const FM1R_IDX: usize = 0x04 / 4;
-const FS1R_IDX: usize = 0x0C / 4;
-const FFA1R_IDX: usize = 0x14 / 4;
-const FA1R_IDX: usize = 0x1C / 4;
-const BANK_BASE_IDX: usize = 0x40 / 4;
+const FMR_IDX: usize = 0;
+const FM1R_IDX: usize = 1;
+const FS1R_IDX: usize = 3;
+const FFA1R_IDX: usize = 5;
+const FA1R_IDX: usize = 7;
+const BANK_BASE_IDX: usize = 16;
 
 /// One captured frame: the four mailbox words exactly as firmware wrote them
 /// (or as they will be read from the FIFO). Transmissions and injected frames
@@ -602,13 +602,12 @@ impl Behavior for CanBehavior {
     }
 
     fn reset(&mut self) {
+        // Preserve is_can2 across reset, but clear filter.
         *self = Self {
             filter: Box::new([0u32; 0x80]),
             is_can2: self.is_can2,
             ..Self::default()
         };
-        // Preserve is_can2 across reset, but clear filter.
-        self.is_can2 = self.is_can2;
     }
 
     fn drive_inputs(&mut self, view: &mut Registers<&mut [u32]>, value: u32) {
@@ -674,8 +673,10 @@ impl Can {
     fn for_device<D: Device>(peripheral: &str, name: &'static str, is_can2: bool) -> Self {
         let def = D::peripheral(peripheral)
             .unwrap_or_else(|| panic!("generated tables contain {peripheral}"));
-        let mut beh = CanBehavior::default();
-        beh.is_can2 = is_can2;
+        let beh = CanBehavior {
+            is_can2,
+            ..CanBehavior::default()
+        };
         Self {
             inner: RegisterFile::new(def, beh),
             name,
@@ -1032,7 +1033,7 @@ mod tests {
 
     fn configure_mask_filter(c: &mut Can, bank: usize, id: u32, mask: u32, fifo: u8) {
         // FINIT=1 to allow config, then set bank.
-        write_word(c, FILTER_BASE + 0x00, 1); // FMR FINIT
+        write_word(c, FILTER_BASE, 1); // FMR FINIT
         write_word(c, FILTER_BASE + 0x1C, 1 << bank); // FA1R active
                                                       // Keep default 32-bit scale and mask mode (FS1R=1, FM1R=0)
         let mut fs1r = read_word(c, FILTER_BASE + 0x0C);
@@ -1049,11 +1050,11 @@ mod tests {
         let fr1_addr = FILTER_BASE + 0x40 + (bank as u32) * 8;
         write_word(c, fr1_addr, id);
         write_word(c, fr1_addr + 4, mask);
-        write_word(c, FILTER_BASE + 0x00, 0); // FINIT=0
+        write_word(c, FILTER_BASE, 0); // FINIT=0
     }
 
     fn configure_list_filter(c: &mut Can, bank: usize, id1: u32, id2: u32, fifo: u8) {
-        write_word(c, FILTER_BASE + 0x00, 1);
+        write_word(c, FILTER_BASE, 1);
         write_word(c, FILTER_BASE + 0x1C, 1 << bank);
         let mut fs1r = read_word(c, FILTER_BASE + 0x0C);
         fs1r |= 1 << bank;
@@ -1069,7 +1070,7 @@ mod tests {
         let fr1_addr = FILTER_BASE + 0x40 + (bank as u32) * 8;
         write_word(c, fr1_addr, id1);
         write_word(c, fr1_addr + 4, id2);
-        write_word(c, FILTER_BASE + 0x00, 0);
+        write_word(c, FILTER_BASE, 0);
     }
 
     #[test]
@@ -1141,8 +1142,8 @@ mod tests {
         c2.reset();
         // Configure bank0 for ID 0x111 (belongs to CAN1) and bank7 for 0x222 (belongs to CAN2)
         // Set CAN2SB=7
-        write_word(&mut c2, FILTER_BASE + 0x00, (7 << 8) | 1); // FMR CAN2SB=7 FINIT
-                                                               // Bank0
+        write_word(&mut c2, FILTER_BASE, (7 << 8) | 1); // FMR CAN2SB=7 FINIT
+                                                        // Bank0
         write_word(&mut c2, FILTER_BASE + 0x1C, 1 << 0); // FA1R bank0 active initially
         let mut fs1r = read_word(&mut c2, FILTER_BASE + 0x0C);
         fs1r |= 1 << 0 | 1 << 7;
@@ -1150,11 +1151,11 @@ mod tests {
         let mut fa1r = read_word(&mut c2, FILTER_BASE + 0x1C);
         fa1r |= 1 << 7;
         write_word(&mut c2, FILTER_BASE + 0x1C, fa1r);
-        write_word(&mut c2, FILTER_BASE + 0x40 + 0 * 8, 0x111);
-        write_word(&mut c2, FILTER_BASE + 0x40 + 0 * 8 + 4, 0xFFFF_FFFF);
+        write_word(&mut c2, FILTER_BASE + 0x40, 0x111);
+        write_word(&mut c2, FILTER_BASE + 0x40 + 4, 0xFFFF_FFFF);
         write_word(&mut c2, FILTER_BASE + 0x40 + 7 * 8, 0x222);
         write_word(&mut c2, FILTER_BASE + 0x40 + 7 * 8 + 4, 0xFFFF_FFFF);
-        write_word(&mut c2, FILTER_BASE + 0x00, 7 << 8); // FINIT=0 keep CAN2SB
+        write_word(&mut c2, FILTER_BASE, 7 << 8); // FINIT=0 keep CAN2SB
 
         write_word(&mut c2, 0x4000_6800 + 0x14, FMPIE0);
         // Frame matching bank0 should be dropped (belongs to CAN1)

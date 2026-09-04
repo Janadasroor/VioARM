@@ -458,7 +458,7 @@ impl FdcanBehavior {
     /// Update `TXFQS`/`TXBRP` from request/complete state.
     fn update_tx_status(&self, view: &mut Registers<&mut [u32]>) {
         let txbc = view.get(TXBC);
-        let total = (((txbc >> 16) & 0x3F) + ((txbc >> 24) & 0x7F)) as u32;
+        let total = ((txbc >> 16) & 0x3F) + ((txbc >> 24) & 0x7F);
         let used = (self.tx_pending | self.tx_outstanding).count_ones();
         view.set(TXFQS, (view.get(TXFQS) & !0x3F) | free_count(total, used));
         view.set(TXBRP, self.tx_pending | self.tx_outstanding);
@@ -483,22 +483,22 @@ impl Behavior for FdcanBehavior {
             IR => {
                 // Write-1-to-clear the pending interrupt flags.
                 view.set(IR, view.get(IR) & !word);
-                return view.get(IR);
+                view.get(IR)
             }
             TXBAR => {
                 // Request bits live in `tx_pending`/`TXBRP`; the register
                 // itself reads back zero so a later request cannot re-fire
                 // stale bits through the byte-lane merge.
                 self.tx_pending |= word;
-                return 0;
+                0
             }
             RXF0A => {
                 self.acknowledge_fifo(view, 0, (word & 0x7) as usize);
-                return 0;
+                0
             }
             RXF1A => {
                 self.acknowledge_fifo(view, 1, (word & 0x7) as usize);
-                return 0;
+                0
             }
             SIDFC | TXBC | RXF0C | RXF1C | TXESC | RXESC | GFC => {
                 if !Self::config_mode(view) {
@@ -528,27 +528,25 @@ impl Behavior for FdcanBehavior {
         self.rx_queue = deferred;
         // Request elements for newly pending TX buffers.
         let mut fresh = self.tx_pending & !self.tx_outstanding;
-        if fresh != 0 {
-            if self.mailbox.is_some() {
-                let txbc = view.get(TXBC);
-                let tbsa = self.ram_addr(txbc);
-                let elen = 8 + Self::data_bytes(view, true, 0);
-                let mb = self.mailbox.clone().expect("checked");
-                let mut mb = mb.lock().unwrap_or_else(|e| e.into_inner());
-                let mut bit = 0;
-                while fresh != 0 {
-                    if fresh & 1 != 0 {
-                        mb.reads.push(FdcanRead {
-                            addr: tbsa.wrapping_add(bit * elen as u32),
-                            len: elen.min(255) as u8,
-                            kind: 0,
-                            index: bit,
-                        });
-                        self.tx_outstanding |= 1 << bit.min(31);
-                    }
-                    bit += 1;
-                    fresh >>= 1;
+        if fresh != 0 && self.mailbox.is_some() {
+            let txbc = view.get(TXBC);
+            let tbsa = self.ram_addr(txbc);
+            let elen = 8 + Self::data_bytes(view, true, 0);
+            let mb = self.mailbox.clone().expect("checked");
+            let mut mb = mb.lock().unwrap_or_else(|e| e.into_inner());
+            let mut bit = 0;
+            while fresh != 0 {
+                if fresh & 1 != 0 {
+                    mb.reads.push(FdcanRead {
+                        addr: tbsa.wrapping_add(bit * elen as u32),
+                        len: elen.min(255) as u8,
+                        kind: 0,
+                        index: bit,
+                    });
+                    self.tx_outstanding |= 1 << bit.min(31);
                 }
+                bit += 1;
+                fresh >>= 1;
             }
         }
         // Complete TX buffers whose elements arrived.
@@ -1178,15 +1176,15 @@ impl Behavior for FdcanCutBehavior {
             CUT_TXBAR => {
                 self.tx_pending |= word & 0x7;
                 self.tx_put = self.tx_put.wrapping_add((word & 0x7).count_ones());
-                return word;
+                word
             }
             CUT_RXF0A => {
                 self.acknowledge_fifo(view, 0, (word & 0x7) as usize);
-                return 0;
+                0
             }
             CUT_RXF1A => {
                 self.acknowledge_fifo(view, 1, (word & 0x7) as usize);
-                return 0;
+                0
             }
             CUT_RXGFC => {
                 self.std_filters.clear();
@@ -1436,7 +1434,7 @@ mod tests {
     }
 
     /// Serve one bus drain by hand: reads come from `ram`, writes land there.
-    fn drain(mb: &Arc<Mutex<FdcanMailbox>>, ram: &mut Vec<u8>, base: u32) {
+    fn drain(mb: &Arc<Mutex<FdcanMailbox>>, ram: &mut [u8], base: u32) {
         let mut mb = mb.lock().unwrap();
         let reads: Vec<FdcanRead> = mb.reads.drain(..).collect();
         for r in reads {
@@ -1504,7 +1502,7 @@ mod tests {
     #[test]
     fn rx_reject_without_matching_filter() {
         let (mut f, mb) = with_mailbox();
-        let mut ram = vec![0u8; 0x1000];
+        let ram = vec![0u8; 0x1000];
         write_word(&mut f, CCCR, CCCR_INIT | CCCR_CCE | (1 << 7));
         // One exact filter for 0x100 -> FIFO0, at FLSSA 0x20000300.
         // SFT=01 (dual), SFEC=1 (FIFO0), SFID1=0x100.
@@ -1565,7 +1563,7 @@ mod tests {
     }
 
     /// Serve one bus drain against `ram` at `base`.
-    fn cut_drain(mb: &Arc<Mutex<FdcanMailbox>>, ram: &mut Vec<u8>, base: u32) {
+    fn cut_drain(mb: &Arc<Mutex<FdcanMailbox>>, ram: &mut [u8], base: u32) {
         let mut mb = mb.lock().unwrap();
         let reads: Vec<FdcanRead> = mb.reads.drain(..).collect();
         for r in reads {

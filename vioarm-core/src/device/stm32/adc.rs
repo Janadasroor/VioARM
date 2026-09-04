@@ -467,7 +467,7 @@ impl Behavior for AdcBehavior {
         let continuous = view.get(self.config.cr_off) & CONT != 0;
         let scan = view.get(CR1) & SCAN != 0;
         let len = self.sequence_len(view);
-        let at_end = !continuous && !(scan && self.sq_index + 1 < len);
+        let at_end = !continuous && (!scan || self.sq_index + 1 >= len);
         if at_end && view.get(CR1) & JAUTO != 0 {
             self.start_injected(view);
             return;
@@ -1186,7 +1186,7 @@ mod tests {
         write_word(&mut adc, CR2, ADON | SWSTART_F1); // regular ch0
         adc.tick(5); // partially through
                      // Inject now.
-        write_word(&mut adc, super::JSQR_OFFSET, (3 << 15)); // JL=0: ch3 only
+        write_word(&mut adc, super::JSQR_OFFSET, 3 << 15); // JL=0: ch3 only
         write_word(&mut adc, CR2, ADON | JSWSTART_F1);
         adc.tick(14);
         assert_eq!(read_word(&mut adc, super::JDR1_OFFSET), 0x111);
@@ -1202,8 +1202,8 @@ mod tests {
     fn jauto_starts_injected_after_regular() {
         let mut adc = Adc::adc1();
         adc.drive_inputs(0x222);
-        write_word(&mut adc, super::JSQR_OFFSET, (6 << 15)); // injected ch6
-                                                             // JAUTO bit 10 + scan-less single regular conversion.
+        write_word(&mut adc, super::JSQR_OFFSET, 6 << 15); // injected ch6
+                                                           // JAUTO bit 10 + scan-less single regular conversion.
         write_word(&mut adc, CR1, 1 << 10);
         write_word(&mut adc, CR2, ADON);
         write_word(&mut adc, CR2, ADON | SWSTART_F1);
@@ -1324,7 +1324,7 @@ mod tests {
         // CSR mirrors
         let mut csr = 0u32;
         for i in 0..4 {
-            csr |= u32::from(c_adc.read(base_c + 0x00 + i).unwrap()) << (8 * i);
+            csr |= u32::from(c_adc.read(base_c + i).unwrap()) << (8 * i);
         }
         assert_ne!(csr & (1 << 1), 0, "CSR EOC1");
         assert_ne!(csr & (1 << 9), 0, "CSR EOC2");

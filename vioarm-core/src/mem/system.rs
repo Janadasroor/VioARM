@@ -1638,13 +1638,16 @@ mod tests {
 
     impl InterruptSource for Ticker {}
 
-    fn timed_system() -> (
+    /// A clocked test bus plus its shared clock and tick counters.
+    type TimedSystem = (
         SystemMemory<FlatMemory>,
         std::sync::Arc<std::sync::Mutex<crate::device::stm32::rcc::ClockState>>,
         std::sync::Arc<std::sync::Mutex<u64>>,
         std::sync::Arc<std::sync::Mutex<u64>>,
         std::sync::Arc<std::sync::Mutex<u64>>,
-    ) {
+    );
+
+    fn timed_system() -> TimedSystem {
         use crate::device::stm32::rcc::ClockState;
         let clock = ClockState::shared();
         let mut sys = SystemMemory::new(ram());

@@ -6,7 +6,7 @@ members = ["vioarm-core", "vioarm-cli", "vioarm-svd", "vioarm-gdb", "vioarm-qemu
 version = "1.9.1"
 edition = "2021"
 license = "MIT"
-rust-version = "1.75"
+rust-version = "1.83"
 description = "ARM Cortex-M ISS — ARMv6-M/ARMv7-M/ARMv7E-M/ARMv8-M baseline with FPv5-D16, validated against QEMU"
 repository = "https://github.com/Janadasroor/VioARM"
 homepage = "https://github.com/Janadasroor/VioARM"
@@ -22,7 +22,7 @@ dead_code = "allow"
 unused_variables = "allow"
 
 [workspace.lints.clippy]
-all = "warn"
+all = { level = "warn", priority = -1 }
 pedantic = "allow"
 nursery = "allow"
 too_many_arguments = "allow"

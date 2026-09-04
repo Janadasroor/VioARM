@@ -287,7 +287,7 @@ fn build_firmware_for(
     let src = src.to_str().ok_or("temp path not UTF-8")?;
     let obj = obj.to_str().ok_or("temp path not UTF-8")?;
     let cpu_arg = format!("-mcpu={cpu}");
-    let mut float_args: Vec<&str> = if vfp {
+    let float_args: Vec<&str> = if vfp {
         vec!["-mfloat-abi=softfp", "-mfpu=fpv4-sp-d16"]
     } else if is_gcc {
         vec!["-mfloat-abi=soft"]
@@ -4160,7 +4160,7 @@ fn stm32h743_firmware_does_f64() {
     let lo = m.core.mem().read_word(RAM).unwrap();
     let hi = m.core.mem().read_word(RAM + 4).unwrap();
     let bits = (u64::from(hi) << 32) | u64::from(lo);
-    let expect = (3.141592653589793f64 + 2.718281828459045f64).to_bits();
+    let expect = (std::f64::consts::PI + std::f64::consts::E).to_bits();
     assert_eq!(bits, expect, "got {bits:#x} want {expect:#x}");
 }
 const STM32H743_F64_CVT_FW: &str = r#"

@@ -615,16 +615,19 @@ impl Peripheral for Usb {
             }
             // HCCHAR at 0x100 + 0x20*ch: CHEN bit 31 enables host channel,
             // latches HCINT XFRC and raises host GINT in host mode.
-            if off & !3 >= 0x100 && off & !3 < 0x300 && (off & !3).wrapping_sub(0x100) % 0x20 == 0 {
-                if word & (1 << 31) != 0 && self.g.get(GUSBCFG) & FDMOD == 0 {
-                    self.state.host_pending = true;
-                    // set HCINT XFRC bit 0 at offset +8
-                    let hcint_off = (off & !3) + 8;
-                    if self.h.def.registers.iter().any(|r| r.offset == hcint_off) {
-                        let mut v = self.h.get(hcint_off);
-                        v |= 1;
-                        self.h.set(hcint_off, v);
-                    }
+            if off & !3 >= 0x100
+                && off & !3 < 0x300
+                && (off & !3).wrapping_sub(0x100) % 0x20 == 0
+                && word & (1 << 31) != 0
+                && self.g.get(GUSBCFG) & FDMOD == 0
+            {
+                self.state.host_pending = true;
+                // set HCINT XFRC bit 0 at offset +8
+                let hcint_off = (off & !3) + 8;
+                if self.h.def.registers.iter().any(|r| r.offset == hcint_off) {
+                    let mut v = self.h.get(hcint_off);
+                    v |= 1;
+                    self.h.set(hcint_off, v);
                 }
             }
             return write_latch(&mut self.h, addr - (base + HOST_OFFSET), val);

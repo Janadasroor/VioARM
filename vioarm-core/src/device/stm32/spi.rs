@@ -179,13 +179,9 @@ impl Behavior for SpiBehavior {
             if word & SPE != 0 && view.get(SR) & MODF != 0 {
                 view.set(SR, view.get(SR) & !MODF);
             }
-            // CRCNEXT is a request consumed by the *next* frame start.
-            let stored = if self.crc_send_pending && word & CRCNEXT != 0 {
-                word
-            } else {
-                word
-            };
-            return stored;
+            // CRCNEXT is a request consumed by the *next* frame start,
+            // so the stored word is unchanged here either way.
+            return word;
         }
         if offset == DR {
             let cr1 = view.get(CR1);
@@ -692,7 +688,7 @@ mod tests {
         let expect = {
             let mut crc: u16 = 0xFF;
             for bit in (0..8).rev() {
-                let next = u16::from((0x01u16 >> bit) & 1);
+                let next = (0x01u16 >> bit) & 1;
                 let msb = (crc >> 7) & 1;
                 crc = (crc << 1) & 0xFF;
                 if msb != next {
@@ -706,7 +702,7 @@ mod tests {
         let expect_rx = {
             let mut crc: u16 = 0xFF;
             for bit in (0..8).rev() {
-                let next = u16::from((0x00u16 >> bit) & 1);
+                let next = (0x00u16 >> bit) & 1;
                 let msb = (crc >> 7) & 1;
                 crc = (crc << 1) & 0xFF;
                 if msb != next {
@@ -735,7 +731,7 @@ mod tests {
     /// SPI frames until audio mode is left.
     #[test]
     fn i2s_mode_gates_spi_frames() {
-        use crate::device::{InterruptSource as _, Peripheral as _};
+        use crate::device::Peripheral as _;
         let mut spi = Spi::spi2();
         write_word(&mut spi, super::I2SCFGR, 1 << 11); // I2SMOD
         write_word(&mut spi, CR1, SPE | MSTR);

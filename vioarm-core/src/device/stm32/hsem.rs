@@ -43,7 +43,7 @@ impl Hsem {
     pub fn new_for<D: Device>() -> Self {
         let def = D::peripheral("HSEM").expect("HSEM");
         Self {
-            inner: RegisterFile::new(def, HsemBehavior::default()),
+            inner: RegisterFile::new(def, HsemBehavior),
         }
     }
 }
@@ -86,14 +86,14 @@ mod tests {
     fn w(c: &mut Hsem, off: u32, v: u32) {
         let b = c.ranges()[0].base;
         for i in 0..4 {
-            c.write(b + off + i, ((v >> 8 * i) & 0xFF) as u8).unwrap();
+            c.write(b + off + i, ((v >> (8 * i)) & 0xFF) as u8).unwrap();
         }
     }
     fn r(c: &mut Hsem, off: u32) -> u32 {
         let b = c.ranges()[0].base;
         let mut v = 0;
         for i in 0..4 {
-            v |= u32::from(c.read(b + off + i).unwrap()) << 8 * i;
+            v |= u32::from(c.read(b + off + i).unwrap()) << (8 * i);
         }
         v
     }

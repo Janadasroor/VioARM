@@ -3501,9 +3501,10 @@ fn code_bytes(a: &Asm) -> Vec<u8> {
 /// little-endian words at `addr`, using r0 as the address and r1 as the word.
 fn store_bytes(a: &mut Asm, addr: u32, bytes: &[u8]) {
     let mut buf = bytes.to_vec();
-    while !buf.len().is_multiple_of(4) {
-        buf.push(0);
-    }
+    // Zero-pad to a word multiple without `usize::is_multiple_of` (Rust
+    // 1.87; the MSRV is 1.83).
+    let pad = (4 - buf.len() % 4) % 4;
+    buf.extend(core::iter::repeat_n(0, pad));
     for (i, chunk) in buf.chunks(4).enumerate() {
         let mut w = [0u8; 4];
         w.copy_from_slice(chunk);

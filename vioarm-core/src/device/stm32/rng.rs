@@ -88,17 +88,9 @@ impl Behavior for RngBehavior {
     }
     fn tick(&mut self, view: &mut Registers<&mut [u32]>, _d: u64) {
         if self.pending {
-            let sr_off = if view.try_get(0x04).is_some() && view.try_get(0x08).is_some() {
-                // H7: SR at 0x04, DR at 0x08
-                0x04
-            } else {
-                0x04
-            };
-            let dr_off = if view.try_get(0x08).is_some() {
-                0x08
-            } else {
-                0x08
-            };
+            // H7 and F1 agree: SR at 0x04, DR at 0x08.
+            let sr_off = 0x04;
+            let dr_off = 0x08;
             let rnd = self.next();
             view.set(sr_off, view.get(sr_off) | SR_DRDY);
             view.set(dr_off, rnd);
@@ -176,14 +168,14 @@ mod tests {
     fn w(c: &mut Rng, off: u32, v: u32) {
         let b = c.ranges()[0].base;
         for i in 0..4 {
-            c.write(b + off + i, ((v >> 8 * i) & 0xFF) as u8).unwrap();
+            c.write(b + off + i, ((v >> (8 * i)) & 0xFF) as u8).unwrap();
         }
     }
     fn r(c: &mut Rng, off: u32) -> u32 {
         let b = c.ranges()[0].base;
         let mut v = 0;
         for i in 0..4 {
-            v |= u32::from(c.read(b + off + i).unwrap()) << 8 * i;
+            v |= u32::from(c.read(b + off + i).unwrap()) << (8 * i);
         }
         v
     }

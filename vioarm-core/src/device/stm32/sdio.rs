@@ -366,7 +366,7 @@ impl InterruptSource for Sdio {
 }
 #[cfg(test)]
 mod tests {
-    use super::{sd_crc16, Sdio, CMD, DCTRL, DLEN, DTIMER, FIFO};
+    use super::{sd_crc16, Sdio, CMD, FIFO};
     use crate::device::svd::stm32f103::Stm32f103;
     use crate::device::svd::Device;
     use crate::device::{InterruptSource, Peripheral};
@@ -457,7 +457,7 @@ mod tests {
         assert_eq!(sd_crc16(b"123456789"), 0x31C3);
         // Prime the card image with that pattern.
         {
-            let mut b = s.inner_behavior_card();
+            let b = s.inner_behavior_card();
             for (i, byte) in b"123456789".iter().enumerate() {
                 b[i] = *byte;
             }

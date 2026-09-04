@@ -504,7 +504,7 @@ impl Eth {
             return Ok(());
         }
         // PTPTSHUR/PTPTSLUR update time (add offset)
-        if off >= 0x10 && off < 0x18 {
+        if (0x10..0x18).contains(&off) {
             // Latch write then apply to current time on write to PTPTSLUR high byte
             write_latch(&mut self.ptp, off, val)?;
             if off == 0x17 {
@@ -1303,7 +1303,7 @@ mod tests {
         enable_rx(&mut mem);
         let dest: [u8; 6] = [0x01, 0x00, 0x5E, 0x00, 0x00, 0x01]; // IPv4 mcast
         let idx = super::eth_hash(&dest);
-        let mut word = if idx < 32 {
+        let word = if idx < 32 {
             super::MACHTLR
         } else {
             super::MACHTHR
@@ -1318,7 +1318,6 @@ mod tests {
                 1 << idx
             },
         );
-        word = 0; // silence unused warnings in cfg paths below
         write_word(&mut mem, MAC + super::MACFFR, 1 << 2); // HM
         rx_ring(&mut mem, RAM + 0x400);
         inject_frame(&mut mem, &dest);
@@ -1351,8 +1350,8 @@ mod tests {
         let base = EthH7::new_for::<Stm32h743>().ranges()[0].base;
         assert_eq!(base, 0x4002_8000, "H7 MAC window");
         // MACCR / MACFFR-style config round-trips through the latch.
-        write_word(&mut mem, base + 0x00, 0x0000_004C); // RE|TE|FES|DM
-        assert_eq!(read_word(&mut mem, base + 0x00), 0x0000_004C);
+        write_word(&mut mem, base, 0x0000_004C); // RE|TE|FES|DM
+        assert_eq!(read_word(&mut mem, base), 0x0000_004C);
         write_word(&mut mem, base + 0x04, 1 << 31); // RA
         assert_eq!(read_word(&mut mem, base + 0x04), 1 << 31);
     }

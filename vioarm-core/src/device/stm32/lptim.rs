@@ -262,7 +262,7 @@ mod tests {
         let b = c.ranges()[0].base;
         for i in 0..4 {
             #[allow(clippy::cast_possible_truncation)]
-            c.write(b + off + i, ((v >> 8 * i) & 0xFF) as u8).unwrap();
+            c.write(b + off + i, ((v >> (8 * i)) & 0xFF) as u8).unwrap();
         }
     }
 
@@ -270,7 +270,7 @@ mod tests {
         let b = c.ranges()[0].base;
         let mut v = 0;
         for i in 0..4 {
-            v |= u32::from(c.read(b + off + i).unwrap()) << 8 * i;
+            v |= u32::from(c.read(b + off + i).unwrap()) << (8 * i);
         }
         v
     }

@@ -1,0 +1,34 @@
+# cargo-deny configuration: what CI enforces (`cargo deny check`).
+#
+# Licenses: every third-party license in the tree is reviewed here. `colored`
+# is the only MPL-2.0 crate (CLI output colors; weak file-level copyleft, no
+# static-link contagion concern for an MIT binary). `Unlicense` duals
+# (aho-corasick, memchr, same-file, walkdir, winapi-util) are public-domain
+# dedications. Everything else is MIT/Apache-2.0/BSD-2-Clause/Unicode-3.0.
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Unicode-3.0",
+    "MPL-2.0",
+    "Unlicense",
+]
+exceptions = []
+
+# Bans: duplicate versions are allowed only where the tree forces them.
+# `windows-sys` 0.59/0.61 arrive via disjoint transitive parents and never
+# compile on the Linux/macOS targets CI covers.
+[bans]
+multiple-versions = "allow"
+skip = [
+    { crate = "windows-sys@0.59.0", reason = "disjoint transitive parents; non-Linux only" },
+    { crate = "windows-sys@0.61.2", reason = "disjoint transitive parents; non-Linux only" },
+]
+
+# Advisories: default levels (unpatched vulnerabilities and yanked crates
+# fail the check); `cargo audit` runs the same database.
+[advisories]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

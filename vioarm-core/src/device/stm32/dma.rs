@@ -108,6 +108,8 @@ impl DmaRequests {
     }
 
     /// The asserted peripheral→memory request mask, for host inspection.
+    /// (Named for the field it reads; not a `From` conversion.)
+    #[allow(clippy::wrong_self_convention)]
     #[must_use]
     pub(crate) const fn from_periph(&self) -> u32 {
         self.from_periph

@@ -1,4 +1,4 @@
-use crate::device::svd::{Behavior, PeripheralDef, RegisterFile, Registers};
+use crate::device::svd::{Behavior, RegisterFile, Registers};
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
 use crate::mem::bus::Region;
