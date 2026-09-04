@@ -133,6 +133,7 @@ Tooling:
 - **Done — M6 F4** (2026-08-26): `benches/mips.rs:1` `board_boot` 10k nop `stm32f103_boot_10k_nop` + `nop_loop_1k` ±5% gated vs H743 `DWT` 168 MHz, `f4_validation.rs:1` `bench_mips`/`board_boot`/`etm_proxy` 3 tests green.
 - **Done — M6 F5** (2026-08-26): 12 chip tables (4 new F1 `stm32f100/101/102/105`), `board::all_chips()` + `core_only_board()` `NoBehavior` latch, `f5_all_chips.rs:1` all-chips `BKPT` smoke on cycle-accurate core green; **M6 closed**.
 - **Done — post-M6 one-by-one (2026-08-30)**: `H743 COMP1@0x58003800 H7 CFGR` `ADC3_Common@0x58026300` `ADC1_2@50000300` `F030/F031 ADC@0x40012400 ISR ADRDY` `F303 COMP/OPAMP/TSC CAN@0x40006400 USB_FS@0x40005C00 ADC1_2 CCR` `TIM4/8/15/16/17/20` `H743 TIM15-17` `L476/G474` fallback latch — `21 SVDs 500 Dnames 0 Reserved` `sbom.json 1.9.1` `ci qemu 10.2.1 deny --deny warnings` `cpu BTreeMap` `dma burst delta` — `615` lib `73` conformance green.
+- **Done — WP7 release hardening (2026-09-04)**: `clippy --workspace --all-targets -- -D warnings` zero-warning on stable (1.98) + MSRV 1.83 (2 real finds: BDMA zero-count optimism stated, CAN reset self-assign removed); MSRV `1.75→1.83` (`const_mut_refs` + exclusive ranges; `clap→4.5.37` so pre-1.85 cargo parses); `quick-xml 0.36→0.41` clears 2 high RUSTSECs (tables regenerate identically); `deny.toml` reviewed policy; CI = ubuntu+macos × 1.83/stable + windows build + mdbook + publish dry-run + lcov artifact, all green; oracle gate (`qemu_is_oracle`, proven `[10.2.1, 8.2.2]`, foreign QEMU skips) — `643` lib + `76` conformance green, coverage `85.64%` lines. `RELEASING.md` holds the publish order + signed-tag procedure (both human steps).
 
 ## Plan to production — `v1.9.1 → v2.0`
 
@@ -354,6 +355,9 @@ Effort: 1ah.
 Acceptance: deliberately introduce a lint failure / coverage drop / vulnerable
 dep on a scratch branch → CI red on each axis.
 Effort: 5ah.
+Status DONE 2026-09-04 (WP7): deny runs without `|| true`, coverage gate +
+lcov artifact live, clippy `-D warnings` zero-warning, audit clean, oracle
+pin (`ORACLE_VERSION`/`ORACLE_VERSIONS`) printed in CI logs.
 
 ### WP-C2 Fuzzing
 
@@ -412,6 +416,8 @@ Effort: 5ah.
 Acceptance: either shipped with equivalence proof or closed with measured
 justification.
 Effort: 16ah stretch.
+Status: superseded by M7 — G1 takes the bench gate, G2 takes this package
+with the hardened guard, G3 takes the JIT question as a spike.
 
 ---
 
@@ -462,7 +468,8 @@ Effort: 6ah.
   measurement table.
 - Platform CI: linux (existing) + macos + windows build jobs (no QEMU on
   windows-runners requirement — conformance job stays linux-only, others
-  cross-platform).
+  cross-platform). DONE 2026-09-04 (WP7: ubuntu+macos × 1.83/stable full
+  legs, windows build+lint leg, oracle gate skips foreign QEMU).
 - Stability: golden-trace snapshot tests per board boot to catch unintended
   model drift between releases.
 Acceptance: policy section in book; platform jobs green; snapshots in tree.
@@ -503,6 +510,143 @@ Research on `Known limitations` → high-fidelity framework. Extends `M1` DWT CP
 - Acceptance met: regenerate test passes for all 12, `f5_all_chips.rs` smoke boots each chip to `BKPT` on the cycle-accurate core (`nop`=1c after zeroing family `FLASH_ACR`), full workspace green.
 - Remaining `<device>` variants (95 pdsc entries) are SVD-shared with these 11; per-variant tables reopen only if a customer scenario needs variant-specific register deltas.
 Effort: 4ah.
+
+---
+
+## M7 — Throughput (target `v3.1`, ~6 agent-days)
+
+Measured baseline 2026-09-04: ~4.5 MIPS release (`nop_loop_1k`). QEMU TCG
+is 50–100× faster; Renode-class interpreters are at parity today. Goal is
+Renode-beating throughput with the determinism and equivalence guarantees
+intact — never raw speed at the cost of either.
+
+### WP-G1 Bench gate + profile (closes M4-D1)
+
+- Benches in CI (stable leg): `nop_loop_1k` + `stm32f103_boot_10k_nop`;
+  baselines recorded in `vioarm-core/benches/`; >15% regressions fail CI
+  (criterion baselines compared in the bench job).
+- Profile the interpreter off-CI (`perf` flamegraph), commit the hot-spot
+  ranking as the G2 work list (expected: fetch/decode/match dispatch,
+  bus attach scan, register-file merge).
+Acceptance: bench job green with recorded baselines; profile notes in tree.
+Effort: 6ah.
+
+### WP-G2 Dispatch-cache interpreter (supersedes M4-D2 stretch)
+
+- No threaded-gotos (not stable Rust): PC→decoded-op dispatch cache,
+  inlined hot execute paths, sequential-flow fetch specialization; behind a
+  `fast-dispatch` feature flag, default off until proven.
+- Guard (M4-D2's rule, hardened): the whole conformance suite runs twice
+  (canonical vs fast), traces byte-identical; plus a fuzz differential on
+  the decoder.
+- Target 3–5× (→15–20 MIPS); if <2× measured, close with justification
+  instead of shipping the complexity.
+Acceptance: flag-gated, equivalence proof green, bench delta recorded.
+Effort: 20ah.
+
+### WP-G3 JIT research spike (go/no-go, NOT committed)
+
+- Evaluate a pure-Rust backend (cranelift; no LLVM dependency) for Thumb-2
+  basic-block JIT behind the same equivalence harness; measure speedup vs
+  complexity/binary-size/build-time cost.
+- Acceptance: spike report + go/no-go decision; no code merged unless ≥10×
+  with the equivalence proof. Default outcome: no-go (interpreter + G2 is
+  the product).
+Effort: 12ah spike.
+
+---
+
+## M8 — Complex-IP depth (target `v3.2`, ~8 agent-days)
+
+### WP-H1 USB host-mode scheduler
+
+- Spec (RM0008 §30 / RM0433 §38 host chapters): OTG_FS host channels
+  (`HCCHAR`/`HCINT` per channel, `GINT` host bit), SOF scheduling, bulk +
+  interrupt transfers against an in-tree virtual-device model (loopback).
+- Acceptance: host-mode enumeration e2e against the virtual device
+  (`GET_DESCRIPTOR`/`SET_ADDRESS`/`SET_CONFIGURATION` through host
+  channels); existing device-mode suite green.
+Effort: 20ah.
+
+### WP-H2 H7 Ethernet behavioral
+
+- Spec: promote `EthH7` from stub to descriptor rings following the F1 `Eth`
+  pattern (`system.rs` mailbox discipline): TX/RX descriptor rings,
+  `MACFFR` filter incl. hash table, RX store-and-latch; checksum offload is
+  latch-or-model per measured need, documented either way.
+- Acceptance: static-IP echo e2e (ARP + ICMP or UDP echo) on the `h743`
+  board; F1 ETH suite green.
+Effort: 16ah.
+
+### WP-H3 Crypto behaviors (closes U585/G041 gaps)
+
+- Spec: AES (`CR`/`DINR`/`DOUTR`/key regs, ECB + CBC) and SAES/HASH
+  (SHA-256) on U5, AES on G0; cipher core must be constant-time — evaluate
+  the `aes` crate (new dep: `deny`/`audit` review required) vs hand-rolled,
+  decisione recorded.
+- Acceptance: NIST CAVP spot vectors e2e through the peripheral (ECB + CBC
+  encrypt/decrypt round-trip), not just the core fn.
+Effort: 16ah.
+
+### WP-H4 Radio link-layer abstraction (bounded, after M9-I2)
+
+- Explicitly NOT RF physics/propagation/timing: a virtual-peer model —
+  frames written to TX appear on the peer `Machine`'s RX via the
+  multi-machine fabric, star/pair topology in the harness.
+- WBA BLE: ADV event send/receive between two virtual peers; SUBGHZ packet
+  TX/RX loopback (window already wired via `Subghz::new_wl`).
+- Acceptance: two-machine ping-pong e2e; single-machine loopback where no
+  peer is attached.
+Effort: 16ah.
+
+---
+
+## M9 — Ecosystem (target `v3.3`, ~5 agent-days)
+
+### WP-I1 Hook/trace plugin API
+
+- In-process hook registry on `Machine`: pre/post-instruction (PC-range
+  filtered), memory read/write watchpoints with callbacks,
+  peripheral-access events; CLI `--trace jsonl` streaming. Rust API only —
+  no dynamic-plugin ABI (an `.so` boundary is a versioning trap; rationale
+  recorded).
+- Acceptance: hooks drive a block-coverage profiling example asserted in
+  e2e; overhead <10% with no hooks armed, measured in benches.
+Effort: 14ah.
+
+### WP-I2 Multi-machine fabric
+
+- Two or more `Machine` instances, virtual wires (USART TX→RX, CAN bus with
+  arbitration-by-ID, SPI controller/peripheral pairs), one deterministic
+  lockstep scheduler (all machines tick together; no threads, ever).
+- Acceptance: two-board UART ping-pong + CAN arbitration e2e; determinism
+  test (run twice, byte-identical traces).
+Effort: 16ah.
+
+### WP-I3 Framework integration
+
+- pytest harness template (build image → run → assert drain channels),
+  Robot Framework keyword doc, `vioarm replay` CLI (golden-trace
+  record/replay + diff).
+- Acceptance: example pytest suite green in CI; replay detects a
+  deliberately mutated model.
+Effort: 10ah.
+
+---
+
+## M10 — A-profile exploratory (far horizon, NOT committed)
+
+### WP-J1 Feasibility spike (go/no-go gate)
+
+- Question: full ARMv7-A (stage-1 MMU, GIC distributor, generic timers) to
+  a Linux shell prompt — versus embedding QEMU for A-profile and keeping
+  VioARM M-profile-only.
+- Spike bounds: decode subset + MMU page-table walk + identity-mapped
+  hello-world. No Linux boot inside the spike.
+- Acceptance: spike report with measured cost projection; steering decision
+  recorded. Default: no-go (A-profile stays a non-goal; document QEMU-embed
+  interop instead).
+Effort: 12ah spike.
 
 ---
 
@@ -748,9 +892,11 @@ All three former open questions are resolved by the plan above:
 
 ## Non-goals (for now)
 
-- JIT compilation (deferred; any future fast path requires
-  interpreter-versus-JIT divergence tests — see WP-D2's guard).
-- ARM (A-profile) support.
+- JIT compilation as an unguarded default (throughput is M7-committed, but
+  every fast path ships only under the interpreter-equivalence guard — see
+  WP-G2/G3; M4-D2's stretch rule stands).
+- ARM (A-profile) support as a product commitment (M10 is a gated research
+  spike with an explicit no-go default; see WP-J1).
 - H743 dual-core (CM4 companion), display/audio behavioral stacks (LTDC/
   DMA2D/SAI/DFSDM stay latch-only per WP-B6 unless a written customer
   scenario reopens them), gate-level or cycle-accurate silicon modeling,
