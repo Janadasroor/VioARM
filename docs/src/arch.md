@@ -4,5 +4,5 @@
 - `RegisterFile` + `Behavior` + SVD tables (`vioarm-svd`)
 - `DWT` `cyccnt`, `SCB` `MPU` `TrustZone`, `FPU` softfloat
 - Determinism: single-threaded, `BTreeMap`, no `HashMap` in state
-- Clocks: `RCC` `HPRE/PPRE` decode → shared `ClockState` → `APB` timer-kernel ratios (×2 rule, exact fractional carry); `FLASH_ACR` wait states + `AXI/FMC` fetch latency priced in core `cyccnt`
+- Clocks: family-aware `RCC` (`F1`/`F4`/`H7` layouts, `SW`+PLL → `SYSCLK` Hz, `H7` `TIMPRE`) → shared `ClockState` → `APB` timer-kernel ratios (×2/×4 rules, exact fractional carry) + `SysTick` `CLKSOURCE` (`HCLK` or `HCLK`/8, `D1CPRE` on `H7`); `FLASH_ACR` wait states + `AXI/FMC` fetch latency priced in core `cyccnt`. `HSE` assumed `8M` (`25M` `H7`); downstream clock gating deliberately unenforced
 - Per-Dname model: 21 donor `PERIPHERALS` + removal deltas (`per_dname.rs`, 505 Dnames), filtered at runtime — no per-chip table copies

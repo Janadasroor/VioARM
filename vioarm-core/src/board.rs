@@ -72,9 +72,11 @@ pub const UART_BASE: u32 = 0x4000_1000;
 pub fn virtual_board() -> BoardMemory {
     let backing = FlatMemory::with_layout(&[FLASH, RAM], &[FLASH_LEN, RAM_LEN]);
     let mut mem = SystemMemory::new(backing);
+    let clock = ClockState::shared();
+    mem.set_clock(clock.clone());
     mem.attach(Box::new(Gpio::at(GPIO_BASE)));
     mem.attach(Box::new(UartTx::at(UART_BASE)));
-    mem.attach(Box::new(SysTick::new()));
+    mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
     mem.attach(Box::new(Dwt::new()));
     mem
 }
@@ -203,7 +205,7 @@ pub fn stm32f103() -> BoardMemory {
         }
     }
     mem.attach(Box::new(Dwt::new()));
-    mem.attach(Box::new(SysTick::new()));
+    mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
     mem
 }
 
@@ -327,7 +329,7 @@ pub fn stm32f107() -> BoardMemory {
         }
     }
     mem.attach(Box::new(Dwt::new()));
-    mem.attach(Box::new(SysTick::new()));
+    mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
     mem
 }
 
@@ -446,7 +448,7 @@ pub fn stm32f407() -> BoardMemory {
         }
     }
     mem.attach(Box::new(Dwt::new()));
-    mem.attach(Box::new(SysTick::new()));
+    mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
     mem
 }
 
@@ -583,7 +585,7 @@ fn f4_full_board(flash_len: u32, ram_len: u32, ccm_len: u32) -> BoardMemory {
         }
     }
     mem.attach(Box::new(Dwt::new()));
-    mem.attach(Box::new(SysTick::new()));
+    mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
     mem
 }
 
@@ -701,7 +703,7 @@ fn f0_full_board(flash_len: u32, ram_len: u32) -> BoardMemory {
         }
     }
     mem.attach(Box::new(Dwt::new()));
-    mem.attach(Box::new(SysTick::new()));
+    mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
     mem
 }
 fn g4_full_board(flash_len: u32, ram_len: u32) -> BoardMemory {
@@ -791,7 +793,7 @@ fn g4_full_board(flash_len: u32, ram_len: u32) -> BoardMemory {
         }
     }
     mem.attach(Box::new(Dwt::new()));
-    mem.attach(Box::new(SysTick::new()));
+    mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
     mem
 }
 fn l4_full_board(flash_len: u32, ram_len: u32) -> BoardMemory {
@@ -868,7 +870,7 @@ fn l4_full_board(flash_len: u32, ram_len: u32) -> BoardMemory {
         }
     }
     mem.attach(Box::new(Dwt::new()));
-    mem.attach(Box::new(SysTick::new()));
+    mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
     mem
 }
 
@@ -1019,7 +1021,7 @@ pub fn stm32f072() -> BoardMemory {
         }
     }
     mem.attach(Box::new(Dwt::new()));
-    mem.attach(Box::new(SysTick::new()));
+    mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
     mem
 }
 
@@ -1146,7 +1148,7 @@ pub fn stm32f030() -> BoardMemory {
         }
     }
     mem.attach(Box::new(Dwt::new()));
-    mem.attach(Box::new(SysTick::new()));
+    mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
     mem
 }
 
@@ -1271,7 +1273,7 @@ pub fn stm32f031() -> BoardMemory {
         }
     }
     mem.attach(Box::new(Dwt::new()));
-    mem.attach(Box::new(SysTick::new()));
+    mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
     mem
 }
 
@@ -1378,7 +1380,7 @@ pub fn stm32f042() -> BoardMemory {
         }
     }
     mem.attach(Box::new(Dwt::new()));
-    mem.attach(Box::new(SysTick::new()));
+    mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
     mem
 }
 
@@ -1450,7 +1452,7 @@ pub fn stm32f0x0() -> BoardMemory {
         mem.attach(Box::new(Wwdg::for_device::<Stm32f0x0>(wdg)));
     }
     mem.attach(Box::new(Dwt::new()));
-    mem.attach(Box::new(SysTick::new()));
+    mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
     mem
 }
 
@@ -1577,7 +1579,7 @@ pub fn stm32f091() -> BoardMemory {
         }
     }
     mem.attach(Box::new(Dwt::new()));
-    mem.attach(Box::new(SysTick::new()));
+    mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
     mem
 }
 
@@ -1629,7 +1631,7 @@ pub fn stm32f0x1() -> BoardMemory {
         mem.attach(Box::new(Wwdg::for_device::<Stm32f0x1>(wdg)));
     }
     mem.attach(Box::new(Dwt::new()));
-    mem.attach(Box::new(SysTick::new()));
+    mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
     mem
 }
 
@@ -1681,7 +1683,7 @@ pub fn stm32f0x2() -> BoardMemory {
         mem.attach(Box::new(Wwdg::for_device::<Stm32f0x2>(wdg)));
     }
     mem.attach(Box::new(Dwt::new()));
-    mem.attach(Box::new(SysTick::new()));
+    mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
     mem
 }
 
@@ -1733,7 +1735,7 @@ pub fn stm32f0x8() -> BoardMemory {
         mem.attach(Box::new(Wwdg::for_device::<Stm32f0x8>(wdg)));
     }
     mem.attach(Box::new(Dwt::new()));
-    mem.attach(Box::new(SysTick::new()));
+    mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
     mem
 }
 
@@ -1785,7 +1787,7 @@ pub fn stm32f0xx() -> BoardMemory {
         mem.attach(Box::new(Wwdg::for_device::<Stm32f0>(wdg)));
     }
     mem.attach(Box::new(Dwt::new()));
-    mem.attach(Box::new(SysTick::new()));
+    mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
     mem
 }
 
@@ -1896,7 +1898,7 @@ pub fn stm32f100() -> BoardMemory {
         }
     }
     mem.attach(Box::new(Dwt::new()));
-    mem.attach(Box::new(SysTick::new()));
+    mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
     mem
 }
 pub const STM32_F101_FLASH_LEN: u32 = 0x0002_0000;
@@ -1997,7 +1999,7 @@ pub fn stm32f101() -> BoardMemory {
         }
     }
     mem.attach(Box::new(Dwt::new()));
-    mem.attach(Box::new(SysTick::new()));
+    mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
     mem
 }
 pub const STM32_F102_FLASH_LEN: u32 = 0x0002_0000;
@@ -2100,7 +2102,7 @@ pub fn stm32f102() -> BoardMemory {
         }
     }
     mem.attach(Box::new(Dwt::new()));
-    mem.attach(Box::new(SysTick::new()));
+    mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
     mem
 }
 pub const STM32_F105_FLASH_LEN: u32 = 0x0004_0000;
@@ -2211,7 +2213,7 @@ pub fn stm32f105() -> BoardMemory {
         }
     }
     mem.attach(Box::new(Dwt::new()));
-    mem.attach(Box::new(SysTick::new()));
+    mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
     mem
 }
 pub const STM32_F401_FLASH_LEN: u32 = 0x0008_0000;
@@ -2277,7 +2279,7 @@ pub fn stm32f746() -> BoardMemory {
         }
     }
     mem.attach(Box::new(Dwt::new()));
-    mem.attach(Box::new(SysTick::new()));
+    mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
     mem
 }
 pub const STM32_F756_FLASH_LEN: u32 = 0x0020_0000;
@@ -2318,7 +2320,7 @@ pub fn stm32f756() -> BoardMemory {
         }
     }
     mem.attach(Box::new(Dwt::new()));
-    mem.attach(Box::new(SysTick::new()));
+    mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
     mem
 }
 pub const STM32_F405_FLASH_LEN: u32 = 0x0010_0000;
@@ -2407,7 +2409,7 @@ pub fn stm32f765() -> BoardMemory {
         }
     }
     mem.attach(Box::new(Dwt::new()));
-    mem.attach(Box::new(SysTick::new()));
+    mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
     mem
 }
 pub const STM32_H7B0_FLASH_LEN: u32 = 0x0002_0000;
@@ -5285,7 +5287,7 @@ pub fn stm32h750() -> BoardMemory {
         }
     }
     mem.attach(Box::new(Dwt::new()));
-    mem.attach(Box::new(SysTick::new()));
+    mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
     mem
 }
 pub const STM32_F769_FLASH_LEN: u32 = 0x0020_0000;
@@ -5494,7 +5496,7 @@ pub fn stm32f303xe() -> BoardMemory {
         }
     }
     mem.attach(Box::new(Dwt::new()));
-    mem.attach(Box::new(SysTick::new()));
+    mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
     mem
 }
 
@@ -5605,7 +5607,7 @@ pub fn stm32l476() -> BoardMemory {
         }
     }
     mem.attach(Box::new(Dwt::new()));
-    mem.attach(Box::new(SysTick::new()));
+    mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
     mem
 }
 
@@ -5706,7 +5708,7 @@ pub fn stm32g474xx() -> BoardMemory {
         }
     }
     mem.attach(Box::new(Dwt::new()));
-    mem.attach(Box::new(SysTick::new()));
+    mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
     mem
 }
 
@@ -6389,7 +6391,7 @@ pub fn stm32h743() -> BoardMemory {
             }
         }
         mem.attach(Box::new(Dwt::new()));
-        mem.attach(Box::new(SysTick::new()));
+        mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
         mem
     }
     fn f101_full_board(flash_len: u32, ram_len: u32) -> BoardMemory {
@@ -6467,7 +6469,7 @@ pub fn stm32h743() -> BoardMemory {
             }
         }
         mem.attach(Box::new(Dwt::new()));
-        mem.attach(Box::new(SysTick::new()));
+        mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
         mem
     }
     fn f102_full_board(flash_len: u32, ram_len: u32) -> BoardMemory {
@@ -6545,7 +6547,7 @@ pub fn stm32h743() -> BoardMemory {
             }
         }
         mem.attach(Box::new(Dwt::new()));
-        mem.attach(Box::new(SysTick::new()));
+        mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
         mem
     }
     fn f3_full_board(flash_len: u32, ram_len: u32) -> BoardMemory {
@@ -6627,7 +6629,7 @@ pub fn stm32h743() -> BoardMemory {
             }
         }
         mem.attach(Box::new(Dwt::new()));
-        mem.attach(Box::new(SysTick::new()));
+        mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
         mem
     }
 
@@ -6677,7 +6679,7 @@ pub fn stm32h743() -> BoardMemory {
                 }
             }
             mem.attach(Box::new(Dwt::new()));
-            mem.attach(Box::new(SysTick::new()));
+            mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
             return mem;
         }
         // Full H7 path with QSPI gates as in stm32h743
@@ -6767,11 +6769,11 @@ pub fn stm32h743() -> BoardMemory {
             }
         }
         mem.attach(Box::new(Dwt::new()));
-        mem.attach(Box::new(SysTick::new()));
+        mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
         mem
     }
 
-    mem.attach(Box::new(SysTick::new()));
+    mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
     mem
 }
 
@@ -6837,11 +6839,13 @@ pub fn core_only_board(
     let mut mem = SystemMemory::new(backing);
     // Every generated window is a pure `NoBehavior` latch; the RCC ready-bit
     // synthesis is not mounted here (core-only contract).
+    let clock = ClockState::shared();
+    mem.set_clock(clock.clone());
     for p in peripherals {
         mem.attach(Box::new(RegisterFile::<NoBehavior>::new(p, NoBehavior)));
     }
     mem.attach(Box::new(Dwt::new()));
-    mem.attach(Box::new(SysTick::new()));
+    mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
     mem
 }
 
@@ -7402,11 +7406,13 @@ pub fn core_only_board_per_dname(dname: &str) -> Option<BoardMemory> {
         FlatMemory::with_layout(&[0x0800_0000, RAM], &[entry.flash_len, entry.ram_len])
     };
     let mut mem = SystemMemory::new(backing);
+    let clock = ClockState::shared();
+    mem.set_clock(clock.clone());
     for p in donor.iter().filter(|p| !removed.contains(&p.name)) {
         mem.attach(Box::new(RegisterFile::<NoBehavior>::new(p, NoBehavior)));
     }
     mem.attach(Box::new(Dwt::new()));
-    mem.attach(Box::new(SysTick::new()));
+    mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
     Some(mem)
 }
 

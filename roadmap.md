@@ -692,6 +692,15 @@ claimed (see Non-goals).
   H7 `ADC` differs (AWD1/2/3 + per-group enables) and stays at latch level.
 - Timers: external trigger/slave modes beyond encoder/Hall/reset latch only.
   (Dead-time insertion into complementary OC pairs is modeled.)
+- Clocks: `SYSCLK`/`HCLK`/`PCLK` frequencies are computed from `SW` + PLL
+  math over fixed oscillators (`HSI` per family, `HSE` assumed 8 MHz except
+  25 MHz on H7, `CSI` 4 MHz); firmware needing another crystal rate, `PREDIV`
+  other than /1 (F0), or PLL2/3 outputs is outside the model. H7 `DIVM/DIVN/
+  DIVP` hold the factor directly (min 1). Downstream clock gating is
+  deliberately unenforced (WP-B6 pattern): every HAL enables clocks before
+  touching a peripheral, and faulting unclocked accesses would churn the
+  500-board suite for no firmware-visible gain; the `gated()` dispatch hook
+  stays for a future strict mode.
 
 ## Open questions
 

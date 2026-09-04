@@ -6,9 +6,11 @@
 //! counter is byte-addressable like every other device; the four registers
 //! occupy `0xE000_E010..0xE000_E020`.
 
+use crate::device::stm32::rcc::ClockState;
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
 use crate::mem::bus::Region;
+use std::sync::{Arc, Mutex};
 
 const BASE: u32 = 0xE000_E010;
 
@@ -27,6 +29,12 @@ pub struct SysTick {
     reload: u32,
     current: u32,
     int_pending: bool,
+    /// Shared RCC clock: when present the counter advances at the `HCLK`
+    /// rate (`CLKSOURCE` set) or `HCLK`/8 (clear) instead of one step per
+    /// core cycle. Without it every cycle is one tick, the old behavior.
+    clock: Option<Arc<Mutex<ClockState>>>,
+    /// Fractional-tick carry for exact sub-cycle scaling across sync points.
+    phase: u64,
 }
 
 impl SysTick {
@@ -41,7 +49,17 @@ impl SysTick {
             reload: 0,
             current: 0,
             int_pending: false,
+            clock: None,
+            phase: 0,
         }
+    }
+
+    /// Share the board clock: `CLKSOURCE` and the H7 `D1CPRE` ratio then
+    /// drive the counter. Boards call this next to `Rcc::with_clock`.
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<Mutex<ClockState>>) -> Self {
+        self.clock = Some(clock);
+        self
     }
 
     fn csr(&self) -> u32 {
@@ -126,13 +144,25 @@ impl Peripheral for SysTick {
         self.reload = 0;
         self.current = 0;
         self.int_pending = false;
+        self.phase = 0;
     }
 
     fn tick(&mut self, delta: u64) {
         if !self.enable {
             return;
         }
-        let mut n = delta;
+        // `CLKSOURCE` set (reset) runs the processor clock; clear runs
+        // `HCLK`/8. Without a shared clock the counter is 1:1 with cycles.
+        let (num, den) = match &self.clock {
+            Some(clock) => clock
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .systick_factor(!self.clksource),
+            None => (1, 1),
+        };
+        let acc = self.phase as u128 + delta as u128 * num as u128;
+        self.phase = (acc % den as u128) as u64;
+        let mut n = (acc / den as u128) as u64;
         while n > 0 {
             n -= 1;
             if self.current == 0 {
@@ -268,5 +298,43 @@ mod tests {
         let mut t = SysTick::new();
         assert!(matches!(t.read(0xE000_E02C), Err(BusError::Reserved)));
         assert!(matches!(t.write(0xE000_E030, 0), Err(BusError::Reserved)));
+    }
+
+    #[test]
+    fn clksource_clear_runs_at_hclk_over_8() {
+        use crate::device::stm32::rcc::ClockState;
+        let clock = ClockState::shared();
+        let mut t = SysTick::new().with_clock(clock);
+        write_word(&mut t, RVR, 0x100);
+        // ENABLE with CLKSOURCE=0: 16 cycles advance the counter twice
+        // (first tick primes 0 -> RELOAD).
+        write_word(&mut t, CSR, 0b001);
+        t.tick(16);
+        assert_eq!(read_word(&mut t, CVR), 0x100 - 1);
+        // CLKSOURCE=1: 8 cycles advance it 8 (plus the primed one).
+        write_word(&mut t, CSR, 0b101);
+        t.tick(8);
+        assert_eq!(read_word(&mut t, CVR), 0x100 - 1 - 8);
+    }
+
+    #[test]
+    fn h7_d1cpre_scales_processor_clock() {
+        use crate::device::stm32::rcc::{ClockState, Rcc};
+        use crate::device::svd::stm32h743::Stm32h743;
+        const H7: u32 = 0x5802_4400;
+        let clock = ClockState::shared();
+        // Stamp the handle H7 (D1CPRE decodes only through the H7 RCC).
+        let mut r = Rcc::for_device::<Stm32h743>().with_clock(clock.clone());
+        // D1CPRE=/2 (nibble 8 at D1CFGR bits 11:8).
+        for (i, b) in 0x800u32.to_le_bytes().iter().enumerate() {
+            use crate::device::Peripheral as _;
+            r.write(H7 + 0x18 + i as u32, *b).unwrap();
+        }
+        let mut t = SysTick::new().with_clock(clock);
+        write_word(&mut t, RVR, 0x10);
+        write_word(&mut t, CSR, 0b101);
+        // HCLK runs at 2x the H7 core: 2 cycles advance 4 (prime + 3).
+        t.tick(2);
+        assert_eq!(read_word(&mut t, CVR), 0x10 - 3);
     }
 }
