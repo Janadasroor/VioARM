@@ -663,17 +663,20 @@ claimed (see Non-goals).
   any `DIR` optimistically in the enable cycle (`00` peripheral→memory
   `PAR`→`M0AR`, `01` memory→peripheral `M0AR`→`PAR`, `10` memory-to-memory)
   with `PSIZE`/`MSIZE` widths and `PINC`/`MINC` stepping
-  (`peripheral_request_dirs_complete_optimistically` for F4); the transfer
-  completes without a wired request source (firmware observes immediate
-  completion, not per-request timing). DMA burst/FIFO behavior and
-  per-peripheral request-line timing are not modeled (F1 per-request is
-  `1` unit per tick, F4 is whole-`NDTR` optimistic).
+  (  `peripheral_request_dirs_complete_optimistically` for F4). A wired F4
+  stream paces one burst per asserted request (`with_requests`; board
+  convention routes USART1/2/3, UART4/5, USART6, TIM1/2/4, ADC, SPI1/2/3 —
+  `CHSEL` remap and H7 `DMAMUX` not modeled); unwired streams and
+  memory-to-memory stay optimistic, as do `TEIF`/`FEIF`/`HTIF` (latch-only)
+  and `CIRC`. DMA burst/FIFO geometry itself is modeled (`MBURST`/`PBURST`/
+  `FTH`), error interrupts are not.
 - The F1 DMA controllers transfer memory-to-memory (optimistically, in the
   cycle the channel is enabled) or one unit per peripheral-request assertion;
-  the USART/UART family is the only request source so far (USART1 ch4/ch5,
-  USART2 ch7/ch6, USART3 ch2/ch3, UART4 ch5/ch6, UART5 ch7/ch4 on `DMA1`).
-  DMA arbitration, burst/fifo behavior, and the timer/ADC/SPI request lines
-  are not modeled; each channel raises its own NVIC line.
+  request sources are the USART/UART family everywhere (USART1 ch4/ch5,
+  USART2 ch7/ch6, USART3 ch2/ch3, UART4 ch5/ch6, UART5 ch7/ch4 on `DMA1`)
+  plus TIM2→ch2, ADC1→ch1, SPI1 TX/RX→ch3/ch2, DAC→ch3/ch4 on `F103`/`F107`
+  (other dies stay USART-only; G4/L4 DMA sources are unwired). DMA
+  arbitration is `PL`-then-channel; each channel raises its own NVIC line.
 - Double-precision data-processing is UNDEFINED on FPv4-SP (Cortex-M4F) —
   only the `D↔S` alias moves/loads (`VMOV D↔R`, `VLDR/VSTR D`, `VLDM/VSTM D`)
   via `read_d`/`write_d` are valid; `sz=11` (`Vfp3`/`Vfp2` double) correctly
