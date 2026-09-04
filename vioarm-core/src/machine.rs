@@ -69,6 +69,25 @@ impl<M: PeripheralBus> Machine<M> {
         }
     }
 
+    /// A machine over an ARMv8-M mainline (Cortex-M33) core: full Thumb-2
+    /// with DSP and single-precision VFP.
+    #[must_use]
+    pub fn armv8m_mainline(mem: M) -> Self {
+        Self {
+            core: Core::armv8m_mainline(mem),
+        }
+    }
+
+    /// An ARMv8-M mainline machine whose FP context-control state is shared
+    /// between the core and the `SCB` device. `mem` must be a `SystemMemory`
+    /// built with the same `fpu_ctx`.
+    #[must_use]
+    pub fn armv8m_mainline_with_fpu(mem: M, fpu_ctx: Arc<Mutex<FpuCtx>>) -> Self {
+        Self {
+            core: Core::armv8m_mainline_with_fpu(mem, fpu_ctx),
+        }
+    }
+
     /// Load an image's segments into the machine's memory.
     #[allow(clippy::cast_possible_truncation)]
     pub fn load_image(&mut self, img: &LoadedImage) {

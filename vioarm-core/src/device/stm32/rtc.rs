@@ -71,8 +71,11 @@ struct RtcBehavior {
     /// Divider countdown, mirrors `DIVH`/`DIVL` (F1) — or the free-running
     /// seconds calendar (new-gen).
     div: u32,
-    /// New-generation tables (`ISR` present): WPR gate + calendar mode.
+    /// New-generation tables (`ISR`/`ICSR` present): WPR gate + calendar mode.
     new_gen: bool,
+    /// Byte offset of `ALRMAR` (`0x1C` on L4-family, `0x40` on U5/H5/WBA;
+    /// resolved from the tables so both layouts model alarms).
+    alrmar_off: u32,
     /// `WPR` unlock state for new-gen (0xCA then 0x53 seen as words).
     wpr_step: u8,
     /// The `WPR` word being assembled from byte-lane writes.
@@ -84,6 +87,7 @@ impl RtcBehavior {
         Self {
             div: 0x8000,
             new_gen: false,
+            alrmar_off: NG_ALRMAR,
             wpr_step: 0,
             wpr_word: 0,
         }
@@ -143,8 +147,12 @@ impl RtcBehavior {
         }
         // Protected registers ignore writes while locked. `ISR` is special:
         // INIT is r/w, ALRAF/RSF are write-0-to-clear.
-        let protected =
-            matches!(offset, NG_CR | NG_PRER | NG_ALRMAR | NG_TR | NG_DR) && !self.ng_unlocked();
+        let protected = (offset == NG_CR
+            || offset == NG_PRER
+            || offset == self.alrmar_off
+            || offset == NG_TR
+            || offset == NG_DR)
+            && !self.ng_unlocked();
         if protected {
             return view.get(offset);
         }
@@ -182,7 +190,7 @@ impl RtcBehavior {
             let s = Self::ng_seconds(view);
             let next = (s + 1) % 60;
             Self::ng_set_seconds(view, next);
-            let alrmar = view.get(NG_ALRMAR);
+            let alrmar = view.get(self.alrmar_off);
             if alrmar & (1 << 7) != 0 {
                 continue; // MSK1: seconds masked
             }
@@ -379,8 +387,17 @@ impl Rtc {
     pub fn new_for<D: Device>() -> Self {
         let def = D::peripheral("RTC").expect("generated tables contain RTC");
         let mut b = RtcBehavior::new();
-        // New-generation tables declare `ISR`; F1 declares `CRL`.
-        b.new_gen = def.registers.iter().any(|r| r.name == "ISR");
+        // New-generation tables declare `ISR`/`ICSR` (H5/H503 use `RTC_ISR`/
+        // `RTC_ICSR`); F1 declares `CRL`.
+        b.new_gen = def.registers.iter().any(|r| {
+            r.name == "ISR" || r.name == "ICSR" || r.name == "RTC_ISR" || r.name == "RTC_ICSR"
+        });
+        b.alrmar_off = def
+            .registers
+            .iter()
+            .find(|r| r.name == "ALRMAR" || r.name == "RTC_ALRMAR")
+            .map(|r| r.offset)
+            .unwrap_or(NG_ALRMAR);
         Self {
             inner: RegisterFile::new(def, b),
         }

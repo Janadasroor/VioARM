@@ -72,6 +72,26 @@ pub fn new_machine_v8m(bin: &[u8]) -> Machine<SystemMemory<FlatMemory>> {
     m
 }
 
+/// Build an ARMv8-M mainline (Cortex-M33) machine with single-precision VFP,
+/// laid out like [`new_machine_v8m`] (flash `0x1000_0000`, NS RAM at
+/// `0x8000_0000`) so mainline programs diff against the same mps2-an505
+/// oracle. The FP context is shared with the `SCB` exactly like the M7
+/// machine, since lazy stacking drives `FPCCR`/`FPCAR` here too.
+#[must_use]
+pub fn new_machine_v8m_mainline(bin: &[u8]) -> Machine<SystemMemory<FlatMemory>> {
+    let backing = FlatMemory::with_layout(
+        &[0x1000_0000, 0x2000_0000, 0x8000_0000],
+        &[FLASH_LEN, SRAM_LEN, SRAM_LEN],
+    );
+    let fpu_ctx = Arc::new(Mutex::new(FpuCtx::new()));
+    let mut mem = SystemMemory::new_with_fpu(backing, fpu_ctx.clone());
+    mem.enable_pmsav8();
+    let mut m = Machine::armv8m_mainline_with_fpu(mem, fpu_ctx);
+    m.core.set_vector_base(0x1000_0000);
+    m.load_image(&load_flat(0x1000_0000, bin));
+    m
+}
+
 /// Snapshot the machine's architectural state. `pc` is stored Thumb-masked by
 /// the core, exactly as QEMU reports `R15`. `xpsr` carries the modeled xPSR
 /// bits plus the CPU's live `ITSTATE` folded in at bits [26:25]/[15:10], the
@@ -117,6 +137,12 @@ pub fn run_until_pc_v6m(bin: &[u8], stop_pc: u32) -> (Vec<CpuState>, bool) {
 #[must_use]
 pub fn run_until_pc_v8m(bin: &[u8], stop_pc: u32) -> (Vec<CpuState>, bool) {
     run_machine(new_machine_v8m(bin), stop_pc)
+}
+
+/// Run `bin` under an ARMv8-M mainline (Cortex-M33) VioARM machine.
+#[must_use]
+pub fn run_until_pc_v8m_mainline(bin: &[u8], stop_pc: u32) -> (Vec<CpuState>, bool) {
+    run_machine(new_machine_v8m_mainline(bin), stop_pc)
 }
 
 /// Build an ARMv7E-M (Cortex-M7) machine with FPv5-D16 and load `bin` at 0.

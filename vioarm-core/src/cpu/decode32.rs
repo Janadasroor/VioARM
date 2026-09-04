@@ -1088,6 +1088,29 @@ pub fn decode32_v8m(hi: u16, lo: u16) -> Result<Inst32, DecodeError> {
     }
 }
 
+/// Decode ARMv8-M mainline (Cortex-M33): the full ARMv7-M Thumb-2 set plus
+/// the ARMv8-M additions (`TT`, `SG`, load-acquire/store-release). The VFP
+/// subset is single-precision only (`decode_vfp`, shared with Cortex-M4F:
+/// double-precision `sz=11` stays undefined); the M33 FPU is FPv5-SP.
+/// Everything the v7-M decoder accepts, the M33 accepts.
+///
+/// # Errors
+///
+/// Returns [`DecodeError`] when the halfwords form no known ARMv8-M mainline
+/// 32-bit instruction.
+pub fn decode32_v8m_mainline(hi: u16, lo: u16) -> Result<Inst32, DecodeError> {
+    if let Some(result) = decode_tt(hi, lo) {
+        return result;
+    }
+    if hi == 0xE97F && lo == 0xE97F {
+        return Ok(Inst32::Sg);
+    }
+    match decode32_v7m(hi, lo) {
+        Ok(inst) => Ok(inst),
+        Err(_) => decode_lda_stl(hi, lo).unwrap_or_else(|| Err(err_for(hi))),
+    }
+}
+
 /// Decode the ARMv8-M `TT` instruction family. The encodings share the
 /// `1110 1000 0100 Rn` first-halfword space with the ARMv7-M `LDRD`/`STRD`
 /// pair, distinguished by the second halfword's `1111 Rd A T 000000` form
@@ -2940,6 +2963,13 @@ mod tests {
         decode32_v8m(hi, lo)
     }
 
+    /// Decode a byte quadruple as an ARMv8-M mainline (Cortex-M33) instruction.
+    fn v8m_mainline_bytes(bytes: [u8; 4]) -> Result<Inst32, DecodeError> {
+        let hi = u16::from_le_bytes([bytes[0], bytes[1]]);
+        let lo = u16::from_le_bytes([bytes[2], bytes[3]]);
+        decode32_v8m_mainline(hi, lo)
+    }
+
     fn reg(
         op: DpOp,
         rd: u8,
@@ -3407,6 +3437,33 @@ mod tests {
                 "control: {b:02x?} must decode on v7-M"
             );
         }
+    }
+
+    #[test]
+    fn v8m_mainline_accepts_dsp_mem32_and_sp_vfp() {
+        // Mainline (M33) accepts what the baseline rejects; the v7-M control
+        // self-validates the hand encodings.
+        let accepts = [
+            [0x90, 0xFA, 0x01, 0xF4], // sadd16 r4, r0, r1
+            [0x10, 0xFB, 0x01, 0xF4], // smulbb r4, r0, r1
+            [0x20, 0xFB, 0x01, 0x24], // smlad r4, r0, r1, r2
+            [0x70, 0xFB, 0x01, 0xF4], // usad8 r4, r0, r1
+            [0xA4, 0xFA, 0x01, 0xF5], // sel r5, r4, r1
+            [0xD3, 0xE9, 0x04, 0x45], // ldrd r4, r5, [r3, #16]
+            [0x30, 0xEE, 0x21, 0x0A], // vadd.f32 s3, s0, s1
+        ];
+        for b in accepts {
+            assert!(v7m_bytes(b).is_ok(), "control: {b:02x?} on v7-M");
+            assert!(v8m_bytes(b).is_err(), "baseline must reject {b:02x?}");
+            assert!(
+                v8m_mainline_bytes(b).is_ok(),
+                "mainline must accept {b:02x?}"
+            );
+        }
+        // Double-precision stays undefined on mainline (FPv5-SP), as on M4F.
+        let dp = [0x02, 0x0B, 0x31, 0xEE]; // vadd.f64 d0, d1, d2
+        assert!(v7m_bytes(dp).is_err());
+        assert!(v8m_mainline_bytes(dp).is_err());
     }
 
     #[test]

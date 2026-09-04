@@ -26,6 +26,7 @@ use vioarm_qemu::vioarm::run_until_pc as vio_run;
 use vioarm_qemu::vioarm::run_until_pc_v6m as vio_run_v6m;
 use vioarm_qemu::vioarm::run_until_pc_v7em as vio_run_v7em;
 use vioarm_qemu::vioarm::run_until_pc_v8m as vio_run_v8m;
+use vioarm_qemu::vioarm::run_until_pc_v8m_mainline as vio_run_v8m_mainline;
 use vioarm_qemu::{compare_traces, CpuState};
 
 /// Run `bin` in QEMU up to `stop`, retrying up to three times when the spawn
@@ -192,6 +193,29 @@ fn conformance_v8m_at(name: &str, a: &mut Asm, halt: &str, sp: u32, mt: &QemuMac
         .addr(halt)
         .unwrap_or_else(|| panic!("{name}: no label {halt:?}"));
     let (vio, reached) = vio_run_v8m(&img.bytes, stop);
+    assert!(
+        reached,
+        "{name}: vioarm never reached halt @ {stop:#x} (last {})",
+        snapshot_like(&vio)
+    );
+    let qemu = qemu_run_retry(mt, &img.bytes, stop);
+    assert!(
+        !qemu.is_empty() && qemu.last().expect("empty").r[15] & !1 == stop,
+        "{name}: qemu never reached halt @ {stop:#x} (got {} states)",
+        qemu.len()
+    );
+    compare_traces(name, &vio, &qemu).expect("traces agree");
+}
+
+/// The ARMv8-M mainline (Cortex-M33) variant of [`conformance`]: runs `a`
+/// through the mainline VioARM machine (full Thumb-2 + DSP + FPv5-SP)
+/// against the same mps2-an505 oracle.
+fn conformance_v8m_mainline(name: &str, a: &mut Asm, halt: &str, mt: &QemuMachine) {
+    let img: Image = a.clone().finish_at(SP, 0x1000_0000).expect("assemble");
+    let stop = img
+        .addr(halt)
+        .unwrap_or_else(|| panic!("{name}: no label {halt:?}"));
+    let (vio, reached) = vio_run_v8m_mainline(&img.bytes, stop);
     assert!(
         reached,
         "{name}: vioarm never reached halt @ {stop:#x} (last {})",
@@ -4305,4 +4329,125 @@ fn m7_f64() {
     a.label("halt");
     a.b("halt");
     conformance_v7em("m7_f64", &mut a, "halt", &mt);
+}
+
+// ---------------------------------------------------------------------------
+// Cortex-M33 mainline: DSP (parallel add/sub, multiplies, select, saturate),
+// 32-bit memory (LDM/STM, LDRD/STRD, TBH), and single-precision VFP. Diffed
+// against the same mps2-an505 oracle as the baseline suite; the baseline
+// machine must fault these encodings (covered by unit tests).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn m33_mainline_dsp() {
+    let Some(mt) = qemu_m33() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+    a.mov_imm32(0, 0x0001_0001);
+    a.mov_imm32(1, 0x0002_0003);
+    a.sadd16(4, 0, 1); // 0x00030004, GE=1111
+    a.sel(5, 4, 1); // GE all set -> r4 lanes
+    a.mov_imm32(0, 0x7FFF_7FFF);
+    a.mov_imm32(1, 0x0001_0001);
+    a.qadd16(4, 0, 1); // saturates to 0x7FFF7FFF, Q set
+    a.mov_imm32(0, 0x0001_0002);
+    a.mov_imm32(1, 0x0010_0020);
+    a.smulbb(4, 0, 1); // 2 * 0x20 = 0x40
+    a.mov_imm32(2, 0x0003_0004);
+    a.mov_imm32(3, 5);
+    a.smlad(4, 0, 2, 3); // 1*3 + 2*4 + 5 = 16
+    a.mov_imm32(0, 0x0102_0304);
+    a.mov_imm32(1, 0);
+    a.usad8(4, 0, 1); // 1+2+3+4 = 10
+    a.mov_imm32(0, 0x1234_5678);
+    a.ssat(4, 0, 8, 0); // saturate to 8 bits -> 0x7F
+    a.label("halt");
+    a.b("halt");
+    conformance_v8m_mainline("m33_mainline_dsp", &mut a, "halt", &mt);
+}
+
+#[test]
+fn m33_mainline_mem32() {
+    let Some(mt) = qemu_m33() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+    // Seed SRAM, then LDM/STM wide + LDRD/STRD round-trips.
+    a.mov_imm32(3, 0x2000_1000);
+    a.mov_imm32(0, 0x1111_1111);
+    a.mov_imm32(1, 0x2222_2222);
+    a.mov_imm32(2, 0x3333_3333);
+    a.stmia(3, 0b0111);
+    a.mov_imm32(0, 0);
+    a.mov_imm32(1, 0);
+    a.mov_imm32(2, 0);
+    a.ldmia(3, 0b0111);
+    a.mov_imm32(4, 0x4444_4444);
+    a.mov_imm32(5, 0x5555_5555);
+    a.strd(4, 5, 3, 16);
+    a.mov_imm32(4, 0);
+    a.mov_imm32(5, 0);
+    a.ldrd(4, 5, 3, 16);
+    // One TBH through a two-entry table to prove table branches. The table
+    // sits immediately after the instruction, like the `tables` test.
+    a.movs_imm8(0, 1);
+    a.align4();
+    a.label("tbh");
+    a.tbh(15, 0);
+    a.dc_u32(0); // patched below (two halfword entries)
+    a.dc_u32(0);
+    a.label("tbh_c0");
+    a.movs_imm8(6, 0xA0);
+    a.b("halt");
+    a.label("tbh_c1");
+    a.movs_imm8(6, 0xB0);
+    a.b("halt");
+    a.label("halt");
+    a.b("halt");
+    // Patch the table like the `tables` test does.
+    let img = a.clone().finish_at(SP, 0x1000_0000).expect("assemble");
+    let base = (img.addr("tbh").expect("tbh") + 4) & !3;
+    let stop = img.addr("halt").expect("halt");
+    let targets = [
+        img.addr("tbh_c0").expect("case"),
+        img.addr("tbh_c1").expect("case"),
+    ];
+    let mut bytes = img.bytes;
+    for (k, target) in targets.iter().enumerate() {
+        let entry = (target - base) / 2;
+        let off = (base - 0x1000_0000 + 2 * k as u32) as usize;
+        bytes[off] = entry as u8;
+        bytes[off + 1] = (entry >> 8) as u8;
+    }
+    let (vio, reached) = vio_run_v8m_mainline(&bytes, stop);
+    assert!(reached, "m33_mainline_mem32: vioarm never reached halt");
+    let qemu = qemu_run_retry(&mt, &bytes, stop);
+    assert!(
+        !qemu.is_empty() && qemu.last().expect("empty").r[15] & !1 == stop,
+        "m33_mainline_mem32: qemu never reached halt"
+    );
+    compare_traces("m33_mainline_mem32", &vio, &qemu).expect("traces agree");
+}
+
+#[test]
+fn m33_mainline_sp_fp() {
+    let Some(mt) = qemu_m33() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+    a.enable_fpu();
+    a.mov_imm32(0, 0x3F80_0000); // 1.0
+    a.mov_imm32(1, 0x4000_0000); // 2.0
+    a.mov_imm32(2, 0x4040_0000); // 3.0
+    a.vmov_s_gpr(0, 0); // s0 = 1.0
+    a.vmov_s_gpr(1, 1); // s1 = 2.0
+    a.vmov_s_gpr(2, 2); // s2 = 3.0
+    a.vadd_f32(3, 0, 1); // s3 = 3.0
+    a.vsub_f32(4, 2, 1); // s4 = 1.0
+    a.vmul_f32(5, 1, 2); // s5 = 6.0
+    a.vmla_f32(5, 0, 1); // s5 = 6.0 + 2.0 = 8.0
+    a.vcmp_f32(0, 1); // 1.0 vs 2.0 -> LT
+    a.vmrs(6, 1); // r6 = FPSCR
+    a.vcvt_f32_s32(7, 1); // s7 = float(2) = 2.0
+    a.label("halt");
+    a.b("halt");
+    conformance_v8m_mainline("m33_mainline_sp_fp", &mut a, "halt", &mt);
 }

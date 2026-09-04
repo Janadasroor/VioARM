@@ -45,8 +45,16 @@ pub mod stm32g061;
 pub mod stm32g081;
 pub mod stm32g0c1;
 pub mod stm32g474xx;
+pub mod stm32h503;
+pub mod stm32h533;
+pub mod stm32h563;
 pub mod stm32h743;
 pub mod stm32l476;
+pub mod stm32l562;
+pub mod stm32u535;
+pub mod stm32u575;
+pub mod stm32u5g9;
+pub mod stm32wba55;
 
 /// The register access vocabulary used by the supported SVD files.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1363,8 +1371,8 @@ mod tests {
         }
         // Regression anchor: sum of filtered peripheral instances over all Dnames.
         // (40062 with 21 donors; 35691 after F2/F7/G0 moved to own-generation
-        // donors, which are smaller than the oversized foreign assignments.)
-        assert_eq!(total, 35691);
+        // donors; 36722 after U5/H5/WBA/L5 moved to theirs.)
+        assert_eq!(total, 36722);
         // Spot checks: known deltas from the (deleted) per-variant tables.
         let f405 = PER_DNAMES.iter().find(|e| e.dname == "STM32F405").unwrap();
         assert!(f405.peripheral("GPIOA").is_some());
@@ -1456,5 +1464,25 @@ mod tests {
         let g041 = PER_DNAMES.iter().find(|e| e.dname == "STM32G041").unwrap();
         assert_eq!(g041.donor, "stm32g031");
         assert!(g041.peripheral("AES").is_none());
+        // WP5: U5/H5/WBA/L5 sit on own-generation M33 donors, never on H7.
+        for e in PER_DNAMES {
+            let d = e.dname;
+            let ok = if d.starts_with("STM32U5") {
+                ["stm32u535", "stm32u575", "stm32u5g9"].contains(&e.donor)
+            } else if d.starts_with("STM32H5") {
+                ["stm32h503", "stm32h533", "stm32h563"].contains(&e.donor)
+            } else if d.starts_with("STM32WBA") {
+                e.donor == "stm32wba55"
+            } else if d.starts_with("STM32L5") {
+                e.donor == "stm32l562"
+            } else {
+                continue;
+            };
+            assert!(ok, "{d} on foreign donor {}", e.donor);
+        }
+        let u575 = PER_DNAMES.iter().find(|e| e.dname == "STM32U575").unwrap();
+        assert_eq!(u575.donor, "stm32u575");
+        assert!(u575.peripheral("GPDMA1").is_some());
+        assert!(u575.peripheral("OCTOSPI1").is_some());
     }
 }

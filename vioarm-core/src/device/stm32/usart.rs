@@ -537,16 +537,25 @@ impl Usart {
         )
     }
 
+    /// Find a register by logical name across SVD naming variants: plain
+    /// (`ISR`), U5 enable-split (`ISR_enabled`), and H5/WBA prefixed
+    /// (`USART_ISR`, `USART_ISR_enabled`).
+    fn reg_find<'d>(
+        def: &'d crate::device::svd::PeripheralDef,
+        name: &str,
+    ) -> Option<&'d crate::device::svd::RegisterDef> {
+        def.registers.iter().find(|r| {
+            r.name == name
+                || r.name == format!("{name}_enabled")
+                || r.name == format!("USART_{name}")
+                || r.name == format!("USART_{name}_enabled")
+        })
+    }
     fn reg_offset(def: &crate::device::svd::PeripheralDef, name: &str) -> Option<u32> {
-        def.registers
-            .iter()
-            .find(|r| r.name == name)
-            .map(|r| r.offset)
+        Self::reg_find(def, name).map(|r| r.offset)
     }
     fn field_bit(def: &crate::device::svd::PeripheralDef, reg: &str, field: &str) -> Option<u8> {
-        def.registers
-            .iter()
-            .find(|r| r.name == reg)
+        Self::reg_find(def, reg)
             .and_then(|r| r.fields.iter().find(|f| f.name == field).map(|f| f.offset))
     }
 

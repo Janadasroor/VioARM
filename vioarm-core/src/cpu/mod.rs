@@ -13,15 +13,16 @@ pub mod registers;
 use crate::error::{Exception, HaltCause};
 use crate::mem::{MpuAccess, PeripheralBus, SauHit};
 use crate::semihost::{SemihostOutcome, SemihostState, SEMIHOST_BKPT};
+use decode::DecodeError;
 use decode16::{
     decode16, decode16_v7m, AluOp, ExtendKind, Hint, Inst16, LsImm, LsReg, ReverseKind, Shift,
     ShiftImm,
 };
 use decode32::{
-    decode32, decode32_v7em, decode32_v7m, decode32_v8m, is_thumb2, is_thumb2_v7m,
-    thumb_expand_imm, BitfieldOp, DpOp, DspMulOp, DualMulOp, ExSize, ExtendAddOp, Inst32, MemOp,
-    MulOp, ParOp, ParSat, QaddOp, SatOp, ShiftType, SysReg, TtVariant, UnaryOp, Vfp2Op, Vfp3Op,
-    VrintOp,
+    decode32, decode32_v7em, decode32_v7m, decode32_v8m, decode32_v8m_mainline, is_thumb2,
+    is_thumb2_v7m, thumb_expand_imm, BitfieldOp, DpOp, DspMulOp, DualMulOp, ExSize, ExtendAddOp,
+    Inst32, MemOp, MulOp, ParOp, ParSat, QaddOp, SatOp, ShiftType, SysReg, TtVariant, UnaryOp,
+    Vfp2Op, Vfp3Op, VrintOp,
 };
 use registers::{Registers, Xpsr, APSR_FLAGS, APSR_GE, APSR_Q, APSR_QFLAGS, XPSR_T};
 use std::collections::BTreeMap;
@@ -45,6 +46,11 @@ pub enum Isa {
     Armv7M,
     Armv7EM,
     Armv8MBaseline,
+    /// ARMv8-M mainline (Cortex-M33): the v7-M Thumb-2 set (DSP, `ldm`/`stm`,
+    /// table branches, single-precision VFP) plus `TT`/`SG`/acquire-release.
+    /// TrustZone behavior matches the baseline; the floating-point unit is
+    /// FPv5-SP.
+    Armv8MMainline,
 }
 
 #[derive(Clone, Debug)]
@@ -550,6 +556,11 @@ impl<B: PeripheralBus> Core<B> {
         Self::new_with_isa(mem, Isa::Armv8MBaseline)
     }
 
+    /// Create an uninitialized ARMv8-M mainline (Cortex-M33) core over `mem`.
+    pub fn armv8m_mainline(mem: B) -> Self {
+        Self::new_with_isa(mem, Isa::Armv8MMainline)
+    }
+
     /// An ARMv7-M core whose FP context-control state is shared with the `SCB`
     /// device (the firmware-visible `FPCCR`/`FPCAR`). `mem` must be a
     /// `SystemMemory` built with the same `fpu_ctx`; core-only uses keep the
@@ -564,6 +575,19 @@ impl<B: PeripheralBus> Core<B> {
     #[must_use]
     pub fn armv7em_with_fpu(mem: B, fpu_ctx: std::sync::Arc<std::sync::Mutex<FpuCtx>>) -> Self {
         let mut core = Self::new_with_isa(mem, Isa::Armv7EM);
+        core.fpu_ctx = fpu_ctx;
+        core
+    }
+
+    /// An ARMv8-M mainline core whose FP context-control state is shared with
+    /// the `SCB` device. `mem` must be a `SystemMemory` built with the same
+    /// `fpu_ctx`.
+    #[must_use]
+    pub fn armv8m_mainline_with_fpu(
+        mem: B,
+        fpu_ctx: std::sync::Arc<std::sync::Mutex<FpuCtx>>,
+    ) -> Self {
+        let mut core = Self::new_with_isa(mem, Isa::Armv8MMainline);
         core.fpu_ctx = fpu_ctx;
         core
     }
@@ -596,7 +620,7 @@ impl<B: PeripheralBus> Core<B> {
             other_ss_control: 0,
             other_ss_msp_lim: 0,
             other_ss_psp_lim: 0,
-            secure: isa == Isa::Armv8MBaseline,
+            secure: matches!(isa, Isa::Armv8MBaseline | Isa::Armv8MMainline),
             decode_cache: BTreeMap::new(),
             semihost: SemihostState::default(),
             mem,
@@ -628,7 +652,7 @@ impl<B: PeripheralBus> Core<B> {
         let next = match self.isa {
             Isa::Armv6M => self.step_v6m(pc)?,
             Isa::Armv7M | Isa::Armv7EM => self.step_v7m(pc)?,
-            Isa::Armv8MBaseline => self.step_v8m(pc)?,
+            Isa::Armv8MBaseline | Isa::Armv8MMainline => self.step_v8m(pc)?,
         };
         let next_pc = match next {
             Next::Advance(a) => a,
@@ -655,7 +679,7 @@ impl<B: PeripheralBus> Core<B> {
         let is32 = match self.isa {
             Isa::Armv6M => is_thumb2(h0),
             Isa::Armv7M | Isa::Armv7EM => is_thumb2_v7m(h0),
-            Isa::Armv8MBaseline => is_thumb2_v7m(h0),
+            Isa::Armv8MBaseline | Isa::Armv8MMainline => is_thumb2_v7m(h0),
         };
         let seq = if is32 {
             pc.wrapping_add(4)
@@ -674,6 +698,7 @@ impl<B: PeripheralBus> Core<B> {
                 Isa::Armv7M => decode32_v7m(h0, h1).ok(),
                 Isa::Armv7EM => decode32_v7em(h0, h1).ok(),
                 Isa::Armv8MBaseline => decode32_v8m(h0, h1).ok(),
+                Isa::Armv8MMainline => decode32_v8m_mainline(h0, h1).ok(),
             };
             let Some(i) = inst else {
                 return 1;
@@ -779,7 +804,7 @@ impl<B: PeripheralBus> Core<B> {
         } else {
             let inst = match self.isa {
                 Isa::Armv6M => decode16(h0).ok(),
-                Isa::Armv7M | Isa::Armv7EM => decode16_v7m(h0).ok(),
+                Isa::Armv7M | Isa::Armv7EM | Isa::Armv8MMainline => decode16_v7m(h0).ok(),
                 Isa::Armv8MBaseline => decode16(h0).ok(),
             };
             let Some(i) = inst else {
@@ -906,7 +931,7 @@ impl<B: PeripheralBus> Core<B> {
             let is32 = match self.isa {
                 Isa::Armv6M => is_thumb2(h0),
                 Isa::Armv7M | Isa::Armv7EM => is_thumb2_v7m(h0),
-                Isa::Armv8MBaseline => is_thumb2_v7m(h0),
+                Isa::Armv8MBaseline | Isa::Armv8MMainline => is_thumb2_v7m(h0),
             };
             if is32 {
                 if let Ok(h1) = self.mem.read_half(pc.wrapping_add(2)) {
@@ -915,6 +940,7 @@ impl<B: PeripheralBus> Core<B> {
                         Isa::Armv7M => decode32_v7m(h0, h1).ok(),
                         Isa::Armv7EM => decode32_v7em(h0, h1).ok(),
                         Isa::Armv8MBaseline => decode32_v8m(h0, h1).ok(),
+                        Isa::Armv8MMainline => decode32_v8m_mainline(h0, h1).ok(),
                     };
                     if let Some(i) = inst {
                         let addr = match i {
@@ -964,7 +990,7 @@ impl<B: PeripheralBus> Core<B> {
             } else {
                 if let Ok(inst) = match self.isa {
                     Isa::Armv6M => decode16(h0),
-                    Isa::Armv7M | Isa::Armv7EM => decode16_v7m(h0),
+                    Isa::Armv7M | Isa::Armv7EM | Isa::Armv8MMainline => decode16_v7m(h0),
                     Isa::Armv8MBaseline => decode16(h0),
                 } {
                     let addr = match inst {
@@ -1203,11 +1229,30 @@ impl<B: PeripheralBus> Core<B> {
     /// Fetch and execute a single ARMv8-M baseline instruction.
     ///
     /// ARMv8-M baseline mixes 16-bit and 32-bit instructions like ARMv7-M and
+    /// Whether this core implements the ARMv8-M Security Extension (baseline
+    /// and mainline alike; ARMv6-M/ARMv7-M never do).
+    fn is_v8m(&self) -> bool {
+        matches!(self.isa, Isa::Armv8MBaseline | Isa::Armv8MMainline)
+    }
+
+    /// Decode one 32-bit instruction for the current v8-M ISA: the baseline
+    /// subset or the mainline full set.
+    fn decode32_v8m_isa(&self, h0: u16, h1: u16) -> Result<Inst32, DecodeError> {
+        if self.isa == Isa::Armv8MMainline {
+            decode32_v8m_mainline(h0, h1)
+        } else {
+            decode32_v8m(h0, h1)
+        }
+    }
+
     /// supports IT blocks, so the fetch and 16-bit path mirror `step_v7m`.
     /// The 32-bit path is the ARMv7-M Thumb-2 decoder filtered down to the
     /// baseline subset (`sdiv`/`udiv`, `movw`/`movt`, `b.w`, the exclusive
-    /// family, `clrex`, and the shared `bl`/`mrs`/`msr`/barriers); every
-    /// other Thumb-2 encoding faults as undefined, matching Cortex-M23.
+    /// family, `clrex`, and the shared `bl`/`mrs`/`msr`/barriers) on
+    /// [`Isa::Armv8MBaseline`]; every other Thumb-2 encoding faults as
+    /// undefined, matching Cortex-M23. [`Isa::Armv8MMainline`] runs the full
+    /// v7-M set plus `TT`/`SG`/acquire-release with single-precision VFP,
+    /// matching Cortex-M33.
     fn step_v8m(&mut self, pc: u32) -> Result<Next, HaltCause> {
         if pc & 1 != 0 {
             return Err(HaltCause::FetchAbort);
@@ -1243,7 +1288,7 @@ impl<B: PeripheralBus> Core<B> {
                         _ => return self.exec_it_step(pc, 4, |s| s.exec32(pc, inst)),
                     }
                 }
-                match decode32_v8m(h0, h1) {
+                match self.decode32_v8m_isa(h0, h1) {
                     Ok(inst @ Inst32::Sg) => {
                         if self.decode_cache.len() > 2048 {
                             self.decode_cache.clear();
@@ -1275,7 +1320,7 @@ impl<B: PeripheralBus> Core<B> {
                     Err(_) => self.hardfault_on_undefined(pc, 4),
                 }
             } else {
-                match decode32_v8m(h0, h1) {
+                match self.decode32_v8m_isa(h0, h1) {
                     Ok(inst @ Inst32::Sg) => self.exec32(pc, inst),
                     Ok(inst) => self.exec_it_step(pc, 4, |s| s.exec32(pc, inst)),
                     Err(_) => self.hardfault_on_undefined(pc, 4),
@@ -1607,15 +1652,15 @@ impl<B: PeripheralBus> Core<B> {
             // ARMv6-M (Cortex-M0/M0+) and ARMv8-M baseline (Cortex-M23) have
             // no BASEPRI or FAULTMASK register: reads of their sysreg
             // encodings are UNPREDICTABLE on silicon, and the QEMU M0/M33
-            // references RAZ them.
+            // references RAZ them. Mainline (M33) has both.
             SysReg::Basepri | SysReg::BasepriMax | SysReg::Faultmask
-                if !matches!(self.isa, Isa::Armv7M | Isa::Armv7EM) =>
+                if !matches!(self.isa, Isa::Armv7M | Isa::Armv7EM | Isa::Armv8MMainline) =>
             {
                 0
             }
             // The ARMv8-M stack-limit registers only exist on the baseline
             // here; their encodings RAZ on ARMv6-M/ARMv7-M like BASEPRI.
-            SysReg::MspLim | SysReg::PspLim if self.isa != Isa::Armv8MBaseline => 0,
+            SysReg::MspLim | SysReg::PspLim if !self.is_v8m() => 0,
             // `CONTROL_NS` is readable by unprivileged *Secure* code (QEMU
             // `v7m_mrs` case 0x94); from the Non-secure state it reads 0. The
             // S-bank `FPCA` is folded into the NS value; the baseline never
@@ -1645,7 +1690,7 @@ impl<B: PeripheralBus> Core<B> {
             // arm's `!secure` gate already RAZs them there; kept explicit for
             // clarity).
             SysReg::MspNs | SysReg::PspNs | SysReg::MsplimNs | SysReg::PsplimNs | SysReg::SpNs
-                if self.isa != Isa::Armv8MBaseline =>
+                if !self.is_v8m() =>
             {
                 0
             }
@@ -1734,11 +1779,12 @@ impl<B: PeripheralBus> Core<B> {
             SysReg::Primask => self.primask = v & 1 != 0,
             // ARMv6-M and ARMv8-M baseline have no BASEPRI/FAULTMASK: writes
             // are UNPREDICTABLE on silicon and ignored by the QEMU references.
+            // Mainline (M33) implements both.
             SysReg::Basepri | SysReg::BasepriMax | SysReg::Faultmask
-                if !matches!(self.isa, Isa::Armv7M | Isa::Armv7EM) => {}
+                if !matches!(self.isa, Isa::Armv7M | Isa::Armv7EM | Isa::Armv8MMainline) => {}
             // The stack-limit registers only exist on the ARMv8-M baseline
             // here; their encodings are RAZ/WI on ARMv6-M/ARMv7-M.
-            SysReg::MspLim | SysReg::PspLim if self.isa != Isa::Armv8MBaseline => {}
+            SysReg::MspLim | SysReg::PspLim if !self.is_v8m() => {}
             SysReg::MspLim => self.msp_lim = v,
             SysReg::PspLim => self.psp_lim = v,
             SysReg::Basepri => self.basepri = v as u8,
@@ -1787,11 +1833,12 @@ impl<B: PeripheralBus> Core<B> {
                 // are false, so no swap happens there (QEMU
                 // `write_v7m_control_spsel`).
                 if self.ipsr != 0 || self.control & 1 == 0 {
-                    let mask = if matches!(self.isa, Isa::Armv7M | Isa::Armv7EM) {
-                        0x7
-                    } else {
-                        0x3
-                    };
+                    let mask =
+                        if matches!(self.isa, Isa::Armv7M | Isa::Armv7EM | Isa::Armv8MMainline) {
+                            0x7
+                        } else {
+                            0x3
+                        };
                     let new = v & mask;
                     let old_is_psp = self.sp_is_process();
                     self.control = new;
@@ -2165,7 +2212,9 @@ impl<B: PeripheralBus> Core<B> {
                 if im & 0b010 != 0 {
                     self.primask = disable;
                 }
-                if matches!(self.isa, Isa::Armv7M | Isa::Armv7EM) && im & 0b001 != 0 {
+                if matches!(self.isa, Isa::Armv7M | Isa::Armv7EM | Isa::Armv8MMainline)
+                    && im & 0b001 != 0
+                {
                     self.faultmask = disable;
                 }
                 Ok(Next::Advance(pc + 2))
@@ -4596,7 +4645,7 @@ impl<B: PeripheralBus> Core<B> {
     /// `gen_bx_excret`/`gen_bx_excret_final_code` routing).
     fn branch(&mut self, target: u32) -> Result<Next, HaltCause> {
         self.itstate = 0;
-        if self.isa == Isa::Armv8MBaseline && target >= FNC_RETURN_MIN_MAGIC {
+        if self.is_v8m() && target >= FNC_RETURN_MIN_MAGIC {
             return self.return_via_magic(target);
         }
         if self.ipsr != 0 && is_exc_return(target) {
@@ -4772,7 +4821,7 @@ impl<B: PeripheralBus> Core<B> {
     /// exception return instead. Undefined from the Non-secure state or on
     /// any pre-ARMv8-M ISA (QEMU's `trans_BXNS` gates on `v8m_secure`).
     fn exec_bxns(&mut self, target: u32) -> Result<Next, HaltCause> {
-        if self.isa != Isa::Armv8MBaseline || !self.secure {
+        if !self.is_v8m() || !self.secure {
             return self.hardfault_on_undefined(self.regs.pc, 2);
         }
         self.itstate = 0;
@@ -4790,7 +4839,7 @@ impl<B: PeripheralBus> Core<B> {
     /// Non-secure target. Mirrors QEMU's `v7m_blxns`. Undefined from the
     /// Non-secure state or on any pre-ARMv8-M ISA.
     fn exec_blxns(&mut self, pc: u32, target: u32) -> Result<Next, HaltCause> {
-        if self.isa != Isa::Armv8MBaseline || !self.secure {
+        if !self.is_v8m() || !self.secure {
             return self.hardfault_on_undefined(self.regs.pc, 2);
         }
         self.itstate = 0;
@@ -4867,7 +4916,7 @@ impl<B: PeripheralBus> Core<B> {
     /// so every escalated fault lands in the Secure bank. On pre-v8-M the
     /// single `HardFault` is never the Secure version.
     fn hardfault_target_secure(&mut self) -> bool {
-        self.isa == Isa::Armv8MBaseline && (self.secure || !self.bfhfnmins())
+        self.is_v8m() && (self.secure || !self.bfhfnmins())
     }
 
     /// `AIRCR.BFHFNMINS`, read through the memory window (the core has no
@@ -5011,7 +5060,7 @@ impl<B: PeripheralBus> Core<B> {
         } else {
             self.msp_lim
         };
-        self.isa == Isa::Armv8MBaseline && new_sp < limit
+        self.is_v8m() && new_sp < limit
     }
 
     /// A stack-limit violation. The baseline has no StackFault exception, so
@@ -5154,7 +5203,7 @@ impl<B: PeripheralBus> Core<B> {
         // and the Secure return pops the block (QEMU `v7m_push_callee_stack`
         // in `v7m_exception_taken`). Entries that stay in Secure, and
         // Non-secure backgrounds, push no callee-saves block.
-        let callee_block = self.isa == Isa::Armv8MBaseline && background_secure && !targets_secure;
+        let callee_block = self.is_v8m() && background_secure && !targets_secure;
         let frame = if callee_block {
             let cbase = frame.wrapping_sub(CALLEE_SAVES_BYTES);
             self.write_word_halt(cbase, CALLEE_SAVES_SIG)?;
@@ -5167,7 +5216,7 @@ impl<B: PeripheralBus> Core<B> {
         } else {
             frame
         };
-        self.regs.lr = if self.isa == Isa::Armv8MBaseline {
+        self.regs.lr = if self.is_v8m() {
             // ARMv8-M builds `EXC_RETURN` from `RES1|DCRS|FTYPE` (the
             // baseline has no FPU so the frame is always basic), `S` set from
             // the interrupted (background) state, `ES` from the target state,
@@ -5223,7 +5272,7 @@ impl<B: PeripheralBus> Core<B> {
         // (now the inactive bank) and the handler runs with the target
         // state's bank, mirroring QEMU's `switch_v7m_security_state` in
         // `v7m_exception_taken`.
-        if self.isa == Isa::Armv8MBaseline && targets_secure != self.secure {
+        if self.is_v8m() && targets_secure != self.secure {
             self.switch_security_state(targets_secure);
         }
         self.regs.pc = vector & !1;
@@ -5236,7 +5285,7 @@ impl<B: PeripheralBus> Core<B> {
         // pushed above), so Non-secure code cannot observe Secure values;
         // EAPSR (NZCV|Q|GE|IT) is cleared. Exceptions targeting Secure leave
         // the registers untouched on v8.0M (QEMU `v7m_exception_taken`).
-        if self.isa == Isa::Armv8MBaseline && !targets_secure {
+        if self.is_v8m() && !targets_secure {
             for r in 0u8..=12 {
                 if !(4..=11).contains(&r) || background_secure {
                     self.regs.write(r, 0);
@@ -5333,7 +5382,7 @@ impl<B: PeripheralBus> Core<B> {
         // the Non-secure state (QEMU `v7m_exception_taken`). The single-bank
         // system exceptions and every pre-v8-M machine target the current
         // state.
-        let targets_secure = if n >= 16 && self.isa == Isa::Armv8MBaseline {
+        let targets_secure = if n >= 16 && self.is_v8m() {
             self.mem.nvic_irq_targets_secure(u32::from(n - 16))
         } else {
             self.secure

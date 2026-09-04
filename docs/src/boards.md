@@ -10,3 +10,7 @@
 | stm32f207/f217 | M3 | 256K–1M | 64–128K | `F4`-gen set, no `FPU`, `ETH`/`DCMI` per die |
 | stm32f722/f746/f767/f730 | M7 | 256K–2M | 64–512K | `F4`-gen set, `QUADSPI`/`FMC` latch, `F730` own donor |
 | stm32g031/g081/g050/g061/g0c1 | M0+ | 16–512K | 4–144K | `G031` behaviors, `FLASH`/`I2C`/`EXTI`/`SYSCFG` latch, `G0` `RCC` |
+| stm32u535/u575/u5g9 | M33 | 128K–4M | 128K–3M | `GPIO`/`TIM`/`USART`/`RTC`/`RNG`/`CRC`/`WDG`, `SPI`/`ADC`/`FLASH` latch |
+| stm32h503/h533/h563 | M33 | 128K–2M | 32–640K | same set, `H533` own donor (`_S` aliases) |
+| stm32wba55 | M33 | 512K–1M | 128–512K | same set, radio permanently latch-only |
+| stm32l552/l562 | M33 | 256–512K | 128–256K | same set + `ADC` (plain names) |

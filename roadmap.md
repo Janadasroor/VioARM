@@ -22,7 +22,8 @@ planning artifact and is intentionally not version controlled.
   - ARMv7-M (Cortex-M3/M4) with Thumb-2 and the ARMv7E-M DSP zone - primary.
   - FPv4-SP VFP (Cortex-M4F) with M-profile FP context switching - implemented.
   - ARMv6-M (Cortex-M0/M0+) - implemented.
-  - ARMv8-M baseline (Cortex-M23/M33) - stretch.
+  - ARMv8-M baseline (Cortex-M23) - implemented; ARMv8-M mainline
+    (Cortex-M33: DSP + FPv5-SP, diffed vs mps2-an505) - implemented (WP5).
 - Boards: a generic virtual board (CPU + RAM + UART + SysTick) plus STM32F103,
   STM32F072 (F0, M0), STM32F107, STM32F303xE (F3, M4), STM32G474 (G4, M4),
   STM32L476 (L4, M4), STM32H743 (H7, M7), and STM32F407 board models
@@ -528,7 +529,7 @@ all five milestones.
 | ETH | 90% | — |
 | SDIO | 90% | CMD/DATAEND + CRC + SPI + error injection |
 | H7 integration (LTDC/DMA2D/BDMA/MDMA/SAI4/DFSDM/HRTIM) | 90% | LPTIM5/DCMI/JPEG/SAI/VREF/RNG/SPDIF/HSEM/MDIOS/SWPMI/COMP1/CRS/CEC behavioral |
-| Chip coverage (SVD tables) | 32 SVDs → 505 Dnames (F0 10 + F1 6 + F2 2 + F3/F4/G4/H7/L4 + F7 4 + G0 5) | **100%** latch-or-better via `board.rs` fallback, F2/F7/G0 own-generation behavioral boards + `sbom.json` 1.9.1 CycloneDX |
+| Chip coverage (SVD tables) | 40 SVDs → 505 Dnames (+U5 3 +H5 3 +WBA +L5) | **100%** latch-or-better via `board.rs` fallback, F2/F7/G0/M33 own-generation behavioral boards + `sbom.json` 1.9.1 CycloneDX |
 | H743 platform | **100% firmware-relevant** | FMC SDRAM/QSPI gate + H7 integration behavioral + all 119 periphs at least latch (no Reserved, TIM15-17 behavioral) |
 | Tooling | **100%** | mdBook builds, 4 examples, `sbom.json` 85 comps 1.9.1, `cargo publish --dry-run` green, bench `±5%`, `ci qemu 10.2.1 deny --deny warnings` |
 
@@ -715,6 +716,18 @@ claimed (see Non-goals).
   `DMA` IRQ mapping follows F0, `G050`/`G061`/`G0B1`/`G0C1` DMA stays latched,
   F7 `DTCM`/`ITCM` timing is not split out (single RAM), F2 has no vendored
   device headers so it stays out of the CMSIS compile matrix.
+- M33 core + U5/H5/WBA/L5 (WP5): mainline accepts all v7-M Thumb-2 (DSP,
+  `ldm`/`stm`, table branches) + SP VFP; DP stays undefined like M4F; MVE
+  absent (no target has it). U5/H5/WBA/L5 donors are own-SVD (name gaps:
+  `U585` `AES`/`SAES` only); `_S`/`SEC_` security-view windows mount as
+  latches. M33 behaviors attach where offsets audit clean (`GPIO`/`TIM`/
+  `USART`/`RTC`/`RNG`/`CRC`/`WDG`/`FDCAN` stubs); `SPI` (new-gen layout),
+  `I2C`, `ADC` (anonymous fields), `FLASH`, `RCC`, `PWR`, `DMA`/`GPDMA`,
+  `USB`, `OCTOSPI`, crypto stay latches. WBA/BLE radio is permanently
+  latch-only (WP-B6 pattern: no customer scenario models an RF link layer).
+  `MP1` is A-profile: descoped under the existing ARM non-goal (1 Dname).
+  U5/H5/WBA/L5 packs are slim (SVD-only, no HAL) so they stay out of the
+  CMSIS compile matrix like F2.
 
 ## Open questions
 

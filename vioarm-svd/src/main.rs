@@ -197,6 +197,38 @@ mod tests {
                 "packs/Keil.STM32G0xx_DFP/CMSIS/SVD/STM32G0C1.svd",
                 "vioarm-core/src/device/svd/stm32g0c1.rs",
             ),
+            (
+                "packs/Keil.STM32U5xx_DFP/CMSIS/SVD/STM32U535.svd",
+                "vioarm-core/src/device/svd/stm32u535.rs",
+            ),
+            (
+                "packs/Keil.STM32U5xx_DFP/CMSIS/SVD/STM32U575.svd",
+                "vioarm-core/src/device/svd/stm32u575.rs",
+            ),
+            (
+                "packs/Keil.STM32U5xx_DFP/CMSIS/SVD/STM32U5G9.svd",
+                "vioarm-core/src/device/svd/stm32u5g9.rs",
+            ),
+            (
+                "packs/Keil.STM32H5xx_DFP/CMSIS/SVD/STM32H503.svd",
+                "vioarm-core/src/device/svd/stm32h503.rs",
+            ),
+            (
+                "packs/Keil.STM32H5xx_DFP/CMSIS/SVD/STM32H533.svd",
+                "vioarm-core/src/device/svd/stm32h533.rs",
+            ),
+            (
+                "packs/Keil.STM32H5xx_DFP/CMSIS/SVD/STM32H563.svd",
+                "vioarm-core/src/device/svd/stm32h563.rs",
+            ),
+            (
+                "packs/Keil.STM32WBAxx_DFP/CMSIS/SVD/STM32WBA55.svd",
+                "vioarm-core/src/device/svd/stm32wba55.rs",
+            ),
+            (
+                "packs/Keil.STM32L5xx_DFP/CMSIS/SVD/STM32L562.svd",
+                "vioarm-core/src/device/svd/stm32l562.rs",
+            ),
         ];
         let mut checked = 0;
         for (svd_rel, out_rel) in pairs {

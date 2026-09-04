@@ -928,6 +928,132 @@ fn g0_full_board<L: crate::device::svd::Device>(
     mem
 }
 
+/// M33 peripheral set on own-generation tables (`Stm32u5xx`/`Stm32h5xx`/
+/// `Stm32wba55`/`Stm32l562`): hosts run `Machine::armv8m_mainline`, and the
+/// bus switches the SCB to `PMSAv8`. Behaviors attach only where layouts are
+/// proven compatible by static offset audit (GPIO/IWDG/WWDG/RNG/CRC/TIM/
+/// USART-with-aliases/RTC-with-tabled-ALRMAR/FDCAN stubs); everything else —
+/// RCC/PWR/FLASH/DMA/GPDMA/USB/OCTOSPI/SPI/I2C/ADC/HASH/radio — is an
+/// exact-window latch. `skip` drops donor windows the die lacks, `latch` is
+/// the donor's table for the fallback loop.
+fn m33_full_board<D: crate::device::svd::Device>(
+    flash_len: u32,
+    ram_len: u32,
+    skip: &[&str],
+    latch: &'static [crate::device::svd::PeripheralDef],
+) -> BoardMemory {
+    let backing = FlatMemory::with_layout(
+        &[FLASH, STM32_MAIN_FLASH, RAM],
+        &[flash_len, flash_len, ram_len],
+    );
+    let gate = std::sync::Arc::new(std::sync::Mutex::new(FlashGate::new(
+        Region::new(STM32_MAIN_FLASH, flash_len),
+        2048,
+    )));
+    let mut mem = SystemMemory::new(backing);
+    mem.set_flash_gate(gate.clone());
+    mem.enable_pmsav8();
+    // No RCC behavior: U5/H5/WBA/L5 clock trees are their own generations,
+    // so the shared handle stays divider-neutral (timers at core rate).
+    let clock = ClockState::shared();
+    mem.set_clock(clock.clone());
+    let live = |name: &str| !skip.contains(&name) && D::peripheral(name).is_some();
+    for (base, name) in [
+        (0x4202_0000u32, "gpioa"),
+        (0x4202_0400, "gpiob"),
+        (0x4202_0800, "gpioc"),
+        (0x4202_0c00, "gpiod"),
+        (0x4202_1000, "gpioe"),
+        (0x4202_1400, "gpiof"),
+        (0x4202_1800, "gpiog"),
+        (0x4202_1c00, "gpioh"),
+        (0x4202_2000, "gpioi"),
+    ] {
+        if D::by_base(base).is_some()
+            && matches!(mem.read(base), Err(crate::error::BusError::Reserved))
+        {
+            mem.attach(Box::new(GpioF4::at_in::<D>(base, name)));
+        }
+    }
+    for (ctor, peripheral) in [
+        (Usart::usart1_for::<D> as fn() -> Usart, "USART1"),
+        (Usart::usart2_for::<D>, "USART2"),
+        (Usart::usart3_for::<D>, "USART3"),
+        (Usart::usart6_for::<D>, "USART6"),
+        (Usart::uart4_for::<D>, "UART4"),
+        (Usart::uart5_for::<D>, "UART5"),
+        (Usart::lpuart1_for::<D>, "LPUART1"),
+    ] {
+        if live(peripheral) {
+            mem.attach(Box::new(ctor()));
+        }
+    }
+    for name in [
+        "TIM1", "TIM2", "TIM3", "TIM4", "TIM5", "TIM6", "TIM7", "TIM8", "TIM12", "TIM13", "TIM14",
+        "TIM15", "TIM16", "TIM17",
+    ] {
+        if live(name) {
+            if let Some(def) = D::peripheral(name) {
+                if matches!(mem.read(def.base), Err(crate::error::BusError::Reserved)) {
+                    mem.attach(Box::new(
+                        crate::device::stm32::timer::Timer::new_for_name::<D>(name),
+                    ));
+                }
+            }
+        }
+    }
+    if live("RTC") {
+        mem.attach(Box::new(Rtc::new_for::<D>()));
+    }
+    if live("RNG") {
+        mem.attach(Box::new(Rng::new_for::<D>()));
+    }
+    if live("CRC") {
+        mem.attach(Box::new(Crc::new_for::<D>()));
+    }
+    if live("FDCAN1") {
+        mem.attach(Box::new(Fdcan::fdcan1_for::<D>()));
+    }
+    if live("FDCAN2") {
+        mem.attach(Box::new(Fdcan::fdcan2_for::<D>()));
+    }
+    // ADC only where the tables use plain CR/ISR names (L5): U5/H5/WBA
+    // prefix them (`ADC_ISR`) with anonymous fields, which the behavior
+    // cannot resolve, so those stay latches.
+    if live("ADC1")
+        && D::peripheral("ADC1").is_some_and(|def| {
+            def.registers
+                .iter()
+                .any(|r| r.name == "CR" || r.name == "CR2")
+        })
+    {
+        mem.attach(Box::new(Adc::adc1_for::<D>()));
+    }
+    let watchdog = std::sync::Arc::new(std::sync::Mutex::new(false));
+    mem.set_watchdog_reset(watchdog.clone());
+    if live("IWDG") {
+        mem.attach(Box::new(Iwdg::for_device::<D>(watchdog.clone())));
+    }
+    if live("WWDG") {
+        mem.attach(Box::new(Wwdg::for_device::<D>(watchdog)));
+    }
+    for p in latch {
+        if p.base >= 0xE000_0000 || skip.contains(&p.name) {
+            continue;
+        }
+        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
+            mem.attach(Box::new(crate::device::svd::RegisterFile::<
+                crate::device::svd::NoBehavior,
+            >::new(
+                p, crate::device::svd::NoBehavior
+            )));
+        }
+    }
+    mem.attach(Box::new(Dwt::new()));
+    mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
+    mem
+}
+
 fn f0_full_board(flash_len: u32, ram_len: u32) -> BoardMemory {
     use crate::device::svd::stm32f072::Stm32f072;
     let backing = FlatMemory::with_layout(
@@ -2925,13 +3051,25 @@ pub const STM32_H563_FLASH_LEN: u32 = 0x0020_0000;
 pub const STM32_H563_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
 pub fn stm32h563() -> BoardMemory {
-    stm32h743()
+    // H563 (M33) on own tables.
+    m33_full_board::<crate::device::svd::stm32h563::Stm32h563>(
+        STM32_H563_FLASH_LEN,
+        STM32_H563_RAM_LEN,
+        &[],
+        crate::device::svd::stm32h563::PERIPHERALS,
+    )
 }
 pub const STM32_U575_FLASH_LEN: u32 = 0x0020_0000;
 pub const STM32_U575_RAM_LEN: u32 = 0x000C_0000;
 #[must_use]
 pub fn stm32u575() -> BoardMemory {
-    stm32h743()
+    // U575 (M33) on own tables.
+    m33_full_board::<crate::device::svd::stm32u575::Stm32u575>(
+        STM32_U575_FLASH_LEN,
+        STM32_U575_RAM_LEN,
+        &[],
+        crate::device::svd::stm32u575::PERIPHERALS,
+    )
 }
 pub const STM32_WB55_FLASH_LEN: u32 = 0x0010_0000;
 pub const STM32_WB55_RAM_LEN: u32 = 0x0004_0000;
@@ -3009,7 +3147,13 @@ pub const STM32_H562_FLASH_LEN: u32 = 0x0020_0000;
 pub const STM32_H562_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
 pub fn stm32h562() -> BoardMemory {
-    stm32h743()
+    // H562 (M33) on H563 tables.
+    m33_full_board::<crate::device::svd::stm32h563::Stm32h563>(
+        STM32_H562_FLASH_LEN,
+        STM32_H562_RAM_LEN,
+        &["ETH", "SDMMC2", "SEC_ETH", "SEC_SDMMC2"],
+        crate::device::svd::stm32h563::PERIPHERALS,
+    )
 }
 pub const STM32_WLE5_FLASH_LEN: u32 = 0x0004_0000;
 pub const STM32_WLE5_RAM_LEN: u32 = 0x0001_0000;
@@ -3113,13 +3257,25 @@ pub const STM32_H503_FLASH_LEN: u32 = 0x0002_0000;
 pub const STM32_H503_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
 pub fn stm32h503() -> BoardMemory {
-    stm32h743()
+    // H503 (M33) on own tables.
+    m33_full_board::<crate::device::svd::stm32h503::Stm32h503>(
+        STM32_H503_FLASH_LEN,
+        STM32_H503_RAM_LEN,
+        &[],
+        crate::device::svd::stm32h503::PERIPHERALS,
+    )
 }
 pub const STM32_U585_FLASH_LEN: u32 = 0x0020_0000;
 pub const STM32_U585_RAM_LEN: u32 = 0x000C_0000;
 #[must_use]
 pub fn stm32u585() -> BoardMemory {
-    stm32h743()
+    // U585 (M33) on U575 tables; AES/SAES windows absent there.
+    m33_full_board::<crate::device::svd::stm32u575::Stm32u575>(
+        STM32_U585_FLASH_LEN,
+        STM32_U585_RAM_LEN,
+        &[],
+        crate::device::svd::stm32u575::PERIPHERALS,
+    )
 }
 pub const STM32_F205_FLASH_LEN: u32 = 0x0002_0000;
 pub const STM32_F205_RAM_LEN: u32 = 0x0001_0000;
@@ -3185,7 +3341,30 @@ pub const STM32_U5A5_FLASH_LEN: u32 = 0x0020_0000;
 pub const STM32_U5A5_RAM_LEN: u32 = 0x000C_0000;
 #[must_use]
 pub fn stm32u5a5() -> BoardMemory {
-    stm32h743()
+    // U5A5 (M33) on U5G9 tables.
+    m33_full_board::<crate::device::svd::stm32u5g9::Stm32u5g9>(
+        STM32_U5A5_FLASH_LEN,
+        STM32_U5A5_RAM_LEN,
+        &[
+            "DCACHE2",
+            "DSI",
+            "GFXMMU",
+            "GFXTIM",
+            "GTZC1_MPCBB6",
+            "HSPI1",
+            "JPEG",
+            "LTDC",
+            "SEC_DCACHE2",
+            "SEC_DSI",
+            "SEC_GFXMMU",
+            "SEC_GFXTIM",
+            "SEC_GTZC1_MPCBB6",
+            "SEC_HSPI1",
+            "SEC_JPEG",
+            "SEC_LTDC",
+        ],
+        crate::device::svd::stm32u5g9::PERIPHERALS,
+    )
 }
 pub const STM32_L162_FLASH_LEN: u32 = 0x0004_0000;
 pub const STM32_L162_RAM_LEN: u32 = 0x0001_4000;
@@ -3252,13 +3431,25 @@ pub const STM32_U5G9_FLASH_LEN: u32 = 0x0020_0000;
 pub const STM32_U5G9_RAM_LEN: u32 = 0x000C_0000;
 #[must_use]
 pub fn stm32u5g9() -> BoardMemory {
-    stm32h743()
+    // U5G9 (M33) on own tables.
+    m33_full_board::<crate::device::svd::stm32u5g9::Stm32u5g9>(
+        STM32_U5G9_FLASH_LEN,
+        STM32_U5G9_RAM_LEN,
+        &[],
+        crate::device::svd::stm32u5g9::PERIPHERALS,
+    )
 }
 pub const STM32_WBA52_FLASH_LEN: u32 = 0x0010_0000;
 pub const STM32_WBA52_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
 pub fn stm32wba52() -> BoardMemory {
-    stm32h743()
+    // WBA52 (M33) on WBA55 tables; radio stays a latch.
+    m33_full_board::<crate::device::svd::stm32wba55::Stm32wba55>(
+        STM32_WBA52_FLASH_LEN,
+        STM32_WBA52_RAM_LEN,
+        &["COMP", "PTACONV", "SEC_COMP", "SEC_PTACONV"],
+        crate::device::svd::stm32wba55::PERIPHERALS,
+    )
 }
 pub const STM32_L071_FLASH_LEN: u32 = 0x0002_0000;
 pub const STM32_L071_RAM_LEN: u32 = 0x0000_5000;
@@ -3318,7 +3509,13 @@ pub const STM32_H533_FLASH_LEN: u32 = 0x0008_0000;
 pub const STM32_H533_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
 pub fn stm32h533() -> BoardMemory {
-    stm32h743()
+    // H533 (M33) on own tables.
+    m33_full_board::<crate::device::svd::stm32h533::Stm32h533>(
+        STM32_H533_FLASH_LEN,
+        STM32_H533_RAM_LEN,
+        &[],
+        crate::device::svd::stm32h533::PERIPHERALS,
+    )
 }
 pub const STM32_H742_FLASH_LEN: u32 = 0x0020_0000;
 pub const STM32_H742_RAM_LEN: u32 = 0x0008_0000;
@@ -3330,7 +3527,40 @@ pub const STM32_U595_FLASH_LEN: u32 = 0x0020_0000;
 pub const STM32_U595_RAM_LEN: u32 = 0x000C_0000;
 #[must_use]
 pub fn stm32u595() -> BoardMemory {
-    stm32h743()
+    // U595 (M33) on U5G9 tables.
+    m33_full_board::<crate::device::svd::stm32u5g9::Stm32u5g9>(
+        STM32_U595_FLASH_LEN,
+        STM32_U595_RAM_LEN,
+        &[
+            "AES",
+            "DCACHE2",
+            "DSI",
+            "GFXMMU",
+            "GFXTIM",
+            "GTZC1_MPCBB6",
+            "HSPI1",
+            "JPEG",
+            "LTDC",
+            "OTFDEC1",
+            "OTFDEC2",
+            "PKA",
+            "SAES",
+            "SEC_AES",
+            "SEC_DCACHE2",
+            "SEC_DSI",
+            "SEC_GFXMMU",
+            "SEC_GFXTIM",
+            "SEC_GTZC1_MPCBB6",
+            "SEC_HSPI1",
+            "SEC_JPEG",
+            "SEC_LTDC",
+            "SEC_OTFDEC1",
+            "SEC_OTFDEC2",
+            "SEC_PKA",
+            "SEC_SAES",
+        ],
+        crate::device::svd::stm32u5g9::PERIPHERALS,
+    )
 }
 pub const STM32_WLE4_FLASH_LEN: u32 = 0x0002_0000;
 pub const STM32_WLE4_RAM_LEN: u32 = 0x0001_0000;
@@ -3373,13 +3603,25 @@ pub const STM32_U535_FLASH_LEN: u32 = 0x0020_0000;
 pub const STM32_U535_RAM_LEN: u32 = 0x000C_0000;
 #[must_use]
 pub fn stm32u535() -> BoardMemory {
-    stm32h743()
+    // U535 (M33) on own tables.
+    m33_full_board::<crate::device::svd::stm32u535::Stm32u535>(
+        STM32_U535_FLASH_LEN,
+        STM32_U535_RAM_LEN,
+        &[],
+        crate::device::svd::stm32u535::PERIPHERALS,
+    )
 }
 pub const STM32_WBA55_FLASH_LEN: u32 = 0x0010_0000;
 pub const STM32_WBA55_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
 pub fn stm32wba55() -> BoardMemory {
-    stm32h743()
+    // WBA55 (M33) on own tables; radio stays a latch.
+    m33_full_board::<crate::device::svd::stm32wba55::Stm32wba55>(
+        STM32_WBA55_FLASH_LEN,
+        STM32_WBA55_RAM_LEN,
+        &[],
+        crate::device::svd::stm32wba55::PERIPHERALS,
+    )
 }
 pub const STM32_WL33_FLASH_LEN: u32 = 0x0004_0000;
 pub const STM32_WL33_RAM_LEN: u32 = 0x0001_0000;
@@ -3398,13 +3640,25 @@ pub const STM32_L552_FLASH_LEN: u32 = 0x0008_0000;
 pub const STM32_L552_RAM_LEN: u32 = 0x0004_0000;
 #[must_use]
 pub fn stm32l552() -> BoardMemory {
-    stm32h743()
+    // L552 (M33) on L562 tables.
+    m33_full_board::<crate::device::svd::stm32l562::Stm32l562>(
+        STM32_L552_FLASH_LEN,
+        STM32_L552_RAM_LEN,
+        &["AES", "OTFDEC1", "PKA", "SEC_AES", "SEC_OTFDEC1", "SEC_PKA"],
+        crate::device::svd::stm32l562::PERIPHERALS,
+    )
 }
 pub const STM32_L562_FLASH_LEN: u32 = 0x0008_0000;
 pub const STM32_L562_RAM_LEN: u32 = 0x0004_0000;
 #[must_use]
 pub fn stm32l562() -> BoardMemory {
-    stm32h743()
+    // L562 (M33) on own tables.
+    m33_full_board::<crate::device::svd::stm32l562::Stm32l562>(
+        STM32_L562_FLASH_LEN,
+        STM32_L562_RAM_LEN,
+        &[],
+        crate::device::svd::stm32l562::PERIPHERALS,
+    )
 }
 pub const STM32_H7B3_FLASH_LEN: u32 = 0x0010_0000;
 pub const STM32_H7B3_RAM_LEN: u32 = 0x0002_0000;
@@ -3416,7 +3670,24 @@ pub const STM32_U5F9_FLASH_LEN: u32 = 0x0020_0000;
 pub const STM32_U5F9_RAM_LEN: u32 = 0x000C_0000;
 #[must_use]
 pub fn stm32u5f9() -> BoardMemory {
-    stm32h743()
+    // U5F9 (M33) on U5G9 tables.
+    m33_full_board::<crate::device::svd::stm32u5g9::Stm32u5g9>(
+        STM32_U5F9_FLASH_LEN,
+        STM32_U5F9_RAM_LEN,
+        &[
+            "AES",
+            "OTFDEC1",
+            "OTFDEC2",
+            "PKA",
+            "SAES",
+            "SEC_AES",
+            "SEC_OTFDEC1",
+            "SEC_OTFDEC2",
+            "SEC_PKA",
+            "SEC_SAES",
+        ],
+        crate::device::svd::stm32u5g9::PERIPHERALS,
+    )
 }
 pub const STM32_MP157_FLASH_LEN: u32 = 0x0010_0000;
 pub const STM32_MP157_RAM_LEN: u32 = 0x0004_0000;
