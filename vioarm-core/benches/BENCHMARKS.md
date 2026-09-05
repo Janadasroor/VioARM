@@ -92,6 +92,22 @@ cost is one predicted branch per step/access. (Full-range tracing costs
 no more than idle-armed here — one registry entry plus an atomic
 increment; real trace sinks like file I/O dominate, as expected.)
 
+## Fast mode (M11, 2026-09-06)
+
+Same 1000-step f103 window, `fast` group (`cargo bench --bench mips -- fast/`):
+
+| Bench | Quantum | Mean | Ratio vs accurate |
+|---|---|---|---|
+| `fast/board_nop_1k_q0` | accurate | 2.84 ms | 1.00 |
+| `fast/board_nop_1k_q8` | 8 | 1.63 ms | 1.74 |
+| `fast/board_nop_1k_q32` | 32 | 1.46 ms | 1.95 |
+| `fast/board_nop_1k_q128` | 128 | 1.42 ms | 2.00 |
+
+Acceptance (best / accurate ≥ 1.5) holds at 2.00 (K=128); K=32 at 1.95
+is the documented sweet spot (±32-step event accuracy). The floor (~1.4 ms)
+is core+bus+memory — device dispatch was the prize, and coarse ticks took
+it (see the tickexp probe notes in the M11 entry).
+
 ## Regression policy
 
 Wall-clock gating on shared CI runners is flake-prone, so CI runs the

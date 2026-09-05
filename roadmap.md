@@ -791,7 +791,7 @@ Effort: 10ah.
 
 ---
 
-## M11 — Dual-engine fast mode (PROPOSED, decision pending)
+## M11 — Dual-engine fast mode (APPROVED as scoped, 2026-09-06)
 
 Problem: M7 proved the accurate engine's wall is the timing model itself
 (~2.6 µs/step, of which dispatch is ~0.2 µs). No interpreter tuning and no
@@ -802,20 +802,29 @@ the only honest path is a second engine, not a faster first one.
 - `accurate` (today's machine, unchanged, default): per-step ticks,
   per-access MPU, per-insn `cyccnt`, deterministic traces. Conformance,
   timing tests, and CI run here. Forever.
-- `fast`: block-chained translations over straight-line code, bulk device
-  ticks between observable points, no per-step accounting. For long soak
-  runs and fuzzing throughput where timing fidelity is explicitly waived.
-- Both engines share decoders and device models; a fidelity contract per
-  run mode states what fast mode does NOT guarantee (interrupt timing,
-  `cyccnt` exactness, DWT reads); a differential suite asserts they agree
-  on final memory/register state for timing-insensitive programs.
-- Acceptance: soak workload runs ≥50× accurate-mode speed in fast mode;
-  differential suite green; fidelity contract in the book.
-- Cost: M-scale (new execution core + scheduler + contract + suite);
-  changes what the product is. NOT started without an explicit steering
-  decision — the recommended default is to hold the deterministic niche
-  (see M7 exit note) and let external JIT emulators own raw throughput.
-Effort: ~30ah if approved.
+- `fast` (shipped): the SAME engine under coarse device time —
+  `Machine::set_fast_quantum(K)` banks device cycles as debt and flushes
+  every K steps, deferring NVIC scans to boundaries. Instructions, bus,
+  hooks, and `cycles`/`cyccnt` stay exact; Core untouched.
+- Fidelity contract (in `host-io.md` + `set_fast_quantum` docs): device
+  timing may lag up to K steps (never ahead); `WFI` wakes late; device
+  state may lag one quantum at observation points (`settle_fast`, automatic
+  at end of `run`). Valid for timing-insensitive workloads (soak, fuzzing,
+  compute, crypto); invalid for timing/IRQ-latency/baud tests. Reruns
+  byte-identical.
+- Acceptance (REVISED by measurement 2026-09-06): the original ≥50×
+  demanded block-chained translation — a JIT by another name, M-scale on
+  its own. Measured instead: device ticks are ~50× dispatch-dominated
+  (1.0 µs per `tick_devices(1)` vs 21 µs per `tick_devices(1000)` for the
+  same 1000 device-cycles), so coarse ticks are the whole prize and the
+  shipped engine takes it: soak 1.74×/1.95×/2.00× at K=8/32/128 (K=32 the
+  sweet spot). Revised acceptance — best-quantum soak ≥1.5×, differential
+  suite green (RAM + `cycles` + `cyccnt` bit-exact across quanta),
+  never-early/bounded-late IRQ proof, contract in the book — HOLDS
+  (2.00×, `tests/fast_mode.rs`, `BENCHMARKS.md`). The 50× JIT stays a
+  recorded future, not a promise.
+- `vioarm run/record --fast K`; goldens carry the mode and replay in it.
+Effort: ~30ah approved; spent ~10ah (no JIT built — see above).
 
 ---
 

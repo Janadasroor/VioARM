@@ -18,6 +18,14 @@ use std::sync::{Arc, Mutex};
 /// the host-facing facade.
 pub struct Machine<M: PeripheralBus> {
     pub core: Core<M>,
+    /// Fast-mode quantum in steps (`0` = accurate mode, the default): NVIC
+    /// scans and device-tick flushes happen on quantum boundaries only.
+    /// See [`Machine::set_fast_quantum`].
+    fast_quantum: u64,
+    /// Steps remaining until the next boundary.
+    fast_countdown: u64,
+    /// Device cycles owed by retired instructions, flushed on boundaries.
+    fast_debt: u64,
 }
 
 impl<M: PeripheralBus> Machine<M> {
@@ -25,6 +33,9 @@ impl<M: PeripheralBus> Machine<M> {
     pub fn new(mem: M) -> Self {
         Self {
             core: Core::new(mem),
+            fast_quantum: 0,
+            fast_countdown: 0,
+            fast_debt: 0,
         }
     }
 
@@ -33,6 +44,9 @@ impl<M: PeripheralBus> Machine<M> {
     pub fn armv7m(mem: M) -> Self {
         Self {
             core: Core::armv7m(mem),
+            fast_quantum: 0,
+            fast_countdown: 0,
+            fast_debt: 0,
         }
     }
 
@@ -41,6 +55,9 @@ impl<M: PeripheralBus> Machine<M> {
     pub fn armv7em(mem: M) -> Self {
         Self {
             core: Core::armv7em(mem),
+            fast_quantum: 0,
+            fast_countdown: 0,
+            fast_debt: 0,
         }
     }
 
@@ -51,6 +68,9 @@ impl<M: PeripheralBus> Machine<M> {
     pub fn armv7m_with_fpu(mem: M, fpu_ctx: Arc<Mutex<FpuCtx>>) -> Self {
         Self {
             core: Core::armv7m_with_fpu(mem, fpu_ctx),
+            fast_quantum: 0,
+            fast_countdown: 0,
+            fast_debt: 0,
         }
     }
 
@@ -59,6 +79,9 @@ impl<M: PeripheralBus> Machine<M> {
     pub fn armv7em_with_fpu(mem: M, fpu_ctx: Arc<Mutex<FpuCtx>>) -> Self {
         Self {
             core: Core::armv7em_with_fpu(mem, fpu_ctx),
+            fast_quantum: 0,
+            fast_countdown: 0,
+            fast_debt: 0,
         }
     }
 
@@ -67,6 +90,9 @@ impl<M: PeripheralBus> Machine<M> {
     pub fn armv8m(mem: M) -> Self {
         Self {
             core: Core::armv8m(mem),
+            fast_quantum: 0,
+            fast_countdown: 0,
+            fast_debt: 0,
         }
     }
 
@@ -76,6 +102,9 @@ impl<M: PeripheralBus> Machine<M> {
     pub fn armv8m_mainline(mem: M) -> Self {
         Self {
             core: Core::armv8m_mainline(mem),
+            fast_quantum: 0,
+            fast_countdown: 0,
+            fast_debt: 0,
         }
     }
 
@@ -86,6 +115,9 @@ impl<M: PeripheralBus> Machine<M> {
     pub fn armv8m_mainline_with_fpu(mem: M, fpu_ctx: Arc<Mutex<FpuCtx>>) -> Self {
         Self {
             core: Core::armv8m_mainline_with_fpu(mem, fpu_ctx),
+            fast_quantum: 0,
+            fast_countdown: 0,
+            fast_debt: 0,
         }
     }
 
@@ -114,6 +146,10 @@ impl<M: PeripheralBus> Machine<M> {
         // Host channels are session state: a fresh boot starts with empty
         // semihost/RTT buffers (the enabled flag survives, it is host config).
         self.core.semihost.reset_session();
+        // Fast scheduling restarts too (the quantum is host config and
+        // survives), so no stale device debt leaks into the fresh boot.
+        self.fast_countdown = 0;
+        self.fast_debt = 0;
         self.core.reset_from_vector_table()
     }
 
@@ -127,6 +163,62 @@ impl<M: PeripheralBus> Machine<M> {
     /// so an instruction that pends an exception is followed by that
     /// exception within the same step, never by an extra thread-mode state.
     ///
+    /// Fast mode: run with coarse device time. `quantum` is the number of
+    /// steps between NVIC scans and device-tick flushes (`0` disables fast
+    /// mode and restores the accurate machine). Instructions, bus traffic,
+    /// hooks, and `cycles`/`cyccnt` stay exact; only *device timing* goes
+    /// coarse: timers, baud edges, and IRQ delivery can lag up to `quantum`
+    /// steps behind the retired instruction (never ahead), and `WFI` wakes
+    /// late by the same bound. Device state may also lag up to one quantum
+    /// behind at any observation point — call [`Machine::settle_fast`]
+    /// (done automatically at the end of [`Machine::run`]) to land owed
+    /// time before reading devices. Valid for timing-insensitive workloads
+    /// (soak runs, fuzzing, compute kernels, crypto loops); invalid for
+    /// timing tests, IRQ-latency tests, and baud-sensitive flows. Reruns
+    /// stay byte-identical. Outstanding device debt flushes immediately,
+    /// so switching modes never strands device time.
+    pub fn set_fast_quantum(&mut self, quantum: u64) {
+        let debt = core::mem::take(&mut self.fast_debt);
+        if debt != 0 {
+            self.core.mem().tick_by(debt);
+        }
+        self.fast_quantum = quantum;
+        self.fast_countdown = 0;
+    }
+
+    /// The fast-mode quantum (`0` = accurate mode).
+    #[must_use]
+    pub const fn fast_quantum(&self) -> u64 {
+        self.fast_quantum
+    }
+
+    /// Whether this step is a fast-mode boundary (scans + tick flush run).
+    /// Accurate mode (`quantum == 0`) treats every step as a boundary, so
+    /// the default path below is untouched.
+    fn fast_boundary(&mut self) -> bool {
+        if self.fast_quantum == 0 {
+            return true;
+        }
+        if self.fast_countdown == 0 {
+            self.fast_countdown = self.fast_quantum.saturating_sub(1);
+            true
+        } else {
+            self.fast_countdown -= 1;
+            false
+        }
+    }
+
+    /// Bank device cycles from one step, flushing on boundaries. With
+    /// `quantum == 0` this is exactly the old per-step `tick_by`, so the
+    /// accurate machine is bit-for-bit unchanged.
+    fn tick_fast(&mut self, delta: u64, boundary: bool) {
+        self.fast_debt = self.fast_debt.wrapping_add(delta);
+        if boundary {
+            let debt = core::mem::take(&mut self.fast_debt);
+            self.core.mem().tick_by(debt);
+        }
+    }
+
     /// # Errors
     ///
     /// Returns the halt cause if the machine halts while stepping.
@@ -138,6 +230,7 @@ impl<M: PeripheralBus> Machine<M> {
         if self.core.mem().reset_requested() {
             self.reset()?;
         }
+        let boundary = self.fast_boundary();
         // An exception return (`bx lr` with an EXC_RETURN value) sets the
         // core's `just_returned` flag: the architecture guarantees the
         // restored instruction executes before a new exception is taken, so
@@ -155,36 +248,47 @@ impl<M: PeripheralBus> Machine<M> {
         );
         if just_returned {
             let before = self.core.cyccnt;
-            self.run_instruction()?;
+            self.run_instruction(boundary)?;
             let delta = self.core.cyccnt.wrapping_sub(before);
-            self.core.mem().tick_by(delta.max(1));
-        } else if let Some(n) = self
-            .core
-            .mem()
-            .next_exception(primask, faultmask, basepri, ipsr)
-        {
-            self.core.enter_exception(n)?;
-            self.core.mem().acknowledge_exception(n);
-            self.core.cycles += 1;
-            self.core.cyccnt += 1;
-            self.core.mem().tick_by(1);
-        } else {
-            let before = self.core.cyccnt;
-            self.run_instruction()?;
-            let delta = self.core.cyccnt.wrapping_sub(before);
-            if delta == 0 {
-                // run_instruction already ticked (e.g. just_returned path); avoid double tick
-                self.core.mem().tick_by(1);
+            self.tick_fast(delta.max(1), boundary);
+        } else if boundary {
+            if let Some(n) = self
+                .core
+                .mem()
+                .next_exception(primask, faultmask, basepri, ipsr)
+            {
+                self.core.enter_exception(n)?;
+                self.core.mem().acknowledge_exception(n);
+                self.core.cycles += 1;
+                self.core.cyccnt += 1;
+                self.tick_fast(1, true);
             } else {
-                self.core.mem().tick_by(delta);
+                let before = self.core.cyccnt;
+                self.run_instruction(true)?;
+                let delta = self.core.cyccnt.wrapping_sub(before);
+                if delta == 0 {
+                    // run_instruction already ticked (e.g. just_returned path); avoid double tick
+                    self.tick_fast(1, true);
+                } else {
+                    self.tick_fast(delta, true);
+                }
             }
+        } else {
+            // Fast inter-boundary step: retire only. Scans and device ticks
+            // wait for the boundary; the debt keeps every cycle accounted.
+            let before = self.core.cyccnt;
+            self.run_instruction(false)?;
+            let delta = self.core.cyccnt.wrapping_sub(before);
+            self.tick_fast(delta.max(1), false);
         }
         Ok(())
     }
 
     /// Retire one instruction, then (unless that instruction was an exception
-    /// return) take any exception that now outranks the running context.
-    fn run_instruction(&mut self) -> Result<(), HaltCause> {
+    /// return) take any exception that now outranks the running context —
+    /// the scan only runs on fast-mode boundaries (`boundary`), which the
+    /// caller established in [`Machine::step`].
+    fn run_instruction(&mut self, boundary: bool) -> Result<(), HaltCause> {
         // Whether the core was already asleep: if so its `step()` returns
         // immediately without a cycle, so we count the sleeping cycle here.
         let was_sleeping = self.core.sleeping;
@@ -219,6 +323,15 @@ impl<M: PeripheralBus> Machine<M> {
             // instruction must execute next, before any pending exception.
             return Ok(());
         }
+        if !boundary {
+            if was_sleeping {
+                // A sleeping core that no exception wakes still spends the
+                // cycle asleep; the caller banks it as device debt.
+                self.core.cycles += 1;
+                self.core.cyccnt += 1;
+            }
+            return Ok(());
+        }
         let (primask, faultmask, basepri, ipsr) = (
             self.core.primask,
             self.core.faultmask,
@@ -245,7 +358,10 @@ impl<M: PeripheralBus> Machine<M> {
     }
 
     /// Run until the machine halts of its own accord or `budget` cycles have
-    /// elapsed (whichever comes first).
+    /// elapsed (whichever comes first). Either way, outstanding fast-mode
+    /// device debt flushes first, so post-run observations (register reads,
+    /// drains, snapshots) see settled device state — a halted machine never
+    /// owes device time.
     ///
     /// # Errors
     ///
@@ -253,9 +369,23 @@ impl<M: PeripheralBus> Machine<M> {
     /// or [`HaltCause::CycleBudgetExhausted`] otherwise.
     pub fn run(&mut self, budget: u64) -> Result<(), HaltCause> {
         for _ in 0..budget {
-            self.step()?;
+            if let Err(cause) = self.step() {
+                self.settle_fast();
+                return Err(cause);
+            }
         }
+        self.settle_fast();
         Err(HaltCause::CycleBudgetExhausted)
+    }
+
+    /// Flush outstanding fast-mode device debt without scanning (also what
+    /// `set_fast_quantum` and end-of-`run` do). Accurate mode has no debt,
+    /// so this is a no-op there.
+    pub fn settle_fast(&mut self) {
+        let debt = core::mem::take(&mut self.fast_debt);
+        if debt != 0 {
+            self.core.mem().tick_by(debt);
+        }
     }
 
     /// The number of executed machine cycles so far.

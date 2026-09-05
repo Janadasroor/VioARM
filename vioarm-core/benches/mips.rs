@@ -359,11 +359,56 @@ fn bench_hooks(c: &mut Criterion) {
     g.finish();
 }
 
+/// Fast-mode scaling (M11): the same 1000-step board window in accurate
+/// mode and at several quanta. Acceptance is best-quantum / accurate ≥ 1.5.
+fn bench_fast(c: &mut Criterion) {
+    let mut g = c.benchmark_group("fast");
+    for quantum in [0, 8, 32, 128] {
+        let bench = format!("board_nop_1k_q{quantum}");
+        g.bench_function(&bench, |b| {
+            b.iter_batched(
+                || {
+                    let mem = board::stm32f103();
+                    let mut m = Machine::armv7m(mem);
+                    for (i, b) in 0x4567_0123u32.to_le_bytes().iter().enumerate() {
+                        m.core.mem().write(0x4002_2004 + i as u32, *b).unwrap();
+                    }
+                    for (i, b) in 0xCDEF_89ABu32.to_le_bytes().iter().enumerate() {
+                        m.core.mem().write(0x4002_2004 + i as u32, *b).unwrap();
+                    }
+                    m.core.mem().write(0x4002_2010, 1).unwrap();
+                    let mut code = Vec::new();
+                    for _ in 0..1000 {
+                        code.extend_from_slice(&[0x00, 0xBF]);
+                    }
+                    code.extend_from_slice(&[0xFE, 0xE7]);
+                    let img = load_flat(0x0800_0000, &code);
+                    m.load_image(&img);
+                    m.core.regs.pc = 0x0800_0000;
+                    m.core.xpsr.set(0x01000000);
+                    m.set_fast_quantum(quantum);
+                    m
+                },
+                |mut m| {
+                    for _ in 0..1000 {
+                        let _ = m.step();
+                    }
+                    m.settle_fast();
+                    black_box(m.core.cyccnt)
+                },
+                BatchSize::SmallInput,
+            );
+        });
+    }
+    g.finish();
+}
+
 criterion_group!(
     benches,
     bench_board_boot,
     bench_mips,
     bench_attribution,
-    bench_hooks
+    bench_hooks,
+    bench_fast
 );
 criterion_main!(benches);

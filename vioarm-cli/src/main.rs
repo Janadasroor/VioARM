@@ -1610,6 +1610,9 @@ enum Commands {
         /// Arm semihosting (`BKPT 0xAB`) plus ITM stimulus capture
         #[arg(long)]
         semihost: bool,
+        /// Fast-mode quantum (`0` = accurate mode; see `Machine::set_fast_quantum`)
+        #[arg(long, default_value_t = 0)]
+        fast: u64,
     },
     /// Record a golden trace (deterministic replay artifact)
     Record {
@@ -1624,6 +1627,9 @@ enum Commands {
         /// Arm semihosting (`BKPT 0xAB`) plus ITM stimulus capture
         #[arg(long)]
         semihost: bool,
+        /// Fast-mode quantum (`0` = accurate mode; stored in the golden)
+        #[arg(long, default_value_t = 0)]
+        fast: u64,
         /// Golden file to write
         #[arg(long)]
         output: PathBuf,
@@ -2080,10 +2086,12 @@ fn main() {
                 base,
                 budget,
                 semihost,
+                fast,
             } => {
                 let (img, _) = load_image_auto(&image, base);
                 let mut m = machine_for(board, &img);
                 m.semihost_enable(semihost);
+                m.set_fast_quantum(fast);
                 banner();
                 run_quiet(&mut m, budget);
             }
@@ -2093,6 +2101,7 @@ fn main() {
                 base,
                 budget,
                 semihost,
+                fast,
                 output,
                 snap,
             } => {
@@ -2101,6 +2110,7 @@ fn main() {
                 let image_bytes = flat_image_bytes(&img);
                 let mut m = machine_for(board, &img);
                 m.semihost_enable(semihost);
+                m.set_fast_quantum(fast);
                 let spans: Vec<(u32, u32)> = if snap.is_empty() {
                     vec![(0x2000_0000, 0x1000)]
                 } else {
@@ -2118,6 +2128,7 @@ fn main() {
                     base,
                     budget,
                     semihost,
+                    fast,
                 };
                 match record(&mut m, &meta, &image_bytes, &spans) {
                     Ok(golden) => {

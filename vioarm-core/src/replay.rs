@@ -19,6 +19,7 @@
 //! base 0
 //! budget 1000000
 //! semihost false
+//! fast 0
 //! image-sha256 <64 hex>
 //! halt breakpoint
 //! cycles 1234
@@ -44,6 +45,8 @@ pub struct RecordMeta {
     pub budget: u64,
     /// Whether semihosting was armed.
     pub semihost: bool,
+    /// Fast-mode quantum the run used (`0` = accurate).
+    pub fast: u64,
 }
 
 /// The outcome of one run: counters, halts, channels, RAM digests.
@@ -59,6 +62,8 @@ pub struct Golden {
     pub budget: u64,
     /// See [`RecordMeta`].
     pub semihost: bool,
+    /// Fast-mode quantum the run used.
+    pub fast: u64,
     /// SHA-256 of the loaded image bytes, hex.
     pub image_sha256: String,
     /// Halt cause display (`"breakpoint"`, `"cycle budget exhausted"`, ...).
@@ -129,6 +134,7 @@ impl Golden {
         out.push_str(&format!("base {}\n", self.base));
         out.push_str(&format!("budget {}\n", self.budget));
         out.push_str(&format!("semihost {}\n", self.semihost));
+        out.push_str(&format!("fast {}\n", self.fast));
         out.push_str(&format!("image-sha256 {}\n", self.image_sha256));
         out.push_str(&format!("halt {}\n", self.halt));
         out.push_str(&format!("cycles {}\n", self.cycles));
@@ -174,6 +180,9 @@ impl Golden {
         let semihost: bool = get("semihost", &mut lines)?
             .parse()
             .map_err(|_| "bad semihost".to_owned())?;
+        let fast: u64 = get("fast", &mut lines)?
+            .parse()
+            .map_err(|_| "bad fast".to_owned())?;
         let image_sha256 = get("image-sha256", &mut lines)?;
         if image_sha256.len() != 64 || unhex(&image_sha256).is_err() {
             return Err("bad image-sha256".to_owned());
@@ -216,6 +225,7 @@ impl Golden {
             base,
             budget,
             semihost,
+            fast,
             image_sha256,
             halt,
             cycles,
@@ -294,6 +304,7 @@ pub fn record(
         base: meta.base,
         budget: meta.budget,
         semihost: meta.semihost,
+        fast: meta.fast,
         image_sha256: sha256_hex(image),
         halt,
         cycles: m.cycles(),
@@ -319,6 +330,8 @@ pub fn replay(
         diffs.push("image digest differs from golden".to_owned());
         return diffs;
     }
+    // Faithful replay runs in the recorded mode.
+    m.set_fast_quantum(golden.fast);
     for (addr, val) in patches {
         // Reserved drops are the caller's bug; the diff below still speaks.
         let _ = m.core.mem().write(*addr, *val);
@@ -328,6 +341,7 @@ pub fn replay(
         base: golden.base,
         budget: golden.budget,
         semihost: golden.semihost,
+        fast: golden.fast,
     };
     let rerun = match record(m, &meta, image, snaps) {
         Ok(g) => g,
@@ -417,6 +431,7 @@ mod tests {
             base: RAM,
             budget: 1_000,
             semihost: false,
+            fast: 0,
         }
     }
 
