@@ -694,6 +694,34 @@ Effort: 10ah.
 
 ---
 
+## M11 — Dual-engine fast mode (PROPOSED, decision pending)
+
+Problem: M7 proved the accurate engine's wall is the timing model itself
+(~2.6 µs/step, of which dispatch is ~0.2 µs). No interpreter tuning and no
+faithful JIT crosses the ~100× gap to JIT-based emulators — that gap *is*
+their missing timing model. If QEMU-class throughput is ever required,
+the only honest path is a second engine, not a faster first one.
+
+- `accurate` (today's machine, unchanged, default): per-step ticks,
+  per-access MPU, per-insn `cyccnt`, deterministic traces. Conformance,
+  timing tests, and CI run here. Forever.
+- `fast`: block-chained translations over straight-line code, bulk device
+  ticks between observable points, no per-step accounting. For long soak
+  runs and fuzzing throughput where timing fidelity is explicitly waived.
+- Both engines share decoders and device models; a fidelity contract per
+  run mode states what fast mode does NOT guarantee (interrupt timing,
+  `cyccnt` exactness, DWT reads); a differential suite asserts they agree
+  on final memory/register state for timing-insensitive programs.
+- Acceptance: soak workload runs ≥50× accurate-mode speed in fast mode;
+  differential suite green; fidelity contract in the book.
+- Cost: M-scale (new execution core + scheduler + contract + suite);
+  changes what the product is. NOT started without an explicit steering
+  decision — the recommended default is to hold the deterministic niche
+  (see M7 exit note) and let external JIT emulators own raw throughput.
+Effort: ~30ah if approved.
+
+---
+
 ## M10 — A-profile exploratory (far horizon, NOT committed)
 
 ### WP-J1 Feasibility spike (go/no-go gate)
