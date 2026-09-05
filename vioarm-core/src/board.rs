@@ -3929,13 +3929,18 @@ pub const STM32_WBA55_FLASH_LEN: u32 = 0x0010_0000;
 pub const STM32_WBA55_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
 pub fn stm32wba55() -> BoardMemory {
-    // WBA55 (M33) on own tables; radio stays a latch.
-    m33_full_board::<crate::device::svd::stm32wba55::Stm32wba55>(
+    // WBA55 (M33) on own tables; the BLE advertising window is virtual
+    // (real BLE runs on CPU2 — see `ble.rs`).
+    let mut mem = m33_full_board::<crate::device::svd::stm32wba55::Stm32wba55>(
         STM32_WBA55_FLASH_LEN,
         STM32_WBA55_RAM_LEN,
         &[],
         crate::device::svd::stm32wba55::PERIPHERALS,
-    )
+    );
+    if matches!(mem.read(0x5800_0000), Err(crate::error::BusError::Reserved)) {
+        mem.attach(Box::new(crate::device::stm32::ble::Ble::new_wba()));
+    }
+    mem
 }
 pub const STM32_WL33_FLASH_LEN: u32 = 0x0004_0000;
 pub const STM32_WL33_RAM_LEN: u32 = 0x0001_0000;

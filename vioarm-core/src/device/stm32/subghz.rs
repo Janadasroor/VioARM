@@ -1,42 +1,17 @@
-use crate::device::svd::{Behavior, RegisterFile, Registers};
+use super::radio::PacketBehavior;
+use crate::device::svd::{Access, FieldDef, IrqDef, PeripheralDef, RegisterDef, RegisterFile};
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
 use crate::mem::bus::Region;
 
-/// STM32WL `SUBGHZ` radio — stub real behavior (enable + status IRQ).
-#[derive(Clone, Debug)]
-struct SubghzBehavior {
-    enabled: bool,
-}
-
-impl Behavior for SubghzBehavior {
-    // Radio packets move synchronously via the mailbox; no tick model.
-    fn needs_tick() -> bool {
-        false
-    }
-    fn on_write(
-        &mut self,
-        view: &mut Registers<&mut [u32]>,
-        offset: u32,
-        val: u8,
-        shift: u32,
-    ) -> u32 {
-        let word = view.merged(offset, val, shift);
-        if offset == 0x00 && word & 1 != 0 {
-            self.enabled = true;
-            view.set(0x10, view.get(0x10) | 1);
-        }
-        word
-    }
-    fn tick(&mut self, _view: &mut Registers<&mut [u32]>, _delta: u64) {}
-    fn pending(&self, view: &Registers<&[u32]>) -> u32 {
-        u32::from(self.enabled && view.get(0x10) & 1 != 0)
-    }
-}
-
+/// STM32WL `SUBGHZ` radio: `CR` enable + `READY` status IRQ (the original
+/// stub surface, preserved bit-for-bit), plus the virtual packet endpoint
+/// (`TXLEN`/`TXDATA`/`TXGO`/`RXSTAT`/`RXDATA`, see
+/// [`PacketBehavior`](super::radio::PacketBehavior)) — real WL packets move
+/// through `SUBGHZSPI` commands, a whole protocol out of scope.
 #[derive(Debug)]
 pub struct Subghz {
-    inner: RegisterFile<SubghzBehavior>,
+    inner: RegisterFile<PacketBehavior>,
     name: &'static str,
 }
 
@@ -47,7 +22,7 @@ impl Subghz {
             .or_else(|| D::peripheral("SUBGHZ"))
             .unwrap_or_else(|| panic!("generated tables contain SUBGHZSPI/SUBGHZ"));
         Self {
-            inner: RegisterFile::new(def, SubghzBehavior { enabled: false }),
+            inner: RegisterFile::new(def, PacketBehavior::new(0x10)),
             name: "subghz",
         }
     }
@@ -56,7 +31,7 @@ impl Subghz {
     pub fn new_for_opt<D: crate::device::svd::Device>() -> Option<Self> {
         let def = D::peripheral("SUBGHZSPI").or_else(|| D::peripheral("SUBGHZ"))?;
         Some(Self {
-            inner: RegisterFile::new(def, SubghzBehavior { enabled: false }),
+            inner: RegisterFile::new(def, PacketBehavior::new(0x10)),
             name: "subghz",
         })
     }
@@ -64,7 +39,6 @@ impl Subghz {
     /// Manual WL SUBGHZ at `0x58001400` when SVD lacks the entry (WL alias boards).
     #[must_use]
     pub fn new_wl() -> Self {
-        use crate::device::svd::{Access, FieldDef, IrqDef, PeripheralDef, RegisterDef};
         const WL_SUBGHZ: PeripheralDef = PeripheralDef {
             name: "SUBGHZSPI",
             base: 0x5800_1400,
@@ -95,10 +69,51 @@ impl Subghz {
                     reset: 0,
                     fields: &[],
                 },
+                // Virtual packet endpoint (see `radio.rs`).
+                RegisterDef {
+                    name: "TXLEN",
+                    offset: 0x20,
+                    width: 32,
+                    access: Access::ReadWrite,
+                    reset: 0,
+                    fields: &[],
+                },
+                RegisterDef {
+                    name: "TXDATA",
+                    offset: 0x24,
+                    width: 32,
+                    access: Access::ReadWrite,
+                    reset: 0,
+                    fields: &[],
+                },
+                RegisterDef {
+                    name: "TXGO",
+                    offset: 0x28,
+                    width: 32,
+                    access: Access::ReadWrite,
+                    reset: 0,
+                    fields: &[],
+                },
+                RegisterDef {
+                    name: "RXSTAT",
+                    offset: 0x2c,
+                    width: 32,
+                    access: Access::ReadOnly,
+                    reset: 0,
+                    fields: &[],
+                },
+                RegisterDef {
+                    name: "RXDATA",
+                    offset: 0x30,
+                    width: 32,
+                    access: Access::ReadOnly,
+                    reset: 0,
+                    fields: &[],
+                },
             ],
         };
         Self {
-            inner: RegisterFile::new(&WL_SUBGHZ, SubghzBehavior { enabled: false }),
+            inner: RegisterFile::new(&WL_SUBGHZ, PacketBehavior::new(0x10)),
             name: "subghz",
         }
     }
@@ -122,6 +137,12 @@ impl Peripheral for Subghz {
     }
     fn name(&self) -> &'static str {
         self.name
+    }
+    fn drive_inputs(&mut self, value: u32) {
+        self.inner.drive_inputs(value);
+    }
+    fn drain_output(&mut self) -> Vec<u8> {
+        self.inner.drain_output()
     }
 }
 

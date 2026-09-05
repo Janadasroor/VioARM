@@ -677,7 +677,7 @@ Effort: 16ah.
   workspace + MSRV clean.
 Effort: 16ah.
 
-### WP-H4 Radio link-layer abstraction (bounded, after M9-I2)
+### WP-H4 Radio link-layer abstraction (bounded, after M9-I2) — DONE (2026-09-06)
 
 - Explicitly NOT RF physics/propagation/timing: a virtual-peer model —
   frames written to TX appear on the peer `Machine`'s RX via the
@@ -686,6 +686,18 @@ Effort: 16ah.
   TX/RX loopback (window already wired via `Subghz::new_wl`).
 - Acceptance: two-machine ping-pong e2e; single-machine loopback where no
   peer is attached.
+- Shipped: `radio.rs` packet engine (TX stage/`TXGO`, RX FIFO, `TXDONE`,
+  `LOOPBACK`, per-device `SR` offset) behind the SUBGHZ packet endpoint
+  (extends `new_wl`, `CR`/`SR` stub semantics preserved bit-for-bit) and a
+  new documented-virtual `BLE` window on `wba55` (`0x5800_0000`, no IRQ —
+  real BLE is CPU2/IPCC, no AP registers exist); `Fabric::link_radio`
+  broadcast bus (pair + star, index-ordered, no self-delivery).
+  `tests/radio_peer.rs` (SUBGHZ ping-pong, both loopbacks, BLE ADV
+  byte-exact, determinism rerun). Stance: virtual registers where silicon
+  has none (`SUBGHZSPI` commands unmodeled), byte-stream framing, silent
+  256 B cap, no access-address/CRC/PHY. Two real bugs caught: missing
+  `drive_inputs`/`drain_output` forwards on wrapper peripherals, and a
+  per-lane TXGO strobe (now lane-0). `694` lib + `5` radio e2e green.
 Effort: 16ah.
 
 ---

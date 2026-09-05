@@ -46,6 +46,16 @@ pub struct CanBus {
     pub members: Vec<Endpoint>,
 }
 
+/// A shared radio medium (virtual air): every member's drained bytes reach
+/// every other member in machine-index order. No arbitration, no
+/// collisions — concurrent transmissions both land, lowest machine index
+/// first (documented simplification: no RF physics by design).
+#[derive(Clone, Debug)]
+pub struct RadioBus {
+    /// Air members.
+    pub members: Vec<Endpoint>,
+}
+
 /// `Fabric::step` outcomes, one per machine in index order: `Ok` for a
 /// retired step, `Err` with the halt cause (a halted machine keeps
 /// reporting its cause; stepping it again is harmless).
@@ -56,6 +66,7 @@ pub struct Fabric<M: PeripheralBus> {
     machines: Vec<Machine<M>>,
     uart_links: Vec<UartLink>,
     can_buses: Vec<CanBus>,
+    radio_buses: Vec<RadioBus>,
 }
 
 impl<M: PeripheralBus> Fabric<M> {
@@ -66,6 +77,7 @@ impl<M: PeripheralBus> Fabric<M> {
             machines: Vec::new(),
             uart_links: Vec::new(),
             can_buses: Vec::new(),
+            radio_buses: Vec::new(),
         }
     }
     pub fn add(&mut self, machine: Machine<M>) -> usize {
@@ -111,6 +123,20 @@ impl<M: PeripheralBus> Fabric<M> {
         });
     }
 
+    /// Share one radio medium between members (virtual air for the
+    /// SUBGHZ/BLE packet endpoints; pair and star both work).
+    pub fn link_radio(&mut self, members: &[(usize, &str)]) {
+        self.radio_buses.push(RadioBus {
+            members: members
+                .iter()
+                .map(|(machine, device)| Endpoint {
+                    machine: *machine,
+                    device: (*device).to_owned(),
+                })
+                .collect(),
+        });
+    }
+
     /// One lockstep round: step every machine in index order, then pump
     /// every wire in attach order.
     pub fn step(&mut self) -> StepOutcomes {
@@ -120,6 +146,7 @@ impl<M: PeripheralBus> Fabric<M> {
         }
         self.pump_uart();
         self.pump_can();
+        self.pump_radio();
         outcomes
     }
 
@@ -188,6 +215,34 @@ impl<M: PeripheralBus> Fabric<M> {
                         continue;
                     }
                     let _ = self.machines[ep.machine].drive_device(&ep.device, frame);
+                }
+            }
+        }
+    }
+
+    /// Move radio bytes across every medium: each member's drained bytes
+    /// reach every other member, machines in index order.
+    fn pump_radio(&mut self) {
+        for i in 0..self.radio_buses.len() {
+            let bus = self.radio_buses[i].clone();
+            // Drain first (one pass, index order), then deliver: a member
+            // never hears its own transmission.
+            let mut aired: Vec<(usize, Vec<u8>)> = Vec::new();
+            for ep in &bus.members {
+                if ep.machine >= self.machines.len() {
+                    continue;
+                }
+                let bytes = self.machines[ep.machine].drain_device(&ep.device);
+                if !bytes.is_empty() {
+                    aired.push((ep.machine, bytes));
+                }
+            }
+            for (src, bytes) in &aired {
+                for ep in &bus.members {
+                    if ep.machine == *src || ep.machine >= self.machines.len() {
+                        continue;
+                    }
+                    let _ = self.machines[ep.machine].drive_device(&ep.device, bytes);
                 }
             }
         }
