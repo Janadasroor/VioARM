@@ -6989,12 +6989,13 @@ pub fn stm32h743() -> BoardMemory {
     if <Stm32h743 as crate::device::svd::Device>::peripheral("HRTIM_Common").is_some() {
         mem.attach(Box::new(Hrtim::common_for::<Stm32h743>()));
     }
-    // ETH - H743 single-window MAC at 0x40028000 (no MMC/PTP split) via EthH7 stub
+    // ETH - H743 MAC/MTL/DMA at 0x40028000/0x40028C00/0x40029000 via EthH7
     if <Stm32h743 as crate::device::svd::Device>::peripheral("Ethernet_MAC").is_some()
         || <Stm32h743 as crate::device::svd::Device>::peripheral("ETH").is_some()
     {
-        // Use EthH7 stub (NoBehavior) so HAL probing (MACCR etc.) does not fault
-        mem.attach(Box::new(EthH7::new_for::<Stm32h743>()));
+        let eth_mailbox = std::sync::Arc::new(std::sync::Mutex::new(EthMailbox::default()));
+        mem.set_eth_mailbox(eth_mailbox.clone());
+        mem.attach(Box::new(EthH7::new_for::<Stm32h743>(eth_mailbox)));
     }
     // FDCAN1 behavior on verified CAN RAM (CMSIS SRAMCAN_BASE 0x4000AC00);
     // FDCAN2 stays a stub (its RAM base is not verifiable from artifacts).

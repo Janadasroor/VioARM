@@ -30,7 +30,7 @@
 //! `[CMD_RX, len_lo, len_hi, payload...]`; output: `[EVT_TX, len_lo, len_hi,
 //! payload...]`.
 
-use crate::device::svd::{Access, Device, NoBehavior, PeripheralDef, RegisterDef, RegisterFile};
+use crate::device::svd::{Access, Device, PeripheralDef, RegisterDef};
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
 use crate::mem::bus::Region;
@@ -655,13 +655,15 @@ impl Eth {
         let is_mcast = dest[0] & 1 != 0;
         let hr = self.mac.get(MACA0HR);
         let lr = self.mac.get(MACA0LR);
+        // `ADDRHI[15:8]`/`[7:0]` carry bytes 5/4, `ADDRLO` bytes 3..=0
+        // big-endian: byte 0 leaves the wire first.
         let station = [
-            ((hr >> 8) & 0xFF) as u8,
-            (hr & 0xFF) as u8,
-            ((lr >> 24) & 0xFF) as u8,
-            ((lr >> 16) & 0xFF) as u8,
-            ((lr >> 8) & 0xFF) as u8,
             (lr & 0xFF) as u8,
+            ((lr >> 8) & 0xFF) as u8,
+            ((lr >> 16) & 0xFF) as u8,
+            ((lr >> 24) & 0xFF) as u8,
+            (hr & 0xFF) as u8,
+            ((hr >> 8) & 0xFF) as u8,
         ];
         let perfect = dest == station;
         let mut accepted = if is_mcast {
@@ -712,12 +714,12 @@ impl Eth {
         let hr = self.mac.get(MACA0HR);
         let lr = self.mac.get(MACA0LR);
         let mac = [
-            ((hr >> 8) & 0xFF) as u8,
-            (hr & 0xFF) as u8,
-            ((lr >> 24) & 0xFF) as u8,
-            ((lr >> 16) & 0xFF) as u8,
-            ((lr >> 8) & 0xFF) as u8,
             (lr & 0xFF) as u8,
+            ((lr >> 8) & 0xFF) as u8,
+            ((lr >> 16) & 0xFF) as u8,
+            ((lr >> 24) & 0xFF) as u8,
+            (hr & 0xFF) as u8,
+            ((hr >> 8) & 0xFF) as u8,
         ];
         frame[..6].iter().all(|&b| b == 0xFF) && frame[6..6 + 96].chunks_exact(6).all(|c| c == mac)
     }
@@ -964,51 +966,721 @@ impl Eth {
     }
 }
 
-/// H7 single-window Ethernet (MAC at 0x40028000, window 0x0BDF) — stub that
-/// round-trips writes so HAL probing does not HardFault. Real H7 DMA/MTL
-/// are not modeled; use this for H743 board bringup.
+/// H7 Ethernet (MAC at `0x4002_8000`, MTL at `0x4002_8C00`, DMA at
+/// `0x4002_9000`), driven by the SVD-generated register tables.
+///
+/// Like [`Eth`], the descriptor-ring DMA engines run through the shared
+/// [`EthMailbox`]: RX stores one frame per owned descriptor (filter first,
+/// then buffer, then the `FD|LD|PL` write-back), TX gathers buffer 1 (+2)
+/// and clears `OWN` on completion. Register map and descriptor formats
+/// follow RM0433 as the HAL programs them: `MACCR.RE/TE` at bits 0/1,
+/// `MACPFR` filter bits, `MACHT0R/1R` hash table, `MACA0HR.AE`-gated
+/// station address, `DMACTxCR.ST` / `DMACRxCR.SR` engine starts,
+/// `DMACTDTPR` transmit kick, ring wrap from `DMACTxRLR`/`DMACRxRLR`,
+/// and `DMACSR.TI/RI/NIS` (+`TBU/RBU/AIS`) gated by `DMACIER`.
+///
+/// Deliberate limits, all documented: single-buffer frames only (a frame
+/// larger than `DMACRxCR.RBSZ` latches `RBU` and drops); checksum offload
+/// (`MACCR.IPC`, `TDES3.CIC`) and CRC/pad control (`CPC`) are latched and
+/// passed through — bytes are never modified, so a stack's valid frames
+/// echo bit-exact; context descriptors (VLAN/TSO) are consumed without
+/// effect; MTL queue setup, MMC counters, and PMT/magic-packet wakeup are
+/// latch-only (the H7 has a single `ETH` line, no wakeup line).
+// MAC window register offsets.
+const H7_MACCR: u32 = 0x00;
+const H7_MACPFR: u32 = 0x08;
+const H7_MACHT0R: u32 = 0x10;
+const H7_MACHT1R: u32 = 0x14;
+const H7_MACMDIOAR: u32 = 0x200;
+const H7_MACMDIODR: u32 = 0x204;
+const H7_MACA0HR: u32 = 0x300;
+const H7_MACA0LR: u32 = 0x304;
+// DMA window register offsets.
+const H7_DMAMR: u32 = 0x00;
+const H7_DMACTXCR: u32 = 0x104;
+const H7_DMACRXCR: u32 = 0x108;
+const H7_DMACTXDLAR: u32 = 0x114;
+const H7_DMACRXDLAR: u32 = 0x11c;
+const H7_DMACTXDTPR: u32 = 0x120;
+const H7_DMACRXDTPR: u32 = 0x128;
+const H7_DMACTXRLR: u32 = 0x12c;
+const H7_DMACRXRLR: u32 = 0x130;
+const H7_DMACIER: u32 = 0x134;
+const H7_DMACCATXDR: u32 = 0x144;
+const H7_DMACCARXDR: u32 = 0x14c;
+const H7_DMACSR: u32 = 0x160;
+// MACCR bits.
+const H7_RE: u32 = 1 << 0;
+const H7_TE: u32 = 1 << 1;
+// MACPFR bits.
+const H7_PR: u32 = 1 << 0;
+const H7_HUC: u32 = 1 << 1;
+const H7_HMC: u32 = 1 << 2;
+const H7_DAIF: u32 = 1 << 3;
+const H7_PM: u32 = 1 << 4;
+const H7_DBF: u32 = 1 << 5;
+const H7_RA: u32 = 1 << 31;
+// MACA0HR bits.
+const H7_AE: u32 = 1 << 31;
+// MACMDIOAR bits.
+const H7_MDIO_MB: u32 = 1 << 0;
+// DMAMR bits.
+const H7_SWR: u32 = 1 << 0;
+// DMACTxCR / DMACRxCR bits.
+const H7_ST: u32 = 1 << 0;
+const H7_SR: u32 = 1 << 0;
+// DMACIER bits.
+const H7_TIE: u32 = 1 << 0;
+const H7_TBUE: u32 = 1 << 2;
+const H7_RIE: u32 = 1 << 6;
+const H7_RBUE: u32 = 1 << 7;
+const H7_AIE: u32 = 1 << 14;
+const H7_NIE: u32 = 1 << 15;
+// DMACSR bits.
+const H7_TI: u32 = 1 << 0;
+const H7_TBU: u32 = 1 << 2;
+const H7_RI: u32 = 1 << 6;
+const H7_RBU: u32 = 1 << 7;
+const H7_FBE: u32 = 1 << 12;
+const H7_AIS: u32 = 1 << 14;
+const H7_NIS: u32 = 1 << 15;
+/// `DMACSR` write-one-to-clear event bits; every other bit ignores writes.
+const H7_CSR_W1C: u32 =
+    H7_TI | H7_TBU | H7_RI | H7_RBU | (1 << 9) | H7_FBE | (1 << 13) | H7_AIS | H7_NIS;
+// Enhanced normal-descriptor bits (HAL `ETH_DMATXNDESCRF/RXNDESCWBF`).
+const H7_TX_OWN: u32 = 1 << 31;
+const H7_TX_CTXT: u32 = 1 << 30;
+const H7_TX_FD: u32 = 1 << 29;
+const H7_TX_LD: u32 = 1 << 28;
+const H7_TX_BUF2V: u32 = 1 << 25;
+const H7_TX_FL_MASK: u32 = 0x7FFF;
+const H7_TX_B1L_MASK: u32 = 0x3FFF;
+const H7_RX_OWN: u32 = 1 << 31;
+const H7_RX_IOC: u32 = 1 << 30;
+const H7_RX_BUF1V: u32 = 1 << 24;
+const H7_RX_FD: u32 = 1 << 29;
+const H7_RX_LD: u32 = 1 << 28;
+const H7_RX_PL_MASK: u32 = 0x7FFF;
+
+/// Which descriptor fetch or frame move the H7 DMA engine is waiting on.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+enum H7Phase {
+    #[default]
+    Idle,
+    /// An RX descriptor read is in flight.
+    AwaitRxDesc,
+    /// A TX descriptor read is in flight.
+    AwaitTxDesc,
+    /// A TX buffer-1 read is in flight; the descriptor address, its
+    /// control word, and the optional buffer-2 address are stashed until
+    /// the data arrives.
+    AwaitTxData {
+        desc: u32,
+        tdes3: u32,
+        next: u32,
+        extra: u32,
+        extra_len: usize,
+        total: usize,
+    },
+    /// A TX buffer-2 read is in flight; buffer-1 bytes are stashed.
+    AwaitTxData2 {
+        desc: u32,
+        tdes3: u32,
+        next: u32,
+        part1: Vec<u8>,
+        total: usize,
+    },
+}
+
+/// Everything the SVD cannot describe about the H7 controller.
+#[derive(Debug, Default)]
+struct H7State {
+    /// The DMA engine's place in its descriptor walk.
+    phase: H7Phase,
+    /// The current RX descriptor address (from `DMACRxDLAR`).
+    rx_desc: u32,
+    /// The current TX descriptor address (from `DMACTxDLAR`).
+    tx_desc: u32,
+    /// A frame injected by the host, waiting for the RX engine to store it.
+    rx_frame: Option<Vec<u8>>,
+    /// Bytes of one host frame being accumulated.
+    host_rx: Vec<u8>,
+    /// A `DMACTxDTPR` kick arrived and the TX engine is enabled.
+    tx_poll: bool,
+    /// The in-flight TX walk already produced a frame: reaching an
+    /// unowned descriptor ends the walk quietly (no `TBU`).
+    tx_chain: bool,
+    /// Completed TX frames, framed for the host channel.
+    output: Vec<u8>,
+}
+
+/// A full H7 Ethernet controller: MAC + MTL + DMA windows behind one
+/// address space and the memory bus through a shared mailbox.
 #[derive(Debug)]
 pub struct EthH7 {
-    inner: RegisterFile<NoBehavior>,
+    ranges: [Region; 3],
+    mac: Win,
+    mtl: Win,
+    dma: Win,
+    state: H7State,
+    mailbox: Arc<Mutex<EthMailbox>>,
+    exception: Option<u8>,
+    name: &'static str,
+    phy: [u16; 32],
+    mii_pending: bool,
 }
 
 impl EthH7 {
+    /// An H7 Ethernet controller on another chip's device tables
+    /// (`Ethernet_MAC`/`Ethernet_MTL`/`Ethernet_DMA`), sharing `mailbox`
+    /// with the memory bus.
+    ///
+    /// # Panics
+    /// Panics if `D`'s generated tables do not contain the three Ethernet
+    /// peripherals.
     #[must_use]
-    pub fn new_for<D: Device>() -> Self {
-        let def = D::peripheral("Ethernet_MAC")
-            .or_else(|| D::peripheral("ETH"))
-            .expect("generated tables contain Ethernet_MAC");
+    pub fn new_for<D: Device>(mailbox: Arc<Mutex<EthMailbox>>) -> Self {
+        let mac = Win::new(h7_eth_def::<D>("MAC"));
+        let exception = irq_number(&mac, "ETH");
+        let mut phy = [0u16; 32];
+        phy[PHY_BMCR] = 0x1000; // autoneg enable
+        phy[PHY_BMSR] = 0x7809; // link up, autoneg complete, capable
+        phy[PHY_ID1] = 0x0007;
+        phy[PHY_ID2] = 0xC0F1;
         Self {
-            inner: RegisterFile::new(def, NoBehavior),
+            ranges: [
+                Region::new(mac.def.base, mac.def.window),
+                Region::new(h7_eth_def::<D>("MTL").base, h7_eth_def::<D>("MTL").window),
+                Region::new(h7_eth_def::<D>("DMA").base, h7_eth_def::<D>("DMA").window),
+            ],
+            mac,
+            mtl: Win::new(h7_eth_def::<D>("MTL")),
+            dma: Win::new(h7_eth_def::<D>("DMA")),
+            state: H7State::default(),
+            mailbox,
+            exception,
+            name: "eth",
+            phy,
+            mii_pending: false,
         }
+    }
+}
+
+/// The generated name of the H7 Ethernet controller's `which` window.
+fn h7_eth_def<D: Device>(which: &str) -> &'static PeripheralDef {
+    if let Some(def) = D::peripheral(&format!("Ethernet_{which}")) {
+        return def;
+    }
+    panic!("generated tables contain Ethernet_{which}");
+}
+
+impl EthH7 {
+    /// Whether the MAC is receiving and its DMA engine is started.
+    fn rx_enabled(&self) -> bool {
+        self.mac.get(H7_MACCR) & H7_RE != 0 && self.dma.get(H7_DMACRXCR) & H7_SR != 0
+    }
+
+    /// Whether the MAC is transmitting and its DMA engine is started.
+    fn tx_enabled(&self) -> bool {
+        self.mac.get(H7_MACCR) & H7_TE != 0 && self.dma.get(H7_DMACTXCR) & H7_ST != 0
+    }
+
+    /// Receive buffer size in bytes (`DMACRxCR.RBSZ`).
+    fn rbsz(&self) -> usize {
+        usize::try_from((self.dma.get(H7_DMACRXCR) >> 1) & 0x3FFF).unwrap_or(0)
+    }
+
+    /// Descriptors in a ring (`RLR` holds count − 1, 10 bits).
+    fn ring_count(&self, rlr: u32) -> u32 {
+        (rlr & 0x3FF) + 1
+    }
+
+    /// The descriptor after `cur` in the ring rooted at `base`.
+    fn ring_next(&self, cur: u32, base: u32, rlr: u32) -> u32 {
+        let count = self.ring_count(rlr);
+        let next = cur.wrapping_add(16);
+        if next.wrapping_sub(base) >= count.wrapping_mul(16) {
+            base
+        } else {
+            next
+        }
+    }
+
+    fn push_read(&self, addr: u32, len: u16) {
+        self.mailbox
+            .lock()
+            .unwrap()
+            .ops
+            .push(EthMemOp::Read { addr, len });
+    }
+
+    fn push_write(&self, addr: u32, bytes: Vec<u8>) {
+        self.mailbox
+            .lock()
+            .unwrap()
+            .ops
+            .push(EthMemOp::Write { addr, bytes });
+    }
+
+    /// Pop the one result expected by the phase machine, if it has arrived.
+    fn pop_result(&self) -> Option<Vec<u8>> {
+        self.mailbox
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .results
+            .pop_front()
+    }
+
+    /// The H7 MAC frame filter (`MACPFR`, RM0433 §73.7.5): promiscuous or
+    /// receive-all passes everything; broadcast drops only when `DBF` is
+    /// set; multicast passes via `PM` or the `HMC` hash table; unicast
+    /// passes on a perfect `MACA0` match (gated by `AE`) or the `HUC`
+    /// hash table; `DAIF` inverts the verdict for non-broadcast frames.
+    /// The hash index reuses the CRC32 upper-6-bit function shared with
+    /// the F1 filter (`MACHT0R` holds bits 31..=0, `MACHT1R` 63..=32).
+    fn accepts_frame(&self, frame: &[u8]) -> bool {
+        let pfr = self.mac.get(H7_MACPFR);
+        if pfr & H7_PR != 0 || pfr & H7_RA != 0 {
+            return true;
+        }
+        let Some(dest) = frame.get(..6) else {
+            return false;
+        };
+        if dest == [0xFF; 6] {
+            return pfr & H7_DBF == 0;
+        }
+        let is_mcast = dest[0] & 1 != 0;
+        let hr = self.mac.get(H7_MACA0HR);
+        let lr = self.mac.get(H7_MACA0LR);
+        let station = [
+            (lr & 0xFF) as u8,
+            ((lr >> 8) & 0xFF) as u8,
+            ((lr >> 16) & 0xFF) as u8,
+            ((lr >> 24) & 0xFF) as u8,
+            (hr & 0xFF) as u8,
+            ((hr >> 8) & 0xFF) as u8,
+        ];
+        let perfect = hr & H7_AE != 0 && dest == station;
+        let hash = || {
+            let idx = eth_hash(dest);
+            let word = if idx < 32 {
+                self.mac.get(H7_MACHT0R)
+            } else {
+                self.mac.get(H7_MACHT1R)
+            };
+            word & (1 << (idx % 32)) != 0
+        };
+        let mut accepted = if is_mcast {
+            pfr & H7_PM != 0 || (pfr & H7_HMC != 0 && hash())
+        } else {
+            perfect || (pfr & H7_HUC != 0 && hash())
+        };
+        // HPF: hash OR perfect (perfect already folded into `accepted`).
+        let _ = pfr & (1 << 10);
+        if pfr & H7_DAIF != 0 {
+            accepted = !accepted;
+        }
+        accepted
+    }
+
+    /// Advance the RX ring one frame: store the pending host frame into the
+    /// descriptor's buffer and write back `FD|LD|PL` (keeping `IOC`).
+    fn rx_advance(&mut self, bytes: &[u8]) {
+        let w = |i: usize| {
+            u32::from_le_bytes([
+                bytes[4 * i],
+                bytes[4 * i + 1],
+                bytes[4 * i + 2],
+                bytes[4 * i + 3],
+            ])
+        };
+        let (buf1, rdes3) = (w(0), w(3));
+        let next = self.ring_next(
+            self.state.rx_desc,
+            self.dma.get(H7_DMACRXDLAR),
+            self.dma.get(H7_DMACRXRLR),
+        );
+        if rdes3 & H7_RX_OWN == 0 {
+            // Owned by the CPU: no buffer available, drop and flag.
+            self.state.rx_frame = None;
+            self.latch_h7(H7_RBU);
+            self.state.phase = H7Phase::Idle;
+            return;
+        }
+        if let Some(frame) = self.state.rx_frame.take() {
+            if !self.accepts_frame(&frame) {
+                // Filtered on real silicon: nothing is stored and no
+                // status is written back; the DMA takes the next descriptor.
+                self.state.rx_desc = next;
+                self.state.phase = H7Phase::Idle;
+                return;
+            }
+            if frame.len() > self.rbsz() {
+                // Single-buffer frames only: an oversized frame latches
+                // `RBU` and drops (documented limit).
+                self.latch_h7(H7_RBU);
+                self.state.rx_desc = next;
+                self.state.phase = H7Phase::Idle;
+                return;
+            }
+            if !frame.is_empty() {
+                self.push_write(buf1, frame.clone());
+            }
+            let wb = (rdes3 & H7_RX_IOC)
+                | H7_RX_FD
+                | H7_RX_LD
+                | (u32::try_from(frame.len()).unwrap_or(u32::MAX) & H7_RX_PL_MASK);
+            self.push_write(self.state.rx_desc + 12, wb.to_le_bytes().to_vec());
+        }
+        self.latch_h7(H7_RI);
+        self.state.rx_desc = next;
+        self.state.phase = H7Phase::Idle;
+    }
+
+    /// Consume one TX descriptor: gather buffer 1 (+2) and hand the bytes
+    /// to the completion path. Context descriptors are consumed without
+    /// effect (VLAN/TSO unmodeled); an unowned descriptor ends a chained
+    /// walk quietly or latches `TBU` on a fresh kick.
+    fn consume_tx_desc(&mut self, bytes: &[u8]) {
+        let w = |i: usize| {
+            u32::from_le_bytes([
+                bytes[4 * i],
+                bytes[4 * i + 1],
+                bytes[4 * i + 2],
+                bytes[4 * i + 3],
+            ])
+        };
+        let (buf1, buf2, tdes2, tdes3) = (w(0), w(1), w(2), w(3));
+        let desc = self.state.tx_desc;
+        let next = self.ring_next(
+            desc,
+            self.dma.get(H7_DMACTXDLAR),
+            self.dma.get(H7_DMACTXRLR),
+        );
+        if tdes3 & H7_TX_CTXT != 0 {
+            // Context descriptor (VLAN tag, TSO MSS): owned back, no frame.
+            self.push_write(desc + 12, (tdes3 & !H7_TX_OWN).to_le_bytes().to_vec());
+            self.state.tx_desc = next;
+            self.state.tx_poll = true; // keep walking the ring
+            self.state.phase = H7Phase::Idle;
+            return;
+        }
+        if tdes3 & H7_TX_OWN == 0 {
+            if !self.state.tx_chain {
+                self.latch_h7(H7_TBU);
+            }
+            self.state.tx_chain = false;
+            self.state.phase = H7Phase::Idle;
+            return;
+        }
+        let b1l = usize::try_from(tdes2 & H7_TX_B1L_MASK).unwrap_or(0);
+        let b2l = usize::try_from((tdes2 >> 16) & H7_TX_B1L_MASK).unwrap_or(0);
+        let fl = usize::try_from(tdes3 & H7_TX_FL_MASK).unwrap_or(0);
+        if b2l > 0 && buf2 != 0 {
+            let len = u16::try_from(b1l).unwrap_or(u16::MAX);
+            self.push_read(buf1, len);
+            self.state.phase = H7Phase::AwaitTxData {
+                desc,
+                tdes3,
+                next,
+                extra: buf2,
+                extra_len: b2l,
+                total: fl,
+            };
+        } else {
+            let len = u16::try_from(b1l).unwrap_or(u16::MAX);
+            self.push_read(buf1, len);
+            self.state.phase = H7Phase::AwaitTxData {
+                desc,
+                tdes3,
+                next,
+                extra: 0,
+                extra_len: 0,
+                total: fl,
+            };
+        }
+    }
+
+    /// Complete a TX frame: drain the gathered bytes (clamped to the
+    /// descriptor's frame length) to the host channel, return the
+    /// descriptor's ownership, and keep walking while owned.
+    fn tx_complete(&mut self, desc: u32, tdes3: u32, next: u32, mut data: Vec<u8>, total: usize) {
+        // `CIC`/`CPC` pass through: checksums and padding are firmware's
+        // bytes, never recomputed (documented stance).
+        let want = if total != 0 { total } else { data.len() };
+        data.truncate(want);
+        let len = u16::try_from(data.len()).unwrap_or(u16::MAX);
+        self.state.output.push(EVT_TX);
+        self.state.output.push((len & 0xFF) as u8);
+        self.state.output.push((len >> 8) as u8);
+        self.state.output.extend_from_slice(&data);
+        self.push_write(desc + 12, (tdes3 & !H7_TX_OWN).to_le_bytes().to_vec());
+        self.state.tx_desc = next;
+        self.state.tx_chain = true;
+        self.state.phase = H7Phase::Idle;
+        self.latch_h7(H7_TI);
+        // Keep walking while the next descriptor is already owned.
+        if self.tx_enabled() {
+            self.push_read(next, 16);
+            self.state.phase = H7Phase::AwaitTxDesc;
+        }
+    }
+
+    /// Latch a normal (`TI`/`RI`) or abnormal (`TBU`/`RBU`/`FBE`) event:
+    /// abnormal events also raise `AIS`, normal ones `NIS`.
+    fn latch_h7(&mut self, bit: u32) {
+        let mut word = self.dma.get(H7_DMACSR) | bit;
+        if bit == H7_TI || bit == H7_RI {
+            word |= H7_NIS;
+        } else {
+            word |= H7_AIS;
+        }
+        self.dma.set(H7_DMACSR, word);
     }
 }
 
 impl Peripheral for EthH7 {
     fn ranges(&self) -> &[Region] {
-        self.inner.ranges()
+        &self.ranges
     }
+
     fn read(&mut self, addr: u32) -> Result<u8, BusError> {
-        self.inner.read(addr)
+        let off = addr.wrapping_sub(self.mac.def.base);
+        if off < self.mac.def.window {
+            return self.read_h7_mac(off);
+        }
+        let off = addr.wrapping_sub(self.mtl.def.base);
+        if off < self.mtl.def.window {
+            return read_latch(&self.mtl, off);
+        }
+        let off = addr.wrapping_sub(self.dma.def.base);
+        if off < self.dma.def.window {
+            return self.read_h7_dma(off);
+        }
+        Err(BusError::Reserved)
     }
+
     fn write(&mut self, addr: u32, val: u8) -> Result<(), BusError> {
-        self.inner.write(addr, val)
+        let off = addr.wrapping_sub(self.mac.def.base);
+        if off < self.mac.def.window {
+            return self.write_h7_mac(off, val);
+        }
+        let off = addr.wrapping_sub(self.mtl.def.base);
+        if off < self.mtl.def.window {
+            return write_latch(&mut self.mtl, off, val);
+        }
+        let off = addr.wrapping_sub(self.dma.def.base);
+        if off < self.dma.def.window {
+            return self.write_h7_dma(off, val);
+        }
+        Err(BusError::Reserved)
     }
+
     fn reset(&mut self) {
-        self.inner.reset();
+        self.soft_reset();
     }
+
+    fn tick(&mut self, delta: u64) {
+        // MII busy latency: one tick completes the PHY access.
+        if self.mii_pending && delta != 0 {
+            self.mii_pending = false;
+            let cur = self.mac.get(H7_MACMDIOAR);
+            self.mac.set(H7_MACMDIOAR, cur & !H7_MDIO_MB);
+        }
+        // Consume the result of the in-flight read, if it has landed.
+        if let Some(result) = self.pop_result() {
+            let phase = core::mem::replace(&mut self.state.phase, H7Phase::Idle);
+            match phase {
+                H7Phase::AwaitRxDesc => self.rx_advance(&result),
+                H7Phase::AwaitTxDesc => self.consume_tx_desc(&result),
+                H7Phase::AwaitTxData {
+                    desc,
+                    tdes3,
+                    next,
+                    extra,
+                    extra_len,
+                    total,
+                } => {
+                    if extra != 0 && extra_len > 0 {
+                        let len = u16::try_from(extra_len).unwrap_or(u16::MAX);
+                        self.push_read(extra, len);
+                        self.state.phase = H7Phase::AwaitTxData2 {
+                            desc,
+                            tdes3,
+                            next,
+                            part1: result,
+                            total,
+                        };
+                    } else {
+                        self.tx_complete(desc, tdes3, next, result, total);
+                    }
+                }
+                H7Phase::AwaitTxData2 {
+                    desc,
+                    tdes3,
+                    next,
+                    mut part1,
+                    total,
+                } => {
+                    part1.extend_from_slice(&result);
+                    self.tx_complete(desc, tdes3, next, part1, total);
+                }
+                H7Phase::Idle => {}
+            }
+            return;
+        }
+        // Nothing in flight: start new work.
+        if self.state.phase == H7Phase::Idle {
+            if self.rx_enabled() && self.state.rx_frame.is_some() {
+                self.push_read(self.state.rx_desc, 16);
+                self.state.phase = H7Phase::AwaitRxDesc;
+            } else if self.tx_enabled() && self.state.tx_poll {
+                self.state.tx_poll = false;
+                self.state.tx_chain = false;
+                self.push_read(self.state.tx_desc, 16);
+                self.state.phase = H7Phase::AwaitTxDesc;
+            }
+        }
+    }
+
     fn name(&self) -> &'static str {
-        "eth"
+        self.name
+    }
+
+    fn drive_inputs(&mut self, value: u32) {
+        self.state.host_rx.push((value & 0xFF) as u8);
+        let frame = core::mem::take(&mut self.state.host_rx);
+        let opcode = frame.first().copied().unwrap_or(0);
+        let len = usize::from(*frame.get(1).unwrap_or(&0))
+            | (usize::from(*frame.get(2).unwrap_or(&0)) << 8);
+        if opcode != CMD_RX {
+            // Unknown opcode: the stream is out of sync, so drop the whole
+            // frame rather than misparse a later byte.
+            self.state.host_rx.clear();
+            return;
+        }
+        let expected = 3 + len;
+        if frame.len() < expected {
+            self.state.host_rx = frame;
+            return;
+        }
+        self.state.rx_frame = Some(frame[3..3 + len].to_vec());
+    }
+
+    fn drain_output(&mut self) -> Vec<u8> {
+        core::mem::take(&mut self.state.output)
+    }
+}
+
+impl EthH7 {
+    fn read_h7_mac(&mut self, off: u32) -> Result<u8, BusError> {
+        if lane(off, H7_MACMDIOAR).is_some() {
+            // The busy bit clears one tick after the transaction starts.
+            let word = self.mac.get(H7_MACMDIOAR);
+            let shift = 8 * (off - H7_MACMDIOAR);
+            return Ok(((word >> shift) & 0xFF) as u8);
+        }
+        if lane(off, H7_MACMDIODR).is_some() {
+            // No PHY behind the model: reads report link-up capability.
+            let shift = 8 * (off - H7_MACMDIODR);
+            return Ok(((0x7809u32 >> shift) & 0xFF) as u8);
+        }
+        read_latch(&self.mac, off)
+    }
+
+    fn write_h7_mac(&mut self, off: u32, val: u8) -> Result<(), BusError> {
+        if let Some(l) = lane(off, H7_MACMDIOAR) {
+            let merged = self.mac.merged(H7_MACMDIOAR, val, 8 * l);
+            if merged & H7_MDIO_MB != 0 && !self.mii_pending {
+                self.mii_pending = true;
+            }
+            self.mac.set(H7_MACMDIOAR, merged);
+            return Ok(());
+        }
+        write_latch(&mut self.mac, off, val)
+    }
+
+    fn read_h7_dma(&self, off: u32) -> Result<u8, BusError> {
+        if let Some(l) = lane(off, H7_DMACCATXDR) {
+            let word = self.state.tx_desc;
+            return Ok(((word >> (8 * l)) & 0xFF) as u8);
+        }
+        if let Some(l) = lane(off, H7_DMACCARXDR) {
+            let word = self.state.rx_desc;
+            return Ok(((word >> (8 * l)) & 0xFF) as u8);
+        }
+        read_latch(&self.dma, off)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn write_h7_dma(&mut self, off: u32, val: u8) -> Result<(), BusError> {
+        if let Some(l) = lane(off, H7_DMAMR) {
+            let merged = self.dma.merged(H7_DMAMR, val, 8 * l);
+            if l == 0 && merged & H7_SWR != 0 {
+                self.soft_reset();
+                return Ok(());
+            }
+            self.dma.set(H7_DMAMR, merged);
+            return Ok(());
+        }
+        if lane(off, H7_DMACRXDLAR).is_some() {
+            // Keep the RX walk rooted while firmware programs the list.
+            write_latch(&mut self.dma, off, val)?;
+            self.state.rx_desc = self.dma.get(H7_DMACRXDLAR);
+            return Ok(());
+        }
+        if lane(off, H7_DMACTXDLAR).is_some() {
+            write_latch(&mut self.dma, off, val)?;
+            self.state.tx_desc = self.dma.get(H7_DMACTXDLAR);
+            return Ok(());
+        }
+        if lane(off, H7_DMACTXDTPR).is_some() {
+            // A tail-pointer write is the transmit kick.
+            write_latch(&mut self.dma, off, val)?;
+            self.state.tx_poll = true;
+            self.state.tx_chain = false;
+            return Ok(());
+        }
+        if let Some(l) = lane(off, H7_DMACSR) {
+            // Write-one-to-clear of the latched event bits only.
+            let bits = (u32::from(val) << (8 * l)) & H7_CSR_W1C;
+            self.dma.set(H7_DMACSR, self.dma.get(H7_DMACSR) & !bits);
+            return Ok(());
+        }
+        write_latch(&mut self.dma, off, val)
+    }
+
+    fn soft_reset(&mut self) {
+        self.mac.reload_reset();
+        self.mtl.reload_reset();
+        self.dma.reload_reset();
+        self.state = H7State::default();
+        self.mii_pending = false;
+        let mut mailbox = self.mailbox.lock().unwrap_or_else(|e| e.into_inner());
+        mailbox.ops.clear();
+        mailbox.results.clear();
     }
 }
 
 impl InterruptSource for EthH7 {
     fn exception_number(&self) -> Option<u8> {
-        self.inner.exception_number()
+        self.exception
     }
+
+    /// The single `ETH` line: any event whose enable is set in `DMACIER`.
     fn pending(&self) -> u32 {
-        0
+        let csr = self.dma.get(H7_DMACSR);
+        let ier = self.dma.get(H7_DMACIER);
+        let hit = (csr & H7_TI != 0 && ier & H7_TIE != 0)
+            || (csr & H7_RI != 0 && ier & H7_RIE != 0)
+            || (csr & H7_TBU != 0 && ier & H7_TBUE != 0)
+            || (csr & H7_RBU != 0 && ier & H7_RBUE != 0)
+            || (csr & H7_FBE != 0 && ier & (1 << 12) != 0)
+            || (csr & H7_NIS != 0 && ier & H7_NIE != 0)
+            || (csr & H7_AIS != 0 && ier & H7_AIE != 0);
+        u32::from(hit)
     }
+
     fn acknowledge(&mut self, _lines: u32) {}
 }
 
@@ -1118,8 +1790,8 @@ mod tests {
         let (mut mem, _mailbox) = sys();
         enable_rx(&mut mem);
         // Station address matches the injected frame's unicast destination.
-        write_word(&mut mem, MAC + MACA0HR, 0x0202);
-        write_word(&mut mem, MAC + MACA0LR, 0x0304_0506);
+        write_word(&mut mem, MAC + MACA0HR, 0x0605); // mac bytes 5:4
+        write_word(&mut mem, MAC + MACA0LR, 0x0403_0202); // mac bytes 3..=0
         rx_ring(&mut mem, RAM + 0x400);
         inject_frame(&mut mem, &[2, 2, 3, 4, 5, 6]);
         cycle(&mut mem);
@@ -1183,8 +1855,8 @@ mod tests {
     fn magic_packet_wakes_the_wkup_line() {
         let (mut mem, _mailbox) = sys();
         enable_rx(&mut mem);
-        write_word(&mut mem, MAC + MACA0HR, 0x0102);
-        write_word(&mut mem, MAC + MACA0LR, 0x0304_0506);
+        write_word(&mut mem, MAC + MACA0HR, 0x0605); // mac bytes 5:4
+        write_word(&mut mem, MAC + MACA0LR, 0x0403_0201); // mac bytes 3..=0
         write_word(&mut mem, MAC + MACPMTCSR, 1 << 1); // MPE
         rx_ring(&mut mem, RAM + 0x400);
         let mut frame = Vec::new();
@@ -1237,8 +1909,8 @@ mod tests {
     fn frame_filter_perfect_match_and_drop() {
         let (mut mem, _mailbox) = sys();
         enable_rx(&mut mem);
-        write_word(&mut mem, MAC + MACA0HR, 0x0202);
-        write_word(&mut mem, MAC + MACA0LR, 0x0304_0506);
+        write_word(&mut mem, MAC + MACA0HR, 0x0605); // mac bytes 5:4
+        write_word(&mut mem, MAC + MACA0LR, 0x0403_0202); // mac bytes 3..=0
         rx_ring(&mut mem, RAM + 0x400);
         // Unknown unicast destination: filtered, buffer untouched.
         inject_frame(&mut mem, &[2, 2, 3, 4, 5, 7]);
@@ -1336,24 +2008,308 @@ mod tests {
         }
     }
 
-    /// The H7 single-window MAC stub (`EthH7`) round-trips HAL probing writes.
-    #[test]
-    fn h7_eth_stub_window_roundtrip() {
-        use crate::device::stm32::eth::EthH7;
-        use crate::device::svd::stm32h743::Stm32h743;
+    // ---- H7 engine ----
+
+    use super::{
+        EthH7, H7_AIS, H7_NIS, H7_RBU, H7_RI, H7_RX_BUF1V, H7_RX_FD, H7_RX_LD, H7_RX_OWN, H7_TBU,
+        H7_TI, H7_TX_FD, H7_TX_LD, H7_TX_OWN,
+    };
+
+    const H7MAC: u32 = 0x4002_8000;
+    const H7DMA: u32 = 0x4002_9000;
+
+    /// An H7 `SystemMemory` over RAM with the real `EthH7` attached.
+    fn h7sys() -> SystemMemory<FlatMemory> {
         let backing = FlatMemory::with_layout(&[RAM], &[0x1000]);
         let mailbox = Arc::new(Mutex::new(EthMailbox::default()));
         let mut mem = SystemMemory::new(backing);
         mem.set_eth_mailbox(mailbox.clone());
-        mem.attach(Box::new(EthH7::new_for::<Stm32h743>()));
-        // H7 ETH MAC base from the generated tables.
-        let base = EthH7::new_for::<Stm32h743>().ranges()[0].base;
-        assert_eq!(base, 0x4002_8000, "H7 MAC window");
-        // MACCR / MACFFR-style config round-trips through the latch.
-        write_word(&mut mem, base, 0x0000_004C); // RE|TE|FES|DM
-        assert_eq!(read_word(&mut mem, base), 0x0000_004C);
-        write_word(&mut mem, base + 0x04, 1 << 31); // RA
-        assert_eq!(read_word(&mut mem, base + 0x04), 1 << 31);
+        mem.attach(Box::new(EthH7::new_for::<
+            crate::device::svd::stm32h743::Stm32h743,
+        >(mailbox)));
+        mem
+    }
+
+    /// Station address `02:02:03:04:05:06` with `AE` set.
+    fn h7_station(sys: &mut SystemMemory<FlatMemory>) {
+        write_word(sys, H7MAC + 0x300, (1 << 31) | 0x0605); // MACA0HR AE + bytes 5:4
+        write_word(sys, H7MAC + 0x304, 0x0403_0202); // MACA0LR bytes 3..=0
+    }
+
+    /// MAC + DMA enables and channel interrupts, HAL-`Start` order.
+    fn h7_enable(sys: &mut SystemMemory<FlatMemory>) {
+        write_word(sys, H7MAC, (1 << 1) | 1); // MACCR TE|RE
+        write_word(sys, H7DMA + 0x104, 1); // DMACTxCR ST
+        write_word(sys, H7DMA + 0x108, 1 | (1536 << 1)); // DMACRxCR SR|RBSZ
+        write_word(sys, H7DMA + 0x134, (1 << 15) | (1 << 6) | 1); // DMACIER NIE|RIE|TIE
+    }
+
+    /// An RX ring of `n` descriptors at `base` with `bufsize` buffers.
+    fn h7_rx_ring(sys: &mut SystemMemory<FlatMemory>, base: u32, n: u32, buf0: u32, bufsize: u32) {
+        for i in 0..n {
+            let d = base + i * 16;
+            write_word(sys, d, buf0 + i * bufsize); // DESC0 buffer
+            write_word(sys, d + 12, H7_RX_OWN | H7_RX_BUF1V); // DESC3
+        }
+        write_word(sys, H7DMA + 0x11c, base); // DMACRxDLAR
+        write_word(sys, H7DMA + 0x130, n - 1); // DMACRxRLR
+        write_word(sys, H7DMA + 0x128, base + (n - 1) * 16); // DMACRDTPR tail
+    }
+
+    /// A TX ring of `n` descriptors at `base` (application-owned).
+    fn h7_tx_ring(sys: &mut SystemMemory<FlatMemory>, base: u32, n: u32) {
+        for i in 0..n {
+            write_word(sys, base + i * 16 + 12, 0);
+        }
+        write_word(sys, H7DMA + 0x114, base); // DMACTxDLAR
+        write_word(sys, H7DMA + 0x12c, n - 1); // DMACTxRLR
+    }
+
+    /// Program one TX descriptor and kick the tail pointer, as the HAL does.
+    fn h7_tx_submit(sys: &mut SystemMemory<FlatMemory>, desc: u32, buf: u32, len: u32) {
+        write_word(sys, desc, buf); // TDES0
+        write_word(sys, desc + 4, 0); // TDES1
+        write_word(sys, desc + 8, len & 0x3FFF); // TDES2 B1L
+        write_word(
+            sys,
+            desc + 12,
+            H7_TX_OWN | H7_TX_FD | H7_TX_LD | (len & 0x7FFF),
+        );
+        write_word(sys, H7DMA + 0x120, desc + 16); // DMACTxDTPR kick
+    }
+
+    #[test]
+    fn h7_layout_and_single_irq() {
+        let mem = h7sys();
+        let e = mem.devices()[0].as_ref() as &dyn InterruptSource;
+        assert_eq!(e.exception_number(), Some(16 + 61), "ETH");
+        assert_eq!(e.ranges()[0].base, H7MAC);
+        assert_eq!(e.ranges()[1].base, 0x4002_8c00, "MTL");
+        assert_eq!(e.ranges()[2].base, H7DMA, "DMA");
+        assert_eq!(e.pending(), 0);
+    }
+
+    #[test]
+    fn h7_rx_stores_frame_and_latches_ri() {
+        let mut mem = h7sys();
+        h7_station(&mut mem);
+        h7_enable(&mut mem);
+        h7_rx_ring(&mut mem, RAM + 0x100, 4, RAM + 0x400, 0x400);
+        inject_frame(&mut mem, &[2, 2, 3, 4, 5, 6, 0x08, 0x00]);
+        cycle(&mut mem);
+        cycle(&mut mem);
+        assert_eq!(mem.devices()[0].pending(), 1, "ETH line");
+        assert_eq!(
+            read_word(&mut mem, H7DMA + 0x160) & (H7_RI | H7_NIS),
+            H7_RI | H7_NIS,
+            "RI+NIS"
+        );
+        assert_eq!(
+            read_word(&mut mem, RAM + 0x400),
+            0x0403_0202,
+            "frame stored little-endian"
+        );
+        let wb = read_word(&mut mem, RAM + 0x100 + 12);
+        assert_eq!(wb & H7_RX_OWN, 0, "ownership returned");
+        assert_ne!(wb & H7_RX_FD, 0, "FD");
+        assert_ne!(wb & H7_RX_LD, 0, "LD");
+        assert_eq!(wb & 0x7FFF, 8, "PL = frame length");
+        // The ISR's write-back clears the latches.
+        write_word(&mut mem, H7DMA + 0x160, 0xFFFF_FFFF);
+        assert_eq!(mem.devices()[0].pending(), 0);
+    }
+
+    #[test]
+    fn h7_tx_drains_and_latches_ti() {
+        let mut mem = h7sys();
+        h7_enable(&mut mem);
+        h7_tx_ring(&mut mem, RAM + 0x100, 4);
+        write_word(&mut mem, RAM + 0x800, 0x4443_4241); // frame bytes
+        h7_tx_submit(&mut mem, RAM + 0x100, RAM + 0x800, 4);
+        cycle(&mut mem);
+        cycle(&mut mem);
+        cycle(&mut mem);
+        cycle(&mut mem);
+        let out = mem.devices_mut()[0].drain_output();
+        assert_eq!(out[0], EVT_TX);
+        assert_eq!(out[1], 4);
+        assert_eq!(out[2], 0);
+        assert_eq!(&out[3..], &[0x41, 0x42, 0x43, 0x44]);
+        assert_eq!(
+            read_word(&mut mem, RAM + 0x100 + 12) & H7_TX_OWN,
+            0,
+            "OWN cleared"
+        );
+        assert_ne!(
+            read_word(&mut mem, H7DMA + 0x160) & (H7_TI | H7_NIS),
+            0,
+            "TI+NIS"
+        );
+        assert_eq!(mem.devices()[0].pending(), 1, "ETH line");
+    }
+
+    #[test]
+    fn h7_filter_drops_unknown_unicast() {
+        let mut mem = h7sys();
+        h7_station(&mut mem);
+        h7_enable(&mut mem);
+        h7_rx_ring(&mut mem, RAM + 0x100, 4, RAM + 0x400, 0x400);
+        inject_frame(&mut mem, &[2, 2, 3, 4, 5, 7, 0x08, 0x00]);
+        cycle(&mut mem);
+        cycle(&mut mem);
+        assert_eq!(
+            read_word(&mut mem, RAM + 0x100 + 12) & H7_RX_OWN,
+            H7_RX_OWN,
+            "descriptor stays owned by DMA"
+        );
+        assert_eq!(
+            read_word(&mut mem, RAM + 0x400),
+            0,
+            "filtered frame not stored"
+        );
+        assert_eq!(mem.devices()[0].pending(), 0, "no interrupt");
+    }
+
+    #[test]
+    fn h7_filter_receive_all_and_broadcast_disable() {
+        let mut mem = h7sys();
+        h7_station(&mut mem);
+        h7_enable(&mut mem);
+        write_word(&mut mem, H7MAC + 0x08, 1 << 31); // MACPFR RA
+        h7_rx_ring(&mut mem, RAM + 0x100, 4, RAM + 0x400, 0x400);
+        inject_frame(&mut mem, &[9, 9, 9, 9, 9, 8]);
+        cycle(&mut mem);
+        cycle(&mut mem);
+        assert_ne!(read_word(&mut mem, RAM + 0x400), 0, "RA accepted");
+
+        // DBF drops broadcast when not promiscuous.
+        let mut mem = h7sys();
+        h7_station(&mut mem);
+        h7_enable(&mut mem);
+        write_word(&mut mem, H7MAC + 0x08, 1 << 5); // DBF
+        h7_rx_ring(&mut mem, RAM + 0x100, 4, RAM + 0x400, 0x400);
+        inject_frame(&mut mem, &[0xFF; 6]);
+        cycle(&mut mem);
+        cycle(&mut mem);
+        assert_eq!(
+            read_word(&mut mem, RAM + 0x400),
+            0,
+            "broadcast dropped by DBF"
+        );
+    }
+
+    #[test]
+    fn h7_filter_multicast_hash_table() {
+        let mut mem = h7sys();
+        h7_station(&mut mem);
+        h7_enable(&mut mem);
+        let dest: [u8; 6] = [0x01, 0x00, 0x5E, 0x00, 0x00, 0x01];
+        let idx = super::eth_hash(&dest);
+        if idx < 32 {
+            write_word(&mut mem, H7MAC + 0x10, 1 << idx);
+        } else {
+            write_word(&mut mem, H7MAC + 0x14, 1 << (idx - 32));
+        }
+        write_word(&mut mem, H7MAC + 0x08, 1 << 2); // HMC
+        h7_rx_ring(&mut mem, RAM + 0x100, 4, RAM + 0x400, 0x400);
+        inject_frame(&mut mem, &dest);
+        cycle(&mut mem);
+        cycle(&mut mem);
+        assert_ne!(read_word(&mut mem, RAM + 0x400), 0, "hash hit accepted");
+    }
+
+    #[test]
+    fn h7_tx_kick_without_owned_desc_latches_tbu() {
+        let mut mem = h7sys();
+        h7_enable(&mut mem);
+        h7_tx_ring(&mut mem, RAM + 0x100, 4);
+        // Kick with nothing owned by the DMA.
+        write_word(&mut mem, H7DMA + 0x120, RAM + 0x100);
+        cycle(&mut mem);
+        cycle(&mut mem);
+        let csr = read_word(&mut mem, H7DMA + 0x160);
+        assert_ne!(csr & H7_TBU, 0, "TBU");
+        assert_ne!(csr & H7_AIS, 0, "AIS summary");
+    }
+
+    #[test]
+    fn h7_rx_unowned_desc_latches_rbu() {
+        let mut mem = h7sys();
+        h7_station(&mut mem);
+        h7_enable(&mut mem);
+        // Ring owned by the CPU: no buffer available.
+        write_word(&mut mem, RAM + 0x100 + 12, 0);
+        write_word(&mut mem, H7DMA + 0x11c, RAM + 0x100);
+        write_word(&mut mem, H7DMA + 0x130, 0);
+        inject_frame(&mut mem, &[2, 2, 3, 4, 5, 6]);
+        cycle(&mut mem);
+        cycle(&mut mem);
+        let csr = read_word(&mut mem, H7DMA + 0x160);
+        assert_ne!(csr & H7_RBU, 0, "RBU");
+        assert_ne!(csr & H7_AIS, 0, "AIS summary");
+    }
+
+    #[test]
+    fn h7_ring_advances_and_wraps() {
+        let mut mem = h7sys();
+        h7_station(&mut mem);
+        h7_enable(&mut mem);
+        h7_rx_ring(&mut mem, RAM + 0x100, 2, RAM + 0x400, 0x400);
+        inject_frame(&mut mem, &[2, 2, 3, 4, 5, 6]);
+        cycle(&mut mem);
+        cycle(&mut mem);
+        assert_ne!(read_word(&mut mem, RAM + 0x400), 0, "first frame in buf0");
+        // Re-arm desc0 and land a second frame: it must use desc1.
+        write_word(&mut mem, RAM + 0x100 + 12, H7_RX_OWN | H7_RX_BUF1V);
+        inject_frame(&mut mem, &[2, 2, 3, 4, 5, 6]);
+        cycle(&mut mem);
+        cycle(&mut mem);
+        assert_ne!(read_word(&mut mem, RAM + 0x800), 0, "second frame in buf1");
+        // Third frame wraps back to desc0.
+        write_word(&mut mem, RAM + 0x110 + 12, H7_RX_OWN | H7_RX_BUF1V);
+        write_word(&mut mem, RAM + 0x400, 0);
+        inject_frame(&mut mem, &[2, 2, 3, 4, 5, 6]);
+        cycle(&mut mem);
+        cycle(&mut mem);
+        assert_ne!(read_word(&mut mem, RAM + 0x400), 0, "wrap to buf0");
+    }
+
+    #[test]
+    fn h7_oversized_frame_drops_with_rbu() {
+        let mut mem = h7sys();
+        h7_station(&mut mem);
+        h7_enable(&mut mem);
+        // Shrink the buffers below the frame: single-buffer limit.
+        write_word(&mut mem, H7DMA + 0x108, 1 | (4 << 1)); // SR|RBSZ=4
+        h7_rx_ring(&mut mem, RAM + 0x100, 4, RAM + 0x400, 0x400);
+        inject_frame(&mut mem, &[2, 2, 3, 4, 5, 6, 7, 8]);
+        cycle(&mut mem);
+        cycle(&mut mem);
+        assert_ne!(
+            read_word(&mut mem, H7DMA + 0x160) & H7_RBU,
+            0,
+            "RBU on oversize"
+        );
+        assert_eq!(read_word(&mut mem, RAM + 0x400), 0, "nothing stored");
+    }
+
+    #[test]
+    fn h7_mdio_busy_clears_after_one_tick() {
+        let mut mem = h7sys();
+        write_word(&mut mem, H7MAC + 0x200, 1 | (2 << 2)); // MACMDIOAR MB
+        assert_eq!(read_word(&mut mem, H7MAC + 0x200) & 1, 1, "MB set");
+        mem.tick_devices(1);
+        assert_eq!(read_word(&mut mem, H7MAC + 0x200) & 1, 0, "MB cleared");
+        assert_eq!(read_word(&mut mem, H7MAC + 0x204), 0x7809, "link-up PHY");
+    }
+
+    #[test]
+    fn h7_swr_reloads_dma() {
+        let mut mem = h7sys();
+        write_word(&mut mem, H7DMA + 0x104, 1); // ST
+        write_word(&mut mem, H7DMA, 0x01); // DMAMR SWR
+        assert_eq!(read_word(&mut mem, H7DMA + 0x104), 0, "ST reloaded");
+        assert_eq!(read_word(&mut mem, H7DMA + 0x160) & (H7_TI | H7_RI), 0);
     }
 
     #[test]

@@ -627,7 +627,7 @@ built — a prototype could not have changed the model-work arithmetic).
   clean. Isochronous host channels STALL (documented, unmodeled).
 Effort: 20ah.
 
-### WP-H2 H7 Ethernet behavioral
+### WP-H2 H7 Ethernet behavioral — DONE (2026-09-06)
 
 - Spec: promote `EthH7` from stub to descriptor rings following the F1 `Eth`
   pattern (`system.rs` mailbox discipline): TX/RX descriptor rings,
@@ -635,6 +635,18 @@ Effort: 20ah.
   latch-or-model per measured need, documented either way.
 - Acceptance: static-IP echo e2e (ARP + ICMP or UDP echo) on the `h743`
   board; F1 ETH suite green.
+- Shipped: `eth.rs` `EthH7` — MAC/MTL/DMA windows, enhanced descriptors
+  (`TDES` gather + `OWN|FD|LD|FL`, `RDES` `FD|LD|PL` write-back keeping
+  `IOC`), `DMACTDTPR` kick with chained TX walk, ring wrap from `RLR`,
+  `MACPFR` filter (RA/PR/DBF/PM/HMC/HUC/`AE`-gated perfect/`DAIF`), single
+  `ETH` line from `DMACSR` events gated by `DMACIER`, MDIO busy + link-up
+  PHY. Stance: checksum/CPC pass-through (bytes never modified), context
+  descriptors consumed without effect, single-buffer frames (`RBU` past
+  `RBSZ`), MTL/MMC/PMT latch-only. `tests/eth_h7_echo.rs` (ARP + ICMP
+  static-IP echo with verified reply checksums) + 12 lib tests; also fixed
+  a latent F1+H7 station-address byte-order bug (`ADDRLO` is bytes 3..=0
+  big-endian — perfect-match compared the reversed MAC, invisible until
+  asymmetric addresses). `661` lib + `2` H7 e2e green, workspace clean.
 Effort: 16ah.
 
 ### WP-H3 Crypto behaviors (closes U585/G041 gaps)
