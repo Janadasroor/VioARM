@@ -156,7 +156,7 @@ impl Golden {
             Some("vioarm-golden-v1") => {}
             other => return Err(format!("bad golden header: {other:?}")),
         }
-        let mut get = |key: &str, lines: &mut std::str::Lines<'_>| -> Result<String, String> {
+        let get = |key: &str, lines: &mut std::str::Lines<'_>| -> Result<String, String> {
             lines
                 .next()
                 .ok_or_else(|| format!("missing {key}"))?

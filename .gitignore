@@ -3,4 +3,5 @@
 /.opencode/
 /docs/book/
 fuzz/target/
-fuzz/Cargo.lock
+fuzz/Cargo.lock__pycache__/
+*.pyc
