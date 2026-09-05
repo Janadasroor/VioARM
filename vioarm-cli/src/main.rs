@@ -1611,6 +1611,42 @@ enum Commands {
         #[arg(long)]
         semihost: bool,
     },
+    /// Record a golden trace (deterministic replay artifact)
+    Record {
+        /// Image path (.bin/.elf/.hex auto-detected)
+        image: PathBuf,
+        #[arg(long, value_enum, default_value_t = Board::Virtual)]
+        board: Board,
+        #[arg(long, default_value_t = 0, value_parser = parse_u32)]
+        base: u32,
+        #[arg(long, default_value_t = 1_000_000, alias = "max-cycles")]
+        budget: u64,
+        /// Arm semihosting (`BKPT 0xAB`) plus ITM stimulus capture
+        #[arg(long)]
+        semihost: bool,
+        /// Golden file to write
+        #[arg(long)]
+        output: PathBuf,
+        /// RAM spans to digest (`BASE:LEN`, repeatable; default snapshots
+        /// the first 4 KiB of `0x20000000`)
+        #[arg(long)]
+        snap: Vec<String>,
+    },
+    /// Replay a golden trace and diff (exit 1 on any difference)
+    Replay {
+        /// Image path (digest must match the golden)
+        image: PathBuf,
+        /// Golden file from `record`
+        golden: PathBuf,
+        #[arg(long, value_enum, default_value_t = Board::Virtual)]
+        board: Board,
+        #[arg(long, default_value_t = 0, value_parser = parse_u32)]
+        base: u32,
+        /// Memory patches standing in for a mutated model (`ADDR=VAL`,
+        /// repeatable; applied before running)
+        #[arg(long)]
+        patch: Vec<String>,
+    },
     /// Trace cycle-by-cycle
     Trace {
         image: PathBuf,
@@ -1719,6 +1755,15 @@ fn load_image_auto(path: &PathBuf, base: u32) -> (LoadedImage, String) {
         _ => loader::load_flat(base, &bytes),
     };
     (img, kind.to_string())
+}
+
+/// Image bytes in address order for digesting (segments concatenated).
+fn flat_image_bytes(img: &LoadedImage) -> Vec<u8> {
+    let mut segs: Vec<(u32, &[u8])> = img.segments.iter().map(|(a, b)| (*a, &b[..])).collect();
+    segs.sort_by_key(|(addr, _)| *addr);
+    segs.into_iter()
+        .flat_map(|(_, b)| b.iter().copied())
+        .collect()
 }
 
 fn print_info(img: &LoadedImage) {
@@ -2041,6 +2086,116 @@ fn main() {
                 m.semihost_enable(semihost);
                 banner();
                 run_quiet(&mut m, budget);
+            }
+            Commands::Record {
+                image,
+                board,
+                base,
+                budget,
+                semihost,
+                output,
+                snap,
+            } => {
+                use vioarm_core::replay::{parse_snap, record, RecordMeta};
+                let (img, _) = load_image_auto(&image, base);
+                let image_bytes = flat_image_bytes(&img);
+                let mut m = machine_for(board, &img);
+                m.semihost_enable(semihost);
+                let spans: Vec<(u32, u32)> = if snap.is_empty() {
+                    vec![(0x2000_0000, 0x1000)]
+                } else {
+                    snap.iter()
+                        .map(|s| {
+                            parse_snap(s).unwrap_or_else(|e| {
+                                eprintln!("{} {e}", "error:".red().bold());
+                                std::process::exit(2);
+                            })
+                        })
+                        .collect()
+                };
+                let meta = RecordMeta {
+                    board: format!("{board:?}").to_ascii_lowercase(),
+                    base,
+                    budget,
+                    semihost,
+                };
+                match record(&mut m, &meta, &image_bytes, &spans) {
+                    Ok(golden) => {
+                        std::fs::write(&output, golden.serialize()).unwrap_or_else(|e| {
+                            eprintln!(
+                                "{} cannot write {}: {e}",
+                                "error:".red().bold(),
+                                output.display()
+                            );
+                            std::process::exit(2);
+                        });
+                        println!(
+                            "{} {} halt={} cycles={} cyccnt={}",
+                            "recorded".green().bold(),
+                            output.display(),
+                            golden.halt,
+                            golden.cycles,
+                            golden.cyccnt
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("{} record failed: {e}", "error:".red().bold());
+                        std::process::exit(1);
+                    }
+                }
+            }
+            Commands::Replay {
+                image,
+                golden,
+                board,
+                base,
+                patch,
+            } => {
+                use vioarm_core::replay::{parse_patch, replay, Golden};
+                let (img, _) = load_image_auto(&image, base);
+                let image_bytes = flat_image_bytes(&img);
+                let text = std::fs::read_to_string(&golden).unwrap_or_else(|e| {
+                    eprintln!(
+                        "{} cannot read {}: {e}",
+                        "error:".red().bold(),
+                        golden.display()
+                    );
+                    std::process::exit(2);
+                });
+                let golden = Golden::parse(&text).unwrap_or_else(|e| {
+                    eprintln!("{} bad golden file: {e}", "error:".red().bold());
+                    std::process::exit(2);
+                });
+                let patches: Vec<(u32, u8)> = patch
+                    .iter()
+                    .map(|s| {
+                        parse_patch(s).unwrap_or_else(|e| {
+                            eprintln!("{} {e}", "error:".red().bold());
+                            std::process::exit(2);
+                        })
+                    })
+                    .collect();
+                let spans: Vec<(u32, u32)> =
+                    golden.snaps.iter().map(|(b, l, _)| (*b, *l)).collect();
+                let mut m = machine_for(board, &img);
+                m.semihost_enable(golden.semihost);
+                let mut diffs = Vec::new();
+                let want_board = format!("{board:?}").to_ascii_lowercase();
+                if want_board != golden.board {
+                    diffs.push(format!(
+                        "board: golden {} != replay {want_board}",
+                        golden.board
+                    ));
+                }
+                diffs.extend(replay(&mut m, &golden, &image_bytes, &patches, &spans));
+                if diffs.is_empty() {
+                    println!("{}", "MATCH".green().bold());
+                } else {
+                    for d in &diffs {
+                        println!("{} {d}", "diff:".yellow().bold());
+                    }
+                    std::process::exit(1);
+                }
             }
             Commands::Trace {
                 image,

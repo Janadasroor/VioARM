@@ -125,7 +125,7 @@ fn sha256_with_iv(message: &[u8], iv: [u32; 8]) -> [u32; 8] {
     h
 }
 
-fn sha256(message: &[u8]) -> [u32; 8] {
+pub(crate) fn sha256(message: &[u8]) -> [u32; 8] {
     sha256_with_iv(
         message,
         [

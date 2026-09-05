@@ -15,4 +15,5 @@ pub mod hooks;
 pub mod loader;
 pub mod machine;
 pub mod mem;
+pub mod replay;
 pub mod semihost;

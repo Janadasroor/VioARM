@@ -742,13 +742,25 @@ Effort: 14ah.
   `686` lib + `4` fabric e2e green, workspace clean.
 Effort: 16ah.
 
-### WP-I3 Framework integration
+### WP-I3 Framework integration — DONE (2026-09-06)
 
 - pytest harness template (build image → run → assert drain channels),
   Robot Framework keyword doc, `vioarm replay` CLI (golden-trace
   record/replay + diff).
 - Acceptance: example pytest suite green in CI; replay detects a
   deliberately mutated model.
+- Shipped: `replay.rs` (record/replay/diff over `Machine<BoardMemory>`,
+  git-diffable `vioarm-golden-v1` line format, no new dependencies —
+  SHA-256 reused from `hash.rs`), `vioarm record`/`replay` commands
+  (`--snap`, `--patch`, exit 1 on diff), `pytest/` (harness template +
+  `test_usart_tx.py` with real CMSIS firmware + `test_replay.py`
+  toolchain-free + `ROBOT_KEYWORDS.md`), CI `pytest` job (ubuntu, gcc,
+  debug CLI, 4 green). Determinism needs no checkpoints (study note
+  holds); `--patch` is the mutation stand-in, proven in Rust tests and
+  CLI e2e. Incidental find: the `packs/STM32F4xx_CMSIS` include path
+  older Rust firmware tests reference no longer exists in-tree (those
+  tests skip vacuously); the harness uses `ARM.CMSIS` instead.
+  `690` lib + `4` pytest green, workspace clean.
 Effort: 10ah.
 - External prior art 2026-09-05: event-sourced replay logs instruction
   counts as checkpoints plus async/input/clock events against snapshots

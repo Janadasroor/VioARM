@@ -146,6 +146,46 @@ jobs:
       - name: Run benches
         run: cargo bench -p vioarm-core --bench mips -- --sample-size 10 --measurement-time 2 --warm-up-time 1
 
+  pytest:
+    name: Framework integration (pytest, ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install gcc-arm-none-eabi
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-none-eabi
+          arm-none-eabi-gcc --version
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ubuntu-pytest-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pytest
+        run: python -m pip install -r pytest/requirements.txt
+
+      - name: Build the CLI
+        run: cargo build -p vioarm-cli
+
+      - name: Run pytest suite
+        run: VIOARM_BIN=$PWD/target/debug/vioarm-cli python -m pytest pytest/ -v
+
   book:
     name: Build the mdbook
     runs-on: ubuntu-latest
