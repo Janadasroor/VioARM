@@ -303,6 +303,18 @@ impl<M: PeripheralBus> Machine<M> {
         self.core.mem().drain_channel(name)
     }
 
+    /// Drain a named device's host-output channel (USART TX bytes, CAN TX
+    /// frames, ...). Unknown names drain to empty.
+    pub fn drain_device(&mut self, name: &str) -> Vec<u8> {
+        self.core.mem().drain_channel(name)
+    }
+
+    /// Inject bytes into a named device's host-input channel. Returns
+    /// whether a device by that name exists.
+    pub fn drive_device(&mut self, name: &str, bytes: &[u8]) -> bool {
+        self.core.mem().drive_device(name, bytes)
+    }
+
     /// A pre- (`before`) or post-instruction hook over `start..end`
     /// (end-exclusive; `0..u32::MAX` covers every PC). Returns whether the
     /// memory installed it (plain test doubles without a registry decline).

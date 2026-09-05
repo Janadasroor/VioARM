@@ -252,6 +252,13 @@ pub trait PeripheralBus: Bus {
         None
     }
 
+    /// Inject `bytes` into the named device's host-input channel (USART RX,
+    /// CAN RX frames, SPI MISO, ...). Returns whether a device by that name
+    /// exists. Default: no devices (plain memories decline).
+    fn drive_device(&mut self, _name: &str, _bytes: &[u8]) -> bool {
+        false
+    }
+
     /// Record escalated-fault status into the SCB's `CFSR`/`HFSR` (the bits to
     /// OR in). The core calls this when it folds a fault into HardFault, so
     /// firmware can read the cause back. Default: no recording (plain memory).

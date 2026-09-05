@@ -719,13 +719,27 @@ Effort: 14ah.
   pre/post-instruction + watchpoint hooks, minus the block layer we do
   not have. Findings only, no code taken (GPL-2.0 codebase).
 
-### WP-I2 Multi-machine fabric
+### WP-I2 Multi-machine fabric — DONE (2026-09-06)
 
 - Two or more `Machine` instances, virtual wires (USART TX→RX, CAN bus with
   arbitration-by-ID, SPI controller/peripheral pairs), one deterministic
   lockstep scheduler (all machines tick together; no threads, ever).
 - Acceptance: two-board UART ping-pong + CAN arbitration e2e; determinism
   test (run twice, byte-identical traces).
+- Shipped: `fabric.rs` (`Fabric<M>`, `link_uart`, `link_can`, lockstep
+  `step`/`run` with per-machine outcomes; UART drains drive peer RX both
+  ways; CAN gathers TX frames, sorts lowest-identifier-first with
+  standard-beats-extended + machine-index tiebreak, delivers to every
+  other member through their own filters). `Machine::drive_device` /
+  `drain_device` facade over a new `PeripheralBus::drive_device` (declined
+  by default; `SystemMemory` drives by device name). `tests/fabric_uart_can.rs`:
+  real CMSIS ping-pong firmware (`f103` + `f107`, snapshots prove both
+  directions), 3-machine CAN arbitration (no self-delivery; pure receiver
+  observes `0x080` before `0x100`), both scenarios rerun byte-identical.
+  SPI pairs deferred with rationale (model is master-oriented; slave
+  never drains — pair wiring needs slave TX capture first). Lockstep is
+  instruction-step granularity (own `cyccnt` per machine), documented.
+  `686` lib + `4` fabric e2e green, workspace clean.
 Effort: 16ah.
 
 ### WP-I3 Framework integration

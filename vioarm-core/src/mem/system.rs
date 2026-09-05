@@ -1000,6 +1000,16 @@ impl<M: Bus> PeripheralBus for SystemMemory<M> {
         Some(&mut self.hooks)
     }
 
+    fn drive_device(&mut self, name: &str, bytes: &[u8]) -> bool {
+        let Some(device) = self.devices.iter_mut().find(|d| d.name() == name) else {
+            return false;
+        };
+        for &b in bytes {
+            device.drive_inputs(u32::from(b));
+        }
+        true
+    }
+
     fn record_fault(&mut self, cfsr_bits: u32, hfsr_bits: u32) {
         self.scb.record_fault(cfsr_bits, hfsr_bits);
     }
