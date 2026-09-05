@@ -133,7 +133,7 @@ Tooling:
 - **Done — M6 F4** (2026-08-26): `benches/mips.rs:1` `board_boot` 10k nop `stm32f103_boot_10k_nop` + `nop_loop_1k` ±5% gated vs H743 `DWT` 168 MHz, `f4_validation.rs:1` `bench_mips`/`board_boot`/`etm_proxy` 3 tests green.
 - **Done — M6 F5** (2026-08-26): 12 chip tables (4 new F1 `stm32f100/101/102/105`), `board::all_chips()` + `core_only_board()` `NoBehavior` latch, `f5_all_chips.rs:1` all-chips `BKPT` smoke on cycle-accurate core green; **M6 closed**.
 - **Done — post-M6 one-by-one (2026-08-30)**: `H743 COMP1@0x58003800 H7 CFGR` `ADC3_Common@0x58026300` `ADC1_2@50000300` `F030/F031 ADC@0x40012400 ISR ADRDY` `F303 COMP/OPAMP/TSC CAN@0x40006400 USB_FS@0x40005C00 ADC1_2 CCR` `TIM4/8/15/16/17/20` `H743 TIM15-17` `L476/G474` fallback latch — `21 SVDs 500 Dnames 0 Reserved` `sbom.json 1.9.1` `ci qemu 10.2.1 deny --deny warnings` `cpu BTreeMap` `dma burst delta` — `615` lib `73` conformance green.
-- **Done — WP7 release hardening (2026-09-04)**: `clippy --workspace --all-targets -- -D warnings` zero-warning on stable (1.98) + MSRV 1.83 (2 real finds: BDMA zero-count optimism stated, CAN reset self-assign removed); MSRV `1.75→1.83` (`const_mut_refs` + exclusive ranges; `clap→4.5.37` so pre-1.85 cargo parses); `quick-xml 0.36→0.41` clears 2 high RUSTSECs (tables regenerate identically); `deny.toml` reviewed policy; CI = ubuntu+macos × 1.83/stable + windows build + mdbook + publish dry-run + lcov artifact, all green; oracle gate (`qemu_is_oracle`, proven `[10.2.1, 8.2.2]`, foreign QEMU skips) — `643` lib + `76` conformance green, coverage `85.64%` lines. `RELEASING.md` holds the publish order + signed-tag procedure (both human steps).
+- **Done — WP7 release hardening (2026-09-04)**: `clippy --workspace --all-targets -- -D warnings` zero-warning on stable (1.98) + MSRV 1.83 (2 real finds: BDMA zero-count optimism stated, CAN reset self-assign removed); MSRV `1.75→1.83` (`const_mut_refs` + exclusive ranges; `clap→4.5.37` so pre-1.85 cargo parses); `quick-xml 0.36→0.41` clears 2 high RUSTSECs (tables regenerate identically); `deny.toml` reviewed policy; CI = ubuntu+macos × 1.83/stable + windows build + mdbook + publish dry-run + lcov artifact, all green; oracle gate (proven versions `[10.2.1, 8.2.2]`, foreign versions skip) — `643` lib + `76` conformance green, coverage `85.64%` lines. `RELEASING.md` holds the publish order + signed-tag procedure (both human steps).
 
 ## Plan to production — `v1.9.1 → v2.0`
 
@@ -469,7 +469,7 @@ Effort: 6ah.
 - Platform CI: linux (existing) + macos + windows build jobs (no QEMU on
   windows-runners requirement — conformance job stays linux-only, others
   cross-platform). DONE 2026-09-04 (WP7: ubuntu+macos × 1.83/stable full
-  legs, windows build+lint leg, oracle gate skips foreign QEMU).
+  legs, windows build+lint leg, oracle gate skips foreign versions).
 - Stability: golden-trace snapshot tests per board boot to catch unintended
   model drift between releases.
 Acceptance: policy section in book; platform jobs green; snapshots in tree.
@@ -516,8 +516,9 @@ Effort: 4ah.
 ## M7 — Throughput (target `v3.1`, ~6 agent-days) — CLOSED 2026-09-04
 
 Measured baseline 2026-09-04: ~4.5 MIPS bare release (`nop_loop_1k`),
-0.20 MIPS full-board (`board_nop_1k` 4.96 ms pinned). QEMU TCG
-is 50–100× faster; Renode-class interpreters are at parity today. Goal was
+0.20 MIPS full-board (`board_nop_1k` 4.96 ms pinned). External JIT-based
+emulators run 50–100× faster; interpreters without a JIT are at parity
+today. Goal was
 Renode-beating throughput with the determinism and equivalence guarantees
 intact — never raw speed at the cost of either.
 
@@ -583,6 +584,22 @@ Direct-mapped cache, timing fusion, pending-gate explicitly deferred
   (requires the post-M7 timing-model redesign, not a backend).
 Effort: 12ah spike (spent ~2ah; paper ceiling + measurement, no prototype
 built — a prototype could not have changed the model-work arithmetic).
+- External JIT-emulator study 2026-09-05 (shallow sparse checkout of a
+  GPL-2.0 codebase, read-only, clean-room: findings only, no code copied
+  and nothing linked — GPL stays out of this MIT tree per WP-E1): its ARM
+  translator (~7k lines) emits scalar integer/DSP ops as inline host ops
+  with only ~123 helper call sites (system ops, saturating edge cases,
+  sleep/wait, secure-state transitions); the bulk of the ~4k helper
+  references tree-wide is vector ops lowered to host SIMD (still fast).
+  The speed comes from three architectural choices VioARM deliberately
+  does not make: translation-block chaining (interrupts polled between
+  blocks, not per instruction), TLB-amortized translation (protection
+  checks in the page-walk path, not per access), and no timing model at
+  all. A VioARM JIT preserving per-access MPU, per-insn `cyccnt`,
+  per-step NVIC, and per-step device ticks would have to re-implement
+  exactly those three trade-offs — losing the timing model and
+  determinism that justify VioARM. No-go confirmed from the other side
+  too.
 
 ---
 
@@ -643,6 +660,12 @@ Effort: 16ah.
 - Acceptance: hooks drive a block-coverage profiling example asserted in
   e2e; overhead <10% with no hooks armed, measured in benches.
 Effort: 14ah.
+- External prior art 2026-09-05: a ~3.5k-line multiprocess/thread RSP
+  server plus XML target descriptions versus our ~850-line M-profile
+  RSP — match scope, not size. Plugin hook points (pre/post
+  translation-block, memory access) are the placement model for our
+  pre/post-instruction + watchpoint hooks, minus the block layer we do
+  not have. Findings only, no code taken (GPL-2.0 codebase).
 
 ### WP-I2 Multi-machine fabric
 
@@ -661,6 +684,13 @@ Effort: 16ah.
 - Acceptance: example pytest suite green in CI; replay detects a
   deliberately mutated model.
 Effort: 10ah.
+- External prior art 2026-09-05: event-sourced replay logs instruction
+  counts as checkpoints plus async/input/clock events against snapshots
+  — needed by multi-threaded nondeterministic emulators. Our machine is
+  single-threaded and deterministic, so replay collapses to initial
+  image + host-input sequence re-executed (checkpoints only buy seeking,
+  defer them). Simpler by construction; findings only, no code taken
+  (GPL-2.0 codebase).
 
 ---
 
@@ -674,8 +704,8 @@ Effort: 10ah.
 - Spike bounds: decode subset + MMU page-table walk + identity-mapped
   hello-world. No Linux boot inside the spike.
 - Acceptance: spike report with measured cost projection; steering decision
-  recorded. Default: no-go (A-profile stays a non-goal; document QEMU-embed
-  interop instead).
+  recorded. Default: no-go (A-profile stays a non-goal; document embedding
+  an external A-profile emulator for interop instead).
 Effort: 12ah spike.
 
 ---
