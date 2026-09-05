@@ -22,17 +22,38 @@ use crate::error::BusError;
 use crate::mem::bus::{Bus, IdauAttribution, MpuAccess, MpuLookup, PeripheralBus, Region, SauHit};
 use std::sync::{Arc, Mutex};
 
+/// One attached-device window in the route index below.
+#[derive(Clone, Copy, Debug)]
+struct DevWindow {
+    base: u32,
+    end: u32,
+    dev: usize,
+}
+
 /// A `Bus` over flat backing memory plus a set of MMIO devices and the NVIC.
 ///
 /// Devices are stored as `dyn InterruptSource` — most peripherals can raise
 /// at least one line, and the default no-op methods keep the purely
 /// memory-mapped ones cheap — so the interrupt controller can peek and
-/// acknowledge their state without a second registry. Lookup is a linear scan
-/// over a small vector of windows; the M1 roadmap allows a two-level lookup
-/// later if real runs ever make it hot.
+/// acknowledge their state without a second registry. Lookup is a sorted
+/// window index over the attach-order windows (see `route_device`); the M7
+/// profile made the old linear scan untenable (~5 ns per device per byte,
+/// ~150 windows on big boards).
 pub struct SystemMemory<M: Bus> {
     backing: M,
     devices: Vec<Box<dyn InterruptSource>>,
+    /// Device windows sorted by `(base, dev)`; rebuilt lazily whenever
+    /// `devices` grows. `dev` is the attach index, so precedence never
+    /// depends on sort stability. Overlaps are real (controllers sharing
+    /// an SRAM window), so lookup checks every window that can contain the
+    /// address and keeps attach-order-first.
+    dev_index: Vec<DevWindow>,
+    /// `devices.len()` the last time `dev_index` was rebuilt.
+    dev_index_len: usize,
+    /// The longest indexed window. Lookup only inspects windows with
+    /// `base` in `(addr - max, addr]`: anything earlier ends at or before
+    /// `addr` and cannot contain it.
+    dev_index_max_len: u32,
     nvic: Nvic,
     /// The ARMv7-M system control block: interrupt control/state, priority
     /// registers for the fixed exceptions, and the AIRCR reset bits.
@@ -110,6 +131,9 @@ impl<M: Bus> SystemMemory<M> {
         Self {
             backing,
             devices: Vec::new(),
+            dev_index: Vec::new(),
+            dev_index_len: 0,
+            dev_index_max_len: 0,
             nvic: Nvic::new(),
             scb: Scb::new(),
             flash: None,
@@ -144,7 +168,53 @@ impl<M: Bus> SystemMemory<M> {
     /// Attach a device. Its windows immediately take priority over the
     /// backing memory and over devices that were attached earlier.
     pub fn attach(&mut self, device: Box<dyn InterruptSource>) {
+        // No explicit invalidation: `route_device` rebuilds whenever
+        // `devices.len()` outgrows `dev_index_len`.
         self.devices.push(device);
+    }
+
+    /// Rebuild the sorted window index from the attached devices.
+    fn rebuild_dev_index(&mut self) {
+        let mut index = Vec::new();
+        let mut max_len = 0;
+        for (dev, d) in self.devices.iter().enumerate() {
+            for r in d.ranges() {
+                max_len = max_len.max(r.len);
+                index.push(DevWindow {
+                    base: r.base,
+                    end: r.base.saturating_add(r.len),
+                    dev,
+                });
+            }
+        }
+        index.sort_by_key(|a| (a.base, a.dev));
+        self.dev_index = index;
+        self.dev_index_len = self.devices.len();
+        self.dev_index_max_len = max_len;
+    }
+
+    /// Route `addr` to the attached device index, attach-order-first.
+    ///
+    /// Only windows with `base` in `(addr - max_len, addr]` can contain
+    /// `addr` (anything earlier ends at or before it); the survivors are
+    /// usually one window, and the minimum attach index wins ties, exactly
+    /// matching the pre-index linear scan.
+    fn route_device(&mut self, addr: u32) -> Option<usize> {
+        if self.dev_index_len != self.devices.len() {
+            self.rebuild_dev_index();
+        }
+        let from = if addr < self.dev_index_max_len {
+            0
+        } else {
+            let floor = addr - self.dev_index_max_len;
+            self.dev_index.partition_point(|w| w.base <= floor)
+        };
+        let to = self.dev_index.partition_point(|w| w.base <= addr);
+        self.dev_index[from..to]
+            .iter()
+            .filter(|w| addr < w.end)
+            .map(|w| w.dev)
+            .min()
     }
 
     /// Install the shared flash-controller gate. Writes to `gate.region` are
@@ -749,12 +819,8 @@ impl<M: Bus> SystemMemory<M> {
 
 impl<M: Bus> Bus for SystemMemory<M> {
     fn read(&mut self, addr: u32) -> Result<u8, BusError> {
-        if let Some(dev) = self
-            .devices
-            .iter_mut()
-            .find(|d| d.ranges().iter().any(|r| r.contains(addr)))
-        {
-            dev.read(addr)
+        if let Some(i) = self.route_device(addr) {
+            self.devices[i].read(addr)
         } else if self.scb.ranges().iter().any(|r| r.contains(addr)) {
             self.scb.read(addr)
         } else if self.nvic.ranges().iter().any(|r| r.contains(addr)) {
@@ -767,12 +833,8 @@ impl<M: Bus> Bus for SystemMemory<M> {
     }
 
     fn write(&mut self, addr: u32, val: u8) -> Result<(), BusError> {
-        if let Some(dev) = self
-            .devices
-            .iter_mut()
-            .find(|d| d.ranges().iter().any(|r| r.contains(addr)))
-        {
-            dev.write(addr, val)
+        if let Some(i) = self.route_device(addr) {
+            self.devices[i].write(addr, val)
         } else if self.scb.ranges().iter().any(|r| r.contains(addr)) {
             self.scb.write(addr, val)
         } else if self.nvic.ranges().iter().any(|r| r.contains(addr)) {
@@ -999,6 +1061,74 @@ mod tests {
         sys.attach(Box::new(Beacon::at(0x4200_0000)));
         sys.write_word(0x4200_0000, 0xDEAD_BEEF).unwrap();
         assert_eq!(sys.read_word(0x4200_0000).unwrap(), 0xDEAD_BEEF);
+    }
+
+    /// Pre-index routing semantics: first attached device whose window
+    /// contains the address. The index must agree with this everywhere.
+    fn linear_route(sys: &SystemMemory<FlatMemory>, addr: u32) -> Option<usize> {
+        sys.devices
+            .iter()
+            .position(|d| d.ranges().iter().any(|r| r.contains(addr)))
+    }
+
+    #[test]
+    fn route_index_matches_linear_scan_on_synthetic_overlap() {
+        let mut sys = SystemMemory::new(ram());
+        sys.attach(Box::new(Beacon::at(0x4200_0000))); // [..+16)
+        sys.attach(Box::new(Beacon::at(0x4200_000F))); // 1-byte overlap
+        sys.attach(Box::new(Beacon::at(0x4300_0000))); // disjoint
+                                                       // The overlapped byte routes to the first-attached device (whose
+                                                       // offset 15 is an ignored lane, while B's offset 0 is its low
+                                                       // data byte): a B win would read back 0xAB.
+        sys.write(0x4200_000F, 0xAB).unwrap();
+        assert_eq!(sys.read(0x4200_000F).unwrap(), 0x00);
+        // Both neighbors still work: A-only data area and B-only window.
+        sys.write_word(0x4200_0000, 0x1111_2222).unwrap();
+        assert_eq!(sys.read_word(0x4200_0000).unwrap(), 0x1111_2222);
+        assert_eq!(sys.read(0x4200_0010).unwrap(), 0x00); // B.reg byte 1
+                                                          // ...and the router agrees with the scan on every sampled address.
+        for base in [0x4200_0000, 0x4200_000F, 0x4300_0000, RAM, 0x5000_0000] {
+            for delta in 0..32u32 {
+                let addr = base.wrapping_add(delta);
+                assert_eq!(
+                    sys.route_device(addr),
+                    linear_route(&sys, addr),
+                    "route {addr:#x}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn route_index_matches_linear_scan_on_a_real_board() {
+        let mut sys = crate::board::stm32f103();
+        let mut addrs = vec![
+            0x0000_0000,
+            0x0800_0000,
+            0x2000_0000,
+            0x4000_0000,
+            0xE000_0000,
+            0xFFFF_FFFF,
+        ];
+        for d in sys.devices.iter() {
+            for r in d.ranges() {
+                let end = r.base.wrapping_add(r.len);
+                addrs.extend([
+                    r.base.wrapping_sub(1),
+                    r.base,
+                    r.base.wrapping_add(1),
+                    end.wrapping_sub(1),
+                    end,
+                ]);
+            }
+        }
+        for addr in addrs {
+            assert_eq!(
+                sys.route_device(addr),
+                linear_route(&sys, addr),
+                "route {addr:#x}"
+            );
+        }
     }
 
     #[test]

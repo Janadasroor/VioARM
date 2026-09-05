@@ -111,6 +111,37 @@ fn bench_attribution(c: &mut Criterion) {
         );
     });
 
+    // Bare core without the Machine wrapper: separates core cost from
+    // machine-step overhead (NVIC peeks, tick dispatch, reset checks).
+    g.bench_function("core_nop_1k", |b| {
+        b.iter_batched(
+            || {
+                let mem = FlatMemory::with_layout(&[0x0800_0000], &[0x10000]);
+                let mut core = vioarm_core::cpu::Core::armv7m(mem);
+                let mut code = Vec::new();
+                for _ in 0..1000 {
+                    code.extend_from_slice(&[0x00, 0xBF]);
+                }
+                let img = load_flat(0x0800_0000, &code);
+                for (addr, bytes) in &img.segments {
+                    for (i, &byte) in bytes.iter().enumerate() {
+                        core.mem().write(addr.wrapping_add(i as u32), byte).unwrap();
+                    }
+                }
+                core.regs.pc = 0x0800_0000;
+                core.xpsr.set(0x01000000);
+                core
+            },
+            |mut core| {
+                for _ in 0..1000 {
+                    let _ = core.step();
+                }
+                black_box(core.cyccnt)
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
     // Full f103 board, sequential NOPs: adds the bus scan, NVIC scan, and
     // per-step device ticks to the bare cost above. Flash is unlocked the
     // way firmware does it (F1 KEYR sequence), and the landing is asserted
@@ -155,6 +186,37 @@ fn bench_attribution(c: &mut Criterion) {
     g.bench_function("bus_flash_read_1k", |b| {
         b.iter_batched(
             board::stm32f103,
+            |mut mem| {
+                let mut acc = 0u16;
+                for i in 0..1000u32 {
+                    acc = acc.wrapping_add(mem.read_half(0x0800_0000 + i * 2).unwrap_or(0));
+                }
+                black_box(acc)
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    // Raw backing cost with no bus at all (baseline for the two below).
+    g.bench_function("bus_flat_read_1k", |b| {
+        b.iter_batched(
+            || FlatMemory::with_layout(&[0x0800_0000], &[0x10000]),
+            |mut mem| {
+                let mut acc = 0u16;
+                for i in 0..1000u32 {
+                    acc = acc.wrapping_add(mem.read_half(0x0800_0000 + i * 2).unwrap_or(0));
+                }
+                black_box(acc)
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    // Raw bus cost on the big H7 board (100+ windows): where the index
+    // should win over the linear scan.
+    g.bench_function("bus_h743_flash_read_1k", |b| {
+        b.iter_batched(
+            board::stm32h743,
             |mut mem| {
                 let mut acc = 0u16;
                 for i in 0..1000u32 {

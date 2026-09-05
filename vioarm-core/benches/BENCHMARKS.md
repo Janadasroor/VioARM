@@ -12,11 +12,21 @@ so a perf change that alters timing fails loudly instead of silently.
 |---|---|---|---|
 | `attrib/bare_nop_1k_miss` | 1000 bare steps, all decode misses | 195 µs | 195 ns/step |
 | `attrib/bare_loop_100_hit` | 201 bare steps, cache-hot loop | 18.8 µs | 94 ns/step |
-| `attrib/board_nop_1k` | 1000 f103 steps | 4.47 ms | 4.47 µs/step (~0.22 MIPS) |
-| `attrib/bus_flash_read_1k` | 1000 flash halfword reads | 554 µs | 554 ns/read |
+| `attrib/board_nop_1k` | 1000 f103 steps | 2.46 ms | 2.46 µs/step (~0.41 MIPS) |
+| `attrib/bus_flash_read_1k` | 1000 flash halfword reads (f103) | 166 µs | 166 ns/read |
+| `attrib/bus_h743_flash_read_1k` | 1000 flash halfword reads (h743) | 267 µs | 267 ns/read |
+| `attrib/bus_flat_read_1k` | 1000 halfword reads, no bus | 3.4 µs | 3.4 ns/read |
 | `attrib/bus_tick_1k` | 1000 `tick_devices(1)` | 1.24 ms | 1.24 µs/tick |
 | `attrib/bus_next_exception_1k` | 1000 NVIC peeks | 164 µs | 164 ns/peek |
+| `attrib/core_nop_1k` | 1000 core steps, no Machine wrapper | 213 µs | 213 ns/step |
 | `mips/nop_loop_1k` | legacy aggregate | — | ~4.5 MIPS bare |
+
+History: `board_nop_1k` was 4.47 ms and the flash reads 554 ns (f103) /
+1.43 µs (h743) before the G2 bus index (sorted windows + bounded walk,
+attach-order-first incl. overlaps); the first index revision showed zero
+gain because overlaps took a linear fallback — overlaps are common
+(shared SRAM windows), so the fallback *was* the path. Lesson recorded:
+measure the fallback rate, not just the happy path.
 
 ## Attribution (board NOP step ≈ 4.47 µs)
 
