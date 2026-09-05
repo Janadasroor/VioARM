@@ -6,6 +6,7 @@
 //! talking to RAM, flash, or a device; it only sees this trait.
 
 use crate::error::BusError;
+use crate::hooks::Hooks;
 
 /// `VTOR` (the vector table offset register): the default vector-table base
 /// address consulted when no `SCB` overrides the answer.
@@ -237,6 +238,18 @@ pub trait PeripheralBus: Bus {
     /// machine performs a full reset when set. Default: no such request.
     fn reset_requested(&self) -> bool {
         false
+    }
+
+    /// The hook registry, if this memory fires hooks. Default: none (plain
+    /// memories neither register nor fire; `FlatMemory` and `SystemMemory`
+    /// both do).
+    fn hooks(&self) -> Option<&Hooks> {
+        None
+    }
+
+    /// Mutable hook registry. Default: none.
+    fn hooks_mut(&mut self) -> Option<&mut Hooks> {
+        None
     }
 
     /// Record escalated-fault status into the SCB's `CFSR`/`HFSR` (the bits to

@@ -7,9 +7,19 @@ use colored::Colorize;
 
 use vioarm_core::board;
 use vioarm_core::error::HaltCause;
+use vioarm_core::hooks::HookEvent;
 use vioarm_core::loader::{self, LoadedImage};
 use vioarm_core::machine::Machine;
 use vioarm_core::mem::bus::Bus;
+
+/// Trace output format.
+#[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
+enum TraceFormat {
+    /// Human-readable per-cycle register snapshot (legacy).
+    Text,
+    /// `{"cycle":N,"pc":"0x..."}` per retired instruction, hook-driven.
+    Jsonl,
+}
 
 /// The concrete boards the CLI can boot (21 SVD tables + 500 Dnames via core_only, 13 full).
 #[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
@@ -1613,6 +1623,14 @@ enum Commands {
         /// Arm semihosting (`BKPT 0xAB`) plus ITM stimulus capture
         #[arg(long)]
         semihost: bool,
+        /// Trace format: human-readable text (default) or `jsonl` streaming
+        /// (`{"cycle":N,"pc":"0x..."}` per retired instruction, driven by
+        /// the hook registry).
+        #[arg(long, value_enum, default_value_t = TraceFormat::Text)]
+        format: TraceFormat,
+        /// Write the trace here instead of stdout.
+        #[arg(long)]
+        output: Option<PathBuf>,
     },
     /// Show image layout (segments, entry)
     Info { image: PathBuf },
@@ -1789,6 +1807,34 @@ fn run_quiet(m: &mut Machine<board::BoardMemory>, budget: u64) {
     }
     if let Some(code) = m.semihost_exit() {
         println!("{} {code}", "exit:".bright_magenta().bold());
+    }
+}
+
+/// JSONL trace: one `{"cycle":N,"pc":"0x..."}` line per retired
+/// instruction, streamed through the hook registry (pre-instruction hook,
+/// full PC range). `output` selects a file, `None` streams to stdout.
+fn run_traced_jsonl(m: &mut Machine<board::BoardMemory>, budget: u64, output: Option<PathBuf>) {
+    use std::io::Write;
+    let sink: Box<dyn Write + Send> = match output {
+        Some(path) => Box::new(
+            std::fs::File::create(&path)
+                .unwrap_or_else(|e| panic!("trace output {}: {e}", path.display())),
+        ),
+        // `Stdout` (not the non-`Send` lock guard): each write locks briefly.
+        None => Box::new(std::io::stdout()),
+    };
+    let sink = std::sync::Arc::new(std::sync::Mutex::new(sink));
+    let writer = sink.clone();
+    m.on_instruction(true, 0, u32::MAX, move |e| {
+        if let HookEvent::Instruction { pc, cycles } = *e {
+            let mut out = writer.lock().unwrap_or_else(|e| e.into_inner());
+            writeln!(out, "{{\"cycle\":{cycles},\"pc\":\"{pc:#010x}\"}}").ok();
+        }
+    });
+    for _ in 0..budget {
+        if m.step().is_err() {
+            break;
+        }
     }
 }
 
@@ -2002,12 +2048,17 @@ fn main() {
                 base,
                 budget,
                 semihost,
+                format,
+                output,
             } => {
                 let (img, _) = load_image_auto(&image, base);
                 let mut m = machine_for(board, &img);
                 m.semihost_enable(semihost);
                 banner();
-                run_traced(&mut m, budget);
+                match format {
+                    TraceFormat::Jsonl => run_traced_jsonl(&mut m, budget, output),
+                    TraceFormat::Text => run_traced(&mut m, budget),
+                }
             }
             Commands::Info { image } => {
                 let (img, _) = load_image_auto(&image, 0);

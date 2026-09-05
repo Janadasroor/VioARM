@@ -9,6 +9,7 @@
 
 use crate::cpu::{Core, FpuCtx};
 use crate::error::HaltCause;
+use crate::hooks::HookEvent;
 use crate::loader::LoadedImage;
 use crate::mem::PeripheralBus;
 use std::sync::{Arc, Mutex};
@@ -187,7 +188,32 @@ impl<M: PeripheralBus> Machine<M> {
         // Whether the core was already asleep: if so its `step()` returns
         // immediately without a cycle, so we count the sleeping cycle here.
         let was_sleeping = self.core.sleeping;
+        // Instruction hooks bracket the retired instruction (never for an
+        // already-sleeping core, which retires nothing).
+        let hooked = !was_sleeping
+            && self
+                .core
+                .mem()
+                .hooks()
+                .is_some_and(|h| h.has_before() || h.has_after());
+        let pc = self.core.regs.pc;
+        if hooked {
+            let cycles = self.core.cyccnt;
+            if let Some(h) = self.core.mem().hooks_mut() {
+                if h.has_before() {
+                    h.fire_before(pc, cycles);
+                }
+            }
+        }
         self.core.step()?;
+        if hooked {
+            let cycles = self.core.cyccnt;
+            if let Some(h) = self.core.mem().hooks_mut() {
+                if h.has_after() {
+                    h.fire_after(pc, cycles);
+                }
+            }
+        }
         if self.core.just_returned {
             // The instruction was an exception return: the restored thread
             // instruction must execute next, before any pending exception.
@@ -275,5 +301,72 @@ impl<M: PeripheralBus> Machine<M> {
     /// names drain to empty.
     pub fn drain_channel(&mut self, name: &str) -> Vec<u8> {
         self.core.mem().drain_channel(name)
+    }
+
+    /// A pre- (`before`) or post-instruction hook over `start..end`
+    /// (end-exclusive; `0..u32::MAX` covers every PC). Returns whether the
+    /// memory installed it (plain test doubles without a registry decline).
+    pub fn on_instruction(
+        &mut self,
+        before: bool,
+        start: u32,
+        end: u32,
+        callback: impl FnMut(&HookEvent) + 'static,
+    ) -> bool {
+        if let Some(h) = self.core.mem().hooks_mut() {
+            h.on_instruction(before, start, end, callback);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// A read watchpoint over `start..end` (end-exclusive). See
+    /// [`Machine::on_instruction`] for the return value.
+    pub fn on_read(
+        &mut self,
+        start: u32,
+        end: u32,
+        callback: impl FnMut(&HookEvent) + 'static,
+    ) -> bool {
+        if let Some(h) = self.core.mem().hooks_mut() {
+            h.on_read(start, end, callback);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// A write watchpoint over `start..end` (end-exclusive). See
+    /// [`Machine::on_instruction`] for the return value.
+    pub fn on_write(
+        &mut self,
+        start: u32,
+        end: u32,
+        callback: impl FnMut(&HookEvent) + 'static,
+    ) -> bool {
+        if let Some(h) = self.core.mem().hooks_mut() {
+            h.on_write(start, end, callback);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// A peripheral-access hook: `write` selects direction, `name` (if
+    /// given) restricts to one device (`Peripheral::name`, e.g. `"usart1"`).
+    /// See [`Machine::on_instruction`] for the return value.
+    pub fn on_peripheral(
+        &mut self,
+        write: bool,
+        name: Option<&str>,
+        callback: impl FnMut(&HookEvent) + 'static,
+    ) -> bool {
+        if let Some(h) = self.core.mem().hooks_mut() {
+            h.on_peripheral(write, name, callback);
+            true
+        } else {
+            false
+        }
     }
 }

@@ -692,7 +692,7 @@ Effort: 16ah.
 
 ## M9 — Ecosystem (target `v3.3`, ~5 agent-days)
 
-### WP-I1 Hook/trace plugin API
+### WP-I1 Hook/trace plugin API — DONE (2026-09-06)
 
 - In-process hook registry on `Machine`: pre/post-instruction (PC-range
   filtered), memory read/write watchpoints with callbacks,
@@ -701,6 +701,16 @@ Effort: 16ah.
   recorded).
 - Acceptance: hooks drive a block-coverage profiling example asserted in
   e2e; overhead <10% with no hooks armed, measured in benches.
+- Shipped: `hooks.rs` (`HookEvent`, `Hooks` registry, `Coverage` block
+  analyzer with 16-bit + `BL` decode), bus-level firing in
+  `FlatMemory`/`SystemMemory` (byte-granular, post-success, one predicted
+  branch when empty), `Machine::on_*` facade returning install support,
+  `vioarm trace --format jsonl [--output]` streaming, `examples/coverage.rs`,
+  `tests/hooks_coverage.rs` (4 e2e on assembler-verified encodings).
+  Overhead measured 1.024 (idle-armed vs none), full-trace 1.017 —
+  acceptance holds (`BENCHMARKS.md`). The work exposed a core decoder
+  cross-check (CBZ/CBNZ `i:imm5` layout confirmed against the assembler;
+  hooks decoder matches). `684` lib + `4` hooks e2e green, workspace clean.
 Effort: 14ah.
 - External prior art 2026-09-05: a ~3.5k-line multiprocess/thread RSP
   server plus XML target descriptions versus our ~850-line M-profile

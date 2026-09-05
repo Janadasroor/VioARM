@@ -10,6 +10,7 @@ pub mod board;
 pub mod cpu;
 pub mod device;
 pub mod error;
+pub mod hooks;
 pub mod loader;
 pub mod machine;
 pub mod mem;

@@ -19,6 +19,7 @@ use crate::device::stm32::fmc::QspiGate;
 use crate::device::stm32::rcc::ClockState;
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
+use crate::hooks::Hooks;
 use crate::mem::bus::{Bus, IdauAttribution, MpuAccess, MpuLookup, PeripheralBus, Region, SauHit};
 use std::sync::{Arc, Mutex};
 
@@ -103,6 +104,9 @@ pub struct SystemMemory<M: Bus> {
     /// retargeting lands here when the host enables the unit. Present on
     /// every board without touching any constructor.
     itm: Itm,
+    /// In-process hook registry (instruction/watchpoint/peripheral hooks).
+    /// Empty by default: one predicted branch per access then.
+    hooks: Hooks,
 }
 
 impl<M: Bus + core::fmt::Debug> core::fmt::Debug for SystemMemory<M> {
@@ -153,6 +157,7 @@ impl<M: Bus> SystemMemory<M> {
             clock: None,
             tim_phase: [0, 0],
             itm: Itm::new(),
+            hooks: Hooks::default(),
         }
     }
 
@@ -849,31 +854,93 @@ impl<M: Bus> SystemMemory<M> {
 
 impl<M: Bus> Bus for SystemMemory<M> {
     fn read(&mut self, addr: u32) -> Result<u8, BusError> {
-        if let Some(i) = self.route_device(addr) {
-            self.devices[i].read(addr)
-        } else if self.scb.ranges().iter().any(|r| r.contains(addr)) {
-            self.scb.read(addr)
-        } else if self.nvic.ranges().iter().any(|r| r.contains(addr)) {
-            self.nvic.read(addr)
-        } else if self.itm.ranges().iter().any(|r| r.contains(addr)) {
-            self.itm.read(addr)
-        } else {
-            self.read_backing(addr)
+        // Resolve first so hooks fire after (and only after) a successful
+        // access, with the device name for peripheral events.
+        enum Target {
+            Device(usize),
+            Scb,
+            Nvic,
+            Itm,
+            Backing,
         }
+        let target = if let Some(i) = self.route_device(addr) {
+            Target::Device(i)
+        } else if self.scb.ranges().iter().any(|r| r.contains(addr)) {
+            Target::Scb
+        } else if self.nvic.ranges().iter().any(|r| r.contains(addr)) {
+            Target::Nvic
+        } else if self.itm.ranges().iter().any(|r| r.contains(addr)) {
+            Target::Itm
+        } else {
+            Target::Backing
+        };
+        let value = match target {
+            Target::Device(i) => self.devices[i].read(addr)?,
+            Target::Scb => self.scb.read(addr)?,
+            Target::Nvic => self.nvic.read(addr)?,
+            Target::Itm => self.itm.read(addr)?,
+            Target::Backing => self.read_backing(addr)?,
+        };
+        if self.hooks.has_read() {
+            self.hooks.fire_read(addr, value);
+        }
+        let name = match target {
+            Target::Device(i) => Some(self.devices[i].name()),
+            Target::Scb => Some("scb"),
+            Target::Nvic => Some("nvic"),
+            Target::Itm => Some("itm"),
+            Target::Backing => None,
+        };
+        if let Some(name) = name {
+            if self.hooks.has_prd() {
+                self.hooks.fire_peripheral(name, addr, value, false);
+            }
+        }
+        Ok(value)
     }
 
     fn write(&mut self, addr: u32, val: u8) -> Result<(), BusError> {
-        if let Some(i) = self.route_device(addr) {
-            self.devices[i].write(addr, val)
-        } else if self.scb.ranges().iter().any(|r| r.contains(addr)) {
-            self.scb.write(addr, val)
-        } else if self.nvic.ranges().iter().any(|r| r.contains(addr)) {
-            self.nvic.write(addr, val)
-        } else if self.itm.ranges().iter().any(|r| r.contains(addr)) {
-            self.itm.write(addr, val)
-        } else {
-            self.write_backing(addr, val)
+        enum Target {
+            Device(usize),
+            Scb,
+            Nvic,
+            Itm,
+            Backing,
         }
+        let target = if let Some(i) = self.route_device(addr) {
+            Target::Device(i)
+        } else if self.scb.ranges().iter().any(|r| r.contains(addr)) {
+            Target::Scb
+        } else if self.nvic.ranges().iter().any(|r| r.contains(addr)) {
+            Target::Nvic
+        } else if self.itm.ranges().iter().any(|r| r.contains(addr)) {
+            Target::Itm
+        } else {
+            Target::Backing
+        };
+        match target {
+            Target::Device(i) => self.devices[i].write(addr, val)?,
+            Target::Scb => self.scb.write(addr, val)?,
+            Target::Nvic => self.nvic.write(addr, val)?,
+            Target::Itm => self.itm.write(addr, val)?,
+            Target::Backing => self.write_backing(addr, val)?,
+        }
+        if self.hooks.has_write() {
+            self.hooks.fire_write(addr, val);
+        }
+        let name = match target {
+            Target::Device(i) => Some(self.devices[i].name()),
+            Target::Scb => Some("scb"),
+            Target::Nvic => Some("nvic"),
+            Target::Itm => Some("itm"),
+            Target::Backing => None,
+        };
+        if let Some(name) = name {
+            if self.hooks.has_pwr() {
+                self.hooks.fire_peripheral(name, addr, val, true);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -923,6 +990,14 @@ impl<M: Bus> PeripheralBus for SystemMemory<M> {
     /// the default (false) would never reboot the machine.
     fn reset_requested(&self) -> bool {
         SystemMemory::reset_requested(self)
+    }
+
+    fn hooks(&self) -> Option<&Hooks> {
+        Some(&self.hooks)
+    }
+
+    fn hooks_mut(&mut self) -> Option<&mut Hooks> {
+        Some(&mut self.hooks)
     }
 
     fn record_fault(&mut self, cfsr_bits: u32, hfsr_bits: u32) {

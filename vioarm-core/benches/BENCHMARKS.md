@@ -77,6 +77,21 @@ differential burden. G2 delivered 1.89× for ~200 safe lines. JIT: no-go
    shifts interrupt timing visibly (traces change), so it is a timing-model
    decision, not a fast path. Documented for post-M7.
 
+## Hook overhead (M9-I1, 2026-09-06)
+
+Same 1000-step NOP window, `hooks` group (`cargo bench --bench mips -- hooks`):
+
+| Bench | Window | Mean | Ratio vs none |
+|---|---|---|---|
+| `hooks/steps_1k_none` | no hooks | 219.7 µs | 1.00 |
+| `hooks/steps_1k_armed_idle` | hooks armed, never-matching ranges | 225.0 µs | 1.024 |
+| `hooks/steps_1k_trace_all` | full-range tracing hook + atomic count | 223.5 µs | 1.017 |
+
+Acceptance (`idle / none < 1.10`) holds at 1.024: with no hooks armed the
+cost is one predicted branch per step/access. (Full-range tracing costs
+no more than idle-armed here — one registry entry plus an atomic
+increment; real trace sinks like file I/O dominate, as expected.)
+
 ## Regression policy
 
 Wall-clock gating on shared CI runners is flake-prone, so CI runs the

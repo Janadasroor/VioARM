@@ -286,5 +286,84 @@ fn bench_attribution(c: &mut Criterion) {
     g.finish();
 }
 
-criterion_group!(benches, bench_board_boot, bench_mips, bench_attribution);
+/// Hook overhead (M9-I1): the same 1000-step NOP window with no hooks,
+/// with hooks armed on never-matching ranges (check cost), and with a
+/// full-range tracing hook (fire cost). Acceptance is `idle / none < 1.10`.
+fn bench_hooks(c: &mut Criterion) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+    fn nop_machine() -> Machine<FlatMemory> {
+        let mem = FlatMemory::with_layout(&[0x0800_0000], &[0x10000]);
+        let mut m = Machine::armv7m(mem);
+        let mut code = Vec::new();
+        for _ in 0..1000 {
+            code.extend_from_slice(&[0x00, 0xBF]);
+        }
+        let img = load_flat(0x0800_0000, &code);
+        m.load_image(&img);
+        m.core.regs.pc = 0x0800_0000;
+        m.core.xpsr.set(0x01000000);
+        m
+    }
+    let mut g = c.benchmark_group("hooks");
+    g.bench_function("steps_1k_none", |b| {
+        b.iter_batched(
+            nop_machine,
+            |mut m| {
+                for _ in 0..1000 {
+                    let _ = m.step();
+                }
+                black_box(m.core.cyccnt)
+            },
+            BatchSize::SmallInput,
+        );
+    });
+    g.bench_function("steps_1k_armed_idle", |b| {
+        b.iter_batched(
+            || {
+                let mut m = nop_machine();
+                // Never-matching ranges: pure check cost, no callback runs.
+                m.on_instruction(true, 0x3000_0000, 0x3000_1000, |_| {});
+                m.on_write(0x3000_0000, 0x3000_1000, |_| {});
+                m
+            },
+            |mut m| {
+                for _ in 0..1000 {
+                    let _ = m.step();
+                }
+                black_box(m.core.cyccnt)
+            },
+            BatchSize::SmallInput,
+        );
+    });
+    g.bench_function("steps_1k_trace_all", |b| {
+        b.iter_batched(
+            || {
+                let mut m = nop_machine();
+                let n = Arc::new(AtomicU64::new(0));
+                let sink = n.clone();
+                m.on_instruction(true, 0, u32::MAX, move |_| {
+                    sink.fetch_add(1, Ordering::Relaxed);
+                });
+                (m, n)
+            },
+            |(mut m, n)| {
+                for _ in 0..1000 {
+                    let _ = m.step();
+                }
+                black_box((m.core.cyccnt, n.load(Ordering::Relaxed)))
+            },
+            BatchSize::SmallInput,
+        );
+    });
+    g.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_board_boot,
+    bench_mips,
+    bench_attribution,
+    bench_hooks
+);
 criterion_main!(benches);

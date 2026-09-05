@@ -3,6 +3,7 @@
 //! declared regions is `Reserved`.
 
 use crate::error::BusError;
+use crate::hooks::Hooks;
 use crate::mem::bus::{Bus, PeripheralBus, Region};
 
 /// A single owned bank of bytes.
@@ -18,12 +19,16 @@ pub struct Bank {
 #[derive(Debug)]
 pub struct FlatMemory {
     banks: Vec<Bank>,
+    hooks: Hooks,
 }
 
 impl FlatMemory {
     #[must_use]
     pub const fn of_banks(banks: Vec<Bank>) -> Self {
-        Self { banks }
+        Self {
+            banks,
+            hooks: Hooks::empty(),
+        }
     }
 
     /// Build a memory from base/length pairs. Useful for tests.
@@ -37,7 +42,10 @@ impl FlatMemory {
                 bytes: vec![0; *len as usize],
             })
             .collect();
-        Self { banks: bytes }
+        Self {
+            banks: bytes,
+            hooks: Hooks::default(),
+        }
     }
 
     /// Locate a bank containing `addr`.
@@ -67,13 +75,20 @@ impl Bus for FlatMemory {
     fn read(&mut self, addr: u32) -> Result<u8, BusError> {
         let b = self.bank_for(addr)?;
         let off = (addr - b.region.base) as usize;
-        Ok(b.bytes[off])
+        let value = b.bytes[off];
+        if self.hooks.has_read() {
+            self.hooks.fire_read(addr, value);
+        }
+        Ok(value)
     }
 
     fn write(&mut self, addr: u32, val: u8) -> Result<(), BusError> {
         let b = self.bank_for_mut(addr)?;
         let off = (addr - b.region.base) as usize;
         b.bytes[off] = val;
+        if self.hooks.has_write() {
+            self.hooks.fire_write(addr, val);
+        }
         Ok(())
     }
 }
@@ -90,4 +105,12 @@ impl PeripheralBus for FlatMemory {
     }
 
     fn acknowledge_exception(&mut self, _n: u8) {}
+
+    fn hooks(&self) -> Option<&Hooks> {
+        Some(&self.hooks)
+    }
+
+    fn hooks_mut(&mut self) -> Option<&mut Hooks> {
+        Some(&mut self.hooks)
+    }
 }
