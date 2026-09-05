@@ -814,7 +814,7 @@ Effort: ~30ah if approved.
 
 ## M10 — A-profile exploratory (far horizon, NOT committed)
 
-### WP-J1 Feasibility spike (go/no-go gate)
+### WP-J1 Feasibility spike (go/no-go gate) — DONE (2026-09-06)
 
 - Question: full ARMv7-A (stage-1 MMU, GIC distributor, generic timers) to
   a Linux shell prompt — versus embedding QEMU for A-profile and keeping
@@ -824,6 +824,31 @@ Effort: ~30ah if approved.
 - Acceptance: spike report with measured cost projection; steering decision
   recorded. Default: no-go (A-profile stays a non-goal; document embedding
   an external A-profile emulator for interop instead).
+- Shipped: `examples/a_profile_spike.rs` (339 lines, isolated — zero
+  product-code touch): 11 A32 encodings (MOV/ADD/SUB/CMP imm + LSL#0 reg,
+  LDR/STR imm, B/BL, BKPT, full cond table) + short-descriptor walk
+  (sections, 4 KB pages, `AP[1:0]`) + guest that writes via identity,
+  reads back via a translated VA, and flags PASS (10 steps, 16 translated
+  accesses; unmapped-VA and `AP==0b00` fault probes green). Guest bytes
+  assembler-verified. Even the spike caught real corner classes (class-mask
+  bits, `PC+8` pipeline, BE word order, table self-collision).
+- Measured projection to a Linux shell prompt (single-threaded, reusing
+  bus/CLI/test infrastructure): full ARM+Thumb-2-A decode with shifts and
+  addressing modes 3–4 wk; VFPv3/NEON scalar for userland (or a non-NEON
+  rootfs scope lever) 2–3 wk; full MMU (domains/`DACR`, TEX remap, full
+  AP + XN/PXN/UXN, supersections, TLB + maintenance, alignment, `TTBCR`/
+  ASIDs) 2–3 wk; 7 modes + banked regs + abort model 1–2 wk; GICv2
+  distributor + CPU interface with preemption 2–3 wk; generic timer +
+  PL011 + device-tree/PSCI-UP boot path 2–4 wk; kernel-driven debug tail
+  (dmesg triage, unknown unknowns) 3–6 wk. Total ≈ 15–25 agent-weeks for
+  a UP-only shell prompt — before SMP, LPAE, or virtualization.
+- DECISION: no-go (default holds). Cost is 3–5 months for a different
+  market (application processors) where a fast, mature, free incumbent
+  owns raw throughput and board coverage, while every week spent there is
+  a week off the deterministic-MCU moat (M8 depth, M9 ecosystem). A-profile
+  stays a non-goal; interop remains embedding an external A-profile
+  emulator beside VioARM (fabric-style coupling later if ever needed).
+  The spike example stays as the executable record.
 Effort: 12ah spike.
 
 ---
