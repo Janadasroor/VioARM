@@ -605,7 +605,7 @@ built — a prototype could not have changed the model-work arithmetic).
 
 ## M8 — Complex-IP depth (target `v3.2`, ~8 agent-days)
 
-### WP-H1 USB host-mode scheduler
+### WP-H1 USB host-mode scheduler — DONE (2026-09-06)
 
 - Spec (RM0008 §30 / RM0433 §38 host chapters): OTG_FS host channels
   (`HCCHAR`/`HCINT` per channel, `GINT` host bit), SOF scheduling, bulk +
@@ -613,6 +613,18 @@ built — a prototype could not have changed the model-work arithmetic).
 - Acceptance: host-mode enumeration e2e against the virtual device
   (`GET_DESCRIPTOR`/`SET_ADDRESS`/`SET_CONFIGURATION` through host
   channels); existing device-mode suite green.
+- Shipped: `usb.rs` host engine — HPRT port machine (power/connect/
+  SOF-counted reset/enable with `PCDET`/`PENCHNG` W1C + `HPRTINT`), SOF
+  scheduler (`HFNUM`, reset countdown, interrupt-type channels deferred
+  to the frame boundary), channel execution (control SETUP/data/status,
+  bulk/interrupt IN/OUT with ACK/NAK/STALL/TXERR, `HCTSIZ` remainder
+  write-back, DATA toggle), IN data via host `GRXSTSR` status words;
+  `VirtualUsbDevice` CDC-ACM (device/config/string descriptors, address/
+  configuration, line coding, EP1 bulk pair + EP2 interrupt IN, HALT).
+  `tests/usb_host_enumeration.rs` (full enumeration incl. 67-byte config
+  multi-packet IN, bulk echo, NAK→SOF→XFRC periodic, STALL + halt
+  recovery) + 4 lib tests. `649` lib + `3` host e2e green, workspace
+  clean. Isochronous host channels STALL (documented, unmodeled).
 Effort: 20ah.
 
 ### WP-H2 H7 Ethernet behavioral
