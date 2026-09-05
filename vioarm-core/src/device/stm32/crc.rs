@@ -39,6 +39,10 @@ impl CrcBehavior {
 }
 
 impl Behavior for CrcBehavior {
+    // CRC folds synchronously on DR writes.
+    fn needs_tick() -> bool {
+        false
+    }
     fn on_write(
         &mut self,
         view: &mut Registers<&mut [u32]>,

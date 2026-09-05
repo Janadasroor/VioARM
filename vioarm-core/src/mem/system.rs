@@ -50,10 +50,15 @@ pub struct SystemMemory<M: Bus> {
     dev_index: Vec<DevWindow>,
     /// `devices.len()` the last time `dev_index` was rebuilt.
     dev_index_len: usize,
+    /// See `set_route_force_linear`.
+    route_force_linear: bool,
     /// The longest indexed window. Lookup only inspects windows with
     /// `base` in `(addr - max, addr]`: anything earlier ends at or before
     /// `addr` and cannot contain it.
     dev_index_max_len: u32,
+    /// Per-device APB timer domain (`tim_apb` of the device name), built
+    /// with the window index. Saves a string match per device per tick.
+    dev_apb: Vec<Option<u8>>,
     nvic: Nvic,
     /// The ARMv7-M system control block: interrupt control/state, priority
     /// registers for the fixed exceptions, and the AIRCR reset bits.
@@ -133,7 +138,9 @@ impl<M: Bus> SystemMemory<M> {
             devices: Vec::new(),
             dev_index: Vec::new(),
             dev_index_len: 0,
+            route_force_linear: false,
             dev_index_max_len: 0,
+            dev_apb: Vec::new(),
             nvic: Nvic::new(),
             scb: Scb::new(),
             flash: None,
@@ -191,6 +198,11 @@ impl<M: Bus> SystemMemory<M> {
         self.dev_index = index;
         self.dev_index_len = self.devices.len();
         self.dev_index_max_len = max_len;
+        self.dev_apb = self
+            .devices
+            .iter()
+            .map(|d| Self::tim_apb(d.name()))
+            .collect();
     }
 
     /// Route `addr` to the attached device index, attach-order-first.
@@ -199,7 +211,21 @@ impl<M: Bus> SystemMemory<M> {
     /// `addr` (anything earlier ends at or before it); the survivors are
     /// usually one window, and the minimum attach index wins ties, exactly
     /// matching the pre-index linear scan.
+    ///
+    /// Measurement hook: when set, routing reverts to the linear scan
+    /// inside one process so benches can A/B both paths back-to-back.
+    /// Firmware has no reason to touch this; it exists for M7.
+    pub fn set_route_force_linear(&mut self, on: bool) {
+        self.route_force_linear = on;
+    }
+
     fn route_device(&mut self, addr: u32) -> Option<usize> {
+        if self.route_force_linear {
+            return self
+                .devices
+                .iter()
+                .position(|d| d.ranges().iter().any(|r| r.contains(addr)));
+        }
         if self.dev_index_len != self.devices.len() {
             self.rebuild_dev_index();
         }
@@ -364,11 +390,15 @@ impl<M: Bus> SystemMemory<M> {
         let (ratio1, phase1) = self.tim_scaled(delta, 1);
         let (ratio2, phase2) = self.tim_scaled(delta, 2);
         self.tim_phase = [phase1, phase2];
-        for device in &mut self.devices {
+        if self.dev_apb.len() != self.devices.len() {
+            self.rebuild_dev_index();
+        }
+        for i in 0..self.devices.len() {
+            let device = &mut self.devices[i];
             if device.gated() {
                 continue;
             }
-            let delta = match Self::tim_apb(device.name()) {
+            let delta = match self.dev_apb[i] {
                 Some(1) => ratio1,
                 Some(2) => ratio2,
                 _ => delta,

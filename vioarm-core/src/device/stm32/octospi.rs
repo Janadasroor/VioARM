@@ -24,6 +24,10 @@ impl OctospiBehavior {
 }
 
 impl Behavior for OctospiBehavior {
+    // Gated-window access is synchronous; the empty tick is removed.
+    fn needs_tick() -> bool {
+        false
+    }
     fn on_write(
         &mut self,
         view: &mut Registers<&mut [u32]>,
@@ -44,7 +48,6 @@ impl Behavior for OctospiBehavior {
         }
         word
     }
-    fn tick(&mut self, _view: &mut Registers<&mut [u32]>, _delta: u64) {}
     fn reset(&mut self) {
         self.enabled = false;
         if let Some(g) = &self.gate {

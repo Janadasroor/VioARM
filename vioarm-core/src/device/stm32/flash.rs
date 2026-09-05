@@ -153,6 +153,10 @@ impl FlashBehavior {
 }
 
 impl Behavior for FlashBehavior {
+    // Unlock/program/erase complete synchronously; timing is latency math.
+    fn needs_tick() -> bool {
+        false
+    }
     fn on_write(
         &mut self,
         view: &mut Registers<&mut [u32]>,
@@ -419,6 +423,10 @@ impl FlashF4Behavior {
 }
 
 impl Behavior for FlashF4Behavior {
+    // Unlock/program/erase complete synchronously; timing is latency math.
+    fn needs_tick() -> bool {
+        false
+    }
     fn on_write(
         &mut self,
         view: &mut Registers<&mut [u32]>,

@@ -228,6 +228,30 @@ fn bench_attribution(c: &mut Criterion) {
         );
     });
 
+    // In-process A/B of the route index: same binary, same process, the
+    // flag flips per setup, so machine drift cannot fake the delta.
+    for (name, linear) in [("index", false), ("linear", true)] {
+        let bench = format!("bus_h743_route_{name}_1k");
+        g.bench_function(&bench, |b| {
+            b.iter_batched(
+                || {
+                    let mut mem = board::stm32h743();
+                    mem.set_route_force_linear(linear);
+                    mem
+                },
+                |mut mem| {
+                    let mut acc = 0u32;
+                    for i in 0..1000u32 {
+                        acc = acc
+                            .wrapping_add(mem.read_half(0x0800_0000 + i * 2).unwrap_or(0) as u32);
+                    }
+                    black_box(acc)
+                },
+                BatchSize::SmallInput,
+            );
+        });
+    }
+
     // Per-step peripheral time advance on the full board (all device ticks
     // + NVIC latch + mailbox drains, no core).
     g.bench_function("bus_tick_1k", |b| {

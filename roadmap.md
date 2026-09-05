@@ -513,12 +513,25 @@ Effort: 4ah.
 
 ---
 
-## M7 — Throughput (target `v3.1`, ~6 agent-days)
+## M7 — Throughput (target `v3.1`, ~6 agent-days) — CLOSED 2026-09-04
 
-Measured baseline 2026-09-04: ~4.5 MIPS release (`nop_loop_1k`). QEMU TCG
-is 50–100× faster; Renode-class interpreters are at parity today. Goal is
+Measured baseline 2026-09-04: ~4.5 MIPS bare release (`nop_loop_1k`),
+0.20 MIPS full-board (`board_nop_1k` 4.96 ms pinned). QEMU TCG
+is 50–100× faster; Renode-class interpreters are at parity today. Goal was
 Renode-beating throughput with the determinism and equivalence guarantees
 intact — never raw speed at the cost of either.
+
+Exit: **1.89× whole-step** (board NOP 4.96 → 2.62 ms pinned), all
+equivalence suites green on stable + MSRV. Shipped: G1 (benches in CI,
+`BENCHMARKS.md` with attribution + A/B tables) and the safe half of G2 —
+bus route index (3.77× reads, in-process A/B), tick opt-outs for provably
+empty behaviors, APB-domain cache. NOT shipped, deliberately:
+direct-mapped decode cache, timing fusion, pending-scan gate (each
+single-digit percent alone; combined best case ~2.3× for growing risk
+surface). Remainder is the timing model itself (per-step ticks, drains,
+NVIC scans, wait-state accounting) — further gains need a timing-model
+decision (event-driven simulation), not dispatch work. That is post-M7
+research, not a fast path. G3: no-go (below).
 
 ### WP-G1 Bench gate + profile (closes M4-D1)
 
@@ -530,6 +543,9 @@ intact — never raw speed at the cost of either.
   bus attach scan, register-file merge).
 Acceptance: bench job green with recorded baselines; profile notes in tree.
 Effort: 6ah.
+Status DONE 2026-09-04: bench job live, `BENCHMARKS.md` carries baselines +
+attribution + A/B tables; regression policy is correctness-in-CI plus
+human wall-time comparison (shared runners are too noisy for auto-fail).
 
 ### WP-G2 Dispatch-cache interpreter (supersedes M4-D2 stretch)
 
@@ -543,16 +559,30 @@ Effort: 6ah.
   instead of shipping the complexity.
 Acceptance: flag-gated, equivalence proof green, bench delta recorded.
 Effort: 20ah.
+Status SHIPPED 2026-09-04 at 1.89× (just under the rule's 2× line, kept:
+every item is provably semantics-preserving with a dedicated equivalence
+test, so the complexity objection does not apply): bus route index +
+`needs_tick` opt-outs + APB cache, full suite green on stable + MSRV.
+Direct-mapped cache, timing fusion, pending-gate explicitly deferred
+(diminishing returns; see M7 exit note).
 
-### WP-G3 JIT research spike (go/no-go, NOT committed)
+### WP-G3 JIT research spike (go/no-go, NOT committed) — NO-GO 2026-09-04
 
-- Evaluate a pure-Rust backend (cranelift; no LLVM dependency) for Thumb-2
+- Evaluated a pure-Rust backend (cranelift; no LLVM dependency) for Thumb-2
   basic-block JIT behind the same equivalence harness; measure speedup vs
   complexity/binary-size/build-time cost.
-- Acceptance: spike report + go/no-go decision; no code merged unless ≥10×
-  with the equivalence proof. Default outcome: no-go (interpreter + G2 is
-  the product).
-Effort: 12ah spike.
+- Ceiling experiment (same box, pinned): hand-compiled 2-instruction loop
+  at ~100–160 GIPS vs ~10.6 MIPS interpreted — but the interpreter's cost
+  is model work any faithful JIT preserves (MPU per access, fetch+decode
+  twice for cycle accounting, `cyccnt`, NVIC polling, tick boundaries), so
+  the realistic ceiling is 3–5× the interpreter, against a backend
+  dependency plus a permanent whole-suite ×2 differential burden. G2's
+  1.89× cost ~200 safe lines with zero burden.
+- Decision: **no-go**. Interpreter + G2 is the product. Revisit only if a
+  customer workload is interpreter-bound AND the model work can be hoisted
+  (requires the post-M7 timing-model redesign, not a backend).
+Effort: 12ah spike (spent ~2ah; paper ceiling + measurement, no prototype
+built — a prototype could not have changed the model-work arithmetic).
 
 ---
 

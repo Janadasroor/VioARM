@@ -63,6 +63,10 @@ impl Gpio4Behavior {
 }
 
 impl Behavior for Gpio4Behavior {
+    // Pin state is synchronous on ODR/BSRR access.
+    fn needs_tick() -> bool {
+        false
+    }
     fn on_write(
         &mut self,
         view: &mut Registers<&mut [u32]>,

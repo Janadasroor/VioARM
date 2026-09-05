@@ -223,6 +223,16 @@ pub trait Behavior: Send {
     /// prescaler phases, analog settle delays).
     fn tick(&mut self, _view: &mut Registers<&mut [u32]>, _delta: u64) {}
 
+    /// Whether `tick` can do anything. The default stays `true` (safe: an
+    /// unknown behavior keeps ticking); behaviors with a provably empty
+    /// `tick` override this to `false` so the bus skips the dispatch, the
+    /// view construction, and the call entirely. If you add tick logic to
+    /// such a behavior, flip this back — the full test suite is the
+    /// backstop, not the compiler.
+    fn needs_tick() -> bool {
+        true
+    }
+
     /// Interrupt lines latched pending right now.
     fn pending(&self, _view: &Registers<&[u32]>) -> u32 {
         0
@@ -254,7 +264,12 @@ pub trait Behavior: Send {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NoBehavior;
 
-impl Behavior for NoBehavior {}
+impl Behavior for NoBehavior {
+    // Pure latch: no counters, no phases, nothing time-driven.
+    fn needs_tick() -> bool {
+        false
+    }
+}
 
 /// A byte-addressable peripheral driven entirely by a [`PeripheralDef`].
 ///
@@ -356,6 +371,9 @@ impl<B: Behavior> Peripheral for RegisterFile<B> {
     }
 
     fn tick(&mut self, delta: u64) {
+        if !B::needs_tick() {
+            return;
+        }
         let mut view = Registers::new(self.def, &mut self.regs[..]);
         self.behavior.tick(&mut view, delta);
     }

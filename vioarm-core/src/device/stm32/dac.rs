@@ -75,6 +75,10 @@ impl DacBehavior {
 }
 
 impl Behavior for DacBehavior {
+    // Triggers convert synchronously (SWTRIGR/TIM edge); nothing free-runs.
+    fn needs_tick() -> bool {
+        false
+    }
     fn on_write(
         &mut self,
         view: &mut Registers<&mut [u32]>,

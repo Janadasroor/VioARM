@@ -10,6 +10,10 @@ use crate::mem::bus::Region;
 struct HsemBehavior;
 
 impl Behavior for HsemBehavior {
+    // Hardware semaphores; lock state changes only on register writes.
+    fn needs_tick() -> bool {
+        false
+    }
     fn on_write(
         &mut self,
         view: &mut Registers<&mut [u32]>,

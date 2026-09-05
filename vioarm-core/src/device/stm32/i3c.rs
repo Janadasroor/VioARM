@@ -10,6 +10,10 @@ struct I3cBehavior {
 }
 
 impl Behavior for I3cBehavior {
+    // Latch-only controller window; no modeled bus timing.
+    fn needs_tick() -> bool {
+        false
+    }
     fn on_write(
         &mut self,
         view: &mut Registers<&mut [u32]>,

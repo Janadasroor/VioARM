@@ -9,7 +9,12 @@ use crate::mem::bus::Region;
 
 #[derive(Debug, Default)]
 struct BkpBehavior;
-impl Behavior for BkpBehavior {}
+impl Behavior for BkpBehavior {
+    // BKP domain registers; all effects synchronous on access.
+    fn needs_tick() -> bool {
+        false
+    }
+}
 
 #[derive(Debug)]
 pub struct Bkp {

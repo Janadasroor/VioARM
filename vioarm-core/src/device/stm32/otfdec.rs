@@ -10,6 +10,10 @@ struct OtfdecBehavior {
 }
 
 impl Behavior for OtfdecBehavior {
+    // Decrypt-on-read is synchronous; the empty tick is removed.
+    fn needs_tick() -> bool {
+        false
+    }
     fn on_write(
         &mut self,
         view: &mut Registers<&mut [u32]>,
@@ -24,7 +28,6 @@ impl Behavior for OtfdecBehavior {
         }
         word
     }
-    fn tick(&mut self, _view: &mut Registers<&mut [u32]>, _delta: u64) {}
 }
 
 #[derive(Debug)]

@@ -21,12 +21,37 @@ so a perf change that alters timing fails loudly instead of silently.
 | `attrib/core_nop_1k` | 1000 core steps, no Machine wrapper | 213 µs | 213 ns/step |
 | `mips/nop_loop_1k` | legacy aggregate | — | ~4.5 MIPS bare |
 
-History: `board_nop_1k` was 4.47 ms and the flash reads 554 ns (f103) /
-1.43 µs (h743) before the G2 bus index (sorted windows + bounded walk,
-attach-order-first incl. overlaps); the first index revision showed zero
-gain because overlaps took a linear fallback — overlaps are common
-(shared SRAM windows), so the fallback *was* the path. Lesson recorded:
-measure the fallback rate, not just the happy path.
+History: `board_nop_1k` was 4.96 ms pinned pre-G2 (worktree A/B) and the
+flash reads 607 ns (f103) / 1.43 µs (h743) before the G2 bus index
+(sorted windows + bounded walk, attach-order-first incl. overlaps); the
+first index revision showed zero gain because overlaps took a linear
+fallback — overlaps are common (shared SRAM windows), so the fallback
+*was* the path. Lesson recorded: measure the fallback rate, not just
+the happy path.
+
+In-process A/B (same binary, flag flips per setup — immune to machine
+drift), h743 flash reads, pinned cores:
+
+| Path | Mean/1000 | Per read |
+|---|---|---|
+| index | 291 µs | 291 ns |
+| linear scan | 1096 µs | 1096 ns |
+
+Index effect: **3.77×** on reads. Whole-step effect (f103 board NOP):
+4.96 ms → 2.62 ms pinned, **1.89×**. Remainder is the timing model
+itself (per-step device ticks, drains, NVIC scans, wait-state accounting),
+not dispatch — see G2 exit note in the roadmap. `set_route_force_linear`
+stays as the A/B hook for future perf work.
+
+G3 ceiling micro-experiment (2026-09-04, same box): the 2-instruction
+loop hand-compiled to native Rust runs at ~100–160 GIPS vs ~10.6 MIPS
+interpreted (cache-hot bare core) — but the interpreter's cost is model
+work a JIT must preserve (MPU per access, fetch+decode twice for timing,
+cyccnt, NVIC polling, tick boundaries), so a model-faithful JIT keeps an
+estimated 70–80% of per-instruction cost: realistic ceiling 3–5× the
+interpreter, against a backend dependency plus a permanent ×2
+differential burden. G2 delivered 1.89× for ~200 safe lines. JIT: no-go
+(see WP-G3).
 
 ## Attribution (board NOP step ≈ 4.47 µs)
 

@@ -12,6 +12,10 @@ use crate::mem::bus::Region;
 #[derive(Debug, Default)]
 struct PwrBehavior;
 impl Behavior for PwrBehavior {
+    // Power control latches; no time-driven state.
+    fn needs_tick() -> bool {
+        false
+    }
     fn on_write(
         &mut self,
         view: &mut Registers<&mut [u32]>,

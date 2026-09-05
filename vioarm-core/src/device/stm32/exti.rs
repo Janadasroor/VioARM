@@ -31,6 +31,10 @@ struct ExtiBehavior {
 }
 
 impl Behavior for ExtiBehavior {
+    // Edge detection is synchronous on GPIO writes.
+    fn needs_tick() -> bool {
+        false
+    }
     fn on_write(
         &mut self,
         view: &mut Registers<&mut [u32]>,
