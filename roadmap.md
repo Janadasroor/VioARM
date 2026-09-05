@@ -769,9 +769,11 @@ Effort: 16ah.
   toolchain-free + `ROBOT_KEYWORDS.md`), CI `pytest` job (ubuntu, gcc,
   debug CLI, 4 green). Determinism needs no checkpoints (study note
   holds); `--patch` is the mutation stand-in, proven in Rust tests and
-  CLI e2e. Incidental find: the `packs/STM32F4xx_CMSIS` include path
-  older Rust firmware tests reference no longer exists in-tree (those
-  tests skip vacuously); the harness uses `ARM.CMSIS` instead.
+  CLI e2e. Incidental find, since fixed everywhere: the
+  `packs/STM32F4xx_CMSIS` include path older Rust firmware tests reference
+  no longer exists in-tree (those tests skipped vacuously); everything now
+  uses `ARM.CMSIS` (+ Keil F4 device headers), un-skipping 20 firmware
+  tests and exposing 6 latent defects, all fixed (see CHANGELOG).
   `690` lib + `4` pytest green, workspace clean.
 Effort: 10ah.
 - External prior art 2026-09-05: event-sourced replay logs instruction

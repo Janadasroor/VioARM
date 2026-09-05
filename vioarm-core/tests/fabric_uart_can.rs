@@ -54,7 +54,9 @@ fn build_firmware(source: &str) -> Option<(Vec<u8>, HashMap<String, u32>)> {
     let nm = which("arm-none-eabi-nm").or_else(|| which("nm"))?;
     let mf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let f1 = mf.join("../packs/Keil.STM32F1xx_DFP/Device/Include");
-    let core = mf.join("../packs/STM32F4xx_CMSIS/CMSIS/Core/Include");
+    // NOTE: the `STM32F4xx_CMSIS` path older tests reference no longer
+    // exists in-tree; the ARM CMSIS pack carries the same `core_cm3.h`.
+    let core = mf.join("../packs/ARM.CMSIS/CMSIS/Core/Include");
     if !f1.is_dir() || !core.is_dir() {
         eprintln!("skipping fabric uart test: pack includes not found");
         return None;

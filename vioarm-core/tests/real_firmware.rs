@@ -739,7 +739,7 @@ fn run_stm32_firmware(
         STM32_F103_FIRMWARE,
         &[
             "../packs/Keil.STM32F1xx_DFP/Device/Include",
-            "../packs/STM32F4xx_CMSIS/CMSIS/Core/Include",
+            "../packs/ARM.CMSIS/CMSIS/Core/Include",
         ],
     )
 }
@@ -918,8 +918,8 @@ fn stm32f407_firmware_uses_real_peripherals() {
         board::stm32f407,
         STM32_F407_FIRMWARE,
         &[
-            "../packs/STM32F4xx_CMSIS/Device/Include",
-            "../packs/STM32F4xx_CMSIS/CMSIS/Core/Include",
+            "../packs/Keil.STM32F4xx_DFP/Drivers/CMSIS/Device/ST/STM32F4xx/Include",
+            "../packs/ARM.CMSIS/CMSIS/Core/Include",
         ],
     ) else {
         return; // skipped
@@ -976,7 +976,7 @@ void reset(void) {
 fn run_adc_firmware() -> Option<(u32, u32)> {
     let includes = [
         "../packs/Keil.STM32F1xx_DFP/Device/Include",
-        "../packs/STM32F4xx_CMSIS/CMSIS/Core/Include",
+        "../packs/ARM.CMSIS/CMSIS/Core/Include",
     ];
     let mut include_paths = Vec::new();
     for rel in includes {
@@ -1088,7 +1088,7 @@ void reset(void) {
 fn run_spi_firmware() -> Option<(u32, u32)> {
     let includes = [
         "../packs/Keil.STM32F1xx_DFP/Device/Include",
-        "../packs/STM32F4xx_CMSIS/CMSIS/Core/Include",
+        "../packs/ARM.CMSIS/CMSIS/Core/Include",
     ];
     let mut include_paths = Vec::new();
     for rel in includes {
@@ -1230,7 +1230,7 @@ void reset(void) {
 fn run_i2c_firmware() -> Option<(u32, u32, u32)> {
     let includes = [
         "../packs/Keil.STM32F1xx_DFP/Device/Include",
-        "../packs/STM32F4xx_CMSIS/CMSIS/Core/Include",
+        "../packs/ARM.CMSIS/CMSIS/Core/Include",
     ];
     let mut include_paths = Vec::new();
     for rel in includes {
@@ -1356,7 +1356,7 @@ void reset(void) {
 fn run_usart2_firmware() -> Option<(u32, u32, Vec<u8>)> {
     let includes = [
         "../packs/Keil.STM32F1xx_DFP/Device/Include",
-        "../packs/STM32F4xx_CMSIS/CMSIS/Core/Include",
+        "../packs/ARM.CMSIS/CMSIS/Core/Include",
     ];
     let mut include_paths = Vec::new();
     for rel in includes {
@@ -1465,7 +1465,7 @@ void reset(void) {
 fn run_tim6_firmware() -> Option<(u32, u32)> {
     let includes = [
         "../packs/Keil.STM32F1xx_DFP/Device/Include",
-        "../packs/STM32F4xx_CMSIS/CMSIS/Core/Include",
+        "../packs/ARM.CMSIS/CMSIS/Core/Include",
     ];
     let mut include_paths = Vec::new();
     for rel in includes {
@@ -1499,15 +1499,17 @@ fn run_tim6_firmware() -> Option<(u32, u32)> {
         .expect("no TIM6_IRQHandler symbol");
     assert!(!code.is_empty(), "compiled .text must not be empty");
 
+    // Code lives at 0x200: vector 70 (0x118) would overwrite the ISR
+    // inside a CODE_BASE image (latent harness/code-layout collision).
+    const BASE: u32 = 0x200;
     let mut m = Machine::new(board::stm32f103());
-    m.load_image(&load_flat(CODE_BASE, &code));
+    m.load_image(&load_flat(BASE, &code));
     {
         let mem = m.core.mem();
         mem.write_word(FLASH, INIT_SP).unwrap();
-        mem.write_word(FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+        mem.write_word(FLASH + 4, (BASE + entry) | 1).unwrap();
         // Vector 70 = TIM6 IRQ 54 at FLASH + 70 * 4.
-        mem.write_word(FLASH + 70 * 4, (CODE_BASE + irq) | 1)
-            .unwrap();
+        mem.write_word(FLASH + 70 * 4, (BASE + irq) | 1).unwrap();
     }
     m.reset().expect("reset from vector table");
     let err = m.run(200_000);
@@ -1535,8 +1537,8 @@ fn stm32f103_firmware_counts_with_tim6() {
 /// `.text` and symbol map, or `None` if the toolchain or pack is missing.
 fn build_f4_firmware(firmware: &str) -> Option<(Vec<u8>, std::collections::HashMap<String, u32>)> {
     let includes = [
-        "../packs/STM32F4xx_CMSIS/Device/Include",
-        "../packs/STM32F4xx_CMSIS/CMSIS/Core/Include",
+        "../packs/Keil.STM32F4xx_DFP/Drivers/CMSIS/Device/ST/STM32F4xx/Include",
+        "../packs/ARM.CMSIS/CMSIS/Core/Include",
     ];
     let mut include_paths = Vec::new();
     for rel in includes {
@@ -1748,12 +1750,12 @@ const STM32_F407_CCM_FIRMWARE: &str = r"
 #define RESULT_ADDR 0x20000000u
 
 void reset(void) {
-    *(volatile unsigned *)0x10000000u = 0xCCM1u;
-    *(volatile unsigned *)0x1000FFF8u = 0xCCM2u;
+    *(volatile unsigned *)0x10000000u = 0xCC11u;
+    *(volatile unsigned *)0x1000FFF8u = 0xCC22u;
     unsigned a = *(volatile unsigned *)0x10000000u;
     unsigned b = *(volatile unsigned *)0x1000FFF8u;
     *(volatile unsigned *)RESULT_ADDR =
-        (a == 0xCCM1u && b == 0xCCM2u) ? 1u : 0u;
+        (a == 0xCC11u && b == 0xCC22u) ? 1u : 0u;
     *(volatile unsigned *)0x10010000u = 0xBADu; /* unmapped: faults */
 }
 ";
@@ -1845,7 +1847,7 @@ void reset(void) {
 fn stm32f103_flash_programming_is_gated_and_lands() {
     let includes = [
         "../packs/Keil.STM32F1xx_DFP/Device/Include",
-        "../packs/STM32F4xx_CMSIS/CMSIS/Core/Include",
+        "../packs/ARM.CMSIS/CMSIS/Core/Include",
     ];
     let mut include_paths = Vec::new();
     for rel in includes {
@@ -1998,7 +2000,7 @@ fn build_f1_dma_firmware(
 ) -> Option<(Vec<u8>, std::collections::HashMap<String, u32>)> {
     let includes = [
         "../packs/Keil.STM32F1xx_DFP/Device/Include",
-        "../packs/STM32F4xx_CMSIS/CMSIS/Core/Include",
+        "../packs/ARM.CMSIS/CMSIS/Core/Include",
     ];
     let mut include_paths = Vec::new();
     for rel in includes {
@@ -2049,11 +2051,13 @@ void DMA1_Channel4_IRQHandler(void) {
 }
 
 void reset(void) {
-    /* 1. Fill the transmit buffer. */
+    /* 1. Fill the transmit buffer (character immediates only: string
+          literals would land in `.rodata`, which the harness does not
+          load, collapsing the length count to zero). */
     volatile unsigned char *tx = (volatile unsigned char *)TX_ADDR;
-    const unsigned char msg[] = "dma ok!\n";
-    unsigned len = 0;
-    while (msg[len] != 0) { tx[len] = msg[len]; ++len; }
+    tx[0] = 'd'; tx[1] = 'm'; tx[2] = 'a'; tx[3] = ' ';
+    tx[4] = 'o'; tx[5] = 'k'; tx[6] = '!'; tx[7] = '\n';
+    unsigned len = 8;
 
     /* 2. Enable clocks (gating is not enforced; kept for realism). */
     RCC->APB2ENR |= RCC_APB2ENR_IOPAEN | RCC_APB2ENR_USART1EN;
@@ -2098,15 +2102,17 @@ fn stm32f103_dma_transmits_usart1_via_peripheral_request() {
         .expect("no DMA1_Channel4_IRQHandler symbol");
     assert!(!code.is_empty(), "compiled .text must not be empty");
 
+    // Code lives at 0x200: vector 30 (0x78) would overwrite the ISR
+    // inside a CODE_BASE image (latent harness/code-layout collision).
+    const BASE: u32 = 0x200;
     let mut m = Machine::new(board::stm32f103());
-    m.load_image(&load_flat(CODE_BASE, &code));
+    m.load_image(&load_flat(BASE, &code));
     {
         let mem = m.core.mem();
         mem.write_word(FLASH, INIT_SP).unwrap();
-        mem.write_word(FLASH + 4, (CODE_BASE + entry) | 1).unwrap();
+        mem.write_word(FLASH + 4, (BASE + entry) | 1).unwrap();
         // Vector 30 = DMA1_Channel4 IRQ 14 at FLASH + 30 * 4.
-        mem.write_word(FLASH + 30 * 4, (CODE_BASE + irq) | 1)
-            .unwrap();
+        mem.write_word(FLASH + 30 * 4, (BASE + irq) | 1).unwrap();
     }
     m.reset().expect("reset from vector table");
     let err = m.run(100_000);
@@ -2450,7 +2456,7 @@ void reset(void) {
     CAN1->MCR = 0u;                     /* leave initialization mode */
     while (CAN1->MSR & CAN_MSR_INAK) { }
     CAN1->IER = CAN_IER_FMPIE0;
-    NVIC->ISER[0] = 1u << USB_LP_CAN1_RX0_IRQn;
+    NVIC->ISER[0] = 1u << CAN1_RX0_IRQn; /* CL header name for IRQ 20 */
     while (!RX_D0) { }                  /* wait for the incoming frame */
     CAN1->sTxMailBox[0].TDLR = 0x5Au;
     CAN1->sTxMailBox[0].TDTR = 1u;
@@ -2467,7 +2473,7 @@ void reset(void) {
 fn run_can_firmware() -> Option<(u32, u32, u32, u32, Vec<u8>)> {
     let includes = [
         "../packs/Keil.STM32F1xx_DFP/Device/Include",
-        "../packs/STM32F4xx_CMSIS/CMSIS/Core/Include",
+        "../packs/ARM.CMSIS/CMSIS/Core/Include",
     ];
     let mut include_paths = Vec::new();
     for rel in includes {
@@ -2512,6 +2518,11 @@ fn run_can_firmware() -> Option<(u32, u32, u32, u32, Vec<u8>)> {
             .unwrap();
     }
     m.reset().expect("reset from vector table");
+    // Phase 1: let the firmware leave init mode first — entering init
+    // flushes the RX FIFOs, so stimulus injected before setup would be
+    // discarded (same phased pattern as the USB test).
+    let err = m.run(20_000);
+    assert_eq!(err, Err(HaltCause::CycleBudgetExhausted));
     // Host stimulus: a standard frame, id 0x123, DLC 3, bytes AA BB CC.
     let mut frame = [0u8; 16];
     frame[0..4].copy_from_slice(&0x123u32.to_le_bytes());
@@ -2663,7 +2674,7 @@ void reset(void) {
 fn run_usb_firmware() -> Option<(u32, u32, u32, u32, Vec<u8>)> {
     let includes = [
         "../packs/Keil.STM32F1xx_DFP/Device/Include",
-        "../packs/STM32F4xx_CMSIS/CMSIS/Core/Include",
+        "../packs/ARM.CMSIS/CMSIS/Core/Include",
     ];
     let mut include_paths = Vec::new();
     for rel in includes {
@@ -2820,7 +2831,11 @@ void reset(void) {
     ETH->DMASR = 0xFFFFFFFFu;
     ETH->DMAIER = ETH_DMAIER_NISE | ETH_DMAIER_RIE | ETH_DMAIER_TIE;
 
-    /* 4. Receiver and transmitter on, DMA RX and TX started. */
+    /* 4. Unicast station address matching the injected frame's
+          destination (02:00:00:00:00:01, locally administered), then
+          receiver and transmitter on, DMA RX and TX started. */
+    ETH->MACA0HR = 0x0100u;
+    ETH->MACA0LR = 0x00000002u;
     ETH->MACCR = ETH_MACCR_RE | ETH_MACCR_TE;
     ETH->DMAOMR = ETH_DMAOMR_SR | ETH_DMAOMR_ST;
 
@@ -2856,7 +2871,7 @@ void reset(void) {
 fn run_eth_firmware() -> Option<(u32, u32, u32, u32, Vec<u8>)> {
     let includes = [
         "../packs/Keil.STM32F1xx_DFP/Device/Include",
-        "../packs/STM32F4xx_CMSIS/CMSIS/Core/Include",
+        "../packs/ARM.CMSIS/CMSIS/Core/Include",
     ];
     let mut include_paths = Vec::new();
     for rel in includes {
@@ -2903,8 +2918,9 @@ fn run_eth_firmware() -> Option<(u32, u32, u32, u32, Vec<u8>)> {
             .unwrap();
     }
     m.reset().expect("reset from vector table");
-    // Host stimulus: a 6-byte frame on the channel (opcode 0x01, len 6).
-    for byte in [0x01u8, 6, 0, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46] {
+    // Host stimulus: a 6-byte frame on the channel (opcode 0x01, len 6),
+    // unicast to the programmed station address.
+    for byte in [0x01u8, 6, 0, 0x02, 0x00, 0x00, 0x00, 0x00, 0x01] {
         for device in m.core.mem().devices_mut() {
             device.drive_inputs(u32::from(byte));
         }
@@ -2932,11 +2948,11 @@ fn stm32f107_firmware_talks_ethernet() {
     };
     assert_eq!(rx_done, 1, "the RX interrupt fired");
     assert_eq!(tx_done, 1, "the TX interrupt fired");
-    // The injected frame bytes 0x41..0x46 landed in the RX buffer.
-    assert_eq!(rx_w0, 0x4443_4241, "first received word");
-    assert_eq!(rx_w1, 0x0000_4645, "second received word");
+    // The injected frame bytes landed in the RX buffer.
+    assert_eq!(rx_w0, 0x0000_0002, "first received word");
+    assert_eq!(rx_w1, 0x0000_0100, "second received word");
     // The echoed frame reached the host channel: EVT_TX, length 6, the bytes.
-    let expected: &[u8] = &[0x80, 6, 0, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46];
+    let expected: &[u8] = &[0x80, 6, 0, 0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
     assert_eq!(tx, expected, "the echoed frame reached the host");
 }
 
