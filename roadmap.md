@@ -752,7 +752,12 @@ Effort: 14ah.
   never drains — pair wiring needs slave TX capture first). Lockstep is
   instruction-step granularity (own `cyccnt` per machine), documented.
   `686` lib + `4` fabric e2e green, workspace clean.
-Effort: 16ah.
+- Follow-up shipped (2026-09-06): SPI slave capture + `link_spi` pair
+  wire (`spi.rs` slave DR-write staging for drain, slave `drive_inputs`
+  landing frames with `RXNE`; one-round pipeline delay, `SSM`
+  recommended). `tests/fabric_spi_pair.rs` (real CMSIS master/slave
+  firmware, both directions + determinism). I2 wire set complete.
+Effort: 16ah + 4ah.
 
 ### WP-I3 Framework integration — DONE (2026-09-06)
 

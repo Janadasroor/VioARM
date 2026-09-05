@@ -56,6 +56,19 @@ pub struct RadioBus {
     pub members: Vec<Endpoint>,
 }
 
+/// An SPI controller/peripheral pair: the controller's shifted-out bytes
+/// become the peripheral's received frames, and the peripheral's staged
+/// bytes become the controller's next MISO bytes. One lockstep round of
+/// pipeline delay (documented): bytes staged this round are consumed next
+/// round, so firmware paces on `RXNE`/`TXE` exactly like on silicon.
+#[derive(Clone, Debug)]
+pub struct SpiPair {
+    /// Controller endpoint (master mode).
+    pub controller: Endpoint,
+    /// Peripheral endpoint (slave mode: `SPE` without `MSTR`).
+    pub peripheral: Endpoint,
+}
+
 /// `Fabric::step` outcomes, one per machine in index order: `Ok` for a
 /// retired step, `Err` with the halt cause (a halted machine keeps
 /// reporting its cause; stepping it again is harmless).
@@ -67,6 +80,7 @@ pub struct Fabric<M: PeripheralBus> {
     uart_links: Vec<UartLink>,
     can_buses: Vec<CanBus>,
     radio_buses: Vec<RadioBus>,
+    spi_pairs: Vec<SpiPair>,
 }
 
 impl<M: PeripheralBus> Fabric<M> {
@@ -78,6 +92,7 @@ impl<M: PeripheralBus> Fabric<M> {
             uart_links: Vec::new(),
             can_buses: Vec::new(),
             radio_buses: Vec::new(),
+            spi_pairs: Vec::new(),
         }
     }
     pub fn add(&mut self, machine: Machine<M>) -> usize {
@@ -137,6 +152,40 @@ impl<M: PeripheralBus> Fabric<M> {
         });
     }
 
+    /// Pair an SPI controller with a peripheral. The controller side runs
+    /// master mode, the peripheral side slave mode (`SPE` without `MSTR`,
+    /// `SSM` recommended to dodge mode faults).
+    pub fn link_spi(
+        &mut self,
+        controller: usize,
+        controller_dev: &str,
+        peripheral: usize,
+        peripheral_dev: &str,
+    ) {
+        self.spi_pairs.push(SpiPair {
+            controller: Endpoint {
+                machine: controller,
+                device: controller_dev.to_owned(),
+            },
+            peripheral: Endpoint {
+                machine: peripheral,
+                device: peripheral_dev.to_owned(),
+            },
+        });
+    }
+
+    /// Move SPI bytes across every pair: controller MOSI becomes peripheral
+    /// frames, peripheral staged bytes become controller MISO staging.
+    fn pump_spi(&mut self) {
+        for i in 0..self.spi_pairs.len() {
+            let pair = self.spi_pairs[i].clone();
+            // Controller frames land on the peripheral as received frames.
+            Self::move_bytes(&mut self.machines, &pair.controller, &pair.peripheral);
+            // Peripheral staged bytes become the controller's next MISO.
+            Self::move_bytes(&mut self.machines, &pair.peripheral, &pair.controller);
+        }
+    }
+
     /// One lockstep round: step every machine in index order, then pump
     /// every wire in attach order.
     pub fn step(&mut self) -> StepOutcomes {
@@ -147,6 +196,7 @@ impl<M: PeripheralBus> Fabric<M> {
         self.pump_uart();
         self.pump_can();
         self.pump_radio();
+        self.pump_spi();
         outcomes
     }
 

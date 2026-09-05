@@ -189,6 +189,16 @@ impl Behavior for SpiBehavior {
             // shift register; SPI frames do not start.
             let i2s = view.try_get(I2SCFGR).is_some_and(|w| w & I2SMOD != 0);
             let word = view.merged(DR, val, shift);
+            // Slave mode (enabled, not master): the byte stages for the
+            // pair wire — the fabric drains it as this side's MISO toward
+            // the controller. Lane-gated like frame start (8-bit firmware
+            // writes bytes or halfwords; only the frame lane stages).
+            // `TXE`/`RXNE` are untouched: transmission is paced by the
+            // controller's clocks, reception flags below.
+            if !i2s && cr1 & (SPE | MSTR) == SPE && shift == Self::frame_lane(cr1) {
+                self.mosi.push(val);
+                return word;
+            }
             // A frame starts only in master mode with the peripheral enabled,
             // not in I2S audio mode, and with the transmit buffer empty;
             // writes while busy are dropped.
@@ -308,11 +318,20 @@ impl Behavior for SpiBehavior {
         self.crc_send_pending = false;
     }
 
-    fn drive_inputs(&mut self, _view: &mut Registers<&mut [u32]>, value: u32) {
-        // The low byte is the slave's response on the next frame; bit 8 set
-        // pulls hardware NSS low (undriven inputs idle high).
-        self.rx_byte = (value & 0xFF) as u8;
+    fn drive_inputs(&mut self, view: &mut Registers<&mut [u32]>, value: u32) {
+        // Bit 8 set pulls hardware NSS low (undriven inputs idle high).
         self.nss_asserted = value & (1 << 8) != 0;
+        let cr1 = view.get(CR1);
+        if cr1 & (SPE | MSTR) == SPE {
+            // Slave mode: the byte is an incoming controller frame — store
+            // it and flag it, exactly like a completed shift would.
+            view.set(DR, value & 0xFF);
+            view.set(SR, view.get(SR) | RXNE);
+        } else {
+            // Master (or disabled): the low byte is the slave's response
+            // on the next frame.
+            self.rx_byte = (value & 0xFF) as u8;
+        }
     }
 
     fn drain_output(&mut self) -> Vec<u8> {
@@ -602,6 +621,42 @@ mod tests {
         assert_eq!(read_word(&mut spi, SR) & RXNE, 0);
         assert_eq!(read_word(&mut spi, SR) & TXE, TXE); // SVD reset value
         assert_eq!(spi.drain_output(), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn slave_dr_write_stages_for_drain() {
+        let mut spi = Spi::spi1();
+        write_word(&mut spi, CR1, SPE | SSM);
+        // Slave mode: DR writes stage MISO bytes for the pair wire without
+        // starting frames or touching TXE/RXNE.
+        write_word(&mut spi, DR, 0xA0);
+        write_word(&mut spi, DR, 0xA1);
+        assert_eq!(read_word(&mut spi, SR) & RXNE, 0);
+        assert_eq!(spi.drain_output(), [0xA0, 0xA1]);
+        assert!(spi.drain_output().is_empty());
+    }
+
+    #[test]
+    fn slave_drive_inputs_lands_a_frame() {
+        let mut spi = Spi::spi1();
+        write_word(&mut spi, CR1, SPE | SSM);
+        // In slave mode a driven byte is an incoming controller frame.
+        spi.drive_inputs(0x5A);
+        assert_eq!(read_word(&mut spi, SR) & RXNE, RXNE);
+        assert_eq!(read_word(&mut spi, DR) & 0xFF, 0x5A);
+        assert_eq!(read_word(&mut spi, SR) & RXNE, 0, "DR read clears RXNE");
+    }
+
+    #[test]
+    fn master_drive_inputs_still_stages_miso() {
+        // Disabled (neither master frame engine nor slave path): the byte
+        // stages as the next MISO response, as before.
+        let mut spi = Spi::spi1();
+        spi.drive_inputs(0xAB);
+        write_word(&mut spi, CR1, SPE | MSTR);
+        write_word(&mut spi, DR, 0x55);
+        spi.tick(16);
+        assert_eq!(read_word(&mut spi, DR), 0xAB);
     }
 
     #[test]
