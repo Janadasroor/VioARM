@@ -11,6 +11,7 @@
 //! touching a peripheral) behaves identically to silicon.
 
 pub mod adc;
+pub mod aes;
 pub mod afio;
 pub mod bkp;
 pub mod can;
@@ -29,6 +30,7 @@ pub mod flash;
 pub mod fmc;
 pub mod gpio;
 pub mod gpio_f4;
+pub mod hash;
 pub mod hsem;
 pub mod i2c;
 pub mod i3c;

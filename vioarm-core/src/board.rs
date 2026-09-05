@@ -15,6 +15,7 @@
 use crate::device::dwt::Dwt;
 use crate::device::gpio::Gpio;
 use crate::device::stm32::adc::{Adc, AdcCommon, AdcCommonState};
+use crate::device::stm32::aes::Aes;
 use crate::device::stm32::afio::Afio;
 use crate::device::stm32::bkp::Bkp;
 use crate::device::stm32::can::Can;
@@ -32,6 +33,7 @@ use crate::device::stm32::fmc::{
 };
 use crate::device::stm32::gpio::Gpio as StmGpio;
 use crate::device::stm32::gpio_f4::GpioF4;
+use crate::device::stm32::hash::Hash;
 use crate::device::stm32::i2c::I2c;
 use crate::device::stm32::pwr::Pwr;
 use crate::device::stm32::rcc::{ClockState, Rcc};
@@ -1085,6 +1087,11 @@ fn g0_full_board<L: crate::device::svd::Device>(
     if live_b("RNG") {
         mem.attach(Box::new(Rng::new_for::<B>()));
     }
+    // AES behavior where the donor tables carry it (G081/G0C1 128/256-bit;
+    // G070/G071/G0B1 skip it via `skip`); G041 has no tables (see below).
+    if live_l("AES") {
+        mem.attach(Box::new(Aes::new_for::<L>()));
+    }
     if live_b("HDMI_CEC") {
         mem.attach(Box::new(Cec::new_for::<B>()));
     }
@@ -1284,6 +1291,11 @@ fn m33_full_board<D: crate::device::svd::Device>(
     }
     if live("WWDG") {
         mem.attach(Box::new(Wwdg::for_device::<D>(watchdog)));
+    }
+    // HASH behavior where the tables describe the supported generation
+    // (U5/L5 via the layout probe; H5/WBA stay latches).
+    if let Some(hash) = Hash::new_for_opt::<D>() {
+        mem.attach(Box::new(hash));
     }
     for p in latch {
         if p.base >= 0xE000_0000 || skip.contains(&p.name) {
@@ -3316,12 +3328,19 @@ pub const STM32_G041_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
 pub fn stm32g041() -> BoardMemory {
     // G041 (M0+) on G031 tables; AES/RNG windows absent there.
-    g0_full_board::<crate::device::svd::stm32g031::Stm32g031>(
+    let mut mem = g0_full_board::<crate::device::svd::stm32g031::Stm32g031>(
         STM32_G041_FLASH_LEN,
         STM32_G041_RAM_LEN,
         &[],
         crate::device::svd::stm32g031::PERIPHERALS,
-    )
+    );
+    if matches!(mem.read(0x4002_6000), Err(crate::error::BusError::Reserved)) {
+        mem.attach(Box::new(Aes::new_g0()));
+    }
+    if matches!(mem.read(0x4002_5000), Err(crate::error::BusError::Reserved)) {
+        mem.attach(Box::new(Rng::new_g0()));
+    }
+    mem
 }
 pub const STM32_L010_FLASH_LEN: u32 = 0x0000_4000;
 pub const STM32_L010_RAM_LEN: u32 = 0x0000_0800;
@@ -3558,12 +3577,19 @@ pub const STM32_U585_RAM_LEN: u32 = 0x000C_0000;
 #[must_use]
 pub fn stm32u585() -> BoardMemory {
     // U585 (M33) on U575 tables; AES/SAES windows absent there.
-    m33_full_board::<crate::device::svd::stm32u575::Stm32u575>(
+    let mut mem = m33_full_board::<crate::device::svd::stm32u575::Stm32u575>(
         STM32_U585_FLASH_LEN,
         STM32_U585_RAM_LEN,
         &[],
         crate::device::svd::stm32u575::PERIPHERALS,
-    )
+    );
+    if matches!(mem.read(0x420C_0000), Err(crate::error::BusError::Reserved)) {
+        mem.attach(Box::new(Aes::new_u5_aes()));
+    }
+    if matches!(mem.read(0x420C_0C00), Err(crate::error::BusError::Reserved)) {
+        mem.attach(Box::new(Aes::new_u5_saes()));
+    }
+    mem
 }
 pub const STM32_F205_FLASH_LEN: u32 = 0x0002_0000;
 pub const STM32_F205_RAM_LEN: u32 = 0x0001_0000;
@@ -6548,6 +6574,9 @@ pub fn stm32l476() -> BoardMemory {
     }
     if <Stm32l476 as crate::device::svd::Device>::peripheral("WWDG").is_some() {
         mem.attach(Box::new(Wwdg::for_device::<Stm32l476>(watchdog)));
+    }
+    if <Stm32l476 as crate::device::svd::Device>::peripheral("AES").is_some() {
+        mem.attach(Box::new(Aes::new_for::<Stm32l476>()));
     }
     for p in crate::device::svd::stm32l476::PERIPHERALS {
         if p.base >= 0xE000_0000 {

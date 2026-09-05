@@ -1,7 +1,9 @@
 //! RNG `0x48021800` (H7) / `0x50061800` (F4) — random number generator.
 //! `CR.RNGEN@2` enable, `SR.DRDY@0` latches 1-tick with `DR` random, `SR.CECS@1` etc latch.
 
-use crate::device::svd::{Behavior, Device, RegisterFile, Registers};
+use crate::device::svd::{
+    Access, Behavior, Device, PeripheralDef, RegisterDef, RegisterFile, Registers,
+};
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
 use crate::mem::bus::Region;
@@ -121,6 +123,43 @@ impl Rng {
         Self {
             inner: RegisterFile::new(
                 def,
+                RngBehavior {
+                    lfsr: 0x12345678,
+                    pending: false,
+                },
+            ),
+        }
+    }
+
+    /// Manual G0 RNG at `0x4002_5000` (`CR`/`SR`/`DR`) when SVD lacks the
+    /// entry (`G041`). No IRQ in the tables, matching the donor window.
+    #[must_use]
+    pub fn new_g0() -> Self {
+        const fn reg(name: &'static str, offset: u32, access: Access) -> RegisterDef {
+            RegisterDef {
+                name,
+                offset,
+                width: 32,
+                access,
+                reset: 0,
+                fields: &[],
+            }
+        }
+        static REGS: &[RegisterDef] = &[
+            reg("CR", 0x00, Access::ReadWrite),
+            reg("SR", 0x04, Access::ReadWrite),
+            reg("DR", 0x08, Access::ReadOnly),
+        ];
+        static DEF: PeripheralDef = PeripheralDef {
+            name: "RNG",
+            base: 0x4002_5000,
+            window: 0x400,
+            irqs: &[],
+            registers: REGS,
+        };
+        Self {
+            inner: RegisterFile::new(
+                &DEF,
                 RngBehavior {
                     lfsr: 0x12345678,
                     pending: false,

@@ -649,7 +649,7 @@ Effort: 20ah.
   asymmetric addresses). `661` lib + `2` H7 e2e green, workspace clean.
 Effort: 16ah.
 
-### WP-H3 Crypto behaviors (closes U585/G041 gaps)
+### WP-H3 Crypto behaviors (closes U585/G041 gaps) — DONE (2026-09-06)
 
 - Spec: AES (`CR`/`DINR`/`DOUTR`/key regs, ECB + CBC) and SAES/HASH
   (SHA-256) on U5, AES on G0; cipher core must be constant-time — evaluate
@@ -657,6 +657,24 @@ Effort: 16ah.
   decisione recorded.
 - Acceptance: NIST CAVP spot vectors e2e through the peripheral (ECB + CBC
   encrypt/decrypt round-trip), not just the core fn.
+- Shipped: `aes.rs` (hand-rolled FIPS-197 core: ECB/CBC/CTR × 128/256-bit
+  × enc/dec, key-derivation `MODE`, `DATATYPE` swaps, `CCF`/`RDERR`/`WRERR`
+  + `CCFIE`/`ERRIE` line) on `L4`/`G0` tables, manual U5 AES/SAES for
+  `U585`, manual classic AES + RNG for `G041`; `hash.rs` (hand-rolled
+  SHA-1/SHA-224/SHA-256, `HRA`-alias + `HR` digest, `DINIS`/`DCIS` + `IMR`
+  line) via layout probe (U5/L5 in, H5/WBA SHA-512 IP stays a latch).
+  Decision recorded: hand-rolled, explicitly NOT constant-time — the
+  simulator's threat model covers firmware-observable behavior, not
+  host-process timing (same stance as the absent host timing model); the
+  `aes` crate's constant-time guarantees target real deployments and buy
+  nothing here while adding supply-chain surface. Determinism (same
+  inputs → same outputs) holds and is what's tested. Stance: GCM/GMAC/
+  CMAC, MD5, HMAC complete with zeroed output (documented). NIST vectors
+  through registers (FIPS-197 B/C.3, SP 800-38A F.2.1/F.5.1, FIPS 180-4
+  incl. 1M-`a`) + `tests/crypto_boards.rs` (5 board e2e). Two latent bugs
+  caught: SHA-224 used the SHA-256 IV, and G0 AES is 256-bit capable
+  (auto-detected via `KEYR4`). `680` lib + `5` crypto e2e green,
+  workspace + MSRV clean.
 Effort: 16ah.
 
 ### WP-H4 Radio link-layer abstraction (bounded, after M9-I2)
