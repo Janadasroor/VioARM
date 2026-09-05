@@ -824,6 +824,10 @@ the only honest path is a second engine, not a faster first one.
   (2.00×, `tests/fast_mode.rs`, `BENCHMARKS.md`). The 50× JIT stays a
   recorded future, not a promise.
 - `vioarm run/record --fast K`; goldens carry the mode and replay in it.
+- Full 50× JIT execution plan (phased, gated): `jit-roadmap.md` — TB cache,
+  dynasm emitter, memory virtualization + invalidation discipline, quanta
+  time model, host-surface rules, differential fuzzing, ~13–20 agent-weeks.
+  Not started (all steps pending); starts at Phase 1 on steering approval.
 Effort: ~30ah approved; spent ~10ah (no JIT built — see above).
 
 ---
