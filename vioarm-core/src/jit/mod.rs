@@ -18,10 +18,12 @@
 //!   `start_page`/`page_count` it is given and invalidates on overlap.
 
 mod builder;
+mod quanta;
 mod runner;
 mod tb;
 
 pub use builder::{build_tb, TbBody, TbEnd, TbOp};
+pub use quanta::{QuantumEnd, QuantumOutcome, DEFAULT_QUANTUM_OPS};
 pub use runner::{BlockOutcome, ChainEnd, ChainOutcome, TbRunner, TbStats};
 pub use tb::{
     MpuEpoch, TbCache, TbKey, TbMeta, DEFAULT_CAPACITY, MAX_TB_INSNS, PAGE_SHIFT, PAGE_SIZE,

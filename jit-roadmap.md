@@ -205,8 +205,17 @@ everything else stays) — the value is risk retirement, not speed.
   rebuild, inter-block purge, mid-block STRB-exit, untracked single-op).
   The M1 page→host-slice map proper ships with the emitter (P2-3);
   hook-armed ranges arrive with X1 (P3-3).
-- [ ] P1-5: quanta loop (E1/E2) reusing `enter_exception`; WFI/exception
-  side exits (E3/E4).
+- [x] P1-5: quanta loop (E1/E2) reusing `enter_exception`; WFI/exception
+  side exits (E3/E4). Done: `Machine::run_tb_quantum(runner, max_ops)`
+  (runner passed in — no `Machine` struct churn) with one boundary per
+  quantum (single device flush of consumed `cyccnt` + single IRQ delivery;
+  M11-coarse never-early contract), refusals served by one accurate `step`,
+  sleep naps one cycle, `just_returned` skips the scan, halt flushes before
+  `Err`, `fast_quantum != 0` debug-asserted out. E1(d) MMIO exit is
+  Phase-2-only (shared-executor ops are already MMIO-exact); E6 approx
+  counters are Phase-2 (Phase 1 is cycle-exact). 7 quanta tests incl.
+  unmapped-handler boundary proof, mask latching, wake-into-handler,
+  IT-fallback resumption.
 - [ ] P1-6: differential tests TB-vs-interpreter on existing suites
   (conformance programs, AES/SHA loops, board boots).
 - [ ] GATE G1: invalidation torture (M7) green + differential green +
