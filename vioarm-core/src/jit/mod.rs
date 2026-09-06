@@ -18,11 +18,13 @@
 //!   `start_page`/`page_count` it is given and invalidates on overlap.
 
 mod builder;
+mod emit;
 mod quanta;
 mod runner;
 mod tb;
 
 pub use builder::{build_tb, TbBody, TbEnd, TbOp};
+pub use emit::{assemble_smoke, EmitError};
 pub use quanta::{QuantumEnd, QuantumOutcome, DEFAULT_QUANTUM_OPS};
 pub use runner::{BlockOutcome, ChainEnd, ChainOutcome, TbRunner, TbStats};
 pub use tb::{

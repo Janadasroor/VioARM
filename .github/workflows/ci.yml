@@ -120,6 +120,48 @@ jobs:
       - name: Lint
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+  jit-smoke:
+    name: JIT smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: jit-smoke-${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      # P2-0 gate: dynasm must assemble on x86-64 (ubuntu/windows) and
+      # AArch64 (macos); the trampoline must execute through the safe
+      # wrappers. Filtered to the jit unit tests: no qemu needed anywhere.
+      - name: JIT unit tests
+        run: "cargo test -p vioarm-core --features jit --lib jit::"
+
+      - name: Trampoline tests
+        run: cargo test -p vioarm-jit-call
+
+      # R5: the dynasm! macro expands per-arch at compile time, so the
+      # feature-gated harness must build on every host.
+      - name: Bench harness builds with jit
+        run: cargo build -p vioarm-core --features jit --benches
+
+      - name: Lint with jit
+        run: cargo clippy -p vioarm-core --features jit --all-targets -- -D warnings
+
   bench:
     name: Benchmarks (ubuntu-latest, stable)
     runs-on: ubuntu-latest

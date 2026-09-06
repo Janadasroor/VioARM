@@ -6,6 +6,10 @@
 The rest publish inside-out, because each layer depends on the previous one
 from crates.io:
 
+0. `cargo publish -p vioarm-jit-call` (the JIT call trampoline; core's
+   `jit` feature depends on it by versioned path, so it must be on the
+   registry before core publishes — but only matters for releases that
+   ship the `jit` feature)
 1. `cargo publish -p vioarm-core`
 2. `cargo publish -p vioarm-gdb` and `cargo publish -p vioarm-qemu` (either order)
 3. `cargo publish -p vioarm-cli` (needs core + gdb on the registry)

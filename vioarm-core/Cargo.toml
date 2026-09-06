@@ -18,8 +18,10 @@ workspace = true
 
 [features]
 # Translated fast engine (jit-roadmap.md). Default off: non-JIT builds never
-# pull codegen dependencies (Phase 2 adds dynasm here, still opt-in).
-jit = []
+# pull codegen dependencies. The emitter (Phase 2) builds on top; still
+# opt-in. `dynasm`/`dynasmrt` are pinned synced (P2-0 gate); the call
+# trampoline is an in-workspace path dependency (see vioarm-jit-call).
+jit = ["dep:dynasm", "dep:dynasmrt", "dep:vioarm-jit-call"]
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
@@ -29,3 +31,6 @@ name = "mips"
 harness = false
 
 [dependencies]
+dynasm = { version = "5.1", optional = true }
+dynasmrt = { version = "5.1", optional = true }
+vioarm-jit-call = { version = "1.9.1", path = "../vioarm-jit-call", optional = true }

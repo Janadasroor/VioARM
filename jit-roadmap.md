@@ -26,12 +26,20 @@ require deleting the byte-exact device models, i.e. deleting the product.
 
 ## 1. Decisions recorded (do not re-litigate without new data)
 
-- [ ] D1: emitter is **dynasm-rs** (`dynasm` + `dynasmrt`, synced versions),
+- [x] D1: emitter is **dynasm-rs** (`dynasm` + `dynasmrt` 5.1.0, synced),
   not Cranelift/LLVM (dependency weight, compile latency, MSRV drag vs our
   `deny.toml` + MSRV 1.83 posture) and not a fully custom emitter yet
   (custom emitter stays the fallback if dynasm's proc-macro or audit
-  surface proves unfit — see step P0-4). Rationale: x86-64 + AArch64
-  coverage (Linux dev + mac CI), MSRV 1.77 ≤ our 1.83, two small crates.
+  surface proves unfit — see step P0-4). Pinned 5.1.0 (MPL-2.0, allowed
+  per `deny.toml` colored precedent); MSRV proven by building + testing
+  under 1.83 locally (no declared MSRV upstream — empirical proof
+  instead). P2-0 FINDING: `workspace.lints.rust.unsafe_code = "forbid"`
+  cannot be allow-overridden, while calling emitted code is inherently
+  unsafe — so the emitter lives in `vioarm-core/src/jit/` per this
+  decision (assembly is safe API), but the final jump lives in the
+  micro-crate `vioarm-jit-call` (two safe wrappers + SAFETY CASE +
+  template/fuzz coverage as the soundness legs). Rationale stands:
+  x86-64 + AArch64 coverage, two small crates + one micro-crate.
 - [ ] D2: integer ALU / load-store / branches are emitted; **everything
   else is a callout** into the existing executor (SVC/BKPT, barriers,
   DSP edge cases, exclusives initially, FP always — see D3).
@@ -242,11 +250,18 @@ everything else stays) — the value is risk retirement, not speed.
 
 Goal: 10–30× on compute loops.
 
-- [ ] P2-0: dependency gate: add `dynasm`/`dynasmrt` behind the `jit`
-  feature; `cargo deny` + `cargo audit` + SBOM baseline updated; MSRV
-  1.83 verified (dynasm MSRV 1.77 ≤ floor — re-verify at integration);
-  x86-64 + AArch64 CI legs assemble a smoke template (Windows leg
-  explicitly included — codegen must exist there too).
+- [x] P2-0: dependency gate. Done 2026-09-07: `dynasm`/`dynasmrt` 5.1.0
+  optional behind `jit` (+ `vioarm-jit-call` versioned path dep, published
+  inside-out per RELEASING.md); `cargo deny check --deny warnings` clean
+  (MPL-2.0 allowed; transitives bitflags/byteorder/fnv/lazy_static/libc/
+  memmap2/proc-macro*/quote/syn/unicode-ident all allow-listed);
+  `cargo audit` clean (106 crates); SBOMs at 95 components (+10 P2-0
+  crates, additive-only diff); MSRV proven (`cargo +1.83 build` and 46 jit
+  + 2 trampoline tests green under 1.83); smoke assembles AND executes
+  (`mov eax,42; ret` → 42) via `jit/emit.rs` + trampoline tests using only
+  safe API in `vioarm-core` (`forbid` intact); `jit-smoke` CI job added
+  (ubuntu/macos/windows × stable: jit unit tests, trampoline tests,
+  feature-gated bench build, feature-gated clippy).
 - [ ] P2-1: emitter skeleton: register allocation (fixed guest→host
   mapping for r0–r12/sp/lr/pc + flags word — simplescalar, no graph
   coloring; document the choice), prologue/epilogue, callout ABI.

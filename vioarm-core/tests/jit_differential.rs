@@ -119,12 +119,7 @@ fn check(code: &[u8], code_len: u32, steps: u64) {
     check_with(code, code_len, steps, |_| {});
 }
 
-fn check_with(
-    code: &[u8],
-    code_len: u32,
-    steps: u64,
-    setup: impl Fn(&mut Machine<FlatMemory>),
-) {
+fn check_with(code: &[u8], code_len: u32, steps: u64, setup: impl Fn(&mut Machine<FlatMemory>)) {
     let mut a = boot(code);
     setup(&mut a);
     for _ in 0..steps {
@@ -161,7 +156,7 @@ fn workload_alu() -> Vec<u8> {
         0x3B01, // SUBS r3, #1
         0xBF08, // IT EQ
         0x245A, // MOVEQ r4, #0x5A (last iteration only, Z set)
-        // BNE loop, STR r0, [r1], B .
+                // BNE loop, STR r0, [r1], B .
     ];
     let bne_at = e + c.len() as u32 * 2;
     c.push(bcond(1, bne_at, e + 6));
@@ -246,13 +241,15 @@ fn workload_calls() -> Vec<u8> {
     let b_at = e + 12;
     halves(&[
         0x2000, // MOVS r0, #0
-        b1h, b1l, // BL inc
-        b2h, b2l, // BL inc
-        0x6008, // STR r0, [r1]
+        b1h,
+        b1l, // BL inc
+        b2h,
+        b2l,           // BL inc
+        0x6008,        // STR r0, [r1]
         b(b_at, b_at), // B .
-        0xB500, // inc: PUSH {lr}
-        0x3001, // ADDS r0, #1
-        0xBD00, // POP {pc}
+        0xB500,        // inc: PUSH {lr}
+        0x3001,        // ADDS r0, #1
+        0xBD00,        // POP {pc}
     ])
 }
 
@@ -310,7 +307,10 @@ fn svc_round_trip_matches() {
         a.step().unwrap();
     }
     assert_eq!(a.core.cycles, b.core.cycles);
-    assert_eq!(snap(&mut a, code_len + 0x104), snap(&mut b, code_len + 0x104));
+    assert_eq!(
+        snap(&mut a, code_len + 0x104),
+        snap(&mut b, code_len + 0x104)
+    );
 }
 
 /// Firmware self-modifying code: a STRH patches the loop's first slot,
@@ -319,16 +319,16 @@ fn workload_smc() -> Vec<u8> {
     let e = ENTRY;
     assert_eq!(e & 3, 0);
     halves(&[
-        0x2000, // slot: MOVS r0, #0 (rewritten to MOVS r0, #2)
-        0x2204, // MOVS r2, #4
-        0x0092, // LSLS r2, r2, #2 (r2 = 0x10 = slot)
-        0x4902, // LDR r1, [pc, #8] (-> E + 0x10)
-        0x8011, // STRH r1, [r2, #0]
+        0x2000,         // slot: MOVS r0, #0 (rewritten to MOVS r0, #2)
+        0x2204,         // MOVS r2, #4
+        0x0092,         // LSLS r2, r2, #2 (r2 = 0x10 = slot)
+        0x4902,         // LDR r1, [pc, #8] (-> E + 0x10)
+        0x8011,         // STRH r1, [r2, #0]
         b(e + 0x0A, e), // B slot
-        0xBF00, // padding
-        0xBF00, // padding
-        0x2002, // literal halfword: new slot content (low half of .word)
-        0x0000, // literal high halfword
+        0xBF00,         // padding
+        0xBF00,         // padding
+        0x2002,         // literal halfword: new slot content (low half of .word)
+        0x0000,         // literal high halfword
     ])
 }
 

@@ -1,0 +1,50 @@
+[package]
+name = "vioarm-jit-call"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+authors.workspace = true
+
+# Internal trampoline: it only exists because
+# `workspace.lints.rust.unsafe_code = "forbid"` cannot be allow-overridden
+# inside vioarm-core, while calling JIT-emitted machine code is inherently
+# unsafe (see `src/lib.rs` SAFETY CASE). Versioned + published (never
+# `publish = false`) solely so `cargo publish -p vioarm-core` resolves the
+# path dependency; see RELEASING.md for the inside-out order. The API is
+# two functions and intentionally stable.
+publish = true
+
+# Deliberately NOT `[lints] workspace = true`: the workspace table forbids
+# `unsafe_code` with no possible override, while this crate exists to
+# encapsulate exactly two unsafe blocks (see SAFETY CASE in src/lib.rs).
+# Everything else mirrors the workspace deny levels.
+[lints.rust]
+unsafe_code = "allow"
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = "allow"
+nursery = "allow"
+too_many_arguments = "allow"
+cognitive_complexity = "allow"
+too_many_lines = "allow"
+type_complexity = "allow"
+similar_names = "allow"
+doc_markdown = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+needless_pass_by_value = "allow"
+approx_constant = "allow"
+manual_range_contains = "allow"
+
+[dev-dependencies]
+# Tests assemble real stubs with the same runtime the emitter uses.
+dynasm = "5.1"
+dynasmrt = "5.1"

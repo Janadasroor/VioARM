@@ -28,8 +28,8 @@
 
 use crate::cpu::decode16::{decode16, decode16_v7m, Hint, Inst16, LsImm, LsReg};
 use crate::cpu::decode32::{
-    MemOp, decode32, decode32_v7em, decode32_v7m, decode32_v8m, decode32_v8m_mainline, is_thumb2,
-    is_thumb2_v7m, Inst32,
+    decode32, decode32_v7em, decode32_v7m, decode32_v8m, decode32_v8m_mainline, is_thumb2,
+    is_thumb2_v7m, Inst32, MemOp,
 };
 use crate::cpu::Isa;
 use crate::mem::bus::Bus;
@@ -207,9 +207,7 @@ pub(crate) fn fetch_op<B: Bus>(bus: &mut B, cur: u32, isa: Isa) -> Option<(TbOp,
     let h0 = bus.read_half(cur).ok()?;
     let is32 = match isa {
         Isa::Armv6M => is_thumb2(h0),
-        Isa::Armv7M | Isa::Armv7EM | Isa::Armv8MBaseline | Isa::Armv8MMainline => {
-            is_thumb2_v7m(h0)
-        }
+        Isa::Armv7M | Isa::Armv7EM | Isa::Armv8MBaseline | Isa::Armv8MMainline => is_thumb2_v7m(h0),
     };
     if !is32 {
         let inst = match isa {
@@ -307,14 +305,11 @@ fn seal16(inst: &Inst16) -> Seal {
         | Inst16::BranchCond { .. }
         | Inst16::CbzCbnz { .. } => Seal::ControlFlow,
         Inst16::Pop { load_pc: true, .. } => Seal::ControlFlow,
-        Inst16::SpecialAdd { rd: 15, .. } | Inst16::SpecialMov { rd: 15, .. } => {
-            Seal::ControlFlow
-        }
+        Inst16::SpecialAdd { rd: 15, .. } | Inst16::SpecialMov { rd: 15, .. } => Seal::ControlFlow,
         Inst16::LdrLiteral { rt: 15, .. } => Seal::ControlFlow,
-        Inst16::Svc { .. }
-        | Inst16::Bkpt { .. }
-        | Inst16::Cps { .. }
-        | Inst16::It { .. } => Seal::System,
+        Inst16::Svc { .. } | Inst16::Bkpt { .. } | Inst16::Cps { .. } | Inst16::It { .. } => {
+            Seal::System
+        }
         Inst16::Hint { kind } => match kind {
             Hint::Nop | Hint::Yield => Seal::Continue,
             Hint::Wfe | Hint::Wfi | Hint::Sev => Seal::System,
@@ -341,8 +336,7 @@ fn seal32(inst: &Inst32) -> Seal {
         | Inst32::Div { rd: 15, .. }
         | Inst32::Mul { rd: 15, .. } => Seal::ControlFlow,
         Inst32::Mem { rt: 15, .. } => Seal::ControlFlow,
-        Inst32::LdrdStrd { rt: 15, .. }
-        | Inst32::LdrdStrd { rt2: 15, .. } => Seal::ControlFlow,
+        Inst32::LdrdStrd { rt: 15, .. } | Inst32::LdrdStrd { rt2: 15, .. } => Seal::ControlFlow,
         Inst32::LdmStm { regs, .. } if regs & (1_u16 << 15) != 0 => Seal::ControlFlow,
         Inst32::DpReg { .. }
         | Inst32::DpImm { .. }
@@ -353,9 +347,12 @@ fn seal32(inst: &Inst32) -> Seal {
         | Inst32::LdrdStrd { .. }
         | Inst32::LdmStm { .. }
         | Inst32::Tt { .. } => Seal::Continue,
-        Inst32::Lda { exclusive: false, .. } | Inst32::Stl { exclusive: false, .. } => {
-            Seal::Continue
+        Inst32::Lda {
+            exclusive: false, ..
         }
+        | Inst32::Stl {
+            exclusive: false, ..
+        } => Seal::Continue,
         _ => Seal::System,
     }
 }

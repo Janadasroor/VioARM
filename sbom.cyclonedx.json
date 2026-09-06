@@ -125,6 +125,19 @@
     },
     {
       "type": "library",
+      "name": "bitflags",
+      "version": "2.13.1",
+      "purl": "pkg:cargo/bitflags@2.13.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT OR Apache-2.0"
+          }
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "bumpalo",
       "version": "3.20.3",
       "purl": "pkg:cargo/bumpalo@3.20.3",
@@ -132,6 +145,19 @@
         {
           "license": {
             "id": "MIT OR Apache-2.0"
+          }
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "byteorder",
+      "version": "1.5.0",
+      "purl": "pkg:cargo/byteorder@1.5.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "Unlicense OR MIT"
           }
         }
       ]
@@ -346,6 +372,32 @@
     },
     {
       "type": "library",
+      "name": "dynasm",
+      "version": "5.1.0",
+      "purl": "pkg:cargo/dynasm@5.1.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MPL-2.0"
+          }
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "dynasmrt",
+      "version": "5.1.0",
+      "purl": "pkg:cargo/dynasmrt@5.1.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MPL-2.0"
+          }
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "either",
       "version": "1.18.0",
       "purl": "pkg:cargo/either@1.18.0",
@@ -353,6 +405,19 @@
         {
           "license": {
             "id": "MIT OR Apache-2.0"
+          }
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "fnv",
+      "version": "1.0.7",
+      "purl": "pkg:cargo/fnv@1.0.7",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0 OR MIT"
           }
         }
       ]
@@ -502,6 +567,19 @@
     },
     {
       "type": "library",
+      "name": "lazy_static",
+      "version": "1.5.0",
+      "purl": "pkg:cargo/lazy_static@1.5.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT OR Apache-2.0"
+          }
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "libc",
       "version": "0.2.189",
       "purl": "pkg:cargo/libc@0.2.189",
@@ -522,6 +600,19 @@
         {
           "license": {
             "id": "Unlicense OR MIT"
+          }
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "memmap2",
+      "version": "0.9.11",
+      "purl": "pkg:cargo/memmap2@0.9.11",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT OR Apache-2.0"
           }
         }
       ]
@@ -626,6 +717,32 @@
         {
           "license": {
             "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "proc-macro-error-attr3",
+      "version": "3.1.1",
+      "purl": "pkg:cargo/proc-macro-error-attr3@3.1.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT OR Apache-2.0"
+          }
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "proc-macro-error3",
+      "version": "3.1.1",
+      "purl": "pkg:cargo/proc-macro-error3@3.1.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT OR Apache-2.0"
           }
         }
       ]
@@ -934,6 +1051,19 @@
       "name": "vioarm-gdb",
       "version": "1.9.1",
       "purl": "pkg:cargo/vioarm-gdb@1.9.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "vioarm-jit-call",
+      "version": "1.9.1",
+      "purl": "pkg:cargo/vioarm-jit-call@1.9.1",
       "licenses": [
         {
           "license": {

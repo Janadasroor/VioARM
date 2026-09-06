@@ -272,9 +272,10 @@ impl TbCache {
     /// Drop every block whose code footprint covers `page` (M6). Returns the
     /// number of blocks dropped.
     pub fn invalidate_page(&mut self, page: u32) -> usize {
-        let keys: Vec<TbKey> = self.pages.remove(&page).map_or_else(Vec::new, |set| {
-            set.into_iter().collect()
-        });
+        let keys: Vec<TbKey> = self
+            .pages
+            .remove(&page)
+            .map_or_else(Vec::new, |set| set.into_iter().collect());
         let mut dropped = 0;
         for key in keys {
             if self.remove(&key) {
@@ -292,9 +293,7 @@ impl TbCache {
             return 0;
         }
         let first = start_addr >> PAGE_SHIFT;
-        let last = start_addr
-            .saturating_add(len_bytes.saturating_sub(1))
-            >> PAGE_SHIFT;
+        let last = start_addr.saturating_add(len_bytes.saturating_sub(1)) >> PAGE_SHIFT;
         // A block spanning pages appears in several buckets: dedupe first so
         // each block is removed (and counted) exactly once.
         let mut keys = HashSet::new();
@@ -429,7 +428,10 @@ mod tests {
         cache.insert(again, Vec::new());
         assert_eq!(cache.len(), 1);
         assert_eq!(
-            cache.lookup(0x1000, false, Isa::Armv7M).unwrap().cycle_estimate,
+            cache
+                .lookup(0x1000, false, Isa::Armv7M)
+                .unwrap()
+                .cycle_estimate,
             9
         );
     }
@@ -467,7 +469,7 @@ mod tests {
         let mut cache = TbCache::new();
         cache.insert(meta(0x1000, 1), Vec::new()); // page 1
         cache.insert(meta(0x2000, 1), Vec::new()); // page 2
-        // Block spanning pages 3-4.
+                                                   // Block spanning pages 3-4.
         let mut wide = meta(0x3000, 2);
         wide.len_bytes = 0x1000;
         cache.insert(wide, Vec::new());
@@ -486,7 +488,7 @@ mod tests {
         wide.len_bytes = 0x2FFF;
         cache.insert(wide, Vec::new());
         cache.insert(meta(0x9000, 1), Vec::new()); // page 9, untouched
-        // Range covers pages 1-3: the wide block is counted exactly once.
+                                                   // Range covers pages 1-3: the wide block is counted exactly once.
         assert_eq!(cache.invalidate_range(0x1000, 0x3000), 1);
         assert_eq!(cache.len(), 1);
         assert!(cache.lookup(0x9000, false, Isa::Armv7M).is_some());
