@@ -277,12 +277,31 @@ Goal: 10–30× on compute loops.
   dynasm parses `r0`–`r3` idents as x64 registers (renamed offsets), and
   the AArch64 arms needed a local cross-check (installed target;
   displacement `u32`, arch-gated `DynasmApi` import).
-- [ ] P2-2: integer ALU templates (S0) with bit-exact flags (each template
-  unit-tested against the interpreter across random inputs — the template
-  test harness from this step serves all later templates).
+- [x] P2-2: integer ALU templates (S0) with bit-exact flags. Done
+  2026-09-07 (`jit/templates*.rs` + shared differential harness serving
+  P2-2–P2-5): full S0 set on x64 + AArch64 mirrors (12 template tests:
+  random + directed edges, pinned + mem + high lanes), block emission +
+  runner native dispatch (block-level D7 accounting; `set_native` gate
+  keeps an interp-exact mode for the P1-6 differential, which now runs
+  both modes). Minimal terminator exits included (B/Bcond/CBZ static +
+  select-to-dynamic-epilogue — without them nothing goes native, since
+  every block ends in control flow); 32-bit/reg/table branches + chaining
+  stay P2-4. Caught by testing (6 bugs: merge_nz V-misevaluation, SUB/SBC
+  borrow inversion, lahf-before-store, ROR undefined SF/ZF, stale `esi`
+  across mem stores, dh-garbage in select, GT/LE dh-wipe ordering).
+  Checkpoint soak: 2.63× RAM / 3.26× flash (not G2 yet).
+  Soundness side-find (fixed here, applies to Phase 1 too): blocks cached
+  under `itstate == 0` must refuse hits under `itstate != 0` (plain `exec`
+  does not predicate) — runner gates + regression test.
 - [ ] P2-3: load/store templates with guard + fast path + side exit (S1,
-  M1–M4 incl. UNALIGN_TRP + bitband exits).
+  M1–M4 incl. UNALIGN_TRP + bitband exits). Note: native templates must
+  never emit bus writes except through the P2-3-checked paths (the P2-2
+  runner skips mid-block revalidation by construction); P2-3 also owns
+  the `last_load_rd` contract (currently reset on native exit, exact for
+  load-free blocks only).
 - [ ] P2-4: branch templates + chaining (S2, T6: patchable hot edges).
+  Note: P2-2 covers 16-bit B/Bcond/CBZ exits via driver; P2-4 adds
+  32-bit/Bl/reg/table/return forms + direct inter-block jumps.
 - [ ] P2-5: PUSH/POP/LDM/STM (S3), IT blocks (S4), 32-bit subset (S5).
 - [ ] P2-6: callout plumbing for all of S6 (SVC/BKPT/barriers/MRS-MSR/
   exclusives/WFI-FE-FE/FP/DSP) + TB-ending rules.

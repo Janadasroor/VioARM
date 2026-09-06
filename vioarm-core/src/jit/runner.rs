@@ -43,8 +43,9 @@ use crate::cpu::{Core, Isa, Next};
 use crate::error::HaltCause;
 use crate::mem::PeripheralBus;
 
-use super::builder::{build_tb, fetch_op, TbOp};
-use super::tb::{TbCache, TbKey, TbMeta};
+use super::builder::{build_tb, fetch_op, op_len, TbOp};
+use super::native::NativeBlock;
+use super::tb::{Got, TbCache, TbKey, TbMeta};
 
 /// Per-runner execution counters (hit/miss shape for G1 measurement).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -59,6 +60,8 @@ pub struct TbStats {
     pub blocks: u64,
     /// Total ops executed.
     pub ops: u64,
+    /// Blocks executed natively (subset of `blocks`; G2 measurement).
+    pub native: u64,
 }
 
 /// What one [`TbRunner::run_block`] did.
@@ -104,6 +107,10 @@ pub struct ChainOutcome {
 pub struct TbRunner {
     cache: TbCache,
     verify_decodes: bool,
+    /// Execute fully-templated blocks natively (default on). Off forces
+    /// the interpreted loop everywhere: cycle-exact `cyccnt`, for the
+    /// P1-6 differential (native mode commits block estimates per D7).
+    use_native: bool,
     /// Last bus config generation seen (`None` until the first poll, or
     /// permanently when the bus is untracked — which polls as changed).
     last_seen: Option<u64>,
@@ -122,6 +129,7 @@ impl TbRunner {
         Self {
             cache: TbCache::new(),
             verify_decodes: false,
+            use_native: true,
             last_seen: None,
             last_validated: None,
             stats: TbStats::default(),
@@ -135,10 +143,19 @@ impl TbRunner {
         Self {
             cache: TbCache::new(),
             verify_decodes: true,
+            use_native: true,
             last_seen: None,
             last_validated: None,
             stats: TbStats::default(),
         }
+    }
+
+    /// Force interpreted (`false`) or native-where-coverable (`true`)
+    /// execution. Interpreted mode is cycle-exact; native mode commits
+    /// block-level `cyccnt` estimates (D7) while keeping retired-op
+    /// `cycles` and all architectural state exact.
+    pub fn set_native(&mut self, on: bool) {
+        self.use_native = on;
     }
 
     /// The block cache (for P1-4 invalidation hooks and inspection).
@@ -171,6 +188,16 @@ impl TbRunner {
             self.stats.fallbacks += 1;
             return Ok(None);
         }
+        // Predicated bodies never enter blocks (hits or misses): plain
+        // `exec` does not predicate (the stepper wraps it in `exec_it_step`
+        // for that), so a block cached under `itstate == 0` must not run
+        // under `itstate != 0` — e.g. a branch landing inside someone
+        // else's IT body. The fallback stepper owns predicated execution
+        // until the IT state drains (Phase-1 IT policy; S4 goes native).
+        if core.itstate != 0 {
+            self.stats.fallbacks += 1;
+            return Ok(None);
+        }
         let pc = core.regs.pc;
         let (isa, secure) = (core.isa, core.secure);
         if !core.fetch_allowed(pc) {
@@ -186,39 +213,88 @@ impl TbRunner {
             isa,
             mpu_epoch: self.cache.epoch(),
         };
-        // One probe returns metadata + payload (owned copies end the borrow
-        // before the content probes re-borrow the cache; no second lookup).
-        let probed: Option<(TbMeta, Vec<TbOp>)> = self
-            .cache
-            .get(pc, secure, isa)
-            .map(|(meta, ops)| (*meta, ops.to_vec()));
-        // A hit additionally requires validated code bytes (gated on the
-        // write generation: a matching generation means no byte could have
+        // One probe returns owned copies (the borrow ends before content
+        // probes re-borrow the cache; no second lookup). A hit
+        // additionally requires validated code bytes (gated on the write
+        // generation: a matching generation means no byte could have
         // changed since the last validation). Any mismatch rebuilds.
-        let (meta, ops, cached) = match probed {
-            Some((meta, ops)) if !ops.is_empty() && self.validated(core, &meta) => {
+        let probed: Option<(TbMeta, Option<NativeBlock>, Vec<TbOp>)> =
+            self.cache.get(pc, secure, isa).map(|hit| match hit {
+                Got::Native(meta, native) => (*meta, Some(native.clone()), Vec::new()),
+                Got::Interp(meta, ops) => (*meta, None, ops.to_vec()),
+            });
+        let (meta, native, ops, cached) = match probed {
+            Some((meta, Some(native), _)) if self.use_native && self.validated(core, &meta) => {
                 self.stats.hits += 1;
-                (meta, ops, true)
+                (meta, Some(native), Vec::new(), true)
             }
-            Some((meta, _)) => {
+            Some((meta, None, ops)) if !ops.is_empty() && self.validated(core, &meta) => {
+                self.stats.hits += 1;
+                (meta, None, ops, true)
+            }
+            Some((meta, _, _)) => {
                 self.cache.invalidate_range(meta.key.pc, meta.len_bytes);
                 match self.miss(core, pc, secure, isa) {
-                    Some((meta, ops)) => (meta, ops, false),
+                    Some((meta, native, ops)) => (meta, native, ops, false),
                     None => return Ok(None),
                 }
             }
             None => match self.miss(core, pc, secure, isa) {
-                Some((meta, ops)) => (meta, ops, false),
+                Some((meta, native, ops)) => (meta, native, ops, false),
                 None => return Ok(None),
             },
         };
         if self.verify_decodes {
             self.verify_block(core, &key);
         }
-        let outcome = self.exec_cached(core, &key, &meta, &ops, cached)?;
+        let outcome = match native {
+            Some(native) => {
+                let outcome = self.exec_native(core, &meta, &native, cached)?;
+                self.stats.native += 1;
+                outcome
+            }
+            None => self.exec_cached(core, &key, &meta, &ops, cached)?,
+        };
         self.stats.blocks += 1;
         self.stats.ops += outcome.ops as u64;
         Ok(Some(outcome))
+    }
+
+    /// Execute a native block: enter through the trampoline, decode the
+    /// exit, commit block-level accounting. S0+terminator blocks run every
+    /// op exactly once with no faults, divergence inside, or sleep (no
+    /// memory/system ops by template construction), so the outcome shape
+    /// follows directly. Cycle accounting is per-block (D7): `cycles`
+    /// counts retired ops exactly, `cyccnt` takes the block estimate, and
+    /// the load-use tracker resets (no loads occur in native S0 blocks —
+    /// exactly what stepping them would leave behind).
+    fn exec_native<B: PeripheralBus>(
+        &mut self,
+        core: &mut Core<B>,
+        meta: &TbMeta,
+        native: &NativeBlock,
+        cached: bool,
+    ) -> Result<BlockOutcome, HaltCause> {
+        use super::native::{exit_pc, exit_reason, NativeCtx, EXIT_FALL};
+
+        let mut ctx = Box::new(NativeCtx {
+            regs: &mut core.regs,
+            xpsr: &mut core.xpsr,
+        });
+        let code = vioarm_jit_call::call1(native.entry_ptr(), &mut *ctx as *mut NativeCtx as u64);
+        let end_pc = exit_pc(code);
+        let fell_through = exit_reason(code) == EXIT_FALL;
+        let ops = meta.insns as u64;
+        core.cycles += ops;
+        core.cyccnt += meta.cycle_estimate;
+        core.clear_load_tracker();
+        core.regs.pc = end_pc;
+        Ok(BlockOutcome {
+            ops: ops as usize,
+            end_pc,
+            fell_through,
+            cached,
+        })
     }
 
     /// Execute chained blocks starting at the core's PC, up to `max_blocks`
@@ -259,16 +335,20 @@ impl TbRunner {
         self.cache.ops(key).unwrap_or(&[])
     }
 
-    /// Cold-miss path: build, hash, insert (plus payload for execution).
-    /// `None` on builder refusal or on bytes vanishing between build and
-    /// hash (fall back so the stepper faults identically).
+    /// Cold-miss path: build, hash, then go native when every op has a
+    /// template (otherwise interpreted). `None` on builder refusal or on
+    /// bytes vanishing between build and hash (fall back so the stepper
+    /// faults identically). Emission failures (including resource
+    /// exhaustion) degrade gracefully to interpreted execution.
     fn miss<B: PeripheralBus>(
         &mut self,
         core: &mut Core<B>,
         pc: u32,
         secure: bool,
         isa: Isa,
-    ) -> Option<(TbMeta, Vec<TbOp>)> {
+    ) -> Option<(TbMeta, Option<NativeBlock>, Vec<TbOp>)> {
+        use super::templates::emit_block;
+
         // Explicit `else` (not `?`): every refusal counts a fallback.
         let itstate = core.itstate;
         let Some(body) = build_tb(core.mem_mut(), pc, secure, isa, itstate) else {
@@ -281,12 +361,20 @@ impl TbRunner {
             return None;
         };
         meta.check = check;
+        if self.use_native {
+            if let Ok(native) = emit_block(&body) {
+                self.cache.insert_native(meta, native.clone());
+                self.stats.misses += 1;
+                self.last_validated = core.mem_mut().write_epoch();
+                return Some((meta, Some(native), Vec::new()));
+            }
+        }
         let ops = body.ops.clone();
         self.cache.insert(meta, body.ops);
         self.stats.misses += 1;
         // The hash just established the baseline for this generation.
         self.last_validated = core.mem_mut().write_epoch();
-        Some((meta, ops))
+        Some((meta, None, ops))
     }
 
     /// Entry content gate (P1-6): re-hash only when the bus reports writes
@@ -442,14 +530,6 @@ impl TbRunner {
 impl Default for TbRunner {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-/// Byte length of one op.
-const fn op_len(op: &TbOp) -> u32 {
-    match op {
-        TbOp::V16(_) => 2,
-        TbOp::V32(_) => 4,
     }
 }
 
@@ -610,6 +690,42 @@ mod tests {
     }
 
     #[test]
+    fn coverable_block_goes_native() {
+        // S0-pure block (no terminator): prologue + templates + FALL.
+        let mut core = core_at(&[MOVS_R0_1, 0x2102]);
+        let mut runner = TbRunner::new();
+        let outcome = runner.run_block(&mut core).unwrap().unwrap();
+        assert_eq!(outcome.ops, 2);
+        assert!(outcome.fell_through);
+        assert!(!outcome.cached);
+        assert_eq!(runner.stats().native, 1);
+        assert_eq!(core.regs.r[0], 1);
+        assert_eq!(core.regs.r[1], 2);
+        // Second run hits the native block (no rebuild).
+        core.regs.pc = 0x1000;
+        core.regs.r[0] = 0;
+        core.regs.r[1] = 0;
+        let outcome = runner.run_block(&mut core).unwrap().unwrap();
+        assert!(outcome.cached);
+        assert_eq!(runner.stats().native, 2);
+        assert_eq!(runner.stats().hits, 1);
+        assert_eq!((core.regs.r[0], core.regs.r[1]), (1, 2));
+    }
+
+    #[test]
+    fn interp_mode_never_goes_native() {
+        let mut core = core_at(&[MOVS_R0_1, 0x2102]);
+        let mut runner = TbRunner::new();
+        runner.set_native(false);
+        let _ = runner.run_block(&mut core).unwrap().unwrap();
+        core.regs.pc = 0x1000;
+        let _ = runner.run_block(&mut core).unwrap().unwrap();
+        assert_eq!(runner.stats().native, 0);
+        assert_eq!(runner.stats().hits, 1);
+        assert_eq!((core.regs.r[0], core.regs.r[1]), (1, 2));
+    }
+
+    #[test]
     fn second_run_hits_cache() {
         let mut core = core_at(&[MOVS_R0_1, NOP]);
         let mut runner = TbRunner::new();
@@ -656,6 +772,26 @@ mod tests {
         // Block shapes: [B](diverge) [MOVS,B](diverge) [B](hit) [B](hit).
         assert_eq!(runner.stats().misses, 3);
         assert_eq!(runner.stats().hits, 1);
+    }
+
+    #[test]
+    fn itstate_hit_refuses_despite_cache() {
+        // The hole: a block cached under itstate==0 must not execute (even
+        // partially) under itstate!=0, where plain `exec` would ignore
+        // predication. A branch landing inside someone else's IT body hits
+        // this; the fallback stepper predicates correctly.
+        let mut core = core_at(&[NOP, NOP]);
+        let mut runner = TbRunner::new();
+        let _ = runner.run_block(&mut core).unwrap().unwrap();
+        assert_eq!(runner.cache().len(), 1);
+        core.regs.pc = 0x1000;
+        core.itstate = 1;
+        assert!(runner.run_block(&mut core).unwrap().is_none());
+        assert_eq!(runner.stats().fallbacks, 1);
+        // Drained again: the cached block runs.
+        core.itstate = 0;
+        let outcome = runner.run_block(&mut core).unwrap().unwrap();
+        assert!(outcome.cached);
     }
 
     #[test]

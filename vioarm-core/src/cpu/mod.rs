@@ -694,6 +694,13 @@ impl<B: PeripheralBus> Core<B> {
         &mut self.mem
     }
 
+    /// Reset the load-use tracker after a native block: S0+terminator
+    /// blocks perform no loads, which is exactly what stepping them would
+    /// leave behind (P2-2; P2-3 memory templates set this precisely).
+    pub(crate) fn clear_load_tracker(&mut self) {
+        self.last_load_rd = None;
+    }
+
     /// Execute one pre-decoded 16-bit instruction (JIT runner entry).
     pub(crate) fn exec_tb16(&mut self, pc: u32, inst: Inst16) -> Result<Next, HaltCause> {
         self.exec(pc, inst)

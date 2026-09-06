@@ -124,10 +124,26 @@ cold cache per iteration (includes block builds):
 G1 acceptance (≥1.2× on the soak) holds at 1.27 on the RAM loop — the
 mechanism's target (the stepper has no decode cache off-flash, so TBs
 remove a re-decode per op there). Flash shows 1.14: the stepper's
-flash decode cache already covers re-decode, leaving dispatch + fetch as
+decode cache already covers re-decode, leaving dispatch + fetch as
 the remaining prize (the emitter's target in Phase 2). Enabling runs:
 mask-driven revalidation (P1-6), write-generation-gated entry checks,
 single-probe lookup.
+
+## JIT Phase 2 checkpoint (P2-2, 2026-09-07)
+
+Same `tb` soak (ALU loop, now S0 + branch templates natively; n=30):
+
+| Bench | Mean | Ratio vs stepper |
+|---|---|---|
+| `tb/step_ram_4k` | 397.0 µs | 1.00 |
+| `tb/quanta_ram_4k` | 151.1 µs | **2.63** |
+| `tb/step_flash_4k` | 499.7 µs | 1.00 |
+| `tb/quanta_flash_4k` | 153.1 µs | **3.26** |
+
+Not yet G2 (≥10× at end of Phase 2): remaining prizes are Mem
+templates (P2-3), direct chaining (P2-4, removes per-block prologue /
+epilogue + driver lookup on hot edges), and wider coverage (P2-5).
+Trajectory 0.64 → 0.86 → 1.27 → 2.63/3.26 supports continuing.
 
 ## Regression policy
 

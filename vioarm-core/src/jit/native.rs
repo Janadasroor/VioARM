@@ -35,10 +35,19 @@
 //!
 //! The prologue saves the pinned set plus a context spill slot; sizes are
 //! chosen so `rsp`/`sp` is 16-aligned before any `call` (x64: 5 pushes +
-//! 16 slot = 56; AArch64: 64-byte frame). Templates
-//! (P2-2) MUST keep the spill slot at `[rsp]`/`[sp,#48]` intact and the
-//! stack balanced at every exit: the epilogue and callout sequences
-//! address the slot absolutely.
+//! 16 slot = 56; AArch64: 64-byte frame). Templates (P2-2) MUST keep the
+//! spill slot at `[rsp]`/`[sp,#48]` intact and the stack balanced at every
+//! exit: the epilogue and callout sequences address the slot absolutely.
+//! The remaining pad bytes (`[rsp+8]` / `[sp,#56]`) are template scratch
+//! (e.g. shift big-case value spills), clobbered freely between ops.
+//!
+//! Template-author rule (load-bearing): memory-path loads/stores reload
+//! the base through `rsi`/`x9`, killing any value carried in the low half.
+//! Never carry values in `esi`/`w9` across a mem-path access — recompute
+//! after, or spill to the pad slot first. Terminator templates (P2-2)
+//! must additionally preserve the pinned set: scratch is `eax`/`ecx`/
+//! `edx`/`esi` (`w0`/`w1`/`w9`–`w11`) only, and dynamic exits deliver the
+//! target PC in `edx`/`w0` for the dynamic epilogue.
 //!
 //! # Exit codes
 //!
@@ -155,7 +164,7 @@ fn reg_offset(i: usize) -> i32 {
 }
 
 #[cfg(target_arch = "x86_64")]
-fn emit_prologue(ops: &mut dynasmrt::x64::Assembler) {
+pub(crate) fn emit_prologue(ops: &mut dynasmrt::x64::Assembler) {
     let ctx_regs = core::mem::offset_of!(NativeCtx, regs) as i32;
     let ctx_xpsr = core::mem::offset_of!(NativeCtx, xpsr) as i32;
     let (o0, o1, o2, o3) = (reg_offset(0), reg_offset(1), reg_offset(2), reg_offset(3));
@@ -183,8 +192,44 @@ fn emit_prologue(ops: &mut dynasmrt::x64::Assembler) {
     );
 }
 
+/// Dynamic epilogue: `next_pc` arrives in `edx` (low 32 bits; producers
+/// use 32-bit writes, which zero-extend), composed with `reason` and torn
+/// down like [`emit_epilogue`]. For terminators whose target resolves at
+/// runtime (conditional branches). `eax`/`ecx` are scratch as usual.
 #[cfg(target_arch = "x86_64")]
-fn emit_epilogue(ops: &mut dynasmrt::x64::Assembler, reason: u32, next_pc: u32) {
+pub(crate) fn emit_epilogue_dynamic(ops: &mut dynasmrt::x64::Assembler, reason: u32) {
+    let ctx_regs = core::mem::offset_of!(NativeCtx, regs) as i32;
+    let ctx_xpsr = core::mem::offset_of!(NativeCtx, xpsr) as i32;
+    let (o0, o1, o2, o3) = (reg_offset(0), reg_offset(1), reg_offset(2), reg_offset(3));
+    let reason = reason as i32;
+    dynasm!(ops
+        ; .arch x64
+        // Write pinned set back (same as the static epilogue).
+        ; mov rax, [rsp]
+        ; mov rcx, [rax + ctx_regs]
+        ; mov [rcx + o0], ebx
+        ; mov [rcx + o1], r12d
+        ; mov [rcx + o2], r13d
+        ; mov [rcx + o3], r14d
+        ; mov rcx, [rax + ctx_xpsr]
+        ; mov [rcx], r15d
+        // Compose (reason << 32) | next_pc from edx.
+        ; mov eax, edx
+        ; mov ecx, reason
+        ; shl rcx, 32
+        ; or rax, rcx
+        ; add rsp, 16
+        ; pop r15
+        ; pop r14
+        ; pop r13
+        ; pop r12
+        ; pop rbx
+        ; ret
+    );
+}
+
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn emit_epilogue(ops: &mut dynasmrt::x64::Assembler, reason: u32, next_pc: u32) {
     let ctx_regs = core::mem::offset_of!(NativeCtx, regs) as i32;
     let ctx_xpsr = core::mem::offset_of!(NativeCtx, xpsr) as i32;
     let (o0, o1, o2, o3) = (reg_offset(0), reg_offset(1), reg_offset(2), reg_offset(3));
@@ -228,7 +273,7 @@ pub(crate) fn assemble_trivial(
 }
 
 #[cfg(target_arch = "aarch64")]
-fn emit_prologue(ops: &mut dynasmrt::aarch64::Assembler) {
+pub(crate) fn emit_prologue(ops: &mut dynasmrt::aarch64::Assembler) {
     // AArch64 displacements take `u32` (x64 takes `i32`): convert once here.
     let ctx_regs = core::mem::offset_of!(NativeCtx, regs) as u32;
     let ctx_xpsr = core::mem::offset_of!(NativeCtx, xpsr) as u32;
@@ -258,7 +303,7 @@ fn emit_prologue(ops: &mut dynasmrt::aarch64::Assembler) {
 }
 
 #[cfg(target_arch = "aarch64")]
-fn emit_epilogue(ops: &mut dynasmrt::aarch64::Assembler, reason: u32, next_pc: u32) {
+pub(crate) fn emit_epilogue(ops: &mut dynasmrt::aarch64::Assembler, reason: u32, next_pc: u32) {
     let ctx_regs = core::mem::offset_of!(NativeCtx, regs) as u32;
     let ctx_xpsr = core::mem::offset_of!(NativeCtx, xpsr) as u32;
     let (o0, o1, o2, o3) = (
@@ -290,6 +335,41 @@ fn emit_epilogue(ops: &mut dynasmrt::aarch64::Assembler, reason: u32, next_pc: u
         ; movk x0, c1, lsl #16
         ; movk x0, c2, lsl #32
         ; movk x0, c3, lsl #48
+        ; ldp x23, x24, [sp, #32]
+        ; ldp x21, x22, [sp, #16]
+        ; ldp x19, x20, [sp]
+        ; add sp, sp, #64
+        ; ret
+    );
+}
+
+/// Dynamic epilogue: `next_pc` arrives in `w0`, composed with `reason`
+/// and torn down like [`emit_epilogue`]. Terminator templates must
+/// preserve the pinned set (scratch is `w0`/`w1`/`w9`–`w11` only).
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn emit_epilogue_dynamic(ops: &mut dynasmrt::aarch64::Assembler, reason: u32) {
+    let ctx_regs = core::mem::offset_of!(NativeCtx, regs) as u32;
+    let ctx_xpsr = core::mem::offset_of!(NativeCtx, xpsr) as u32;
+    let (o0, o1, o2, o3) = (
+        reg_offset(0) as u32,
+        reg_offset(1) as u32,
+        reg_offset(2) as u32,
+        reg_offset(3) as u32,
+    );
+    let r = reason & 0xFFFF;
+    dynasm!(ops
+        ; .arch aarch64
+        ; ldr x9, [sp, #48]
+        ; ldr x10, [x9, ctx_regs]
+        ; str w19, [x10, o0]
+        ; str w20, [x10, o1]
+        ; str w21, [x10, o2]
+        ; str w22, [x10, o3]
+        ; ldr x10, [x9, ctx_xpsr]
+        ; str w23, [x10]
+        ; movz x1, r
+        ; lsl x1, x1, #32
+        ; orr x0, x0, x1
         ; ldp x23, x24, [sp, #32]
         ; ldp x21, x22, [sp, #16]
         ; ldp x19, x20, [sp]

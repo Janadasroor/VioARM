@@ -122,6 +122,15 @@ enum Seal {
     System,
 }
 
+/// Byte length of one op (shared by the runner and the block emitter).
+#[must_use]
+pub(crate) const fn op_len(op: &TbOp) -> u32 {
+    match op {
+        TbOp::V16(_) => 2,
+        TbOp::V32(_) => 4,
+    }
+}
+
 /// Build a translation block starting at `pc`, or `None` when no block can
 /// start here (non-zero ITSTATE, odd PC, or first fetch/decode failure).
 /// `bus` is read with the same halfword fetches the stepper performs.

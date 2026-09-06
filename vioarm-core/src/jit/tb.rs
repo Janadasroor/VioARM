@@ -125,6 +125,15 @@ pub enum BlockPayload {
     Native(NativeBlock),
 }
 
+/// Looked-up block content: either payload kind, with metadata.
+#[derive(Debug)]
+pub enum Got<'a> {
+    /// Decoded ops for the interpreted loop.
+    Interp(&'a TbMeta, &'a [TbOp]),
+    /// Committed machine code for the native driver (P2-2).
+    Native(&'a TbMeta, &'a NativeBlock),
+}
+
 /// One cached block: metadata, executable payload, plus LRU bookkeeping.
 #[derive(Clone, Debug)]
 struct Entry {
@@ -266,9 +275,9 @@ impl TbCache {
         self.blocks.get(key).map(|entry| &entry.payload)
     }
 
-    /// Look up a block with LRU refresh, returning metadata and payload
-    /// together: one hash probe for the runner's hot path (P1-6).
-    pub fn get(&mut self, pc: u32, secure: bool, isa: Isa) -> Option<(&TbMeta, &[TbOp])> {
+    /// Look up a block with LRU refresh: one hash probe for the runner's
+    /// hot path (P1-6), serving either payload kind.
+    pub fn get(&mut self, pc: u32, secure: bool, isa: Isa) -> Option<Got<'_>> {
         let key = TbKey {
             pc,
             secure,
@@ -281,8 +290,8 @@ impl TbCache {
         entry.last_used = tick;
         self.evict.push(Reverse((tick, key)));
         match &entry.payload {
-            BlockPayload::Interp(ops) => Some((&entry.meta, ops.as_slice())),
-            BlockPayload::Native(_) => None,
+            BlockPayload::Interp(ops) => Some(Got::Interp(&entry.meta, ops.as_slice())),
+            BlockPayload::Native(native) => Some(Got::Native(&entry.meta, native)),
         }
     }
 
@@ -566,10 +575,13 @@ mod tests {
             cache.payload(&key),
             Some(super::BlockPayload::Native(_))
         ));
-        // Interpreted accessors see through native blocks (runner rebuilds
-        // until P2-2 wires native dispatch).
+        // Interpreted accessors see through native blocks; the unified
+        // lookup serves the native payload for the P2-2 driver.
         assert!(cache.ops(&key).is_none());
-        assert!(cache.get(0x1000, false, Isa::Armv7M).is_none());
+        assert!(matches!(
+            cache.get(0x1000, false, Isa::Armv7M),
+            Some(Got::Native(_, _))
+        ));
         // Evict with a second block; the mapping must drop exactly once.
         cache.insert(meta(0x2000, 1), Vec::new());
         assert!(cache.payload(&key).is_none());

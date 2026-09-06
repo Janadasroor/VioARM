@@ -120,6 +120,22 @@ fn check(code: &[u8], code_len: u32, steps: u64) {
 }
 
 fn check_with(code: &[u8], code_len: u32, steps: u64, setup: impl Fn(&mut Machine<FlatMemory>)) {
+    check_mode(code, code_len, steps, &setup, false);
+    check_mode(code, code_len, steps, &setup, true);
+}
+
+/// Drive stepper vs quanta and compare. Interpreted mode (`native =
+/// false`) is cycle-exact including `cyccnt`; native mode (`true`) keeps
+/// retired-op `cycles` and all architectural state exact while `cyccnt`
+/// takes block estimates (D7) — so `cyccnt` is compared only in
+/// interpreted mode.
+fn check_mode(
+    code: &[u8],
+    code_len: u32,
+    steps: u64,
+    setup: &dyn Fn(&mut Machine<FlatMemory>),
+    native: bool,
+) {
     let mut a = boot(code);
     setup(&mut a);
     for _ in 0..steps {
@@ -128,6 +144,7 @@ fn check_with(code: &[u8], code_len: u32, steps: u64, setup: impl Fn(&mut Machin
     let mut b = boot(code);
     setup(&mut b);
     let mut runner = TbRunner::new();
+    runner.set_native(native);
     let mut ops = 0u64;
     while ops < steps {
         ops += b.run_tb_quantum(&mut runner, 16).unwrap().ops;
@@ -136,8 +153,23 @@ fn check_with(code: &[u8], code_len: u32, steps: u64, setup: impl Fn(&mut Machin
         a.step().unwrap();
     }
     assert_eq!(a.core.cycles, b.core.cycles, "cycle convergence");
-    assert_eq!(a.core.cyccnt, b.core.cyccnt, "cyccnt convergence");
-    assert_eq!(snap(&mut a, code_len), snap(&mut b, code_len));
+    let sa = snap(&mut a, code_len);
+    let sb = snap(&mut b, code_len);
+    assert_eq!(sa.regs, sb.regs, "regs");
+    assert_eq!(sa.xpsr, sb.xpsr, "xpsr");
+    assert_eq!(sa.ipsr, sb.ipsr, "ipsr");
+    assert_eq!(sa.primask, sb.primask, "primask");
+    assert_eq!(sa.basepri, sb.basepri, "basepri");
+    assert_eq!(sa.faultmask, sb.faultmask, "faultmask");
+    assert_eq!(sa.control, sb.control, "control");
+    assert_eq!(sa.itstate, sb.itstate, "itstate");
+    assert_eq!(sa.sleeping, sb.sleeping, "sleeping");
+    assert_eq!(sa.cycles, sb.cycles, "cycles");
+    assert_eq!(sa.ram, sb.ram, "ram");
+    assert_eq!(sa.code, sb.code, "code");
+    if !native {
+        assert_eq!(sa.cyccnt, sb.cyccnt, "cyccnt convergence");
+    }
 }
 
 /// ALU + flags + conditional branches + an IT block in a hot loop (the IT
@@ -289,28 +321,11 @@ fn svc_round_trip_matches() {
     assert_eq!(m.core.ipsr, 0, "returned to thread");
     assert_eq!(m.core.regs.pc, b_at, "spinning after return");
     drop(m);
-    // Small quanta (4) land boundaries inside the entry/return window,
-    // exercising the just_returned scan-skip path.
-    let mut a = boot(&code);
-    setup(&mut a);
-    for _ in 0..12 {
-        a.step().unwrap();
-    }
-    let mut b = boot(&code);
-    setup(&mut b);
-    let mut runner = TbRunner::new();
-    let mut ops = 0u64;
-    while ops < 12 {
-        ops += b.run_tb_quantum(&mut runner, 4).unwrap().ops;
-    }
-    while a.core.cycles < b.core.cycles {
-        a.step().unwrap();
-    }
-    assert_eq!(a.core.cycles, b.core.cycles);
-    assert_eq!(
-        snap(&mut a, code_len + 0x104),
-        snap(&mut b, code_len + 0x104)
-    );
+    // Both modes (native uses estimates for `cyccnt`, excluded there).
+    // Small quanta would land boundaries inside the entry/return window;
+    // `check_with` uses 16-op quanta, still crossing several boundaries
+    // over the 12-step run including the just_returned skip path.
+    check_with(&code, code_len + 0x104, 12, setup);
 }
 
 /// Firmware self-modifying code: a STRH patches the loop's first slot,
@@ -354,6 +369,9 @@ fn host_pokes_between_quanta_match() {
     let mut a = boot(&code);
     let mut b = boot(&code);
     let mut runner = TbRunner::new();
+    // Interpreted mode: this test proves invalidation interleaving with
+    // full `cyccnt` equality (native state parity rides on `check_mode`).
+    runner.set_native(false);
     // Advance the burst side first (it overshoots atomically), converge the
     // stepper onto its exact cycle count (reachable: B's cycle trajectory
     // is a subsequence of A's), poke the slot identically, repeat. The

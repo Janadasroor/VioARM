@@ -59,13 +59,15 @@ pub fn assemble_smoke() -> Result<ExecutableBuffer, EmitError> {
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 compile_error!("jit feature: dynasm smoke supports x86-64 and AArch64 hosts only (P2-0 gate)");
 
-/// Smoke-assembly failure.
+/// Assembly failure.
 #[derive(Debug)]
 pub enum EmitError {
     /// The executable mapping could not be allocated.
     Alloc(std::io::Error),
     /// Finalization (relocation/commit) failed.
     Finalize,
+    /// The op has no native template (the block stays interpreted).
+    Untemplated,
 }
 
 impl From<std::io::Error> for EmitError {
@@ -79,6 +81,7 @@ impl core::fmt::Display for EmitError {
         match self {
             Self::Alloc(err) => write!(f, "executable mapping failed: {err}"),
             Self::Finalize => write!(f, "assembly finalization failed"),
+            Self::Untemplated => write!(f, "op has no native template"),
         }
     }
 }
@@ -87,7 +90,7 @@ impl std::error::Error for EmitError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Alloc(err) => Some(err),
-            Self::Finalize => None,
+            Self::Finalize | Self::Untemplated => None,
         }
     }
 }
