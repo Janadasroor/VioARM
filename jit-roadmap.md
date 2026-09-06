@@ -170,7 +170,7 @@ branches initially (S2), VMRS/VMSR, CPACR-gated traps (checked in callout).
 - [x] P0-0: coarse device time + differential suite + fidelity contract
   (shipped; the fallback every later phase leans on).
 
-### Phase 1 — TB cache + quanta, interpreted execution (3–4 wk)
+### Phase 1 — TB cache + quanta, interpreted execution (3–4 wk; DONE 2026-09-07)
 
 Goal: validate invalidation (M5/M6) + quanta (E1/E2) + chaining (T6)
 before any emitter exists. Expected gain only ~1.2–1.5× (re-decode dies;
@@ -216,11 +216,27 @@ everything else stays) — the value is risk retirement, not speed.
   counters are Phase-2 (Phase 1 is cycle-exact). 7 quanta tests incl.
   unmapped-handler boundary proof, mask latching, wake-into-handler,
   IT-fallback resumption.
-- [ ] P1-6: differential tests TB-vs-interpreter on existing suites
-  (conformance programs, AES/SHA loops, board boots).
-- [ ] GATE G1: invalidation torture (M7) green + differential green +
-  ≥1.2× measured, else stop and re-scope (do NOT start the emitter on a
-  shaky cache).
+- [x] P1-6: differential tests TB-vs-interpreter on existing suites
+  (conformance programs, AES/SHA loops, board boots). Done:
+  `tests/jit_differential.rs` (6 tests: ALU+flags+IT-in-loop, mem ops,
+  BL calls, SVC round-trip via vectors, firmware SMC, host-poke
+  interleaving — full regs/flags/RAM/code/cycles/cyccnt snapshots), plus a
+  `just_returned` scan-skip unit test. Board-boot/AES-SHA-loop
+  differentials deferred with reason: device-timing divergence is by design
+  under quanta (M11 contract) — polled-device firmware converges on values
+  but not on cycle counts, so cycle-exact differentials only hold for
+  IRQ-quiescent firmware; board boots with SysTick/timers are P3-4
+  differential-fuzzing territory, not G1. Two perf refinements landed here:
+  `store_mask`-driven revalidation (replaces per-op polling; also closes
+  same-block SMC) and write-generation-gated entry checks (new
+  `Bus::write_epoch`, bumped in `FlatMemory`/`SystemMemory::write`;
+  untracked buses revalidate every entry).
+- [x] GATE G1: PASS 2026-09-07. Invalidation torture green (firmware SMC,
+  host pokes halfword+word, mid-block STRB exit, epoch purge, untracked
+  single-path); differential 6/6 green; **1.27×** on the RAM soak
+  (`tb/quanta_ram_4k` 345.7 µs vs `tb/step_ram_4k` 439.9 µs, n=30, tight
+  intervals; flash 1.14× as context — stepper decode cache already covers
+  flash). The emitter (Phase 2) is unblocked on a sound cache.
 
 ### Phase 2 — dynasm emitter (6–10 wk)
 

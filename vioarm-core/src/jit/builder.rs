@@ -26,9 +26,9 @@
 //! first MMIO access), and bit-band exclusion (M4: the loop must refuse
 //! blocks covering alias regions).
 
-use crate::cpu::decode16::{decode16, decode16_v7m, Hint, Inst16};
+use crate::cpu::decode16::{decode16, decode16_v7m, Hint, Inst16, LsImm, LsReg};
 use crate::cpu::decode32::{
-    decode32, decode32_v7em, decode32_v7m, decode32_v8m, decode32_v8m_mainline, is_thumb2,
+    MemOp, decode32, decode32_v7em, decode32_v7m, decode32_v8m, decode32_v8m_mainline, is_thumb2,
     is_thumb2_v7m, Inst32,
 };
 use crate::cpu::Isa;
@@ -84,6 +84,11 @@ pub struct TbBody {
     pub page_count: u32,
     /// Approximate cycle cost (D7): 1 per op plus 1 per memory-touching op.
     pub cycle_estimate: u64,
+    /// Bit `i` set when op `i` performs a bus write (P1-6): the runner
+    /// revalidates content + config only after write ops, so hot loops
+    /// without stores pay no per-op polling. At most [`MAX_TB_INSNS`] ops,
+    /// so a `u64` always suffices.
+    pub store_mask: u64,
 }
 
 impl TbBody {
@@ -102,6 +107,7 @@ impl TbBody {
             start_page: self.start_page,
             page_count: self.page_count,
             cycle_estimate: self.cycle_estimate,
+            store_mask: self.store_mask,
             // The runner stamps the real content hash at insert time.
             check: 0,
         }
@@ -133,6 +139,7 @@ pub fn build_tb<B: Bus>(
     let mut ops: Vec<TbOp> = Vec::new();
     let mut cur = pc;
     let mut cycles: u64 = 0;
+    let mut store_mask: u64 = 0;
 
     let end = loop {
         if ops.len() >= usize::from(MAX_TB_INSNS) {
@@ -161,6 +168,10 @@ pub fn build_tb<B: Bus>(
             TbOp::V32(inst) => seal32(&inst),
         };
         cycles += 1 + u64::from(op_touches_memory(&op));
+        if op_writes_memory(&op) {
+            // `ops.len() < MAX_TB_INSNS <= 64` (checked at loop top).
+            store_mask |= 1_u64 << ops.len();
+        }
         cur = cur.wrapping_add(len);
         ops.push(op);
         match seal {
@@ -185,6 +196,7 @@ pub fn build_tb<B: Bus>(
         start_page,
         page_count,
         cycle_estimate: cycles,
+        store_mask,
     })
 }
 
@@ -215,6 +227,44 @@ pub(crate) fn fetch_op<B: Bus>(bus: &mut B, cur: u32, isa: Isa) -> Option<(TbOp,
         Isa::Armv8MMainline => decode32_v8m_mainline(h0, h1).ok()?,
     };
     Some((TbOp::V32(inst), 4))
+}
+
+/// Whether the op performs a bus write (P1-6): loads never mutate code or
+/// config, so only these ops can invalidate a running block. Reads
+/// (including MMIO side-effect reads) execute identically through the
+/// shared executor and affect no future decode or permission, so they need
+/// no revalidation. Exception entry stacking diverts the PC, which ends the
+/// block by construction; DMA/devices never tick mid-burst.
+fn op_writes_memory(op: &TbOp) -> bool {
+    match op {
+        TbOp::V16(inst) => match inst {
+            Inst16::LsReg { kind, .. } => {
+                matches!(kind, LsReg::Str | LsReg::Strh | LsReg::Strb)
+            }
+            Inst16::LsImm { kind, .. } => {
+                matches!(kind, LsImm::Str | LsImm::Strh | LsImm::Strb)
+            }
+            Inst16::LsSp { is_load, .. } => !is_load,
+            Inst16::Push { .. } => true,
+            Inst16::LdmStm { is_load, .. } => !is_load,
+            _ => false,
+        },
+        TbOp::V32(inst) => match inst {
+            Inst32::Mem { access, .. } => {
+                matches!(access, MemOp::Str | MemOp::Strb | MemOp::Strh)
+            }
+            Inst32::LdrdStrd { is_load, .. } => !is_load,
+            Inst32::LdmStm { is_load, .. } => !is_load,
+            // Store-release always writes (exclusive forms seal the block
+            // anyway); load-acquire never does.
+            Inst32::Stl { .. } => true,
+            Inst32::VfpLdSt { is_load, .. }
+            | Inst32::VfpLdStD { is_load, .. }
+            | Inst32::VfpLdStMult { is_load, .. }
+            | Inst32::VfpLdStMultD { is_load, .. } => !is_load,
+            _ => false,
+        },
+    }
 }
 
 /// Whether the op performs a data-memory access (cycle-estimate surcharge).
@@ -513,6 +563,24 @@ mod tests {
         let mut mem = mem_with(0x1000, &[NOP, 0xBF50]);
         let body = build_tb(&mut mem, 0x1000, false, Isa::Armv7M, 0).unwrap();
         assert_eq!((body.ops.len(), body.end), (1, TbEnd::Halt));
+    }
+
+    #[test]
+    fn store_mask_marks_write_ops_only() {
+        // STR (bit 0), NOP, LDR (loads never mutate): mask 0b001.
+        // Exactly-sized memory: no zero padding to decode through.
+        let mut mem = VecMem::new(0x1000, 6);
+        mem.poke_half(0x1000, 0x600A);
+        mem.poke_half(0x1002, NOP);
+        mem.poke_half(0x1004, 0x4800);
+        let body = build_tb(&mut mem, 0x1000, false, Isa::Armv7M, 0).unwrap();
+        assert_eq!(body.ops.len(), 3);
+        assert_eq!(body.store_mask, 0b001);
+        assert_eq!(body.to_meta().store_mask, 0b001);
+        // PUSH stores (bit 0); POP-pc loads do not (bit 1 clear).
+        let mut mem = mem_with(0x1000, &[PUSH_LR, POP_PC]);
+        let body = build_tb(&mut mem, 0x1000, false, Isa::Armv7M, 0).unwrap();
+        assert_eq!(body.store_mask, 0b01);
     }
 
     #[test]

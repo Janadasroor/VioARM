@@ -93,6 +93,10 @@ pub struct TbMeta {
     /// drains, debugger writes, flash programming — can never execute
     /// stale (M5). Stamped by the runner, not the builder.
     pub check: u64,
+    /// Bit `i` set when op `i` performs a bus write (stamped by the
+    /// builder): the runner revalidates only after write ops, never after
+    /// pure ALU/branch/load ops (P1-6).
+    pub store_mask: u64,
 }
 
 impl TbMeta {
@@ -227,6 +231,23 @@ impl TbCache {
     #[must_use]
     pub fn ops(&self, key: &TbKey) -> Option<&[TbOp]> {
         self.blocks.get(key).map(|entry| entry.ops.as_slice())
+    }
+
+    /// Look up a block with LRU refresh, returning metadata and payload
+    /// together: one hash probe for the runner's hot path (P1-6).
+    pub fn get(&mut self, pc: u32, secure: bool, isa: Isa) -> Option<(&TbMeta, &[TbOp])> {
+        let key = TbKey {
+            pc,
+            secure,
+            isa,
+            mpu_epoch: self.epoch,
+        };
+        let tick = self.tick.wrapping_add(1);
+        self.tick = tick;
+        let entry = self.blocks.get_mut(&key)?;
+        entry.last_used = tick;
+        self.evict.push(Reverse((tick, key)));
+        Some((&entry.meta, entry.ops.as_slice()))
     }
 
     /// Bump the MPU generation (T7): all cached blocks become stale and are
@@ -374,6 +395,7 @@ mod tests {
             page_count,
             cycle_estimate: 4,
             check: 0,
+            store_mask: 0,
         }
     }
 

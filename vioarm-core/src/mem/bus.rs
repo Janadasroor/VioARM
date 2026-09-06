@@ -301,6 +301,18 @@ pub trait PeripheralBus: Bus {
         None
     }
 
+    /// Generation of bus writes: bumped on every successful `write`
+    /// (byte/halfword/word funnels through it, as do DMA/mailbox drains
+    /// and debugger writes). The JIT runner skips content revalidation
+    /// while this is unchanged since its last validation — no write means
+    /// no byte could have changed — so a missed bump is silent wrong
+    /// execution: every `Bus` implementation MUST bump this on a successful
+    /// write (or override with `None`, which revalidates every entry:
+    /// safe, slow).
+    fn write_epoch(&self) -> Option<u64> {
+        None
+    }
+
     /// Record an MPU access violation at `addr` (an instruction fetch when
     /// `fetch` is true), so firmware reads the cause back through `MMFAR` and
     /// the `MMFSR` bits in `CFSR` plus `HFSR.FORCED` (the escalated-to-

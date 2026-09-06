@@ -11,11 +11,13 @@
 //! - Block entry is gated on MPU fetch permission, mirroring the stepper's
 //!   pre-fetch check; a forbidden PC falls back so the stepper faults
 //!   identically (P1-2 deferred requirement, closed here).
-//! - Block entry purges on bus config-generation change, and every op
-//!   re-polls: an MPU/SAU reconfiguration (by CPU store, DMA drain, or
-//!   debugger write — all funnel through the bus `write` chokepoint) exits
-//!   the running block at the true PC instead of executing under stale
-//!   permissions (M5/T7, P1-4).
+//! - Block entry purges on bus config-generation change, and write ops
+//!   revalidate content + config right after executing (P1-6): an MPU/SAU
+//!   reconfiguration or code patch (by CPU store, DMA drain, or debugger
+//!   write — all funnel through the bus `write` chokepoint) exits the
+//!   running block at the true PC, even when the patch target is a later
+//!   op in the same block. Loads/ALU/branches need no checks: they cannot
+//!   mutate code or config (M5/T7).
 //! - Cache hits re-hash the code bytes (FNV-1a taken at insert) and rebuild
 //!   on mismatch, so self-modifying code from ANY source can never execute
 //!   stale — source-agnostic by construction, no per-site hook audit (M5).
@@ -37,7 +39,7 @@
 //!   before execution and must match, catching stale-decode/store bugs.
 //!   Full state-differential testing is P1-6's job.
 
-use crate::cpu::{Core, Next};
+use crate::cpu::{Core, Isa, Next};
 use crate::error::HaltCause;
 use crate::mem::PeripheralBus;
 
@@ -105,6 +107,11 @@ pub struct TbRunner {
     /// Last bus config generation seen (`None` until the first poll, or
     /// permanently when the bus is untracked — which polls as changed).
     last_seen: Option<u64>,
+    /// Bus write generation at the last content validation (`None` until
+    /// the first validation, or permanently for untracked buses — which
+    /// revalidate every entry). While the generation is unchanged, no byte
+    /// could have changed, so entry re-hashing is skipped (P1-6).
+    last_validated: Option<u64>,
     stats: TbStats,
 }
 
@@ -116,6 +123,7 @@ impl TbRunner {
             cache: TbCache::new(),
             verify_decodes: false,
             last_seen: None,
+            last_validated: None,
             stats: TbStats::default(),
         }
     }
@@ -128,6 +136,7 @@ impl TbRunner {
             cache: TbCache::new(),
             verify_decodes: true,
             last_seen: None,
+            last_validated: None,
             stats: TbStats::default(),
         }
     }
@@ -177,43 +186,36 @@ impl TbRunner {
             isa,
             mpu_epoch: self.cache.epoch(),
         };
-        // The lookup's mutable borrow must end (via `copied`) before the
-        // payload/content probes re-borrow the cache.
-        let hit_meta: Option<TbMeta> = self.cache.lookup(pc, secure, isa).copied();
-        // A hit additionally requires a stored payload AND matching code
-        // bytes: a write from ANY source (CPU, DMA, debugger, flash — M5)
-        // turns the hit into a rebuild instead of silent stale execution.
-        let mut cached = false;
-        if let Some(meta) = hit_meta {
-            if !self.cached_ops(&key).is_empty() && Self::code_matches(core, &meta) {
+        // One probe returns metadata + payload (owned copies end the borrow
+        // before the content probes re-borrow the cache; no second lookup).
+        let probed: Option<(TbMeta, Vec<TbOp>)> = self
+            .cache
+            .get(pc, secure, isa)
+            .map(|(meta, ops)| (*meta, ops.to_vec()));
+        // A hit additionally requires validated code bytes (gated on the
+        // write generation: a matching generation means no byte could have
+        // changed since the last validation). Any mismatch rebuilds.
+        let (meta, ops, cached) = match probed {
+            Some((meta, ops)) if !ops.is_empty() && self.validated(core, &meta) => {
                 self.stats.hits += 1;
-                cached = true;
-            } else {
-                self.cache.invalidate_range(meta.key.pc, meta.len_bytes);
+                (meta, ops, true)
             }
-        }
-        if !cached {
-            let itstate = core.itstate;
-            let Some(body) = build_tb(core.mem_mut(), pc, secure, isa, itstate) else {
-                self.stats.fallbacks += 1;
-                return Ok(None);
-            };
-            let mut meta = body.to_meta();
-            let Some(check) = Self::hash_code(core, &meta) else {
-                // Bytes vanished between build and hash (device window
-                // unmapped mid-build): do not cache; fall back so the
-                // stepper faults identically.
-                self.stats.fallbacks += 1;
-                return Ok(None);
-            };
-            meta.check = check;
-            self.cache.insert(meta, body.ops);
-            self.stats.misses += 1;
-        }
+            Some((meta, _)) => {
+                self.cache.invalidate_range(meta.key.pc, meta.len_bytes);
+                match self.miss(core, pc, secure, isa) {
+                    Some((meta, ops)) => (meta, ops, false),
+                    None => return Ok(None),
+                }
+            }
+            None => match self.miss(core, pc, secure, isa) {
+                Some((meta, ops)) => (meta, ops, false),
+                None => return Ok(None),
+            },
+        };
         if self.verify_decodes {
             self.verify_block(core, &key);
         }
-        let outcome = self.exec_cached(core, &key, cached)?;
+        let outcome = self.exec_cached(core, &key, &meta, &ops, cached)?;
         self.stats.blocks += 1;
         self.stats.ops += outcome.ops as u64;
         Ok(Some(outcome))
@@ -257,10 +259,76 @@ impl TbRunner {
         self.cache.ops(key).unwrap_or(&[])
     }
 
+    /// Cold-miss path: build, hash, insert (plus payload for execution).
+    /// `None` on builder refusal or on bytes vanishing between build and
+    /// hash (fall back so the stepper faults identically).
+    fn miss<B: PeripheralBus>(
+        &mut self,
+        core: &mut Core<B>,
+        pc: u32,
+        secure: bool,
+        isa: Isa,
+    ) -> Option<(TbMeta, Vec<TbOp>)> {
+        // Explicit `else` (not `?`): every refusal counts a fallback.
+        let itstate = core.itstate;
+        let Some(body) = build_tb(core.mem_mut(), pc, secure, isa, itstate) else {
+            self.stats.fallbacks += 1;
+            return None;
+        };
+        let mut meta = body.to_meta();
+        let Some(check) = Self::hash_code(core, &meta) else {
+            self.stats.fallbacks += 1;
+            return None;
+        };
+        meta.check = check;
+        let ops = body.ops.clone();
+        self.cache.insert(meta, body.ops);
+        self.stats.misses += 1;
+        // The hash just established the baseline for this generation.
+        self.last_validated = core.mem_mut().write_epoch();
+        Some((meta, ops))
+    }
+
+    /// Entry content gate (P1-6): re-hash only when the bus reports writes
+    /// since the last validation — an unchanged generation proves no byte
+    /// could have changed, whatever the source. Untracked buses (`None`)
+    /// always re-hash. True when content is confirmed.
+    fn validated<B: PeripheralBus>(&mut self, core: &mut Core<B>, meta: &TbMeta) -> bool {
+        let gen = core.mem_mut().write_epoch();
+        if let (Some(g), Some(v)) = (gen, self.last_validated) {
+            if g == v {
+                return true;
+            }
+        }
+        if Self::code_matches(core, meta) {
+            self.last_validated = gen;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Re-check content + config after a write op (P1-6): true when the
+    /// block went stale and execution must stop at the current PC. A
+    /// matching revalidation refreshes the generation baseline.
+    fn revalidate<B: PeripheralBus>(&mut self, core: &mut Core<B>, meta: &TbMeta) -> bool {
+        if self.poll_config(core.mem_mut().config_epoch()) {
+            return true;
+        }
+        if !Self::code_matches(core, meta) {
+            self.cache.invalidate_range(meta.key.pc, meta.len_bytes);
+            return true;
+        }
+        self.last_validated = core.mem_mut().write_epoch();
+        false
+    }
+
     /// Poll the bus config generation; on change purge blocks translated
     /// under the older configuration (T7). Returns whether it changed, in
-    /// which case block execution must stop at the current PC. An untracked
-    /// bus (`None`) always reports change: safe, slow (single-op blocks).
+    /// which case block execution must stop at the current PC. Called at
+    /// block entry and after write ops only (never per-op: only stores can
+    /// change config mid-block). An untracked bus (`None`) always reports
+    /// change: entry purges every time (safe; rebuilds each block).
     fn poll_config(&mut self, bus_epoch: Option<u64>) -> bool {
         let changed = match bus_epoch {
             None => true,
@@ -309,20 +377,30 @@ impl TbRunner {
     }
 
     /// Execute the cached block's ops with per-op accounting and
-    /// PC-continuity checks. Ops are copied out first so the per-op config
-    /// poll (which mutates the cache) never fights the borrow checker; the
-    /// copy is `<= 64` small `Copy` ops.
+    /// PC-continuity checks. Ops are copied out first so revalidation
+    /// (which mutates the cache) never fights the borrow checker; the copy
+    /// is `<= 64` small `Copy` ops. Revalidation runs only after bus-write
+    /// ops (`store_mask`): loads/ALU/branches cannot mutate code or config
+    /// mid-block (see `op_writes_memory`), so hot loops pay no per-op
+    /// polling (P1-6). Sleeping is checked once at block end: only
+    /// `WFI`/`WFE` set it and both always seal their block, so sleep can
+    /// only ever engage on the last op.
     fn exec_cached<B: PeripheralBus>(
         &mut self,
         core: &mut Core<B>,
         key: &TbKey,
+        meta: &TbMeta,
+        ops: &[TbOp],
         cached: bool,
     ) -> Result<BlockOutcome, HaltCause> {
-        let ops: Vec<TbOp> = self.cached_ops(key).to_vec();
+        let mask = meta.store_mask;
         let mut cur = key.pc;
         let mut done = 0;
         let mut fell_through = true;
-        for op in &ops {
+        for (i, op) in ops.iter().enumerate() {
+            // Invariant: sleeping cores never enter blocks (run_block
+            // refuses) and only sealing last-ops can sleep.
+            debug_assert!(!core.sleeping, "sleep engaged mid-block");
             let fall = cur.wrapping_add(op_len(op));
             let npc = match *op {
                 TbOp::V16(inst) => core.exec_tb16(cur, inst),
@@ -334,18 +412,10 @@ impl TbRunner {
             };
             core.commit_step(cur, npc);
             done += 1;
-            // A sleeping op (WFI/WFE) ends the block even on fallthrough:
-            // the stepper would no-op from here.
-            if core.sleeping {
-                cur = npc;
-                fell_through = false;
-                break;
-            }
-            // A config change caused by the op just executed (e.g. an STR
-            // reprogramming the MPU, or a DMA write landing on PPB):
-            // purge and exit at the true PC; the next block rebuilds under
-            // the new configuration.
-            if self.poll_config(core.mem_mut().config_epoch()) {
+            // A write op may have patched code (even later ops in this same
+            // block) or reprogrammed the MPU: revalidate and exit at the
+            // true PC on any change; the next block rebuilds fresh.
+            if mask & (1_u64 << i) != 0 && self.revalidate(core, meta) {
                 cur = npc;
                 fell_through = false;
                 break;
@@ -356,6 +426,9 @@ impl TbRunner {
                 break;
             }
             cur = fall;
+        }
+        if core.sleeping {
+            fell_through = false;
         }
         Ok(BlockOutcome {
             ops: done,
@@ -397,6 +470,7 @@ mod tests {
         deny_fetch: bool,
         untracked: bool,
         config: u64,
+        writes: u64,
     }
 
     /// Writes here succeed without backing and bump the config generation.
@@ -410,6 +484,7 @@ mod tests {
                 deny_fetch: false,
                 untracked: false,
                 config: 0,
+                writes: 0,
             };
             for (i, half) in halves.iter().enumerate() {
                 bus.poke_half(base + (i as u32) * 2, *half);
@@ -422,6 +497,9 @@ mod tests {
             let i = addr.wrapping_sub(self.base) as usize;
             self.data[i] = lo;
             self.data[i + 1] = hi;
+            // Backdoor writes bump too: ANY byte mutation must be visible
+            // to the validation gate, without exception.
+            self.writes = self.writes.wrapping_add(1);
         }
 
         fn bump_config(&mut self) {
@@ -440,11 +518,13 @@ mod tests {
         fn write(&mut self, addr: u32, val: u8) -> Result<(), BusError> {
             if addr == MAGIC_CONFIG_ADDR {
                 self.bump_config();
+                self.writes = self.writes.wrapping_add(1);
                 return Ok(());
             }
             let i = addr.wrapping_sub(self.base) as usize;
             if i < self.data.len() {
                 self.data[i] = val;
+                self.writes = self.writes.wrapping_add(1);
                 Ok(())
             } else {
                 Err(BusError::Reserved)
@@ -480,6 +560,14 @@ mod tests {
                 None
             } else {
                 Some(self.config)
+            }
+        }
+
+        fn write_epoch(&self) -> Option<u64> {
+            if self.untracked {
+                None
+            } else {
+                Some(self.writes)
             }
         }
     }
@@ -688,17 +776,19 @@ mod tests {
     }
 
     #[test]
-    fn untracked_bus_runs_single_op_blocks() {
-        // `None` generation = assume change everywhere: correct, slow.
-        // Every block executes exactly one op and is purged immediately.
+    fn untracked_bus_rebuilds_every_block() {
+        // `None` generation = assume change at every entry: the cache is
+        // purged before each lookup, so every block is a cold miss — but
+        // full blocks still execute (revalidation only fires after writes).
         let mut core = core_at(&[MOVS_R0_1, NOP]);
         core.mem_mut().untracked = true;
         let mut runner = TbRunner::new();
         let first = runner.run_block(&mut core).unwrap().unwrap();
-        assert_eq!(first.ops, 1);
-        assert!(!first.fell_through);
+        assert_eq!(first.ops, 2);
+        assert!(first.fell_through);
+        core.regs.pc = 0x1000;
         let second = runner.run_block(&mut core).unwrap().unwrap();
-        assert_eq!(second.ops, 1);
+        assert_eq!(second.ops, 2);
         assert_eq!(runner.stats().hits, 0);
         assert_eq!(runner.stats().misses, 2);
     }

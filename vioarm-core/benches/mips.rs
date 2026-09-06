@@ -403,6 +403,66 @@ fn bench_fast(c: &mut Criterion) {
     g.finish();
 }
 
+/// G1 gate measurement (Phase 1 JIT): TB-quanta vs stepper wall time for
+/// the same retired-op count. The loop lives in RAM (no stepper decode
+/// cache off-flash: the TB win) and in flash (stepper cached: parity
+/// expectation) for context. Cold cache per iteration: honest short-run
+/// cost including block builds.
+#[cfg(feature = "jit")]
+fn bench_tb_quanta(c: &mut Criterion) {
+    use vioarm_core::jit::TbRunner;
+    // top: MOVS r0,#0; MOVS r1,#1; MOVS r2,#200;
+    // loop: ADDS r0,r0,r1; ADDS r1,#1; SUBS r2,#1; BNE loop; B top.
+    // BNE @base+12 -> base+6: off = -10 -> 0xD1FB. B @base+14 -> base: -18 -> 0xE7F7.
+    let prog = vec![
+        0x00, 0x20, 0x01, 0x21, 0xC8, 0x23, 0x40, 0x18, 0x49, 0x31, 0x91, 0x3B, 0xFB, 0xD1,
+        0xF7, 0xE7,
+    ];
+    let mut g = c.benchmark_group("tb");
+    for (name, base) in [("ram", 0x2000_0000u32), ("flash", 0x0800_0000u32)] {
+        g.bench_function(format!("step_{name}_4k"), |b| {
+            b.iter_batched(
+                || {
+                    let mem = FlatMemory::with_layout(&[base], &[0x10000]);
+                    let mut m = Machine::armv7m(mem);
+                    m.load_image(&load_flat(base, &prog));
+                    m.core.regs.pc = base;
+                    m.core.xpsr.set(0x01000000);
+                    m
+                },
+                |mut m| {
+                    for _ in 0..4096 {
+                        let _ = m.step();
+                    }
+                    black_box(m.core.cyccnt)
+                },
+                BatchSize::SmallInput,
+            );
+        });
+        g.bench_function(format!("quanta_{name}_4k"), |b| {
+            b.iter_batched(
+                || {
+                    let mem = FlatMemory::with_layout(&[base], &[0x10000]);
+                    let mut m = Machine::armv7m(mem);
+                    m.load_image(&load_flat(base, &prog));
+                    m.core.regs.pc = base;
+                    m.core.xpsr.set(0x01000000);
+                    (m, TbRunner::new())
+                },
+                |(mut m, mut runner)| {
+                    let mut ops = 0u64;
+                    while ops < 4096 {
+                        ops += m.run_tb_quantum(&mut runner, 1024).unwrap().ops;
+                    }
+                    black_box(m.core.cyccnt)
+                },
+                BatchSize::SmallInput,
+            );
+        });
+    }
+    g.finish();
+}
+
 criterion_group!(
     benches,
     bench_board_boot,
@@ -411,4 +471,9 @@ criterion_group!(
     bench_hooks,
     bench_fast
 );
+#[cfg(feature = "jit")]
+criterion_group!(benches_jit, bench_tb_quanta);
+#[cfg(not(feature = "jit"))]
 criterion_main!(benches);
+#[cfg(feature = "jit")]
+criterion_main!(benches, benches_jit);

@@ -186,6 +186,7 @@ mod tests {
         stack: Vec<u8>,
         pending: Option<u8>,
         ticks: u64,
+        writes: u64,
     }
 
     impl TestBus {
@@ -196,6 +197,7 @@ mod tests {
                 stack: vec![0; 0x100],
                 pending: None,
                 ticks: 0,
+                writes: 0,
             };
             for (i, half) in code_halves.iter().enumerate() {
                 let [lo, hi] = half.to_le_bytes();
@@ -231,6 +233,7 @@ mod tests {
                 _ => return Err(BusError::Reserved),
             };
             mem[(addr - base) as usize] = val;
+            self.writes = self.writes.wrapping_add(1);
             Ok(())
         }
     }
@@ -272,6 +275,10 @@ mod tests {
 
         fn config_epoch(&self) -> Option<u64> {
             Some(0)
+        }
+
+        fn write_epoch(&self) -> Option<u64> {
+            Some(self.writes)
         }
     }
 
@@ -392,6 +399,28 @@ mod tests {
         assert_eq!(out.end, QuantumEnd::Budget);
         assert!(out.ops >= 4);
         assert!(runner.stats().fallbacks >= 1);
+    }
+
+    #[test]
+    fn just_returned_skips_one_boundary_scan() {
+        // A pending IRQ with just_returned set must NOT deliver at the
+        // boundary (the restored instruction runs first); the flag is
+        // consumed, so the next boundary delivers normally. The vector
+        // points at unmapped memory, so any early delivery faults loudly.
+        let mut m = machine_at(&[NOP, NOP, NOP, NOP]);
+        m.core.mem().write_word(0x48, 0x3001).unwrap();
+        m.core.mem().raise(18);
+        m.core.just_returned = true;
+        let mut runner = TbRunner::new();
+        let out = m.run_tb_quantum(&mut runner, 4).unwrap();
+        assert_eq!(m.core.ipsr, 0, "no delivery while just_returned");
+        assert!(!m.core.just_returned, "flag consumed");
+        assert!(out.ops > 0);
+        // Next quantum: the scan runs and delivers.
+        let out = m.run_tb_quantum(&mut runner, 4).unwrap();
+        assert_eq!(m.core.ipsr, 18);
+        assert_eq!(m.core.regs.pc, 0x3000);
+        assert_eq!(out.end, QuantumEnd::Budget);
     }
 
     #[test]

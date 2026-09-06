@@ -115,6 +115,9 @@ pub struct SystemMemory<M: Bus> {
     /// `SHCSR` fault-routing writes, which never change decoded meaning)
     /// is harmless, a missed bump is not.
     config_epoch: u64,
+    /// Bus-write generation for JIT content validation (see `write_epoch`):
+    /// bumped on every successful `write`, whatever the target.
+    write_epoch: u64,
 }
 
 impl<M: Bus + core::fmt::Debug> core::fmt::Debug for SystemMemory<M> {
@@ -167,6 +170,7 @@ impl<M: Bus> SystemMemory<M> {
             itm: Itm::new(),
             hooks: Hooks::default(),
             config_epoch: 0,
+            write_epoch: 0,
         }
     }
 
@@ -936,6 +940,7 @@ impl<M: Bus> Bus for SystemMemory<M> {
         }
         // Every writer funnels through here — CPU stores, DMA/mailbox
         // drains, debugger writes — so one bump site covers all M5 sources.
+        self.write_epoch = self.write_epoch.wrapping_add(1);
         if (0xE000_ED00..0xE000_EE00).contains(&addr) {
             self.config_epoch = self.config_epoch.wrapping_add(1);
         }
@@ -1042,6 +1047,10 @@ impl<M: Bus> PeripheralBus for SystemMemory<M> {
 
     fn config_epoch(&self) -> Option<u64> {
         Some(self.config_epoch)
+    }
+
+    fn write_epoch(&self) -> Option<u64> {
+        Some(self.write_epoch)
     }
 
     fn mpu_fault(&mut self, addr: u32, fetch: bool) {

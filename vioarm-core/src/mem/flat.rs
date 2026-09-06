@@ -20,6 +20,8 @@ pub struct Bank {
 pub struct FlatMemory {
     banks: Vec<Bank>,
     hooks: Hooks,
+    /// Bus-write generation for JIT content validation (see `write_epoch`).
+    write_epoch: u64,
 }
 
 impl FlatMemory {
@@ -28,6 +30,7 @@ impl FlatMemory {
         Self {
             banks,
             hooks: Hooks::empty(),
+            write_epoch: 0,
         }
     }
 
@@ -45,6 +48,7 @@ impl FlatMemory {
         Self {
             banks: bytes,
             hooks: Hooks::default(),
+            write_epoch: 0,
         }
     }
 
@@ -86,6 +90,7 @@ impl Bus for FlatMemory {
         let b = self.bank_for_mut(addr)?;
         let off = (addr - b.region.base) as usize;
         b.bytes[off] = val;
+        self.write_epoch = self.write_epoch.wrapping_add(1);
         if self.hooks.has_write() {
             self.hooks.fire_write(addr, val);
         }
@@ -105,6 +110,10 @@ impl PeripheralBus for FlatMemory {
     }
 
     fn acknowledge_exception(&mut self, _n: u8) {}
+
+    fn write_epoch(&self) -> Option<u64> {
+        Some(self.write_epoch)
+    }
 
     fn config_epoch(&self) -> Option<u64> {
         // Plain RAM/ROM banks: no MPU, no attribution, no fetch-affecting

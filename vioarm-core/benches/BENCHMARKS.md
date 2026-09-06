@@ -108,6 +108,27 @@ is the documented sweet spot (±32-step event accuracy). The floor (~1.4 ms)
 is core+bus+memory — device dispatch was the prize, and coarse ticks took
 it (see the tickexp probe notes in the M11 entry).
 
+## JIT Phase 1 (P1-6/G1, 2026-09-07)
+
+4096-op ALU soak loop, `tb` group with the `jit` feature
+(`cargo bench -p vioarm-core --features jit --bench mips -- tb`);
+cold cache per iteration (includes block builds):
+
+| Bench | Mean | Ratio vs stepper |
+|---|---|---|
+| `tb/step_ram_4k` | 439.9 µs | 1.00 |
+| `tb/quanta_ram_4k` | 345.7 µs | **1.27** |
+| `tb/step_flash_4k` | 521.2 µs | 1.00 |
+| `tb/quanta_flash_4k` | 455.5 µs | 1.14 |
+
+G1 acceptance (≥1.2× on the soak) holds at 1.27 on the RAM loop — the
+mechanism's target (the stepper has no decode cache off-flash, so TBs
+remove a re-decode per op there). Flash shows 1.14: the stepper's
+flash decode cache already covers re-decode, leaving dispatch + fetch as
+the remaining prize (the emitter's target in Phase 2). Enabling runs:
+mask-driven revalidation (P1-6), write-generation-gated entry checks,
+single-probe lookup.
+
 ## Regression policy
 
 Wall-clock gating on shared CI runners is flake-prone, so CI runs the
