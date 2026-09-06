@@ -262,9 +262,21 @@ Goal: 10–30× on compute loops.
   safe API in `vioarm-core` (`forbid` intact); `jit-smoke` CI job added
   (ubuntu/macos/windows × stable: jit unit tests, trampoline tests,
   feature-gated bench build, feature-gated clippy).
-- [ ] P2-1: emitter skeleton: register allocation (fixed guest→host
-  mapping for r0–r12/sp/lr/pc + flags word — simplescalar, no graph
-  coloring; document the choice), prologue/epilogue, callout ABI.
+- [x] P2-1: emitter skeleton. Done 2026-09-07 (`jit/native.rs`):
+  zero-copy model (no writeback path to forget — `Core` stays the single
+  source of truth; addresses via `offset_of!` + `repr(C)` ctx +
+  `repr(transparent)` flags, no layout assumptions); fixed map r0–r3 +
+  xPSR word in callee-saved pins (rbx/r12–r15, x19–x23; `rbp` refused for
+  unwind-friendliness; r4–r12/sp/lr/pc memory-backed with P2-2 template
+  rules pending); prologue/epilogue with 16-alignment + ctx spill slot
+  discipline for templates; exit codes `(reason<<32)|pc`;
+  `extern "C"` callout ABI (callouts must not unwind — P2-2 enforces) with
+  an end-to-end callout test proving mechanics + pin survival across a
+  real Rust call. Cache holds `BlockPayload::{Interp,Native}` (`Arc`
+  mapping; eviction leak-proven by `strong_count`). Caught by testing:
+  dynasm parses `r0`–`r3` idents as x64 registers (renamed offsets), and
+  the AArch64 arms needed a local cross-check (installed target;
+  displacement `u32`, arch-gated `DynasmApi` import).
 - [ ] P2-2: integer ALU templates (S0) with bit-exact flags (each template
   unit-tested against the interpreter across random inputs — the template
   test harness from this step serves all later templates).

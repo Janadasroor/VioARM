@@ -25,7 +25,12 @@ pub const XPSR_T: u32 = 1 << 24;
 
 /// `xPSR` bits we allow host code to inspect and modify. Everything else is
 /// reserved (and reading reserved bits yields 0 on the hardware we model).
+///
+/// `repr(transparent)`: the JIT emitter (P2-1) addresses the flags word
+/// directly through a `*mut u32`, which is sound only with a guaranteed
+/// newtype layout. No behavior change.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(transparent)]
 pub struct Xpsr(u32);
 
 impl Xpsr {

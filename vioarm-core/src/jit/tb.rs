@@ -8,6 +8,7 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use super::builder::TbOp;
+use super::native::NativeBlock;
 use crate::cpu::Isa;
 
 /// Default TB-cache capacity: 8192 blocks (T4). Sized so whole soak-loop
@@ -113,12 +114,22 @@ impl TbMeta {
     }
 }
 
-/// One cached block: metadata, the decoded ops to execute (Phase 1;
-/// native code replaces them in Phase 2), plus LRU bookkeeping.
+/// What a cached block executes: interpreted ops (Phase 1) or committed
+/// machine code (Phase 2+). `Native` shares its mapping by `Arc` (code is
+/// immutable after `finalize`); eviction drops the last `Arc` and unmaps.
+#[derive(Clone, Debug)]
+pub enum BlockPayload {
+    /// Decoded ops for the interpreted loop.
+    Interp(Vec<TbOp>),
+    /// Committed machine code for the native driver (P2-2).
+    Native(NativeBlock),
+}
+
+/// One cached block: metadata, executable payload, plus LRU bookkeeping.
 #[derive(Clone, Debug)]
 struct Entry {
     meta: TbMeta,
-    ops: Vec<TbOp>,
+    payload: BlockPayload,
     /// Monotonic last-use tick; the eviction heap orders by it (lazy LRU).
     last_used: u64,
 }
@@ -204,7 +215,18 @@ impl TbCache {
     /// its key. Overwrites any block with the same `(pc, secure, isa)` and
     /// evicts least-recently used blocks past capacity (T4). Chained jump
     /// patches to evicted blocks must be dropped by the chaining layer (T6).
-    pub fn insert(&mut self, mut meta: TbMeta, ops: Vec<TbOp>) {
+    pub fn insert(&mut self, meta: TbMeta, ops: Vec<TbOp>) {
+        self.insert_inner(meta, BlockPayload::Interp(ops));
+    }
+
+    /// Insert a block with committed machine code (P2-1): same keying,
+    /// epoch stamping, page registration, and LRU as [`Self::insert`].
+    pub fn insert_native(&mut self, meta: TbMeta, native: NativeBlock) {
+        self.insert_inner(meta, BlockPayload::Native(native));
+    }
+
+    /// Shared insert path for both payload kinds.
+    fn insert_inner(&mut self, mut meta: TbMeta, payload: BlockPayload) {
         meta.key.mpu_epoch = self.epoch;
         let key = meta.key;
         // Refresh path: drop the old page registration before re-registering.
@@ -216,7 +238,7 @@ impl TbCache {
             key,
             Entry {
                 meta,
-                ops,
+                payload,
                 last_used: self.tick,
             },
         );
@@ -227,10 +249,21 @@ impl TbCache {
         self.evict_past_capacity();
     }
 
-    /// The decoded ops stored for `key`, if the block is cached.
+    /// The decoded ops stored for `key`, if the block is cached as
+    /// interpreted (`None` for native blocks and misses alike: the runner
+    /// treats both as rebuilds until P2-2 wires native dispatch).
     #[must_use]
     pub fn ops(&self, key: &TbKey) -> Option<&[TbOp]> {
-        self.blocks.get(key).map(|entry| entry.ops.as_slice())
+        match self.blocks.get(key).map(|entry| &entry.payload) {
+            Some(BlockPayload::Interp(ops)) => Some(ops.as_slice()),
+            _ => None,
+        }
+    }
+
+    /// The payload stored for `key`, if the block is cached in any form.
+    #[must_use]
+    pub fn payload(&self, key: &TbKey) -> Option<&BlockPayload> {
+        self.blocks.get(key).map(|entry| &entry.payload)
     }
 
     /// Look up a block with LRU refresh, returning metadata and payload
@@ -247,7 +280,10 @@ impl TbCache {
         let entry = self.blocks.get_mut(&key)?;
         entry.last_used = tick;
         self.evict.push(Reverse((tick, key)));
-        Some((&entry.meta, entry.ops.as_slice()))
+        match &entry.payload {
+            BlockPayload::Interp(ops) => Some((&entry.meta, ops.as_slice())),
+            BlockPayload::Native(_) => None,
+        }
     }
 
     /// Bump the MPU generation (T7): all cached blocks become stale and are
@@ -505,5 +541,38 @@ mod tests {
         assert!(!m.covers_page(0));
         assert!(!m.covers_page(3));
         assert_eq!(m.end_page(), 3);
+    }
+
+    #[test]
+    fn native_payload_round_trips_and_evicts_cleanly() {
+        use super::super::emit::assemble_smoke;
+        use super::super::native::NativeBlock;
+
+        let mut cache = TbCache::with_capacity(1);
+        let buf = assemble_smoke().expect("smoke for payload test");
+        let native = NativeBlock::new(buf, dynasmrt::AssemblyOffset(0));
+        // Hold a clone: eviction must return its count to 1, proving the
+        // cache released the mapping (no executable-memory leak).
+        let held = native.clone();
+        assert_eq!(held.strong_count(), 2);
+        cache.insert_native(meta(0x1000, 1), native);
+        let key = TbKey {
+            pc: 0x1000,
+            secure: false,
+            isa: Isa::Armv7M,
+            mpu_epoch: cache.epoch(),
+        };
+        assert!(matches!(
+            cache.payload(&key),
+            Some(super::BlockPayload::Native(_))
+        ));
+        // Interpreted accessors see through native blocks (runner rebuilds
+        // until P2-2 wires native dispatch).
+        assert!(cache.ops(&key).is_none());
+        assert!(cache.get(0x1000, false, Isa::Armv7M).is_none());
+        // Evict with a second block; the mapping must drop exactly once.
+        cache.insert(meta(0x2000, 1), Vec::new());
+        assert!(cache.payload(&key).is_none());
+        assert_eq!(held.strong_count(), 1);
     }
 }

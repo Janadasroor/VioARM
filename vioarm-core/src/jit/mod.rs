@@ -19,14 +19,17 @@
 
 mod builder;
 mod emit;
+mod native;
 mod quanta;
 mod runner;
 mod tb;
 
 pub use builder::{build_tb, TbBody, TbEnd, TbOp};
 pub use emit::{assemble_smoke, EmitError};
+pub use native::{exit_code, exit_pc, exit_reason, NativeBlock, NativeCtx, EXIT_BRANCH, EXIT_FALL};
 pub use quanta::{QuantumEnd, QuantumOutcome, DEFAULT_QUANTUM_OPS};
 pub use runner::{BlockOutcome, ChainEnd, ChainOutcome, TbRunner, TbStats};
+pub use tb::BlockPayload;
 pub use tb::{
     MpuEpoch, TbCache, TbKey, TbMeta, DEFAULT_CAPACITY, MAX_TB_INSNS, PAGE_SHIFT, PAGE_SIZE,
 };

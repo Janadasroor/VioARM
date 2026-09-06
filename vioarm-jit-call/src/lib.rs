@@ -83,7 +83,11 @@ pub fn call1(entry: *const u8, arg: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use dynasmrt::{dynasm, AssemblyOffset, DynasmApi};
+    use dynasmrt::{dynasm, AssemblyOffset};
+
+    // Only the x64 encoding path needs the trait in scope.
+    #[cfg(target_arch = "x86_64")]
+    use dynasmrt::DynasmApi;
 
     use super::*;
 

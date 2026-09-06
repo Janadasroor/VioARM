@@ -12,7 +12,13 @@
 //! enables `jit` fails fast here with a clear message instead of a
 //! half-working emitter.
 
-use dynasmrt::{dynasm, DynasmApi, ExecutableBuffer};
+use dynasmrt::{dynasm, ExecutableBuffer};
+
+// Only the x64 encoding path needs the trait in scope (the AArch64
+// instructions used here don't); keep the import arch-gated so neither
+// host warns.
+#[cfg(target_arch = "x86_64")]
+use dynasmrt::DynasmApi;
 
 /// Assemble a stub returning the constant 42 (`u64`, C ABI) and commit it
 /// as executable memory.
