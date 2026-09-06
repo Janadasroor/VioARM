@@ -17,8 +17,10 @@
 //!   MMIO touches (T2): the builder enforces that; the cache trusts the
 //!   `start_page`/`page_count` it is given and invalidates on overlap.
 
+mod builder;
 mod tb;
 
+pub use builder::{build_tb, TbBody, TbEnd, TbOp};
 pub use tb::{
     MpuEpoch, TbCache, TbKey, TbMeta, DEFAULT_CAPACITY, MAX_TB_INSNS, PAGE_SHIFT, PAGE_SIZE,
 };

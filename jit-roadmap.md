@@ -180,8 +180,13 @@ everything else stays) — the value is risk retirement, not speed.
   placement per D6 (`vioarm-core/src/jit/`, `jit` feature skeleton with no
   dynasm dependency yet). Done: `TbKey`/`MpuEpoch`/`TbMeta`/`TbCache` +
   page-overlap index (M6) + `bump_epoch` purge (T7), 7 unit tests.
-- [ ] P1-2: block builder over the EXISTING decoders (no new decode logic:
-  reuse `decode16`/`decode32`, stop at T2 boundaries).
+- [x] P1-2: block builder over the EXISTING decoders (no new decode logic:
+  reuse `decode16`/`decode32`, stop at T2 boundaries). Done: `build_tb`
+  mirrors the stepper's per-ISA dispatch, seals inclusive on
+  ControlFlow/System (S6 incl. IT/WFI/DSP/FP/unpredictable-PC forms),
+  exclusive on PageCross/Halt, refuses on ITSTATE/odd-PC/entry failure;
+  15 unit tests. P1-3 must still gate block entry on MPU fetch permission
+  and side-exit on first MMIO touch (documented in `builder.rs`).
 - [ ] P1-3: interpreted TB execution loop (per-insn executor calls, chained
   dispatch) + cold-miss path (T5, with debug verify mode).
 - [ ] P1-4: page-guard map (M1) + invalidation hooks (M5) + M6 index.
