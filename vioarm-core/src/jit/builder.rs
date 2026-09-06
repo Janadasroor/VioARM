@@ -102,6 +102,8 @@ impl TbBody {
             start_page: self.start_page,
             page_count: self.page_count,
             cycle_estimate: self.cycle_estimate,
+            // The runner stamps the real content hash at insert time.
+            check: 0,
         }
     }
 }

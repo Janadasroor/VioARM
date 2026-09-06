@@ -107,6 +107,14 @@ pub struct SystemMemory<M: Bus> {
     /// In-process hook registry (instruction/watchpoint/peripheral hooks).
     /// Empty by default: one predicted branch per access then.
     hooks: Hooks,
+    /// Generation of fetch-affecting configuration, bumped on every write
+    /// to the system-control window (`0xE000_ED00..0xE000_EE00`: SCB, MPU,
+    /// SAU, FPU). The JIT runner polls it (see `config_epoch`): a missed
+    /// bump would be silent wrong execution, so the window is deliberately
+    /// wider than just the MPU registers — over-invalidation (e.g. on
+    /// `SHCSR` fault-routing writes, which never change decoded meaning)
+    /// is harmless, a missed bump is not.
+    config_epoch: u64,
 }
 
 impl<M: Bus + core::fmt::Debug> core::fmt::Debug for SystemMemory<M> {
@@ -158,6 +166,7 @@ impl<M: Bus> SystemMemory<M> {
             tim_phase: [0, 0],
             itm: Itm::new(),
             hooks: Hooks::default(),
+            config_epoch: 0,
         }
     }
 
@@ -925,6 +934,11 @@ impl<M: Bus> Bus for SystemMemory<M> {
             Target::Itm => self.itm.write(addr, val)?,
             Target::Backing => self.write_backing(addr, val)?,
         }
+        // Every writer funnels through here — CPU stores, DMA/mailbox
+        // drains, debugger writes — so one bump site covers all M5 sources.
+        if (0xE000_ED00..0xE000_EE00).contains(&addr) {
+            self.config_epoch = self.config_epoch.wrapping_add(1);
+        }
         if self.hooks.has_write() {
             self.hooks.fire_write(addr, val);
         }
@@ -1024,6 +1038,10 @@ impl<M: Bus> PeripheralBus for SystemMemory<M> {
 
     fn mpu_check(&mut self, addr: u32, access: MpuAccess, privileged: bool, exception: u8) -> bool {
         self.scb.mpu_check(addr, access, privileged, exception)
+    }
+
+    fn config_epoch(&self) -> Option<u64> {
+        Some(self.config_epoch)
     }
 
     fn mpu_fault(&mut self, addr: u32, fetch: bool) {

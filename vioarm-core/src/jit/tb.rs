@@ -87,6 +87,12 @@ pub struct TbMeta {
     /// Approximate cycle cost of the block (D7 accounting; exactness is
     /// explicitly NOT guaranteed in JIT mode).
     pub cycle_estimate: u64,
+    /// Content checksum (FNV-1a over the code bytes) taken when the block
+    /// was inserted. The runner re-hashes on every cache hit and rebuilds
+    /// on mismatch, so writes from ANY source — CPU stores, DMA/mailbox
+    /// drains, debugger writes, flash programming — can never execute
+    /// stale (M5). Stamped by the runner, not the builder.
+    pub check: u64,
 }
 
 impl TbMeta {
@@ -367,6 +373,7 @@ mod tests {
             start_page: pc >> PAGE_SHIFT,
             page_count,
             cycle_estimate: 4,
+            check: 0,
         }
     }
 

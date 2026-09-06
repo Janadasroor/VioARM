@@ -194,7 +194,17 @@ everything else stays) — the value is risk retirement, not speed.
   exits, T5 re-decode verify mode, hit/miss stats; 9 runner tests incl. a
   4-op stepper-parity check. Pending interrupts are NOT polled between
   chained blocks (same as back-to-back steps; P1-5 owns quanta).
-- [ ] P1-4: page-guard map (M1) + invalidation hooks (M5) + M6 index.
+- [x] P1-4: page-guard map (M1) + invalidation hooks (M5) + M6 index.
+  Done Phase-1-style: FNV-1a content checksum stamped at insert and
+  re-validated on every hit (source-agnostic — CPU/DMA/debugger/flash
+  writes all funnel through the bus `write` chokepoint, so no per-site
+  audit can miss one), plus a bus `config_epoch` polled at block entry
+  and after every op (`SystemMemory` bumps it on any `0xE000_ED00–EE00`
+  write; `FlatMemory` reports constant; untracked buses poll as
+  always-changed: safe, slow). 4 new runner tests (SMC halfword+word
+  rebuild, inter-block purge, mid-block STRB-exit, untracked single-op).
+  The M1 page→host-slice map proper ships with the emitter (P2-3);
+  hook-armed ranges arrive with X1 (P3-3).
 - [ ] P1-5: quanta loop (E1/E2) reusing `enter_exception`; WFI/exception
   side exits (E3/E4).
 - [ ] P1-6: differential tests TB-vs-interpreter on existing suites

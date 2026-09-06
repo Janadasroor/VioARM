@@ -11,6 +11,17 @@
 //! - Block entry is gated on MPU fetch permission, mirroring the stepper's
 //!   pre-fetch check; a forbidden PC falls back so the stepper faults
 //!   identically (P1-2 deferred requirement, closed here).
+//! - Block entry purges on bus config-generation change, and every op
+//!   re-polls: an MPU/SAU reconfiguration (by CPU store, DMA drain, or
+//!   debugger write — all funnel through the bus `write` chokepoint) exits
+//!   the running block at the true PC instead of executing under stale
+//!   permissions (M5/T7, P1-4).
+//! - Cache hits re-hash the code bytes (FNV-1a taken at insert) and rebuild
+//!   on mismatch, so self-modifying code from ANY source can never execute
+//!   stale — source-agnostic by construction, no per-site hook audit (M5).
+//!   The M1 page-guard map proper ships with the emitter (P2-3); checksums
+//!   are its Phase-1 safety equivalent. Hook-armed ranges (X1) arrive with
+//!   P3-3 host surfaces.
 //! - A sleeping core never enters a block (the stepper no-ops while
 //!   asleep); an op that sleeps (`WFI`/`WFE`) ends the block immediately.
 //! - After every op the runner compares the PC against the fallthrough
@@ -31,7 +42,7 @@ use crate::error::HaltCause;
 use crate::mem::PeripheralBus;
 
 use super::builder::{build_tb, fetch_op, TbOp};
-use super::tb::{TbCache, TbKey};
+use super::tb::{TbCache, TbKey, TbMeta};
 
 /// Per-runner execution counters (hit/miss shape for G1 measurement).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -91,6 +102,9 @@ pub struct ChainOutcome {
 pub struct TbRunner {
     cache: TbCache,
     verify_decodes: bool,
+    /// Last bus config generation seen (`None` until the first poll, or
+    /// permanently when the bus is untracked — which polls as changed).
+    last_seen: Option<u64>,
     stats: TbStats,
 }
 
@@ -101,6 +115,7 @@ impl TbRunner {
         Self {
             cache: TbCache::new(),
             verify_decodes: false,
+            last_seen: None,
             stats: TbStats::default(),
         }
     }
@@ -112,6 +127,7 @@ impl TbRunner {
         Self {
             cache: TbCache::new(),
             verify_decodes: true,
+            last_seen: None,
             stats: TbStats::default(),
         }
     }
@@ -152,30 +168,46 @@ impl TbRunner {
             self.stats.fallbacks += 1;
             return Ok(None);
         }
+        // Entry config poll (T7/M5): blocks translated under an older
+        // fetch-affecting configuration are purged before lookup.
+        self.poll_config(core.mem_mut().config_epoch());
         let key = TbKey {
             pc,
             secure,
             isa,
             mpu_epoch: self.cache.epoch(),
         };
-        // Two steps: the lookup's mutable borrow must end before the
-        // payload probe (`cached_ops`) re-borrows the cache.
-        let hit = self.cache.lookup(pc, secure, isa).is_some();
-        let cached = if hit && !self.cached_ops(&key).is_empty() {
-            true
-        } else {
+        // The lookup's mutable borrow must end (via `copied`) before the
+        // payload/content probes re-borrow the cache.
+        let hit_meta: Option<TbMeta> = self.cache.lookup(pc, secure, isa).copied();
+        // A hit additionally requires a stored payload AND matching code
+        // bytes: a write from ANY source (CPU, DMA, debugger, flash — M5)
+        // turns the hit into a rebuild instead of silent stale execution.
+        let mut cached = false;
+        if let Some(meta) = hit_meta {
+            if !self.cached_ops(&key).is_empty() && Self::code_matches(core, &meta) {
+                self.stats.hits += 1;
+                cached = true;
+            } else {
+                self.cache.invalidate_range(meta.key.pc, meta.len_bytes);
+            }
+        }
+        if !cached {
             let itstate = core.itstate;
             let Some(body) = build_tb(core.mem_mut(), pc, secure, isa, itstate) else {
                 self.stats.fallbacks += 1;
                 return Ok(None);
             };
-            let meta = body.to_meta();
+            let mut meta = body.to_meta();
+            let Some(check) = Self::hash_code(core, &meta) else {
+                // Bytes vanished between build and hash (device window
+                // unmapped mid-build): do not cache; fall back so the
+                // stepper faults identically.
+                self.stats.fallbacks += 1;
+                return Ok(None);
+            };
+            meta.check = check;
             self.cache.insert(meta, body.ops);
-            false
-        };
-        if cached {
-            self.stats.hits += 1;
-        } else {
             self.stats.misses += 1;
         }
         if self.verify_decodes {
@@ -225,6 +257,40 @@ impl TbRunner {
         self.cache.ops(key).unwrap_or(&[])
     }
 
+    /// Poll the bus config generation; on change purge blocks translated
+    /// under the older configuration (T7). Returns whether it changed, in
+    /// which case block execution must stop at the current PC. An untracked
+    /// bus (`None`) always reports change: safe, slow (single-op blocks).
+    fn poll_config(&mut self, bus_epoch: Option<u64>) -> bool {
+        let changed = match bus_epoch {
+            None => true,
+            Some(seen) => self.last_seen != Some(seen),
+        };
+        if changed {
+            self.cache.bump_epoch();
+            self.last_seen = bus_epoch;
+        }
+        changed
+    }
+
+    /// FNV-1a over the block's code bytes; `None` when a byte is unreadable.
+    /// The range is bounded by construction (`<= 64` ops, `<= 256` bytes).
+    fn hash_code<B: PeripheralBus>(core: &mut Core<B>, meta: &TbMeta) -> Option<u64> {
+        let bus = core.mem_mut();
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for offset in 0..meta.len_bytes {
+            let byte = bus.read(meta.key.pc.wrapping_add(offset)).ok()?;
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+        }
+        Some(hash)
+    }
+
+    /// Whether the bus bytes still match the checksum taken at insert.
+    fn code_matches<B: PeripheralBus>(core: &mut Core<B>, meta: &TbMeta) -> bool {
+        Self::hash_code(core, meta) == Some(meta.check)
+    }
+
     /// T5 debug verify: re-decode every stored op from the bus; any
     /// mismatch is a stale-cache bug and panics in debug *and* release
     /// (verify mode is opt-in, so a mismatch must be loud).
@@ -243,19 +309,20 @@ impl TbRunner {
     }
 
     /// Execute the cached block's ops with per-op accounting and
-    /// PC-continuity checks. The ops slice borrows `self` immutably while
-    /// only `core` is mutated, so no per-op re-lookup is needed.
+    /// PC-continuity checks. Ops are copied out first so the per-op config
+    /// poll (which mutates the cache) never fights the borrow checker; the
+    /// copy is `<= 64` small `Copy` ops.
     fn exec_cached<B: PeripheralBus>(
         &mut self,
         core: &mut Core<B>,
         key: &TbKey,
         cached: bool,
     ) -> Result<BlockOutcome, HaltCause> {
-        let ops: &[TbOp] = self.cached_ops(key);
+        let ops: Vec<TbOp> = self.cached_ops(key).to_vec();
         let mut cur = key.pc;
         let mut done = 0;
         let mut fell_through = true;
-        for op in ops {
+        for op in &ops {
             let fall = cur.wrapping_add(op_len(op));
             let npc = match *op {
                 TbOp::V16(inst) => core.exec_tb16(cur, inst),
@@ -270,6 +337,15 @@ impl TbRunner {
             // A sleeping op (WFI/WFE) ends the block even on fallthrough:
             // the stepper would no-op from here.
             if core.sleeping {
+                cur = npc;
+                fell_through = false;
+                break;
+            }
+            // A config change caused by the op just executed (e.g. an STR
+            // reprogramming the MPU, or a DMA write landing on PPB):
+            // purge and exit at the true PC; the next block rebuilds under
+            // the new configuration.
+            if self.poll_config(core.mem_mut().config_epoch()) {
                 cur = npc;
                 fell_through = false;
                 break;
@@ -311,13 +387,20 @@ mod tests {
 
     use super::*;
 
-    /// Stub bus: byte RAM plus an MPU-fetch gate switch.
+    /// Stub bus: byte RAM plus an MPU-fetch gate switch and a controllable
+    /// config generation (the test analog of the system-control window:
+    /// writes to `MAGIC_CONFIG_ADDR` sink and bump it).
     #[derive(Clone, Debug)]
     struct StubBus {
         base: u32,
         data: Vec<u8>,
         deny_fetch: bool,
+        untracked: bool,
+        config: u64,
     }
+
+    /// Writes here succeed without backing and bump the config generation.
+    const MAGIC_CONFIG_ADDR: u32 = 0x2000;
 
     impl StubBus {
         fn with_halves(base: u32, halves: &[u16]) -> Self {
@@ -325,13 +408,24 @@ mod tests {
                 base,
                 data: vec![0; halves.len() * 2],
                 deny_fetch: false,
+                untracked: false,
+                config: 0,
             };
             for (i, half) in halves.iter().enumerate() {
-                let [lo, hi] = half.to_le_bytes();
-                bus.data[i * 2] = lo;
-                bus.data[i * 2 + 1] = hi;
+                bus.poke_half(base + (i as u32) * 2, *half);
             }
             bus
+        }
+
+        fn poke_half(&mut self, addr: u32, half: u16) {
+            let [lo, hi] = half.to_le_bytes();
+            let i = addr.wrapping_sub(self.base) as usize;
+            self.data[i] = lo;
+            self.data[i + 1] = hi;
+        }
+
+        fn bump_config(&mut self) {
+            self.config = self.config.wrapping_add(1);
         }
     }
 
@@ -344,6 +438,10 @@ mod tests {
         }
 
         fn write(&mut self, addr: u32, val: u8) -> Result<(), BusError> {
+            if addr == MAGIC_CONFIG_ADDR {
+                self.bump_config();
+                return Ok(());
+            }
             let i = addr.wrapping_sub(self.base) as usize;
             if i < self.data.len() {
                 self.data[i] = val;
@@ -375,6 +473,14 @@ mod tests {
             _exception: u8,
         ) -> bool {
             !(self.deny_fetch && access == MpuAccess::Fetch && addr < 0x2000_0000)
+        }
+
+        fn config_epoch(&self) -> Option<u64> {
+            if self.untracked {
+                None
+            } else {
+                Some(self.config)
+            }
         }
     }
 
@@ -515,6 +621,86 @@ mod tests {
                 end: ChainEnd::Sleep,
             }
         );
+    }
+
+    #[test]
+    fn self_modifying_code_rebuilds() {
+        let mut core = core_at(&[MOVS_R0_1, NOP]);
+        let mut runner = TbRunner::new();
+        let _ = runner.run_block(&mut core).unwrap().unwrap();
+        assert_eq!(core.regs.r[0], 1);
+        // Rewrite the first instruction in place (any width, any source:
+        // the checksum is source-agnostic by construction).
+        core.regs.pc = 0x1000;
+        core.mem_mut().poke_half(0x1000, 0x2002);
+        let outcome = runner.run_block(&mut core).unwrap().unwrap();
+        assert!(!outcome.cached);
+        assert_eq!(core.regs.r[0], 2);
+        assert_eq!(runner.stats().misses, 2);
+        assert_eq!(runner.stats().hits, 0);
+        // Same through the word-width write path.
+        core.regs.pc = 0x1000;
+        core.regs.r[0] = 0;
+        core.mem_mut().write_word(0x1000, 0xBF00_2003).unwrap();
+        let outcome = runner.run_block(&mut core).unwrap().unwrap();
+        assert!(!outcome.cached);
+        assert_eq!(core.regs.r[0], 3);
+    }
+
+    #[test]
+    fn config_bump_purges_and_rebuilds() {
+        let mut core = core_at(&[MOVS_R0_1, NOP]);
+        let mut runner = TbRunner::new();
+        let _ = runner.run_block(&mut core).unwrap().unwrap();
+        assert_eq!(runner.cache().len(), 1);
+        // An MPU/SAU reconfiguration between blocks purges everything.
+        core.mem_mut().bump_config();
+        core.regs.pc = 0x1000;
+        core.regs.r[0] = 0;
+        let outcome = runner.run_block(&mut core).unwrap().unwrap();
+        assert!(!outcome.cached);
+        assert_eq!(core.regs.r[0], 1);
+        assert_eq!(runner.stats().misses, 2);
+        assert_eq!(runner.cache().len(), 1);
+    }
+
+    #[test]
+    fn mid_block_config_change_exits_at_true_pc() {
+        // `STRB r0, [r1]` (0x7008, a continuing plain store) targets the
+        // config-magic address with r1 = 0x2000: the store succeeds, bumps
+        // the generation, and the runner must exit before the NOP. (Byte
+        // store: a word store would spill past the single magic address.)
+        let mut core = core_at(&[0x7008, NOP]);
+        core.regs.r[0] = 0xAA;
+        core.regs.r[1] = MAGIC_CONFIG_ADDR;
+        let mut runner = TbRunner::new();
+        let outcome = runner.run_block(&mut core).unwrap().unwrap();
+        assert_eq!(outcome.ops, 1);
+        assert_eq!(outcome.end_pc, 0x1002);
+        assert!(!outcome.fell_through);
+        // The purge already dropped the block that just ran.
+        assert!(runner.cache().is_empty());
+        // Re-execution rebuilds (and exits again: the store always bumps).
+        core.regs.pc = 0x1000;
+        let outcome = runner.run_block(&mut core).unwrap().unwrap();
+        assert!(!outcome.cached);
+        assert_eq!(runner.stats().misses, 2);
+    }
+
+    #[test]
+    fn untracked_bus_runs_single_op_blocks() {
+        // `None` generation = assume change everywhere: correct, slow.
+        // Every block executes exactly one op and is purged immediately.
+        let mut core = core_at(&[MOVS_R0_1, NOP]);
+        core.mem_mut().untracked = true;
+        let mut runner = TbRunner::new();
+        let first = runner.run_block(&mut core).unwrap().unwrap();
+        assert_eq!(first.ops, 1);
+        assert!(!first.fell_through);
+        let second = runner.run_block(&mut core).unwrap().unwrap();
+        assert_eq!(second.ops, 1);
+        assert_eq!(runner.stats().hits, 0);
+        assert_eq!(runner.stats().misses, 2);
     }
 
     #[test]

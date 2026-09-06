@@ -290,6 +290,17 @@ pub trait PeripheralBus: Bus {
         true
     }
 
+    /// Generation of fetch-affecting configuration (MPU regions/enablement,
+    /// SAU/IDAU attribution, and whatever else can change what an already-
+    /// decoded block means). The JIT runner purges its cache when this
+    /// changes and exits the running block when it changes mid-block, so a
+    /// missed bump is silent wrong execution: any bus with fetch-affecting
+    /// state MUST override this. Default `None` means untracked (the runner
+    /// then assumes change at every block boundary: safe, slow).
+    fn config_epoch(&self) -> Option<u64> {
+        None
+    }
+
     /// Record an MPU access violation at `addr` (an instruction fetch when
     /// `fetch` is true), so firmware reads the cause back through `MMFAR` and
     /// the `MMFSR` bits in `CFSR` plus `HFSR.FORCED` (the escalated-to-

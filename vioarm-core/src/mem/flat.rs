@@ -106,6 +106,12 @@ impl PeripheralBus for FlatMemory {
 
     fn acknowledge_exception(&mut self, _n: u8) {}
 
+    fn config_epoch(&self) -> Option<u64> {
+        // Plain RAM/ROM banks: no MPU, no attribution, no fetch-affecting
+        // configuration exists, so the generation is constant.
+        Some(0)
+    }
+
     fn hooks(&self) -> Option<&Hooks> {
         Some(&self.hooks)
     }
