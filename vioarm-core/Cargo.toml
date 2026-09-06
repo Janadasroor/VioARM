@@ -16,6 +16,11 @@ authors.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Translated fast engine (jit-roadmap.md). Default off: non-JIT builds never
+# pull codegen dependencies (Phase 2 adds dynasm here, still opt-in).
+jit = []
+
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 

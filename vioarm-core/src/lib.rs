@@ -12,6 +12,8 @@ pub mod device;
 pub mod error;
 pub mod fabric;
 pub mod hooks;
+#[cfg(feature = "jit")]
+pub mod jit;
 pub mod loader;
 pub mod machine;
 pub mod mem;

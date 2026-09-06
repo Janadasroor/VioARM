@@ -176,9 +176,10 @@ Goal: validate invalidation (M5/M6) + quanta (E1/E2) + chaining (T6)
 before any emitter exists. Expected gain only ~1.2–1.5× (re-decode dies;
 everything else stays) — the value is risk retirement, not speed.
 
-- [ ] P1-1: TB data structures: key (T1), metadata (T3), LRU + cap (T4);
+- [x] P1-1: TB data structures: key (T1), metadata (T3), LRU + cap (T4);
   placement per D6 (`vioarm-core/src/jit/`, `jit` feature skeleton with no
-  dynasm dependency yet).
+  dynasm dependency yet). Done: `TbKey`/`MpuEpoch`/`TbMeta`/`TbCache` +
+  page-overlap index (M6) + `bump_epoch` purge (T7), 7 unit tests.
 - [ ] P1-2: block builder over the EXISTING decoders (no new decode logic:
   reuse `decode16`/`decode32`, stop at T2 boundaries).
 - [ ] P1-3: interpreted TB execution loop (per-insn executor calls, chained

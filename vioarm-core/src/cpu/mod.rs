@@ -40,7 +40,7 @@ use std::collections::BTreeMap;
 /// FAULTMASK, or UsageFault, and none of the ARMv7-M Thumb-2 data-processing,
 /// load/store, bitfield, or DSP encodings. The decoder and executor select
 /// behavior on this field so a single core type serves all.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Isa {
     Armv6M,
     Armv7M,
