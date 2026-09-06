@@ -128,7 +128,7 @@ const FP_FRAME_BYTES: u32 = 0x48;
 const EXTENDED_FRAME_BYTES: u32 = FRAME_BYTES + FP_FRAME_BYTES;
 
 /// What an executed instruction does with the program counter.
-enum Next {
+pub(crate) enum Next {
     /// Continue at `address`.
     Advance(u32),
     /// The machine halted; propagate the cause.
@@ -664,13 +664,44 @@ impl<B: PeripheralBus> Core<B> {
             Next::Advance(a) => a,
             Next::Stop(cause) => return Err(cause),
         };
+        self.commit_step(pc, next_pc);
+        Ok(())
+    }
+
+    /// Commit one executed instruction: PC advance plus the exact cycle
+    /// accounting `step` performs. The JIT runner (Phase 1) calls this per
+    /// block op so block execution stays cycle-identical to stepping.
+    pub(crate) fn commit_step(&mut self, pc: u32, next_pc: u32) {
         let base = self.base_cycles(pc, next_pc);
         let ws = if pc < 0x2000_0000 { self.flash_ws() } else { 0 };
         let cache = self.cache_latency(pc, next_pc);
         self.regs.pc = next_pc;
         self.cycles += 1;
         self.cyccnt += base + ws + cache;
-        Ok(())
+    }
+
+    /// Whether an instruction fetch at `pc` is MPU-permitted (the check
+    /// `step` performs before fetching). The JIT runner gates block entry
+    /// on this; a forbidden block falls back so the stepper faults
+    /// identically.
+    pub(crate) fn fetch_allowed(&mut self, pc: u32) -> bool {
+        self.mpu_allows(pc, MpuAccess::Fetch)
+    }
+
+    /// Mutable bus access for the JIT block builder (same fetch path the
+    /// stepper uses; the borrow ends before block execution begins).
+    pub(crate) fn mem_mut(&mut self) -> &mut B {
+        &mut self.mem
+    }
+
+    /// Execute one pre-decoded 16-bit instruction (JIT runner entry).
+    pub(crate) fn exec_tb16(&mut self, pc: u32, inst: Inst16) -> Result<Next, HaltCause> {
+        self.exec(pc, inst)
+    }
+
+    /// Execute one pre-decoded 32-bit instruction (JIT runner entry).
+    pub(crate) fn exec_tb32(&mut self, pc: u32, inst: Inst32) -> Result<Next, HaltCause> {
+        self.exec32(pc, inst)
     }
 
     fn base_cycles(&mut self, pc: u32, next_pc: u32) -> u64 {

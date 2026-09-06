@@ -7,6 +7,7 @@
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
+use super::builder::TbOp;
 use crate::cpu::Isa;
 
 /// Default TB-cache capacity: 8192 blocks (T4). Sized so whole soak-loop
@@ -102,10 +103,12 @@ impl TbMeta {
     }
 }
 
-/// One cached block: metadata plus LRU bookkeeping.
+/// One cached block: metadata, the decoded ops to execute (Phase 1;
+/// native code replaces them in Phase 2), plus LRU bookkeeping.
 #[derive(Clone, Debug)]
 struct Entry {
     meta: TbMeta,
+    ops: Vec<TbOp>,
     /// Monotonic last-use tick; the eviction heap orders by it (lazy LRU).
     last_used: u64,
 }
@@ -187,11 +190,11 @@ impl TbCache {
         None
     }
 
-    /// Insert a block, stamping the current epoch into its key. Overwrites
-    /// any block with the same `(pc, secure, isa)` and evicts least-recently
-    /// used blocks past capacity (T4). Chained jump patches to evicted
-    /// blocks must be dropped by the chaining layer (T6).
-    pub fn insert(&mut self, mut meta: TbMeta) {
+    /// Insert a block with its decoded ops, stamping the current epoch into
+    /// its key. Overwrites any block with the same `(pc, secure, isa)` and
+    /// evicts least-recently used blocks past capacity (T4). Chained jump
+    /// patches to evicted blocks must be dropped by the chaining layer (T6).
+    pub fn insert(&mut self, mut meta: TbMeta, ops: Vec<TbOp>) {
         meta.key.mpu_epoch = self.epoch;
         let key = meta.key;
         // Refresh path: drop the old page registration before re-registering.
@@ -203,6 +206,7 @@ impl TbCache {
             key,
             Entry {
                 meta,
+                ops,
                 last_used: self.tick,
             },
         );
@@ -211,6 +215,12 @@ impl TbCache {
         }
         self.evict.push(Reverse((self.tick, key)));
         self.evict_past_capacity();
+    }
+
+    /// The decoded ops stored for `key`, if the block is cached.
+    #[must_use]
+    pub fn ops(&self, key: &TbKey) -> Option<&[TbOp]> {
+        self.blocks.get(key).map(|entry| entry.ops.as_slice())
     }
 
     /// Bump the MPU generation (T7): all cached blocks become stale and are
@@ -363,15 +373,15 @@ mod tests {
     #[test]
     fn key_axes_are_distinct() {
         let mut cache = TbCache::new();
-        cache.insert(meta(0x1000, 1));
+        cache.insert(meta(0x1000, 1), Vec::new());
         // Same PC, Secure state: a different block, not an overwrite.
         let mut secure = meta(0x1000, 1);
         secure.key.secure = true;
-        cache.insert(secure);
+        cache.insert(secure, Vec::new());
         // Same PC/state, v6-M decode: a different block.
         let mut v6 = meta(0x1000, 1);
         v6.key.isa = Isa::Armv6M;
-        cache.insert(v6);
+        cache.insert(v6, Vec::new());
         assert_eq!(cache.len(), 3);
         assert!(cache.lookup(0x1000, false, Isa::Armv7M).is_some());
         assert!(cache.lookup(0x1000, true, Isa::Armv7M).is_some());
@@ -384,10 +394,10 @@ mod tests {
     #[test]
     fn same_key_overwrites_without_growth() {
         let mut cache = TbCache::new();
-        cache.insert(meta(0x1000, 1));
+        cache.insert(meta(0x1000, 1), Vec::new());
         let mut again = meta(0x1000, 1);
         again.cycle_estimate = 9;
-        cache.insert(again);
+        cache.insert(again, Vec::new());
         assert_eq!(cache.len(), 1);
         assert_eq!(
             cache.lookup(0x1000, false, Isa::Armv7M).unwrap().cycle_estimate,
@@ -398,11 +408,11 @@ mod tests {
     #[test]
     fn lru_evicts_cold_block_first() {
         let mut cache = TbCache::with_capacity(2);
-        cache.insert(meta(0x1000, 1)); // cold: never re-touched
-        cache.insert(meta(0x2000, 1));
+        cache.insert(meta(0x1000, 1), Vec::new()); // cold: never re-touched
+        cache.insert(meta(0x2000, 1), Vec::new());
         // Refresh 0x2000 so 0x1000 is least-recently used.
         assert!(cache.lookup(0x2000, false, Isa::Armv7M).is_some());
-        cache.insert(meta(0x3000, 1));
+        cache.insert(meta(0x3000, 1), Vec::new());
         assert_eq!(cache.len(), 2);
         assert!(cache.lookup(0x1000, false, Isa::Armv7M).is_none());
         assert!(cache.lookup(0x2000, false, Isa::Armv7M).is_some());
@@ -412,26 +422,26 @@ mod tests {
     #[test]
     fn epoch_bump_hides_and_purges_stale_blocks() {
         let mut cache = TbCache::new();
-        cache.insert(meta(0x1000, 1));
+        cache.insert(meta(0x1000, 1), Vec::new());
         let dropped = cache.bump_epoch();
         assert_eq!(dropped, 1);
         assert!(cache.is_empty());
         assert!(cache.lookup(0x1000, false, Isa::Armv7M).is_none());
         assert_eq!(cache.epoch().get(), 1);
         // Re-translation under the new epoch is a fresh block.
-        cache.insert(meta(0x1000, 1));
+        cache.insert(meta(0x1000, 1), Vec::new());
         assert!(cache.lookup(0x1000, false, Isa::Armv7M).is_some());
     }
 
     #[test]
     fn page_invalidation_hits_only_overlapping_blocks() {
         let mut cache = TbCache::new();
-        cache.insert(meta(0x1000, 1)); // page 1
-        cache.insert(meta(0x2000, 1)); // page 2
+        cache.insert(meta(0x1000, 1), Vec::new()); // page 1
+        cache.insert(meta(0x2000, 1), Vec::new()); // page 2
         // Block spanning pages 3-4.
         let mut wide = meta(0x3000, 2);
         wide.len_bytes = 0x1000;
-        cache.insert(wide);
+        cache.insert(wide, Vec::new());
         // A disjoint page touches nothing; the block's second page kills it.
         assert_eq!(cache.invalidate_page(0x5000 >> PAGE_SHIFT), 0);
         assert_eq!(cache.invalidate_page(0x3800 >> PAGE_SHIFT), 1);
@@ -445,8 +455,8 @@ mod tests {
         let mut cache = TbCache::new();
         let mut wide = meta(0x1000, 3); // pages 1-3
         wide.len_bytes = 0x2FFF;
-        cache.insert(wide);
-        cache.insert(meta(0x9000, 1)); // page 9, untouched
+        cache.insert(wide, Vec::new());
+        cache.insert(meta(0x9000, 1), Vec::new()); // page 9, untouched
         // Range covers pages 1-3: the wide block is counted exactly once.
         assert_eq!(cache.invalidate_range(0x1000, 0x3000), 1);
         assert_eq!(cache.len(), 1);

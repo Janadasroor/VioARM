@@ -187,8 +187,13 @@ everything else stays) — the value is risk retirement, not speed.
   exclusive on PageCross/Halt, refuses on ITSTATE/odd-PC/entry failure;
   15 unit tests. P1-3 must still gate block entry on MPU fetch permission
   and side-exit on first MMIO touch (documented in `builder.rs`).
-- [ ] P1-3: interpreted TB execution loop (per-insn executor calls, chained
-  dispatch) + cold-miss path (T5, with debug verify mode).
+- [x] P1-3: interpreted TB execution loop (per-insn executor calls, chained
+  dispatch) + cold-miss path (T5, with debug verify mode). Done:
+  `TbRunner::run_block`/`run_chain` with MPU-fetch gate, sleep handling,
+  per-op `commit_step` accounting (cycle-identical to `step`), PC-continuity
+  exits, T5 re-decode verify mode, hit/miss stats; 9 runner tests incl. a
+  4-op stepper-parity check. Pending interrupts are NOT polled between
+  chained blocks (same as back-to-back steps; P1-5 owns quanta).
 - [ ] P1-4: page-guard map (M1) + invalidation hooks (M5) + M6 index.
 - [ ] P1-5: quanta loop (E1/E2) reusing `enter_exception`; WFI/exception
   side exits (E3/E4).

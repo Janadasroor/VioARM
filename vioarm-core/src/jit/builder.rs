@@ -187,8 +187,9 @@ pub fn build_tb<B: Bus>(
 }
 
 /// Fetch and decode the instruction at `cur` with the stepper's per-ISA
-/// dispatch. Returns the op and its byte length.
-fn fetch_op<B: Bus>(bus: &mut B, cur: u32, isa: Isa) -> Option<(TbOp, u32)> {
+/// dispatch. Returns the op and its byte length. `pub(crate)` for the
+/// runner's verify mode (re-decode each stored op from the bus).
+pub(crate) fn fetch_op<B: Bus>(bus: &mut B, cur: u32, isa: Isa) -> Option<(TbOp, u32)> {
     let h0 = bus.read_half(cur).ok()?;
     let is32 = match isa {
         Isa::Armv6M => is_thumb2(h0),
