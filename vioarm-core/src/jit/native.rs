@@ -79,6 +79,10 @@ use std::sync::Arc;
 
 use dynasmrt::{dynasm, AssemblyOffset, DynasmApi, ExecutableBuffer};
 
+// Label definition/binding for the chaining stubs (per-arch emitters).
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+use dynasmrt::DynasmLabelApi;
+
 use super::tlb::Tlb;
 use crate::cpu::registers::{Registers, Xpsr};
 
@@ -91,8 +95,16 @@ pub const EXIT_BRANCH: u32 = 1;
 /// with-trap, bitband): `next_pc` carries the faulting op's PC. The
 /// driver re-executes that op through the interpreter (identical MMIO and
 /// fault behavior) and attempts a TLB fill from the reported address.
+/// P2-4 generalizes the driver path (not the code): complex-tail branches
+/// (`BX`/`BLX` to magic targets) also exit here with their op PC; the
+/// driver re-executes them with no fill (`mem_access` is `None` there).
 /// Reserved: CALLOUT_RESULT = 3, SLEEP = 4 (P2-6).
 pub const EXIT_MMIO: u32 = 2;
+/// Exit reason: architected halt inside native code (P2-4: `BX`/`BLX` to
+/// an even target — `check_branch` stops with `NonThumbTarget`). The
+/// driver flushes chained accounting, then reports
+/// `Err(HaltCause::NonThumbTarget)` exactly like the stepper.
+pub const EXIT_HALT: u32 = 5;
 
 /// Pack an epilogue exit code.
 #[must_use]
@@ -132,6 +144,26 @@ pub struct NativeCtx {
     /// Faulting guest address, stored by templates on side exits (the
     /// driver fills the TLB from it; size/direction come from the op).
     pub fault_addr: u32,
+    /// Chaining budgets, set by the driver per `call1` (P2-4): each
+    /// chained-block entry subtracts its block size and stops the chain
+    /// (`FALL` to its own PC) at zero. Bounds native execution within one
+    /// call so quanta stay preemptible (no unbounded native loops).
+    pub budget_ops: i64,
+    /// Chaining block budget, set alongside `budget_ops` (same stop).
+    pub budget_blocks: i64,
+    /// Link-epoch value for this call (copied from the runner): chained
+    /// edges compare their slot's stamped epoch against this.
+    pub link_epoch: u64,
+    /// Chained accounting accumulators (P2-4): each chained entry adds its
+    /// block's exact driver-equivalent contribution; the driver flushes
+    /// them into `Core` after the call returns (all exit reasons).
+    pub acc_ops: u64,
+    /// Retired-op cycles from chained blocks (`cycles += insns` each).
+    pub acc_cycles: u64,
+    /// `cyccnt` estimates from chained blocks (per-block D7 each).
+    pub acc_cyccnt: u64,
+    /// Chained blocks executed (beyond the entered block).
+    pub acc_blocks: u64,
 }
 
 impl Default for NativeCtx {
@@ -143,17 +175,77 @@ impl Default for NativeCtx {
             privileged: 0,
             write_gen: core::ptr::null_mut(),
             fault_addr: 0,
+            // Fail-safe: a stray chain entry with zero budgets breaks out
+            // immediately instead of running away.
+            budget_ops: 0,
+            budget_blocks: 0,
+            link_epoch: 0,
+            acc_ops: 0,
+            acc_cycles: 0,
+            acc_cyccnt: 0,
+            acc_blocks: 0,
         }
     }
 }
 
-/// A committed native block: executable code plus its entry offset.
+/// One chained edge (P2-4, T6): runner-owned, plain writable memory (no
+/// self-modifying code — emitted code only READS these). The address is
+/// baked into the emitting block; the box lives in the runner's link map
+/// (stable heap address across map operations) and is reset when its
+/// source block is rebuilt. `entry == 0` means unlinked (exit to driver).
+#[repr(C)]
+#[derive(Debug)]
+pub struct LinkSlot {
+    /// Static edges: the fixed target (recorded for driver mapping);
+    /// dynamic edges (`BX`/`BLX`): the linked target PC (compared at emit).
+    pub target_pc: u32,
+    /// Linked target's chain-entry address (`0` = unlinked).
+    pub entry: u64,
+    /// Keepalive for the linked mapping (code is immutable; eviction must
+    /// not unmap under a live edge — bytes are unchanged by eviction, so
+    /// surviving links stay sound).
+    pub target: Option<NativeBlock>,
+    /// Bus write generation at link time (any bus write breaks the edge).
+    pub gen: u64,
+    /// Runner link epoch at link time (any invalidation/purge breaks all
+    /// edges globally — cheap blanket unlinking for rare events).
+    pub epoch: u64,
+}
+
+impl LinkSlot {
+    /// A fresh unlinked edge to `target_pc` (dynamic edges pass the same
+    /// value as a placeholder until first linked).
+    #[must_use]
+    pub const fn unlinked(target_pc: u32) -> Self {
+        Self {
+            target_pc,
+            entry: 0,
+            target: None,
+            gen: 0,
+            epoch: 0,
+        }
+    }
+}
+
+/// A committed native block: executable code plus its entry offsets.
 /// `Clone` shares the mapping (code is immutable after `finalize`; cache
 /// eviction drops the last `Arc` and unmaps).
 #[derive(Clone, Debug)]
 pub struct NativeBlock {
     code: Arc<ExecutableBuffer>,
     entry: AssemblyOffset,
+    /// Chained entry (P2-4): offset of the budget/accumulator stub just
+    /// past the prologue. Linked edges jump here with pins live in host
+    /// registers and the driver's frame active (`[rsp]`/`[sp,#48]` still
+    /// holds the context pointer).
+    chain_entry: AssemblyOffset,
+    /// Static exit targets in slot order (P2-4): the driver maps an exit
+    /// PC back to its edge slot by position. Empty for dynamic-only
+    /// (`BX`/`BLX`) blocks.
+    static_exits: Box<[u32]>,
+    /// Whether the block ends in a dynamic (`BX`/`BLX`) edge (its slot is
+    /// the one past the static exits).
+    has_dynamic: bool,
     /// Load-use tracker value stepping this block would leave behind
     /// (`Some(rt)` when its last op is a single load into `rt < 13`).
     /// Timing-only state, set by the emitter (P2-3).
@@ -161,12 +253,23 @@ pub struct NativeBlock {
 }
 
 impl NativeBlock {
-    /// Wrap a committed buffer (entry at `entry`).
+    /// Wrap a committed buffer (driver entry at `entry`, chained entry at
+    /// `chain_entry`, exit shape from the emitter).
     #[must_use]
-    pub fn new(code: ExecutableBuffer, entry: AssemblyOffset, last_load: Option<u8>) -> Self {
+    pub fn new(
+        code: ExecutableBuffer,
+        entry: AssemblyOffset,
+        chain_entry: AssemblyOffset,
+        static_exits: Box<[u32]>,
+        has_dynamic: bool,
+        last_load: Option<u8>,
+    ) -> Self {
         Self {
             code: Arc::new(code),
             entry,
+            chain_entry,
+            static_exits,
+            has_dynamic,
             last_load,
         }
     }
@@ -176,6 +279,25 @@ impl NativeBlock {
     #[must_use]
     pub fn entry_ptr(&self) -> *const u8 {
         self.code.ptr(self.entry)
+    }
+
+    /// Raw chained-entry pointer (linked edges jump here; same SAFETY CASE
+    /// — pins live, driver frame active, budgets set).
+    #[must_use]
+    pub fn chain_entry_ptr(&self) -> *const u8 {
+        self.code.ptr(self.chain_entry)
+    }
+
+    /// Static exit targets in slot order (driver edge mapping).
+    #[must_use]
+    pub fn static_exits(&self) -> &[u32] {
+        &self.static_exits
+    }
+
+    /// Whether the block ends in a dynamic (`BX`/`BLX`) edge.
+    #[must_use]
+    pub const fn has_dynamic(&self) -> bool {
+        self.has_dynamic
     }
 
     /// Backing mapping size (proves commitment in tests).
@@ -233,6 +355,123 @@ pub(crate) fn emit_prologue(ops: &mut dynasmrt::x64::Assembler) {
         ; mov rcx, [rdi + ctx_xpsr]
         ; mov r15d, [rcx]
     );
+}
+
+/// Chained-entry stub (P2-4, T6): budgets gate chain length (signed
+/// subtract-and-branch: zero still runs — exact-fit is allowed),
+/// accumulators collect the driver-equivalent accounting. Entered by
+/// linked edges with pins live and the driver frame active; falls through
+/// to the body. Returns the break label: the caller binds it after the
+/// body with a `FALL`-to-`block_pc` epilogue (the driver re-runs the block
+/// with fresh budgets — progress, never a skip).
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn emit_chain_entry(
+    ops: &mut dynasmrt::x64::Assembler,
+    insns: u32,
+    estimate: u64,
+) -> dynasmrt::DynamicLabel {
+    let budg_ops = core::mem::offset_of!(NativeCtx, budget_ops) as i32;
+    let budg_blk = core::mem::offset_of!(NativeCtx, budget_blocks) as i32;
+    let acc_ops = core::mem::offset_of!(NativeCtx, acc_ops) as i32;
+    let acc_cyc = core::mem::offset_of!(NativeCtx, acc_cycles) as i32;
+    let acc_cc = core::mem::offset_of!(NativeCtx, acc_cyccnt) as i32;
+    let acc_blk = core::mem::offset_of!(NativeCtx, acc_blocks) as i32;
+    // Estimates are `1 + touches` per op (`<= 2 * MAX_TB_INSNS`): imm32
+    // always suffices (loud in debug if that ever changes).
+    debug_assert!(estimate <= u64::from(u32::MAX));
+    let (insns, est) = (insns as i32, estimate as i32);
+    let brk = ops.new_dynamic_label();
+    dynasm!(ops
+        ; .arch x64
+        ; mov rax, [rsp]
+        ; sub QWORD [rax + budg_ops], insns
+        ; js =>brk
+        ; sub QWORD [rax + budg_blk], 1
+        ; js =>brk
+        ; add QWORD [rax + acc_ops], insns
+        ; add QWORD [rax + acc_cyc], insns
+        ; add QWORD [rax + acc_cc], est
+        ; add QWORD [rax + acc_blk], 1
+    );
+    brk
+}
+
+/// One chained static edge (P2-4): `slot` is the baked [`LinkSlot`]
+/// address. Linked (entry stamped with matching generation + epoch) jumps
+/// straight to the target's chained entry — pins stay live, no driver
+/// round-trip. Anything else falls to the unlinked epilogue (pins
+/// writeback + return; the driver links the edge for next time).
+/// Scratch is `rax`/`rsi`/`rdi`/`rdx` only (pins + `r15d` untouched; host
+/// flags may clobber — guest flags live in `r15d`).
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn emit_static_edge(
+    ops: &mut dynasmrt::x64::Assembler,
+    reason: u32,
+    target: u32,
+    slot: u64,
+) {
+    let unlinked = ops.new_dynamic_label();
+    let slot = slot as i64;
+    let e_off = core::mem::offset_of!(LinkSlot, entry) as i32;
+    let g_off = core::mem::offset_of!(LinkSlot, gen) as i32;
+    let x_off = core::mem::offset_of!(LinkSlot, epoch) as i32;
+    let c_epoch = core::mem::offset_of!(NativeCtx, link_epoch) as i32;
+    let c_gen = core::mem::offset_of!(NativeCtx, write_gen) as i32;
+    dynasm!(ops
+        ; .arch x64
+        ; mov rax, QWORD slot
+        ; mov rsi, [rax + e_off]
+        ; test rsi, rsi
+        ; jz =>unlinked
+        ; mov rdi, [rsp]
+        ; mov rdx, [rdi + c_epoch]
+        ; cmp rdx, [rax + x_off]
+        ; jne =>unlinked
+        ; mov rdi, [rdi + c_gen]
+        ; mov rdi, [rdi]
+        ; cmp rdi, [rax + g_off]
+        ; jne =>unlinked
+        ; jmp rsi
+        ; =>unlinked
+    );
+    emit_epilogue(ops, reason, target);
+}
+
+/// One chained dynamic edge (P2-4): the target arrives in `edx` (low 32
+/// bits) and is compared against the slot's linked PC first. Scratch is
+/// `rax`/`rsi`/`rdi` only — `edx` survives the gate for the miss
+/// epilogue. Misses exit through the dynamic `BRANCH` epilogue.
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn emit_dynamic_edge(ops: &mut dynasmrt::x64::Assembler, slot: u64) {
+    let miss = ops.new_dynamic_label();
+    let slot = slot as i64;
+    let pc_off = core::mem::offset_of!(LinkSlot, target_pc) as i32;
+    let e_off = core::mem::offset_of!(LinkSlot, entry) as i32;
+    let g_off = core::mem::offset_of!(LinkSlot, gen) as i32;
+    let x_off = core::mem::offset_of!(LinkSlot, epoch) as i32;
+    let c_epoch = core::mem::offset_of!(NativeCtx, link_epoch) as i32;
+    let c_gen = core::mem::offset_of!(NativeCtx, write_gen) as i32;
+    dynasm!(ops
+        ; .arch x64
+        ; mov rax, QWORD slot
+        ; cmp edx, [rax + pc_off]
+        ; jne =>miss
+        ; mov rsi, [rax + e_off]
+        ; test rsi, rsi
+        ; jz =>miss
+        ; mov rdi, [rsp]
+        ; mov rdi, [rdi + c_epoch]
+        ; cmp rdi, [rax + x_off]
+        ; jne =>miss
+        ; mov rdi, [rsp]
+        ; mov rdi, [rdi + c_gen]
+        ; mov rdi, [rdi]
+        ; cmp rdi, [rax + g_off]
+        ; jne =>miss
+        ; jmp rsi
+        ; =>miss
+    );
+    emit_epilogue_dynamic(ops, EXIT_BRANCH);
 }
 
 /// Dynamic epilogue: `next_pc` arrives in `edx` (low 32 bits; producers
@@ -311,7 +550,16 @@ pub(crate) fn assemble_trivial(
     emit_prologue(&mut ops);
     emit_epilogue(&mut ops, reason, next_pc);
     ops.finalize()
-        .map(|buf| NativeBlock::new(buf, AssemblyOffset(0), None))
+        .map(|buf| {
+            NativeBlock::new(
+                buf,
+                AssemblyOffset(0),
+                AssemblyOffset(0),
+                Box::new([]),
+                false,
+                None,
+            )
+        })
         .map_err(|_| crate::jit::EmitError::Finalize)
 }
 
@@ -386,6 +634,151 @@ pub(crate) fn emit_epilogue(ops: &mut dynasmrt::aarch64::Assembler, reason: u32,
     );
 }
 
+/// Absolute 64-bit immediate into `x9` (slot addresses, P2-4 edges).
+#[cfg(target_arch = "aarch64")]
+fn emit_movabs_x9(ops: &mut dynasmrt::aarch64::Assembler, addr: u64) {
+    let (a0, a1, a2, a3) = (
+        (addr & 0xFFFF) as u32,
+        ((addr >> 16) & 0xFFFF) as u32,
+        ((addr >> 32) & 0xFFFF) as u32,
+        ((addr >> 48) & 0xFFFF) as u32,
+    );
+    dynasm!(ops
+        ; .arch aarch64
+        ; movz x9, a0, lsl #0
+        ; movk x9, a1, lsl #16
+        ; movk x9, a2, lsl #32
+        ; movk x9, a3, lsl #48
+    );
+}
+
+/// Chained-entry stub (P2-4, AArch64 mirror of the x64 stub): signed
+/// budget checks (`subs` + `b.mi`), accumulators, fall through to the
+/// body. Returns the break label (caller binds it after the body with a
+/// `FALL`-to-`block_pc` epilogue). Immediates fit imm12 by construction
+/// (`insns <= MAX_TB_INSNS`, estimates `<= 2 * MAX_TB_INSNS`).
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn emit_chain_entry(
+    ops: &mut dynasmrt::aarch64::Assembler,
+    insns: u32,
+    estimate: u64,
+) -> dynasmrt::DynamicLabel {
+    let budg_ops = core::mem::offset_of!(NativeCtx, budget_ops) as u32;
+    let budg_blk = core::mem::offset_of!(NativeCtx, budget_blocks) as u32;
+    let acc_ops = core::mem::offset_of!(NativeCtx, acc_ops) as u32;
+    let acc_cyc = core::mem::offset_of!(NativeCtx, acc_cycles) as u32;
+    let acc_cc = core::mem::offset_of!(NativeCtx, acc_cyccnt) as u32;
+    let acc_blk = core::mem::offset_of!(NativeCtx, acc_blocks) as u32;
+    debug_assert!(insns <= 64);
+    debug_assert!(estimate <= 4095);
+    let (insns, est) = (insns, estimate as u32);
+    let brk = ops.new_dynamic_label();
+    dynasm!(ops
+        ; .arch aarch64
+        ; ldr x9, [sp, #48]
+        ; ldr x10, [x9, budg_ops]
+        ; subs xzr, x10, #insns
+        ; b.mi =>brk
+        ; sub x10, x10, #insns
+        ; str x10, [x9, budg_ops]
+        ; ldr x10, [x9, budg_blk]
+        ; subs xzr, x10, #1
+        ; b.mi =>brk
+        ; sub x10, x10, #1
+        ; str x10, [x9, budg_blk]
+        ; ldr x10, [x9, acc_ops]
+        ; add x10, x10, #insns
+        ; str x10, [x9, acc_ops]
+        ; ldr x10, [x9, acc_cyc]
+        ; add x10, x10, #insns
+        ; str x10, [x9, acc_cyc]
+        ; ldr x10, [x9, acc_cc]
+        ; add x10, x10, est
+        ; str x10, [x9, acc_cc]
+        ; ldr x10, [x9, acc_blk]
+        ; add x10, x10, #1
+        ; str x10, [x9, acc_blk]
+    );
+    brk
+}
+
+/// One chained static edge (P2-4, AArch64): slot base stays in `x9`
+/// throughout (scratch is `x9`–`x11`; `w0` is free — static targets bake
+/// in). Linked jumps to the target's chained entry via `br`.
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn emit_static_edge(
+    ops: &mut dynasmrt::aarch64::Assembler,
+    reason: u32,
+    target: u32,
+    slot: u64,
+) {
+    let unlinked = ops.new_dynamic_label();
+    let e_off = core::mem::offset_of!(LinkSlot, entry) as u32;
+    let g_off = core::mem::offset_of!(LinkSlot, gen) as u32;
+    let x_off = core::mem::offset_of!(LinkSlot, epoch) as u32;
+    let c_epoch = core::mem::offset_of!(NativeCtx, link_epoch) as u32;
+    let c_gen = core::mem::offset_of!(NativeCtx, write_gen) as u32;
+    emit_movabs_x9(ops, slot);
+    dynasm!(ops
+        ; .arch aarch64
+        ; ldr x10, [x9, e_off]
+        ; cbz x10, =>unlinked
+        ; ldr x10, [sp, #48]
+        ; ldr x11, [x10, c_epoch]
+        ; ldr x10, [x9, x_off]
+        ; cmp x11, x10
+        ; b.ne =>unlinked
+        ; ldr x10, [sp, #48]
+        ; ldr x10, [x10, c_gen]
+        ; ldr x10, [x10]
+        ; ldr x11, [x9, g_off]
+        ; cmp x10, x11
+        ; b.ne =>unlinked
+        ; ldr x10, [x9, e_off]
+        ; br x10
+        ; =>unlinked
+    );
+    emit_epilogue(ops, reason, target);
+}
+
+/// One chained dynamic edge (P2-4, AArch64): target arrives in `w0` and
+/// survives the gate (scratch is `x9`–`x11` only). Misses exit through
+/// the dynamic `BRANCH` epilogue.
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn emit_dynamic_edge(ops: &mut dynasmrt::aarch64::Assembler, slot: u64) {
+    let miss = ops.new_dynamic_label();
+    let pc_off = core::mem::offset_of!(LinkSlot, target_pc) as u32;
+    let e_off = core::mem::offset_of!(LinkSlot, entry) as u32;
+    let g_off = core::mem::offset_of!(LinkSlot, gen) as u32;
+    let x_off = core::mem::offset_of!(LinkSlot, epoch) as u32;
+    let c_epoch = core::mem::offset_of!(NativeCtx, link_epoch) as u32;
+    let c_gen = core::mem::offset_of!(NativeCtx, write_gen) as u32;
+    emit_movabs_x9(ops, slot);
+    dynasm!(ops
+        ; .arch aarch64
+        ; ldr w10, [x9, pc_off]
+        ; cmp w0, w10
+        ; b.ne =>miss
+        ; ldr x10, [x9, e_off]
+        ; cbz x10, =>miss
+        ; ldr x10, [sp, #48]
+        ; ldr x11, [x10, c_epoch]
+        ; ldr x10, [x9, x_off]
+        ; cmp x11, x10
+        ; b.ne =>miss
+        ; ldr x10, [sp, #48]
+        ; ldr x10, [x10, c_gen]
+        ; ldr x10, [x10]
+        ; ldr x11, [x9, g_off]
+        ; cmp x10, x11
+        ; b.ne =>miss
+        ; ldr x10, [x9, e_off]
+        ; br x10
+        ; =>miss
+    );
+    emit_epilogue_dynamic(ops, EXIT_BRANCH);
+}
+
 /// Dynamic epilogue: `next_pc` arrives in `w0`, composed with `reason`
 /// and torn down like [`emit_epilogue`]. Terminator templates must
 /// preserve the pinned set (scratch is `w0`/`w1`/`w9`–`w11` only).
@@ -432,7 +825,16 @@ pub(crate) fn assemble_trivial(
     emit_prologue(&mut ops);
     emit_epilogue(&mut ops, reason, next_pc);
     ops.finalize()
-        .map(|buf| NativeBlock::new(buf, AssemblyOffset(0), None))
+        .map(|buf| {
+            NativeBlock::new(
+                buf,
+                AssemblyOffset(0),
+                AssemblyOffset(0),
+                Box::new([]),
+                false,
+                None,
+            )
+        })
         .map_err(|_| crate::jit::EmitError::Finalize)
 }
 
@@ -542,7 +944,16 @@ mod tests {
         );
         emit_epilogue(&mut ops, EXIT_FALL, 0x2000);
         ops.finalize()
-            .map(|buf| NativeBlock::new(buf, AssemblyOffset(0), None))
+            .map(|buf| {
+                NativeBlock::new(
+                    buf,
+                    AssemblyOffset(0),
+                    AssemblyOffset(0),
+                    Box::new([]),
+                    false,
+                    None,
+                )
+            })
             .map_err(|_| crate::jit::EmitError::Finalize)
     }
 
@@ -571,7 +982,16 @@ mod tests {
         );
         emit_epilogue(&mut ops, EXIT_FALL, 0x2000);
         ops.finalize()
-            .map(|buf| NativeBlock::new(buf, AssemblyOffset(0), None))
+            .map(|buf| {
+                NativeBlock::new(
+                    buf,
+                    AssemblyOffset(0),
+                    AssemblyOffset(0),
+                    Box::new([]),
+                    false,
+                    None,
+                )
+            })
             .map_err(|_| crate::jit::EmitError::Finalize)
     }
 

@@ -44,8 +44,26 @@ use crate::error::HaltCause;
 use crate::mem::PeripheralBus;
 
 use super::builder::{build_tb, fetch_op, op_len, TbOp};
-use super::native::NativeBlock;
+use super::native::{LinkSlot, NativeBlock};
 use super::tb::{Got, TbCache, TbKey, TbMeta};
+
+/// Fresh unlinked edge boxes for one block's exit shape.
+fn empty_slots(count: usize) -> Box<[LinkSlot]> {
+    (0..count)
+        .map(|_| LinkSlot::unlinked(u32::MAX))
+        .collect::<Vec<_>>()
+        .into_boxed_slice()
+}
+
+/// Reset edges to unlinked, recording static targets in slot order (the
+/// trailing dynamic slot, if any, keeps the never-matching placeholder —
+/// its target is stamped at first link).
+fn reset_slots(slots: &mut [LinkSlot], statics: &[u32]) {
+    for (i, slot) in slots.iter_mut().enumerate() {
+        let pc = statics.get(i).copied().unwrap_or(u32::MAX);
+        *slot = LinkSlot::unlinked(pc);
+    }
+}
 
 /// Per-runner execution counters (hit/miss shape for G1 measurement).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -62,13 +80,18 @@ pub struct TbStats {
     pub ops: u64,
     /// Blocks executed natively (subset of `blocks`; G2 measurement).
     pub native: u64,
+    /// Native blocks reached through chained edges (subset of `native`;
+    /// P2-4 chaining measurement — driver-bypassed executions).
+    pub chained: u64,
 }
 
 /// What one [`TbRunner::run_block`] did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BlockOutcome {
-    /// Ops executed from the block.
+    /// Ops executed (entered block plus any chained blocks, P2-4).
     pub ops: usize,
+    /// Blocks executed (1 plus chained blocks, P2-4).
+    pub blocks: u32,
     /// True PC after the last executed op (fallthrough or divergence).
     pub end_pc: u32,
     /// Ran every op and fell off the end (the next block is chainable).
@@ -102,6 +125,15 @@ pub struct ChainOutcome {
     pub end: ChainEnd,
 }
 
+/// Link-map key: the source block's identity (epoch excluded — purges
+/// clear the map, so entries never span one).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct LinkKey {
+    pc: u32,
+    secure: bool,
+    isa: Isa,
+}
+
 /// Interpreted-TB execution driver over a [`TbCache`].
 #[derive(Debug)]
 pub struct TbRunner {
@@ -118,6 +150,22 @@ pub struct TbRunner {
     /// Last bus config generation seen (`None` until the first poll, or
     /// permanently when the bus is untracked — which polls as changed).
     last_seen: Option<u64>,
+    /// Chained-edge slots by source block (P2-4, T6): stable boxes whose
+    /// addresses are baked into emitted code. Cleared on full purges;
+    /// source-ranged entries are dropped on partial invalidations (stale
+    /// TARGET links are fenced by the link epoch, so hygiene never gates
+    /// soundness).
+    links: std::collections::HashMap<LinkKey, Box<[super::native::LinkSlot]>>,
+    /// Link epoch (P2-4): bumped on every invalidation or purge; slots
+    /// stamped older break at their next traversal (blanket unlinking).
+    link_epoch: u64,
+    /// Chaining op budget for the next native entry (P2-4): bounds native
+    /// execution within one `call1`. The quanta driver sets it to the
+    /// remaining quantum ops before each block (exact overshoot bound);
+    /// direct users get the fail-safe default.
+    chain_ops: u64,
+    /// Chaining block budget for the next native entry (same stop).
+    chain_blocks: u64,
     stats: TbStats,
 }
 
@@ -131,6 +179,10 @@ impl TbRunner {
             verify_decodes: false,
             use_native: true,
             last_seen: None,
+            links: std::collections::HashMap::new(),
+            link_epoch: 0,
+            chain_ops: super::quanta::DEFAULT_QUANTUM_OPS,
+            chain_blocks: super::quanta::DEFAULT_QUANTUM_OPS,
             stats: TbStats::default(),
         }
     }
@@ -145,8 +197,24 @@ impl TbRunner {
             verify_decodes: true,
             use_native: true,
             last_seen: None,
+            links: std::collections::HashMap::new(),
+            link_epoch: 0,
+            chain_ops: super::quanta::DEFAULT_QUANTUM_OPS,
+            chain_blocks: super::quanta::DEFAULT_QUANTUM_OPS,
             stats: TbStats::default(),
         }
+    }
+
+    /// Chaining budgets for the next native entry (P2-4): at most
+    /// `ops` retired ops and `blocks` chained blocks per `call1` (the
+    /// entered block pre-consumes its own size; overshoot is bounded by
+    /// one chain). Values clamp to `i64::MAX` (the native check is
+    /// signed). The quanta driver sets these per block for exact
+    /// overshoot bounds; direct callers use the fail-safe defaults.
+    pub fn set_chain_budgets(&mut self, ops: u64, blocks: u64) {
+        const MAX: u64 = i64::MAX as u64;
+        self.chain_ops = ops.min(MAX);
+        self.chain_blocks = blocks.min(MAX);
     }
 
     /// Force interpreted (`false`) or native-where-coverable (`true`)
@@ -246,6 +314,7 @@ impl TbRunner {
             }
             Some((meta, _, _)) => {
                 self.cache.invalidate_range(meta.key.pc, meta.len_bytes);
+                self.drop_links_in(meta.key.pc, meta.len_bytes);
                 match self.miss(core, pc, secure, isa) {
                     Some((meta, native, ops)) => (meta, native, ops, false),
                     None => return Ok(None),
@@ -262,24 +331,24 @@ impl TbRunner {
         let outcome = match native {
             Some(native) => {
                 let outcome = self.exec_native(core, &meta, &native, cached)?;
-                self.stats.native += 1;
+                self.stats.native += u64::from(outcome.blocks);
                 outcome
             }
             None => self.exec_cached(core, &key, &meta, &ops, cached)?,
         };
-        self.stats.blocks += 1;
+        self.stats.blocks += u64::from(outcome.blocks);
         self.stats.ops += outcome.ops as u64;
         Ok(Some(outcome))
     }
 
     /// Execute a native block: enter through the trampoline, decode the
-    /// exit, commit block-level accounting. S0+terminator blocks run every
-    /// op exactly once with no faults, divergence inside, or sleep (no
-    /// memory/system ops by template construction), so the outcome shape
-    /// follows directly. Cycle accounting is per-block (D7): `cycles`
-    /// counts retired ops exactly, `cyccnt` takes the block estimate, and
-    /// the load-use tracker resets (no loads occur in native S0 blocks —
-    /// exactly what stepping them would leave behind).
+    /// exit, commit block-level accounting. Cycle accounting is per-block
+    /// (D7): `cycles` counts retired ops exactly, `cyccnt` takes the block
+    /// estimate, and the load-use tracker resets to the block's tail value.
+    /// Chained blocks (P2-4) contribute their exact driver-equivalent
+    /// share through the context accumulators, flushed here for every
+    /// exit reason (halts included: consumed cycles settle before `Err`,
+    /// mirroring the quanta contract).
     fn exec_native<B: PeripheralBus>(
         &mut self,
         core: &mut Core<B>,
@@ -287,63 +356,86 @@ impl TbRunner {
         native: &NativeBlock,
         cached: bool,
     ) -> Result<BlockOutcome, HaltCause> {
-        use super::native::{exit_pc, exit_reason, NativeCtx, EXIT_FALL, EXIT_MMIO};
+        use super::native::{
+            exit_pc, exit_reason, NativeCtx, EXIT_BRANCH, EXIT_FALL, EXIT_HALT, EXIT_MMIO,
+        };
 
         // Whole-core reads first (each borrow ends before the field
         // borrows below begin).
         let privileged = u32::from(core.is_privileged());
+        let tracked = core.mem_mut().write_epoch_ptr().is_some();
         let write_gen = core
             .mem_mut()
             .write_epoch_ptr()
             .unwrap_or(core::ptr::null_mut());
+        // The entered block pre-consumes its own size: chains then stop
+        // exactly at the remaining budget (quanta overshoot stays atomic).
         let mut ctx = Box::new(NativeCtx {
             regs: &mut core.regs,
             xpsr: &mut core.xpsr,
             tlb: self.tlb.as_mut() as *mut super::tlb::Tlb,
             privileged,
             write_gen,
+            budget_ops: self.chain_ops.saturating_sub(u64::from(meta.insns)) as i64,
+            budget_blocks: self.chain_blocks.saturating_sub(1) as i64,
+            link_epoch: self.link_epoch,
             ..Default::default()
         });
         let code = vioarm_jit_call::call1(native.entry_ptr(), &mut *ctx as *mut NativeCtx as u64);
         let reason = exit_reason(code);
         let npc = exit_pc(code);
+        // Chained accounting first (every reason: the entered block ran,
+        // plus whatever the chain reached before this exit). Block/op
+        // totals flow through the outcome (counted once at the tail);
+        // only the driver-bypassed executions count here.
+        let (ch_ops, ch_blocks) = (ctx.acc_ops, ctx.acc_blocks);
+        core.cycles += ctx.acc_cycles;
+        core.cyccnt += ctx.acc_cyccnt;
+        self.stats.chained += ch_blocks;
+        self.stats.hits += ch_blocks;
         if reason == EXIT_MMIO {
-            return self.native_mmio_exit(core, meta, npc, ctx.fault_addr);
+            return self.native_mmio_exit(core, meta, npc, ctx.fault_addr, ch_ops, ch_blocks);
+        }
+        if reason == EXIT_HALT {
+            // Architected halt at the faulting op (`BX`/`BLX` to an even
+            // target): commit the native prefix exactly, then report what
+            // the stepper reports — no commit for the trapping op itself.
+            self.commit_prefix(core, meta, npc)?;
+            return Err(HaltCause::NonThumbTarget);
         }
         let end_pc = npc;
         let fell_through = reason == EXIT_FALL;
-        let ops = meta.insns as u64;
-        core.cycles += ops;
+        let ops = u64::from(meta.insns) + ch_ops;
+        let blocks = (1 + ch_blocks).min(u64::from(u32::MAX)) as u32;
+        core.cycles += u64::from(meta.insns);
         core.cyccnt += meta.cycle_estimate;
         core.set_load_tracker(native.last_load());
         core.regs.pc = end_pc;
+        // Link the traversed edge for next time (tracked buses only: the
+        // native gate dereferences the generation counter).
+        if tracked && (reason == EXIT_FALL || reason == EXIT_BRANCH) {
+            self.link_edge(core, meta, native, npc);
+        }
         Ok(BlockOutcome {
             ops: ops as usize,
+            blocks,
             end_pc,
             fell_through,
             cached,
         })
     }
 
-    /// A native memory side exit at `op_pc` (guard/TLB miss, page cross,
-    /// unaligned-with-trap, bitband): commit the native prefix op-by-op
-    /// (exact — every prefix op fell through, else an earlier exit would
-    /// have fired), re-execute the faulting op through the interpreter
-    /// (identical MMIO and precise-fault behavior), and attempt a TLB fill
-    /// from the reported address for next time. Re-fetching the ops is
-    /// sound: stores seal blocks, so only effect-free ALU ops precede any
-    /// op in a block and the bytes cannot have changed since entry
-    /// validation.
-    fn native_mmio_exit<B: PeripheralBus>(
+    /// Commit the native prefix before `op_pc` op-by-op (exact — every
+    /// prefix op fell through, else an earlier exit would have fired).
+    /// Returns the committed op count. Re-fetching the ops is sound:
+    /// stores seal blocks, so only effect-free ALU ops precede any exit
+    /// site and the bytes cannot have changed since entry validation.
+    fn commit_prefix<B: PeripheralBus>(
         &mut self,
         core: &mut Core<B>,
         meta: &TbMeta,
         op_pc: u32,
-        fault_addr: u32,
-    ) -> Result<BlockOutcome, HaltCause> {
-        use super::templates::mem_access;
-        use super::tlb::fill_tlb;
-
+    ) -> Result<usize, HaltCause> {
         let isa = core.isa;
         let mut pc = meta.key.pc;
         let mut ops = 0usize;
@@ -356,6 +448,30 @@ impl TbRunner {
             ops += 1;
             pc = next;
         }
+        Ok(ops)
+    }
+
+    /// A native side exit at `op_pc`: memory sites (guard/TLB miss, page
+    /// cross, unaligned-with-trap, bitband) plus P2-4 complex-tail
+    /// branches (`BX`/`BLX` to magic targets, which re-execute with no
+    /// fill). Commits the native prefix plus any chained blocks' share,
+    /// re-executes the faulting op through the interpreter (identical MMIO
+    /// and precise-fault behavior), and attempts a TLB fill from the
+    /// reported address for memory ops.
+    fn native_mmio_exit<B: PeripheralBus>(
+        &mut self,
+        core: &mut Core<B>,
+        meta: &TbMeta,
+        op_pc: u32,
+        fault_addr: u32,
+        chained_ops: u64,
+        chained_blocks: u64,
+    ) -> Result<BlockOutcome, HaltCause> {
+        use super::templates::mem_access;
+        use super::tlb::fill_tlb;
+
+        let mut ops = self.commit_prefix(core, meta, op_pc)?;
+        let isa = core.isa;
         let Some((op, len)) = fetch_op(core.mem_mut(), op_pc, isa) else {
             return Err(HaltCause::FetchAbort);
         };
@@ -385,22 +501,83 @@ impl TbRunner {
         }
         let fall = op_pc.wrapping_add(len);
         Ok(BlockOutcome {
-            ops,
+            ops: ops + chained_ops as usize,
+            blocks: (1 + chained_blocks).min(u64::from(u32::MAX)) as u32,
             end_pc: npc,
             fell_through: npc == fall,
             cached: true,
         })
     }
 
+    /// Link the traversed edge `source -> npc` (P2-4, T6): when the target
+    /// is cached natively and validates, stamp its chain entry into the
+    /// source block's edge slot. Static edges map by exit-PC position;
+    /// anything else is the block's single dynamic (`BX`/`BLX`) edge.
+    /// Overwrites unconditionally (self-healing: any driver-observed exit
+    /// implies the edge did not chain this time).
+    fn link_edge<B: PeripheralBus>(
+        &mut self,
+        core: &mut Core<B>,
+        meta: &TbMeta,
+        native: &NativeBlock,
+        npc: u32,
+    ) {
+        let statics = native.static_exits();
+        let idx = match statics.iter().position(|&t| t == npc) {
+            Some(i) => i,
+            None if native.has_dynamic() => statics.len(),
+            None => return,
+        };
+        let key = LinkKey {
+            pc: meta.key.pc,
+            secure: meta.key.secure,
+            isa: meta.key.isa,
+        };
+        let target_key = TbKey {
+            pc: npc,
+            secure: meta.key.secure,
+            isa: meta.key.isa,
+            mpu_epoch: self.cache.epoch(),
+        };
+        // Probe without holding the borrow across validation/linking.
+        let target: Option<(TbMeta, NativeBlock)> = self
+            .cache
+            .get(npc, meta.key.secure, meta.key.isa)
+            .and_then(|hit| match hit {
+                Got::Native(tmeta, tnative) => Some((*tmeta, tnative.clone())),
+                Got::Interp(..) => None,
+            });
+        let Some((tmeta, tnative)) = target else {
+            return;
+        };
+        if !self.validated(core, &target_key, &tmeta) {
+            return;
+        }
+        let gen = core.mem_mut().write_epoch().unwrap_or(0);
+        let entry = tnative.chain_entry_ptr() as u64;
+        if let Some(slots) = self.links.get_mut(&key) {
+            if let Some(slot) = slots.get_mut(idx) {
+                slot.target_pc = npc;
+                slot.entry = entry;
+                slot.target = Some(tnative);
+                slot.gen = gen;
+                slot.epoch = self.link_epoch;
+            }
+        }
+    }
+
     /// Execute chained blocks starting at the core's PC, up to `max_blocks`
     /// blocks. Follows `end_pc` across taken branches; stops on budget,
-    /// fallback, sleep, or halt (`Err`).
+    /// fallback, sleep, or halt (`Err`). One `run_block` may execute
+    /// several blocks natively (P2-4): block counting follows the outcome
+    /// (overshoot bounded by one chain, the native analogue of block
+    /// atomicity), and the native budgets track the remainder.
     pub fn run_chain<B: PeripheralBus>(
         &mut self,
         core: &mut Core<B>,
         max_blocks: usize,
     ) -> Result<ChainOutcome, HaltCause> {
-        let mut blocks = 0;
+        let mut blocks = 0usize;
         let mut ops = 0;
         let end = loop {
             if core.sleeping {
@@ -409,10 +586,15 @@ impl TbRunner {
             if blocks >= max_blocks {
                 break ChainEnd::Budget;
             }
+            let remaining = max_blocks - blocks;
+            self.set_chain_budgets(
+                (remaining as u64).saturating_mul(u64::from(super::tb::MAX_TB_INSNS)),
+                remaining as u64,
+            );
             match self.run_block(core)? {
                 None => break ChainEnd::Fallback,
                 Some(outcome) => {
-                    blocks += 1;
+                    blocks += outcome.blocks as usize;
                     ops += outcome.ops;
                 }
             }
@@ -442,7 +624,7 @@ impl TbRunner {
         secure: bool,
         isa: Isa,
     ) -> Option<(TbMeta, Option<NativeBlock>, Vec<TbOp>)> {
-        use super::templates::emit_block;
+        use super::templates::{emit_block, exit_shape};
 
         // Explicit `else` (not `?`): every refusal counts a fallback.
         let itstate = core.itstate;
@@ -472,7 +654,21 @@ impl TbRunner {
             .map(|ccr| ccr & 8 != 0)
             .unwrap_or(false);
         if self.use_native && (body.store_mask == 0 || tracked) {
-            if let Ok(native) = emit_block(&body, unalign_trap) {
+            // Fresh (or reset) edge slots for this block's exit shape;
+            // stale links never survive a rebuild (the new bytes may
+            // branch elsewhere entirely).
+            let (statics, has_dynamic) = exit_shape(&body);
+            let key = LinkKey { pc, secure, isa };
+            let slot_count = statics.len() + usize::from(has_dynamic);
+            let entry = self
+                .links
+                .entry(key)
+                .or_insert_with(|| empty_slots(slot_count));
+            if entry.len() != slot_count {
+                *entry = empty_slots(slot_count);
+            }
+            reset_slots(entry, &statics);
+            if let Ok(native) = emit_block(&body, unalign_trap, entry) {
                 self.cache.insert_native(meta, native.clone());
                 self.stats.misses += 1;
                 return Some((meta, Some(native), Vec::new()));
@@ -482,6 +678,15 @@ impl TbRunner {
         self.cache.insert(meta, body.ops);
         self.stats.misses += 1;
         Some((meta, None, ops))
+    }
+
+    /// Drop link slots sourced inside `[start, start + len)` and
+    /// blanket-break every surviving edge (a target may have died while
+    /// its source lived on). Ranges never wrap (blocks are `<= 256` B).
+    fn drop_links_in(&mut self, start: u32, len: u32) {
+        let end = start.wrapping_add(len);
+        self.links.retain(|k, _| k.pc < start || k.pc >= end);
+        self.link_epoch = self.link_epoch.wrapping_add(1);
     }
 
     /// Entry content gate (P2-3): re-hash only when the bus reports writes
@@ -526,6 +731,7 @@ impl TbRunner {
         }
         if !Self::code_matches(core, meta) {
             self.cache.invalidate_range(meta.key.pc, meta.len_bytes);
+            self.drop_links_in(meta.key.pc, meta.len_bytes);
             return true;
         }
         if let Some(g) = core.mem_mut().write_epoch() {
@@ -549,6 +755,8 @@ impl TbRunner {
         if changed {
             self.cache.bump_epoch();
             self.tlb.clear();
+            self.links.clear();
+            self.link_epoch = self.link_epoch.wrapping_add(1);
             self.last_seen = bus_epoch;
         }
         changed
@@ -645,6 +853,7 @@ impl TbRunner {
         }
         Ok(BlockOutcome {
             ops: done,
+            blocks: 1,
             end_pc: cur,
             fell_through: fell_through && done == ops.len(),
             cached,
@@ -802,6 +1011,7 @@ mod tests {
             outcome,
             BlockOutcome {
                 ops: 2,
+                blocks: 1,
                 end_pc: 0x1004,
                 fell_through: true,
                 cached: false,

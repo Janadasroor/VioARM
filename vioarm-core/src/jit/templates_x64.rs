@@ -29,25 +29,23 @@ pub type Assembler = dynasmrt::x64::Assembler;
 
 type A = Assembler;
 
-/// Assemble prologue + one template + `FALL` epilogue (harness + block
-/// emission share this shape).
-pub fn assemble_single(
-    op: &TbOp,
-    pc: u32,
-    unalign_trap: bool,
-) -> Result<super::native::NativeBlock, super::EmitError> {
-    use super::native::{emit_epilogue, emit_prologue};
-    use dynasmrt::AssemblyOffset;
+/// Define a marker label at the current position (slot/chain plumbing).
+pub fn mark_label(ops: &mut A, lbl: dynasmrt::DynamicLabel) {
+    dynasm!(ops ; .arch x64 ; =>lbl);
+}
 
-    let mut ops = Assembler::new()?;
-    emit_prologue(&mut ops);
-    if !emit_op(&mut ops, op, pc, unalign_trap) {
-        return Err(super::EmitError::Untemplated);
-    }
-    emit_epilogue(&mut ops, super::native::EXIT_FALL, 0);
-    ops.finalize()
-        .map(|buf| super::native::NativeBlock::new(buf, AssemblyOffset(0), None))
-        .map_err(|_| super::EmitError::Finalize)
+/// Driver-entry jump over the chained-entry stub (the stub is a chaining
+/// resource: the entered block must not consume budgets/accumulators).
+/// Returns the body label for binding after the stub.
+pub fn emit_entry_jump(ops: &mut A) -> dynasmrt::DynamicLabel {
+    let body = ops.new_dynamic_label();
+    dynasm!(ops ; .arch x64 ; jmp =>body);
+    body
+}
+
+/// `FALL` edge to `end_pc` through `slot` (sequential chaining).
+pub fn emit_fall_edge(ops: &mut A, end_pc: u32, slot: u64) {
+    super::native::emit_static_edge(ops, super::native::EXIT_FALL, end_pc, slot);
 }
 
 fn regs_off() -> i32 {
@@ -58,9 +56,21 @@ fn reg_off(i: usize) -> i32 {
     (core::mem::offset_of!(Registers, r) + i * 4) as i32
 }
 
+/// Memory-path offset for an architectural register number, mirroring
+/// [`Registers::read`]/`write`: 13 is the active `sp`, 14 is `lr`
+/// (NOT the adjacent `msp` — raw array indexing ends at `r[12]`; the
+/// `BX lr` return caught this: `reg_off(14)` read `msp`).
+fn mem_reg_off(guest: u8) -> i32 {
+    match guest {
+        13 => core::mem::offset_of!(Registers, sp) as i32,
+        14 => core::mem::offset_of!(Registers, lr) as i32,
+        _ => reg_off(guest as usize),
+    }
+}
+
 /// Load guest `r[guest]` into `eax` (`true`) or `ecx` (`false`).
 fn load(ops: &mut A, guest: u8, into_eax: bool) {
-    let off = reg_off(guest as usize);
+    let off = mem_reg_off(guest);
     match (guest, into_eax) {
         (0, true) => dynasm!(ops ; .arch x64 ; mov eax, ebx),
         (1, true) => dynasm!(ops ; .arch x64 ; mov eax, r12d),
@@ -93,7 +103,7 @@ fn load(ops: &mut A, guest: u8, into_eax: bool) {
 
 /// Store `eax` into guest `r[guest]`.
 fn store(ops: &mut A, guest: u8) {
-    let off = reg_off(guest as usize);
+    let off = mem_reg_off(guest);
     match guest {
         0 => dynasm!(ops ; .arch x64 ; mov ebx, eax),
         1 => dynasm!(ops ; .arch x64 ; mov r12d, eax),
@@ -158,13 +168,33 @@ fn merge_nz(ops: &mut A) {
 
 /// Emit one templated op at guest `pc`. Returns `false` when `op` has no
 /// template (the block then stays interpreted — see `is_templated`).
-/// Terminator arms emit their epilogue directly (P2-2: exits via driver;
-/// direct chaining is P2-4). `unalign_trap` is the emit-time CCR bit
-/// (P2-3: stable across the block by store-seal + config purge).
+/// Plain ops only: terminators go through [`emit_terminator`] (they
+/// consume edge slots). `unalign_trap` is the emit-time CCR bit (P2-3:
+/// stable across the block by store-seal + config purge).
 pub fn emit_op(ops: &mut A, op: &TbOp, pc: u32, unalign_trap: bool) -> bool {
     match *op {
         TbOp::V16(inst) => emit16(ops, &inst, pc, unalign_trap),
         TbOp::V32(inst) => emit32(ops, &inst, pc, unalign_trap),
+    }
+}
+
+/// Emit a block terminator (P2-2 static branches, P2-4 register-indirect
+/// and 32-bit branches). Consumes its edge slots from `tape` in
+/// [`exit_shape`](super::templates::exit_shape) order and returns `false`
+/// for untemplated forms (the block then stays interpreted).
+pub fn emit_terminator(
+    ops: &mut A,
+    op: &TbOp,
+    pc: u32,
+    unalign_trap: bool,
+    tape: &mut super::templates::SlotTape<'_>,
+) -> bool {
+    // `unalign_trap` only affects memory sites; branches take it to keep
+    // the signature uniform (terminators never touch memory).
+    let _ = unalign_trap;
+    match *op {
+        TbOp::V16(inst) => emit16_term(ops, &inst, pc, tape),
+        TbOp::V32(inst) => emit32_term(ops, &inst, pc, tape),
     }
 }
 
@@ -195,7 +225,6 @@ fn lr_off() -> i32 {
 }
 
 fn emit16(ops: &mut A, inst: &crate::cpu::decode16::Inst16, pc: u32, unalign_trap: bool) -> bool {
-    use super::native::{emit_epilogue, EXIT_BRANCH};
     use crate::cpu::decode16::Inst16 as I;
     match *inst {
         I::MovImm { rd, imm } => {
@@ -246,19 +275,31 @@ fn emit16(ops: &mut A, inst: &crate::cpu::decode16::Inst16, pc: u32, unalign_tra
         I::LsImm { rt, rn, imm, kind } => emit_lsimm(ops, rt, rn, imm, kind, pc, unalign_trap),
         I::LsSp { rt, imm, is_load } => emit_lssp(ops, rt, imm, is_load, pc, unalign_trap),
         I::LdrLiteral { rt, imm } => emit_ldrliteral(ops, rt, imm, pc, unalign_trap),
-        // --- Terminators (P2-2 minimal set): static targets exit via the
-        // static epilogue; conditions select at runtime into edx for the
-        // dynamic epilogue. BlxImm/registers/table branches stay
-        // interpreted (P2-4).
+        // Terminators live in `emit_terminator` (slot-consuming edges).
+        _ => false,
+    }
+}
+
+/// 16-bit terminators (P2-2 static forms with P2-4 chained edges, P2-4
+/// register-indirect forms). Slot order is taken-then-fall.
+fn emit16_term(
+    ops: &mut A,
+    inst: &crate::cpu::decode16::Inst16,
+    pc: u32,
+    tape: &mut super::templates::SlotTape<'_>,
+) -> bool {
+    use super::native::{emit_static_edge, EXIT_BRANCH};
+    use crate::cpu::decode16::Inst16 as I;
+    match *inst {
         I::Branch { off } => {
-            emit_epilogue(ops, EXIT_BRANCH, b_target(pc, off));
+            emit_static_edge(ops, EXIT_BRANCH, b_target(pc, off), tape.take());
             true
         }
         I::BranchCond { cond, off } => {
             if cond > 13 {
                 return false;
             }
-            emit_cond_branch(ops, cond, b_target(pc, off), pc.wrapping_add(2));
+            emit_cond_pair(ops, cond, b_target(pc, off), pc.wrapping_add(2), tape);
             true
         }
         I::CbzCbnz { rn, off, nonzero } => {
@@ -266,30 +307,148 @@ fn emit16(ops: &mut A, inst: &crate::cpu::decode16::Inst16, pc: u32, unalign_tra
                 return false;
             }
             load(ops, rn, true);
-            let taken = ops.new_dynamic_label();
+            // Taken edge first (inverted jump): slot order matches
+            // `exit_shape` (taken, fall).
+            let fall = ops.new_dynamic_label();
             if nonzero {
-                dynasm!(ops ; .arch x64 ; test eax, eax ; jnz =>taken);
+                dynasm!(ops ; .arch x64 ; test eax, eax ; jz =>fall);
             } else {
-                dynasm!(ops ; .arch x64 ; test eax, eax ; jz =>taken);
+                dynasm!(ops ; .arch x64 ; test eax, eax ; jnz =>fall);
             }
-            emit_epilogue(ops, EXIT_BRANCH, pc.wrapping_add(2));
-            dynasm!(ops ; .arch x64 ; =>taken);
-            emit_epilogue(ops, EXIT_BRANCH, b_target(pc, off));
+            emit_static_edge(ops, EXIT_BRANCH, b_target(pc, off), tape.take());
+            dynasm!(ops ; .arch x64 ; =>fall);
+            emit_static_edge(ops, EXIT_BRANCH, pc.wrapping_add(2), tape.take());
+            true
+        }
+        I::Bx { rm } => emit_bx(ops, rm, pc, false, tape),
+        I::Blx { rm } => emit_bx(ops, rm, pc, true, tape),
+        _ => false,
+    }
+}
+
+/// 32-bit terminators (P2-4): `BL` links `LR` natively, wide branches
+/// chain like their 16-bit cousins (32-bit forms are `pc + 4`-relative).
+fn emit32_term(
+    ops: &mut A,
+    inst: &crate::cpu::decode32::Inst32,
+    pc: u32,
+    tape: &mut super::templates::SlotTape<'_>,
+) -> bool {
+    use super::native::{emit_static_edge, EXIT_BRANCH};
+    use crate::cpu::decode32::Inst32 as I;
+    match *inst {
+        I::Bl { off } => {
+            let lr = pc.wrapping_add(4) | 1;
+            dynasm!(ops ; .arch x64 ; mov eax, lr as i32);
+            store_lr(ops);
+            emit_static_edge(ops, EXIT_BRANCH, b_target(pc, off), tape.take());
+            true
+        }
+        I::BranchWide { off } => {
+            emit_static_edge(ops, EXIT_BRANCH, b_target(pc, off), tape.take());
+            true
+        }
+        I::BranchCondWide { cond, off } => {
+            if cond > 13 {
+                return false;
+            }
+            emit_cond_pair(ops, cond, b_target(pc, off), pc.wrapping_add(4), tape);
             true
         }
         _ => false,
     }
 }
 
-/// Conditional branch: evaluate `cond` (0-13) against the pinned NZCV
-/// nibble, select target/fallthrough into `edx`, dynamic exit. Nibble
-/// layout after `shr ecx, 28`: N = 8, Z = 4, C = 2, V = 1. `edx` starts
-/// zeroed so every path yields a clean 0/1 taken bit; the select then
-/// overwrites it wholesale.
-fn emit_cond_branch(ops: &mut A, cond: u8, target: u32, fall: u32) {
-    use super::native::{emit_epilogue_dynamic, EXIT_BRANCH};
-    let target = target as i32;
-    let fall = fall as i32;
+/// Store `eax` to the guest `LR` (memory path — `lr` is never pinned).
+/// Clobbers `rsi`; preserves `edx` (the dynamic-edge target register).
+fn store_lr(ops: &mut A) {
+    let ctx = regs_off();
+    let off = lr_off();
+    dynasm!(ops
+        ; .arch x64
+        ; mov rsi, [rsp]
+        ; mov rsi, [rsi + ctx]
+        ; mov [rsi + off], eax
+    );
+}
+
+/// Register-indirect branch (P2-4): fast path for plain Thumb targets
+/// (dynamic chained edge), side exits otherwise. `link` selects `BLX`
+/// (`LR = (pc + 2) | 1` on the fast path only — slow paths leave `LR`
+/// untouched so the interpreter's re-execution owns the write). Targets
+/// at or above the FNC magic floor side-exit FIRST (`EXIT_MMIO` with the
+/// op PC — the driver re-executes with no TLB fill, covering
+/// secure/exception returns on every ISA/mode without baking any config
+/// here); the interpreter dispatches magic before `check_branch`, so an
+/// even magic value must not halt. Remaining even targets halt
+/// (`EXIT_HALT`, mirroring `check_branch`).
+fn emit_bx(
+    ops: &mut A,
+    rm: u8,
+    pc: u32,
+    link: bool,
+    tape: &mut super::templates::SlotTape<'_>,
+) -> bool {
+    use super::native::{emit_dynamic_edge, emit_epilogue, EXIT_HALT};
+    use crate::cpu::FNC_RETURN_MIN_MAGIC;
+    if rm == 15 {
+        return false;
+    }
+    load(ops, rm, true);
+    let halt = ops.new_dynamic_label();
+    let side = ops.new_dynamic_label();
+    let magic = FNC_RETURN_MIN_MAGIC as i32;
+    dynasm!(ops
+        ; .arch x64
+        ; mov edx, eax
+        ; cmp edx, magic
+        ; jae =>side
+        ; test dl, 1
+        ; jz =>halt
+    );
+    if link {
+        let lr = pc.wrapping_add(2) | 1;
+        dynasm!(ops ; .arch x64 ; mov eax, lr as i32);
+        store_lr(ops);
+    }
+    dynasm!(ops ; .arch x64 ; and edx, 0xFFFFFFFEu32 as i32);
+    emit_dynamic_edge(ops, tape.take());
+    dynasm!(ops ; .arch x64 ; =>halt);
+    emit_epilogue(ops, EXIT_HALT, pc);
+    dynasm!(ops ; .arch x64 ; =>side);
+    // `fault_addr` is unread on this path (`mem_access` is `None` for
+    // branches): still zero the contract register for determinism.
+    dynasm!(ops ; .arch x64 ; xor r10d, r10d);
+    mem_side_exit(ops, pc);
+    true
+}
+
+/// Conditional pair: evaluate `cond` (0-13) and take the chained taken
+/// edge or fall edge (slot order taken-then-fall, matching `exit_shape`).
+fn emit_cond_pair(
+    ops: &mut A,
+    cond: u8,
+    taken: u32,
+    fall: u32,
+    tape: &mut super::templates::SlotTape<'_>,
+) {
+    use super::native::{emit_static_edge, EXIT_BRANCH};
+    cond_bit(ops, cond);
+    let fall_lbl = ops.new_dynamic_label();
+    dynasm!(ops ; .arch x64 ; jz =>fall_lbl);
+    emit_static_edge(ops, EXIT_BRANCH, taken, tape.take());
+    dynasm!(ops ; .arch x64 ; =>fall_lbl);
+    emit_static_edge(ops, EXIT_BRANCH, fall, tape.take());
+}
+
+/// Condition select: evaluate `cond` (0-13) against the pinned NZCV
+/// nibble, leaving the taken bit in `sil` with host Z set accordingly
+/// (so callers branch on it directly). Nibble layout after `shr ecx, 28`:
+/// N = 8, Z = 4, C = 2, V = 1. `edx` starts zeroed so every path yields a
+/// clean 0/1 taken bit. Multi-condition paths leave their scratch in
+/// `dh`, which must not vote (`sil` needs no REX conflict here — `ah` is
+/// long dead by exit).
+fn cond_bit(ops: &mut A, cond: u8) {
     dynasm!(ops
         ; .arch x64
         ; mov ecx, r15d
@@ -356,15 +515,8 @@ fn emit_cond_branch(ops: &mut A, cond: u8, target: u32, fall: u32) {
     dynasm!(ops
         ; .arch x64
         ; mov esi, edx
-        ; mov edx, fall
-        ; mov ecx, target
-        // Test the taken BYTE only: multi-condition paths leave their
-        // scratch in dh, which must not vote (`sil` needs no REX
-        // conflict here — `ah` is long dead by exit).
         ; test sil, sil
-        ; cmovnz edx, ecx
     );
-    emit_epilogue_dynamic(ops, EXIT_BRANCH);
 }
 
 #[derive(Clone, Copy)]

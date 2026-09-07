@@ -1,4 +1,4 @@
-//! Template coverage + differential harness (P2-2).
+//! Template coverage + differential harness (P2-2, extended P2-3/P2-4).
 //!
 //! [`is_templated`] is the single coverage decision shared by both hosts
 //! (CI parity: an op is native everywhere or interpreted everywhere).
@@ -7,9 +7,15 @@
 //! registers + flags word; every template test below is random-input
 //! differential with directed edges. The harness serves P2-2 through P2-5
 //! unchanged: later phases only add op classes and arch emitters.
+//!
+//! P2-4 adds [`exit_shape`] (the single source mapping a block body to its
+//! chained-edge slots, shared by slot allocation and emission) and the
+//! [`SlotTape`] cursor that hands baked slot addresses to terminator
+//! templates in slot order.
 
 use crate::cpu::decode16::Inst16;
-use crate::jit::builder::TbOp;
+use crate::jit::builder::{op_len, TbBody, TbEnd, TbOp};
+use crate::jit::native::LinkSlot;
 
 #[cfg(target_arch = "aarch64")]
 use super::templates_aarch64 as arch;
@@ -42,6 +48,12 @@ pub fn is_templated(op: &TbOp) -> bool {
             Inst16::Branch { .. } => true,
             Inst16::BranchCond { cond, .. } => cond <= 13,
             Inst16::CbzCbnz { rn, .. } => rn != 15,
+            // P2-4 terminators: register-indirect branches resolve at
+            // runtime (fast path for plain Thumb targets; magic/even
+            // targets side-exit to the interpreter). `rm == 15` reads the
+            // stale guest PC — stays interpreted.
+            Inst16::Bx { rm } => rm != 15,
+            Inst16::Blx { rm } => rm != 15,
             // P2-3 single transfers (S1): no PC involvement (`r15`
             // anywhere bails — the guest PC is stale mid-block; `rn ==
             // 15` is allowed only for the integer-literal base form,
@@ -72,8 +84,100 @@ pub fn is_templated(op: &TbOp) -> bool {
                     && (rn != 15 || (!writeback && is_mem_load(access)))
                     && rm.is_none_or(|r| r != 15)
             }
+            // P2-4 terminators: static 32-bit branches (`BL` links `LR`
+            // natively). `BLX`-immediate always faults (ARM-state target)
+            // and table branches are memory+branch combos (P2-5): both stay
+            // interpreted.
+            crate::cpu::decode32::Inst32::Bl { .. } => true,
+            crate::cpu::decode32::Inst32::BranchWide { .. } => true,
+            crate::cpu::decode32::Inst32::BranchCondWide { cond, .. } => cond <= 13,
             _ => false,
         },
+    }
+}
+
+/// 16- and 32-bit control flow is `pc + 4`-relative.
+fn branch_target(pc: u32, off: i32) -> u32 {
+    pc.wrapping_add(4).wrapping_add_signed(off)
+}
+
+/// Exit shape of a block body (P2-4): static exit targets in slot order,
+/// plus whether the block ends in a dynamic (`BX`/`BLX`) edge (its slot
+/// trails the static ones). Single source for slot allocation (runner)
+/// and emission (arch backends): `emit_block` asserts the emitter consumed
+/// exactly this shape, so drift fails loud instead of mislinking.
+///
+/// Conditional forms list taken first (emitters select taken before fall).
+/// Anything else (plain tails, store seals, untemplated tails) falls off
+/// the end through one `FALL` edge.
+pub fn exit_shape(body: &TbBody) -> (Vec<u32>, bool) {
+    let last = body.ops.last();
+    // The builder seals after the first terminator, so only the last op
+    // can be one; `end_pc - len` is its address.
+    let last_pc = last.map(|op| body.end_pc.wrapping_sub(op_len(op)));
+    exit_shape_for(last, last_pc, body.end_pc)
+}
+
+/// [`exit_shape`] over an explicit tail (the harness sizes single-op
+/// scratch slots without building a body).
+pub(crate) fn exit_shape_for(
+    last: Option<&TbOp>,
+    last_pc: Option<u32>,
+    end_pc: u32,
+) -> (Vec<u32>, bool) {
+    use crate::cpu::decode16::Inst16 as I16;
+    use crate::cpu::decode32::Inst32 as I32;
+
+    let fall = vec![end_pc];
+    let (Some(last), Some(last_pc)) = (last, last_pc) else {
+        return (fall, false);
+    };
+    match *last {
+        TbOp::V16(I16::Branch { off }) => (vec![branch_target(last_pc, off)], false),
+        TbOp::V16(I16::BranchCond { cond, off }) if cond <= 13 => (
+            vec![branch_target(last_pc, off), last_pc.wrapping_add(2)],
+            false,
+        ),
+        TbOp::V16(I16::CbzCbnz { off, .. }) => (
+            vec![branch_target(last_pc, off), last_pc.wrapping_add(2)],
+            false,
+        ),
+        TbOp::V16(I16::Bx { .. }) | TbOp::V16(I16::Blx { .. }) => (vec![], true),
+        TbOp::V32(I32::Bl { off }) => (vec![branch_target(last_pc, off)], false),
+        TbOp::V32(I32::BranchWide { off }) => (vec![branch_target(last_pc, off)], false),
+        TbOp::V32(I32::BranchCondWide { cond, off }) if cond <= 13 => (
+            vec![branch_target(last_pc, off), last_pc.wrapping_add(4)],
+            false,
+        ),
+        _ => (fall, false),
+    }
+}
+
+/// Cursor handing baked [`LinkSlot`] addresses to terminator templates in
+/// slot order (P2-4). Overruns panic: an emitter consuming more edges than
+/// [`exit_shape`] allocated means the two drifted, and baking a wrong
+/// address would mislink (silence is unsound here — fail loud).
+pub(crate) struct SlotTape<'a> {
+    slots: &'a [LinkSlot],
+    next: usize,
+}
+
+impl<'a> SlotTape<'a> {
+    pub(crate) fn new(slots: &'a [LinkSlot]) -> Self {
+        Self { slots, next: 0 }
+    }
+
+    pub(crate) fn take(&mut self) -> u64 {
+        let slot = self
+            .slots
+            .get(self.next)
+            .expect("slot tape overrun: exit_shape drifted from emitter");
+        self.next += 1;
+        (slot as *const LinkSlot) as u64
+    }
+
+    pub(crate) fn done(&self) -> bool {
+        self.next == self.slots.len()
     }
 }
 
@@ -140,56 +244,100 @@ pub fn emit_op(ops: &mut arch::Assembler, op: &TbOp, pc: u32, unalign_trap: bool
     arch::emit_op(ops, op, pc, unalign_trap)
 }
 
-/// Assemble prologue + one template + epilogue for harness runs. S0 ops
-/// fall through (`FALL`); terminators exit with their branch code.
+/// Assemble prologue + one template + edges for harness runs. The op is
+/// wrapped in a one-op body so emission shares the block path exactly
+/// (including slot consumption — the harness passes scratch slots, which
+/// stay unlinked so every edge exits to the driver like before).
 pub(crate) fn assemble_single(
     op: &TbOp,
     pc: u32,
     unalign_trap: bool,
+    slots: &[LinkSlot],
 ) -> Result<super::native::NativeBlock, super::EmitError> {
-    arch::assemble_single(op, pc, unalign_trap)
+    use crate::cpu::Isa;
+
+    let body = TbBody {
+        pc,
+        secure: false,
+        isa: Isa::Armv7M,
+        ops: vec![*op],
+        end_pc: pc.wrapping_add(op_len(op)),
+        end: TbEnd::MaxInsns,
+        start_page: pc >> super::tb::PAGE_SHIFT,
+        page_count: 1,
+        cycle_estimate: 0,
+        store_mask: 0,
+    };
+    emit_block(&body, unalign_trap, slots)
 }
 
-/// Emit a whole block natively: prologue, one template per op in order,
-/// then the terminator's own epilogue — or, when the block ends in plain
-/// ops, a `FALL` epilogue to the fallthrough address. Bails with
-/// [`EmitError::Untemplated`] on the first untemplated op (the block then
-/// stays interpreted); the builder guarantees terminators only appear
-/// last, so anything after one would be unreachable anyway.
+/// Emit a whole block natively: prologue, the chained-entry stub (P2-4),
+/// one template per op in order, then the terminator's own edges — or,
+/// when the block ends in plain ops, a `FALL` edge to the fallthrough
+/// address. Bails with [`EmitError::Untemplated`] on the first untemplated
+/// op (the block then stays interpreted); the builder guarantees
+/// terminators only appear last, so anything after one would be
+/// unreachable anyway. Asserts the emitter consumed exactly the slots
+/// [`exit_shape`] allocated (drift fails loud — see [`SlotTape`]).
 pub fn emit_block(
     body: &super::TbBody,
     unalign_trap: bool,
+    slots: &[LinkSlot],
 ) -> Result<super::native::NativeBlock, super::EmitError> {
-    use super::builder::op_len;
-    use super::native::{emit_epilogue, emit_prologue, NativeBlock, EXIT_FALL};
+    use super::native::{emit_chain_entry, emit_epilogue, emit_prologue, NativeBlock, EXIT_FALL};
     use dynasmrt::AssemblyOffset;
 
     let mut ops = arch::Assembler::new()?;
     emit_prologue(&mut ops);
+    // Driver entry skips the chained-entry stub (budgets/accumulators are
+    // a chaining resource — the entered block must not consume them).
+    let body_lbl = arch::emit_entry_jump(&mut ops);
+    // Marker label: its resolved offset is the chained entry (linked edges
+    // jump here with pins live and the driver frame active).
+    let chain_lbl = ops.new_dynamic_label();
+    arch::mark_label(&mut ops, chain_lbl);
+    let chain_entry = ops
+        .labels()
+        .resolve_dynamic(chain_lbl)
+        .map_err(|_| super::EmitError::Finalize)?;
+    let brk = emit_chain_entry(&mut ops, body.ops.len() as u32, body.cycle_estimate);
+    arch::mark_label(&mut ops, body_lbl);
+    let mut tape = SlotTape::new(slots);
     let mut pc = body.pc;
-    let mut terminated = false;
-    for op in &body.ops {
-        if !emit_op(&mut ops, op, pc, unalign_trap) {
+    let n = body.ops.len();
+    for (i, op) in body.ops.iter().enumerate() {
+        if i + 1 == n {
+            if emit_op(&mut ops, op, pc, unalign_trap) {
+                arch::emit_fall_edge(&mut ops, body.end_pc, tape.take());
+            } else if !arch::emit_terminator(&mut ops, op, pc, unalign_trap, &mut tape) {
+                return Err(super::EmitError::Untemplated);
+            }
+        } else if !emit_op(&mut ops, op, pc, unalign_trap) {
             return Err(super::EmitError::Untemplated);
         }
-        terminated = matches!(
-            op,
-            TbOp::V16(
-                crate::cpu::decode16::Inst16::Branch { .. }
-                    | crate::cpu::decode16::Inst16::BranchCond { .. }
-                    | crate::cpu::decode16::Inst16::CbzCbnz { .. }
-            )
-        );
         pc = pc.wrapping_add(op_len(op));
     }
-    if !terminated {
-        emit_epilogue(&mut ops, EXIT_FALL, body.end_pc);
-    }
-    // A terminator already returned: emitting another epilogue would only
-    // append dead bytes (its `ret` ends the stream).
+    assert!(
+        tape.done(),
+        "slot tape underrun: exit_shape over-allocated for this body"
+    );
+    // Budget-break exit: pins writeback + `FALL` to the block's own PC
+    // (the driver re-runs it with fresh budgets).
+    arch::mark_label(&mut ops, brk);
+    emit_epilogue(&mut ops, EXIT_FALL, body.pc);
     let last_load = last_op_load(body.ops.last());
+    let (statics, has_dynamic) = exit_shape(body);
     ops.finalize()
-        .map(|buf| NativeBlock::new(buf, AssemblyOffset(0), last_load))
+        .map(|buf| {
+            NativeBlock::new(
+                buf,
+                AssemblyOffset(0),
+                chain_entry,
+                statics.into_boxed_slice(),
+                has_dynamic,
+                last_load,
+            )
+        })
         .map_err(|_| super::EmitError::Finalize)
 }
 
@@ -303,6 +451,18 @@ pub(crate) mod harness {
         x
     }
 
+    /// Scratch edge slots for one op (stay unlinked: harness executions
+    /// always exit to the driver, exactly like an unlinked block).
+    fn scratch_slots(op: &TbOp, pc: u32) -> Vec<LinkSlot> {
+        let end = pc.wrapping_add(op_len(op));
+        let (statics, has_dynamic) = exit_shape_for(Some(op), Some(pc), end);
+        let mut slots: Vec<LinkSlot> = statics.into_iter().map(LinkSlot::unlinked).collect();
+        if has_dynamic {
+            slots.push(LinkSlot::unlinked(u32::MAX));
+        }
+        slots
+    }
+
     /// Raw emitted bytes for one template (byte-level debugging).
     #[allow(dead_code)]
     pub fn dump_native(op: &TbOp) -> Vec<u8> {
@@ -330,9 +490,18 @@ pub(crate) mod harness {
         let mut ctx = Box::new(NativeCtx {
             regs: &mut r,
             xpsr: &mut x,
+            // Unbounded budgets: harness blocks never chain (slots stay
+            // unlinked), but the chained-entry stub still gates the body
+            // on them — zero would break out before running anything.
+            budget_ops: i64::MAX,
+            budget_blocks: i64::MAX,
             ..Default::default()
         });
-        let block = assemble_single(op, pc, unalign_trap).expect("harness op is templated");
+        // Slots live in this frame across the call (the emitted code reads
+        // them while running — baking a shorter-lived address would be
+        // unsound even unlinked).
+        let slots = scratch_slots(op, pc);
+        let block = assemble_single(op, pc, unalign_trap, &slots).expect("harness op is templated");
         let code = vioarm_jit_call::call1(block.entry_ptr(), &mut *ctx as *mut NativeCtx as u64);
         ((r, x), code)
     }
@@ -459,6 +628,7 @@ pub(crate) mod harness {
         use super::super::native::{exit_reason, NativeCtx, EXIT_MMIO};
         use super::mem_access;
 
+        let slots = scratch_slots(op, pc);
         let run_once = |bus: &mut FlatMemory, tlb: &mut Tlb, gen: &mut u64| {
             let mut r = *regs;
             let mut x = *xpsr;
@@ -468,9 +638,11 @@ pub(crate) mod harness {
                 tlb: &mut *tlb as *mut Tlb,
                 privileged: 1,
                 write_gen: &mut *gen as *mut u64,
+                budget_ops: i64::MAX,
+                budget_blocks: i64::MAX,
                 ..Default::default()
             });
-            let block = assemble_single(op, pc, trap).expect("harness op is templated");
+            let block = assemble_single(op, pc, trap, &slots).expect("harness op is templated");
             let code =
                 vioarm_jit_call::call1(block.entry_ptr(), &mut *ctx as *mut NativeCtx as u64);
             let fault = ctx.fault_addr;
@@ -673,9 +845,10 @@ mod tests {
 
     #[test]
     fn untemplated_ops_bail() {
-        // System ops, PC forms, register/table/32-bit branches, and 32-bit
-        // ops have no template: the emitter reports false and the block
-        // stays interpreted.
+        // System ops, PC forms, unpredictable register branches, secure
+        // branches, always-faulting `BLX`-immediate, table branches, and
+        // the remaining 32-bit ops have no template: the emitter reports
+        // false and the block stays interpreted.
         let cases = [
             TbOp::V16(Inst16::Svc { imm: 0 }),
             TbOp::V16(Inst16::Bkpt { imm: 0 }),
@@ -692,12 +865,19 @@ mod tests {
                 off: 4,
                 nonzero: false,
             }),
-            TbOp::V16(Inst16::Bx { rm: 14 }),
+            TbOp::V16(Inst16::Bx { rm: 15 }),
+            TbOp::V16(Inst16::Blx { rm: 15 }),
+            TbOp::V16(Inst16::BxNs { rm: 2 }),
             TbOp::V16(Inst16::Pop {
                 regs: 0,
                 load_pc: true,
             }),
-            TbOp::V32(crate::cpu::decode32::Inst32::Bl { off: 4 }),
+            TbOp::V32(crate::cpu::decode32::Inst32::BlxImm { off: 4 }),
+            TbOp::V32(crate::cpu::decode32::Inst32::TblBranch {
+                rn: 0,
+                rm: 1,
+                half: false,
+            }),
         ];
         for op in &cases {
             assert!(!is_templated(op), "{op:?} must bail");
@@ -1242,6 +1422,307 @@ mod tests {
             let ((ir, _, _, _), err) = run_mem_interp(&op, &regs, &xpsr, 0x1000, bus2);
             assert!(err.is_none());
             assert_eq!(nr.r[2], ir.r[2]);
+        }
+    }
+
+    // ---- 32-bit + register-indirect branches (P2-4) ----
+
+    use crate::cpu::decode32::Inst32 as I32;
+    use crate::jit::native::EXIT_HALT;
+
+    #[test]
+    fn wide_branches_match() {
+        let regs = blank_regs();
+        let xpsr = flags_nzcv(true, false, true, false);
+        // B.W self at 0x1000 (off -4) and forward (off +8 -> 0x100C).
+        check_branch(
+            &TbOp::V32(I32::BranchWide { off: -4 }),
+            &regs,
+            xpsr,
+            0x1000,
+            0x1000,
+        );
+        check_branch(
+            &TbOp::V32(I32::BranchWide { off: 8 }),
+            &regs,
+            xpsr,
+            0x1000,
+            0x100C,
+        );
+        // Bcond.W reuses the cond matrix shape (taken/fall at pc+4 base).
+        let regs = blank_regs();
+        for (cond, take, fall) in [
+            (
+                0u8,
+                flags_nzcv(false, true, false, false),
+                flags_nzcv(false, false, false, false),
+            ),
+            (
+                1u8,
+                flags_nzcv(false, false, false, false),
+                flags_nzcv(false, true, false, false),
+            ),
+            (
+                12u8,
+                flags_nzcv(false, false, false, false),
+                flags_nzcv(false, true, false, false),
+            ),
+            (
+                13u8,
+                flags_nzcv(false, true, false, false),
+                flags_nzcv(false, false, false, false),
+            ),
+        ] {
+            let op = TbOp::V32(I32::BranchCondWide { cond, off: 8 });
+            check_branch(&op, &regs, take, 0x1000, 0x100C);
+            check_branch(&op, &regs, fall, 0x1000, 0x1004);
+        }
+        // Full 14-condition sweep on Bcond.W (same flags as the 16-bit
+        // matrix — the select is shared, the base differs).
+        let cases: &[(u8, Xpsr, Xpsr)] = &[
+            (
+                0,
+                flags_nzcv(false, true, false, false),
+                flags_nzcv(false, false, false, false),
+            ),
+            (
+                2,
+                flags_nzcv(false, false, true, false),
+                flags_nzcv(false, false, false, false),
+            ),
+            (
+                4,
+                flags_nzcv(true, false, false, false),
+                flags_nzcv(false, false, false, false),
+            ),
+            (
+                6,
+                flags_nzcv(false, false, false, true),
+                flags_nzcv(false, false, false, false),
+            ),
+            (
+                10,
+                flags_nzcv(false, false, false, false),
+                flags_nzcv(true, false, false, false),
+            ),
+        ];
+        for (cond, take, fall) in cases {
+            let op = TbOp::V32(I32::BranchCondWide {
+                cond: *cond,
+                off: -4,
+            });
+            check_branch(&op, &regs, *take, 0x1000, 0x1000);
+            check_branch(&op, &regs, *fall, 0x1000, 0x1004);
+        }
+    }
+
+    #[test]
+    fn bl_links_lr_and_branches() {
+        use crate::jit::native::{exit_pc, exit_reason, EXIT_BRANCH};
+
+        let regs = blank_regs();
+        let xpsr = flags_nzcv(false, false, false, false);
+        // BL +0x100 at 0x1000: LR = 0x1005, target 0x1104.
+        let op = TbOp::V32(I32::Bl { off: 0x100 });
+        assert!(is_templated(&op));
+        let ((nr, nx), code) = run_native(&op, &regs, &xpsr, 0x1000, false);
+        assert_eq!(exit_reason(code), EXIT_BRANCH);
+        assert_eq!(exit_pc(code), 0x1104);
+        assert_eq!(nr.lr, 0x1005, "LR = (pc + 4) | 1");
+        let mut want = regs;
+        want.lr = 0x1005;
+        assert_eq!((nr, nx), (want, xpsr), "only LR changes");
+        // Interpreter parity (LR + target, not just shape).
+        let (ir, _) = run_mem_interp_peek(&op, &regs, &xpsr);
+        assert_eq!(ir.lr, 0x1005);
+    }
+
+    /// Interpreter peek for a single non-memory op (regs + flags only;
+    /// memory ops use `run_mem_interp`).
+    fn run_mem_interp_peek(op: &TbOp, regs: &Registers, xpsr: &Xpsr) -> (Registers, Xpsr) {
+        use crate::cpu::Core;
+
+        let mem = FlatMemory::with_layout(&[], &[]);
+        let mut core = Core::armv7m(mem);
+        core.regs = *regs;
+        core.xpsr = *xpsr;
+        core.itstate = 0;
+        match *op {
+            TbOp::V16(inst) => {
+                core.exec_tb16(0x1000, inst).unwrap();
+            }
+            TbOp::V32(inst) => {
+                core.exec_tb32(0x1000, inst).unwrap();
+            }
+        }
+        (core.regs, core.xpsr)
+    }
+
+    /// Dynamic-branch check: `BRANCH` exit to the Thumb-cleared target
+    /// with end state equal to input (BX) or LR-only delta (BLX). The
+    /// target value is planted in the op's actual `Rm` lane (pinned lanes
+    /// included — that path must work too).
+    fn check_bx(op: &TbOp, rm_val: u32, pc: u32, want_pc: u32, want_lr: Option<u32>) {
+        use crate::jit::native::{exit_pc, exit_reason, EXIT_BRANCH};
+
+        assert!(is_templated(op));
+        let rm = match *op {
+            TbOp::V16(Inst16::Bx { rm }) | TbOp::V16(Inst16::Blx { rm }) => rm,
+            _ => panic!("check_bx takes Bx/Blx only"),
+        };
+        let mut regs = blank_regs();
+        if rm == 13 {
+            regs.sp = rm_val;
+        } else if rm == 14 {
+            regs.lr = rm_val;
+        } else {
+            regs.r[rm as usize] = rm_val;
+        }
+        let xpsr = flags_nzcv(true, false, true, false);
+        let ((nr, nx), code) = run_native(op, &regs, &xpsr, pc, false);
+        assert_eq!(exit_reason(code), EXIT_BRANCH);
+        assert_eq!(exit_pc(code), want_pc, "{op:?} with Rm = {rm_val:#X}");
+        let mut want = regs;
+        if let Some(lr) = want_lr {
+            want.lr = lr;
+        }
+        assert_eq!(
+            (nr, nx),
+            (want, xpsr),
+            "BX is stateless; BLX writes LR only"
+        );
+    }
+
+    #[test]
+    fn bx_fast_path_matches() {
+        // BX r2 across Thumb targets (odd incl. the largest odd below
+        // the magic floor, Thumb-bit cleared on exit); BLX additionally
+        // links LR = (pc + 2) | 1. (0xFFFF_FFF9 and friends sit above
+        // the floor — covered by the magic side-exit test.)
+        for target in [0x0800_1001, 0x2000_0001, 0xFEFF_FFFD, 0x0000_0001] {
+            check_bx(
+                &TbOp::V16(Inst16::Bx { rm: 2 }),
+                target,
+                0x1000,
+                target & !1,
+                None,
+            );
+            check_bx(
+                &TbOp::V16(Inst16::Blx { rm: 2 }),
+                target,
+                0x1000,
+                target & !1,
+                Some(0x1003),
+            );
+        }
+        // Pinned register lane.
+        check_bx(
+            &TbOp::V16(Inst16::Bx { rm: 0 }),
+            0x0800_2001,
+            0x1000,
+            0x0800_2000,
+            None,
+        );
+        // LR lane (regression: the memory-path offset for r14 must be
+        // `lr`, not the adjacent `msp` — `BX lr` is the common return).
+        check_bx(
+            &TbOp::V16(Inst16::Bx { rm: 14 }),
+            0x0800_3001,
+            0x1000,
+            0x0800_3000,
+            None,
+        );
+        check_bx(
+            &TbOp::V16(Inst16::Blx { rm: 14 }),
+            0x0800_3001,
+            0x1000,
+            0x0800_3000,
+            Some(0x1003),
+        );
+    }
+
+    #[test]
+    fn high_reg_lanes_match() {
+        // r13/r14 operand lanes use the `sp`/`lr` fields (same `mem_reg_off`
+        // regression as `BX lr`): ALU destinations/sources plus a load with
+        // an `lr` base must equal the interpreter exactly.
+        check(&TbOp::V16(Inst16::MovImm { rd: 14, imm: 0x5A }), 128);
+        check(
+            &TbOp::V16(Inst16::AddReg {
+                rd: 14,
+                rn: 2,
+                rm: 14,
+            }),
+            128,
+        );
+        check(
+            &TbOp::V16(Inst16::AddReg {
+                rd: 4,
+                rn: 14,
+                rm: 13,
+            }),
+            128,
+        );
+        let mut regs = mem_regs();
+        regs.r[0] = MEM_RAM + 0x600;
+        regs.lr = MEM_RAM + 0x600;
+        let op = TbOp::V16(Inst16::LsImm {
+            rt: 0,
+            rn: 14,
+            imm: 0,
+            kind: crate::cpu::decode16::LsImm::Ldr,
+        });
+        check_mem_fast(&op, &regs, 0x1000, false, |_| {});
+    }
+
+    #[test]
+    fn bx_even_target_halts_stateless() {
+        use crate::jit::native::{exit_pc, exit_reason};
+
+        // Even target: HALT exit carrying the op PC, no state touched
+        // (the driver commits the prefix and reports NonThumbTarget).
+        for (mk, target) in [
+            (0u8, 0x0800_1000u32),
+            (0u8, 0x0000_0000u32),
+            (1u8, 0x2000_0002u32),
+        ] {
+            let op = if mk == 0 {
+                TbOp::V16(Inst16::Bx { rm: 2 })
+            } else {
+                TbOp::V16(Inst16::Blx { rm: 2 })
+            };
+            let mut regs = blank_regs();
+            regs.r[2] = target;
+            let xpsr = flags_nzcv(false, true, false, true);
+            let ((nr, nx), code) = run_native(&op, &regs, &xpsr, 0x1000, false);
+            assert_eq!(exit_reason(code), EXIT_HALT, "{op:?} even target");
+            assert_eq!(exit_pc(code), 0x1000, "HALT carries the op PC");
+            assert_eq!((nr, nx), (regs, xpsr), "halt is effect-free");
+        }
+    }
+
+    #[test]
+    fn bx_magic_side_exits_effect_free() {
+        use crate::jit::native::{exit_pc, exit_reason};
+
+        // Magic targets (EXC_RETURN/FNC floor and above): MMIO-side exit
+        // with the op PC, no state touched (the driver re-executes through
+        // the interpreter, which owns the magic dispatch).
+        for target in [0xFFFF_FFF9, 0xFFFF_FFFD, 0xFEFF_FFFE, 0xFF00_0000] {
+            for mk in [0u8, 1u8] {
+                let op = if mk == 0 {
+                    TbOp::V16(Inst16::Bx { rm: 2 })
+                } else {
+                    TbOp::V16(Inst16::Blx { rm: 2 })
+                };
+                let mut regs = blank_regs();
+                regs.r[2] = target;
+                let xpsr = flags_nzcv(true, true, false, false);
+                let ((nr, nx), code) = run_native(&op, &regs, &xpsr, 0x1000, false);
+                assert_eq!(exit_reason(code), EXIT_MMIO, "{op:?} magic {target:#X}");
+                assert_eq!(exit_pc(code), 0x1000, "side exit carries the op PC");
+                assert_eq!((nr, nx), (regs, xpsr), "miss is effect-free");
+            }
         }
     }
 

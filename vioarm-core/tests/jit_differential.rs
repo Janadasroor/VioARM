@@ -14,6 +14,7 @@
 #![cfg(feature = "jit")]
 
 use vioarm_core::cpu::registers::{Registers, Xpsr};
+use vioarm_core::error::HaltCause;
 use vioarm_core::jit::TbRunner;
 use vioarm_core::loader::load_flat;
 use vioarm_core::machine::Machine;
@@ -50,6 +51,58 @@ fn bl(from: u32, to: u32) -> (u16, u16) {
     let h0 = 0xF000 | ((off >> 12) as u16 & 0x03FF);
     let h1 = 0xF800 | ((off >> 1) as u16 & 0x07FF);
     (h0, h1)
+}
+
+/// 32-bit `B.W from -> to` (inverted from `branch_off25`; self-checked
+/// against the decoder's vectors below).
+fn bw(from: u32, to: u32) -> (u16, u16) {
+    let off = to.wrapping_sub(from.wrapping_add(4)) as i32;
+    assert_eq!(off & 1, 0, "misaligned B.W");
+    let f = off as u32 & 0x1FF_FFFF;
+    let (s, i10, i1, i2, i11) = (
+        (f >> 24) & 1,
+        (f >> 14) & 0x3FF,
+        (f >> 13) & 1,
+        (f >> 12) & 1,
+        (f >> 1) & 0x7FF,
+    );
+    let (j1, j2) = (i1 ^ s ^ 1, i2 ^ s ^ 1);
+    (
+        0xF000 | ((s << 10) as u16) | i10 as u16,
+        0x9000 | ((j1 << 13) as u16) | ((j2 << 11) as u16) | i11 as u16,
+    )
+}
+
+/// 32-bit `B<cond>.W from -> to` (T3; same inversion with the `imm6`
+/// field and the condition in the first halfword).
+fn bcond_w(cond: u8, from: u32, to: u32) -> (u16, u16) {
+    assert!(cond <= 13, "B<c>.W has no AL/NV form");
+    let off = to.wrapping_sub(from.wrapping_add(4)) as i32;
+    assert_eq!(off & 1, 0, "misaligned B<c>.W");
+    let f = off as u32 & 0x1F_FFFF;
+    let (s, i1, i2, i6, i11) = (
+        (f >> 20) & 1,
+        (f >> 19) & 1,
+        (f >> 18) & 1,
+        (f >> 12) & 0x3F,
+        (f >> 1) & 0x7FF,
+    );
+    let (j1, j2) = (i1 ^ s ^ 1, i2 ^ s ^ 1);
+    (
+        0xF000 | ((s << 10) as u16) | ((u16::from(cond)) << 6) | i6 as u16,
+        0x8000 | ((j1 << 13) as u16) | ((j2 << 11) as u16) | i11 as u16,
+    )
+}
+
+#[test]
+fn wide_branch_helpers_match_decoder_vectors() {
+    // B.W +10 / -12 / +16384 / +16380 and BEQ.W +8, straight from the
+    // decoder's own tests (proves the helpers above, not the emitter).
+    assert_eq!(bw(0x6, 0x6 + 4 + 10), (0xF000, 0xB805));
+    assert_eq!(bw(0xA, 0xA + 4 - 12), (0xF7FF, 0xBFFA));
+    assert_eq!(bw(0x0, 0x4004), (0xF001, 0xB800));
+    assert_eq!(bw(0x0, 0x4000), (0xF000, 0x97FE));
+    assert_eq!(bcond_w(0, 0x6, 0x6 + 4 + 8), (0xF000, 0xA804));
 }
 
 fn halves(code: &[u16]) -> Vec<u8> {
@@ -296,6 +349,198 @@ fn calls_match() {
     assert_eq!(m.core.regs.r[0], 2, "both calls retired");
     drop(m);
     check(&code, code_len, 60);
+}
+
+/// BL calls with `BX lr` returns (P2-4): the call AND the return execute
+/// natively, exercising the dynamic link edge in both directions.
+fn workload_bx_calls() -> Vec<u8> {
+    let e = ENTRY;
+    // main: MOVS r0,#0; BL inc; BL inc; STR r0,[r1]; B .
+    // inc: ADDS r0,#1; BX lr.
+    let bl1_at = e + 2;
+    let bl2_at = e + 6;
+    let inc_at = e + 14;
+    let (b1h, b1l) = bl(bl1_at, inc_at);
+    let (b2h, b2l) = bl(bl2_at, inc_at);
+    let b_at = e + 12;
+    halves(&[
+        0x2000, // MOVS r0, #0
+        b1h,
+        b1l, // BL inc
+        b2h,
+        b2l,           // BL inc
+        0x6008,        // STR r0, [r1]
+        b(b_at, b_at), // B .
+        0x3001,        // inc: ADDS r0, #1
+        0x4770,        // BX lr
+    ])
+}
+
+#[test]
+fn bx_calls_match() {
+    let code = workload_bx_calls();
+    let code_len = code.len() as u32;
+    let mut m = boot(&code);
+    for _ in 0..20 {
+        m.step().unwrap();
+    }
+    assert_eq!(m.core.regs.r[0], 2, "both BX-returns retired");
+    drop(m);
+    check(&code, code_len, 60);
+}
+
+/// `BNE.W` countdown loop plus a `B.W` forward skip (P2-4 wide forms).
+fn workload_wide() -> Vec<u8> {
+    let e = ENTRY;
+    // MOVS r2,#8; loop: SUBS r2,#1; BNE.W loop; MOVS r0,#1; B.W skip;
+    // MOVS r0,#2 (skipped); skip: STR r0,[r1]; B .
+    let loop_at = e + 2;
+    let bne_at = e + 4;
+    let (bneh, bnel) = bcond_w(1, bne_at, loop_at);
+    let bw_at = e + 10;
+    let skip_at = e + 16;
+    let (bwh, bwl) = bw(bw_at, skip_at);
+    halves(&[
+        0x2208, // MOVS r2, #8
+        0x3A01, // loop: SUBS r2, #1
+        bneh,
+        bnel,   // BNE.W loop
+        0x2001, // MOVS r0, #1
+        bwh,
+        bwl,               // B.W skip
+        0x2002,            // MOVS r0, #2 (skipped)
+        0x6008,            // skip: STR r0, [r1]
+        b(e + 18, e + 18), // B .
+    ])
+}
+
+#[test]
+fn wide_branches_match() {
+    let code = workload_wide();
+    let code_len = code.len() as u32;
+    let mut m = boot(&code);
+    for _ in 0..40 {
+        m.step().unwrap();
+    }
+    assert_eq!(m.core.regs.r[0], 1, "B.W skipped the MOVS #2");
+    assert_eq!(m.core.regs.r[2], 0, "countdown drained");
+    drop(m);
+    check(&code, code_len, 120);
+}
+
+/// `BX` to an even target halts identically (stepper `Err` vs runner
+/// `Err` — the native `HALT` exit reports `NonThumbTarget`).
+#[test]
+fn bx_even_target_halts_identically() {
+    // Single BX r2 at ENTRY with r2 even.
+    let code = halves(&[0x4710]); // BX r2
+    let code_len = code.len() as u32;
+    let setup = |m: &mut Machine<FlatMemory>| {
+        m.core.regs.r[2] = 0x2000_0000;
+    };
+    let mut a = boot(&code);
+    setup(&mut a);
+    let ea = a.step().unwrap_err();
+    assert_eq!(ea, HaltCause::NonThumbTarget);
+    let mut b = boot(&code);
+    setup(&mut b);
+    let mut runner = TbRunner::new();
+    let eb = b.run_tb_quantum(&mut runner, 16).unwrap_err();
+    assert_eq!(eb, HaltCause::NonThumbTarget);
+    // Untouched architectural state on both sides (prefix-free block).
+    let sa = snap(&mut a, code_len);
+    let sb = snap(&mut b, code_len);
+    assert_eq!(sa.regs, sb.regs, "regs");
+    assert_eq!(sa.cycles, sb.cycles, "no cycles charged for the trap");
+}
+
+/// Hot loop must actually chain (P2-4): driver-bypassed executions show
+/// up in `stats().chained`, with state identical to the stepper.
+#[test]
+fn hot_loop_chains() {
+    let code = workload_memloop();
+    let code_len = code.len() as u32;
+    let setup = |m: &mut Machine<FlatMemory>| {
+        m.core.regs.r[0] = 0;
+        m.core.regs.r[2] = 8;
+        let mem = m.core.mem();
+        for i in 0..8u32 {
+            mem.write_word(0x2000_0800 + 4 * i, i + 1).unwrap();
+        }
+    };
+    let mut b = boot(&code);
+    setup(&mut b);
+    let mut runner = TbRunner::new();
+    let mut ops = 0u64;
+    while ops < 200 {
+        ops += b.run_tb_quantum(&mut runner, 64).unwrap().ops;
+    }
+    assert!(
+        runner.stats().chained > 0,
+        "hot loop must bypass the driver"
+    );
+    assert_eq!(b.core.regs.r[0], 36, "1+..+8 accumulated");
+    drop(b);
+    check_with(&code, code_len, 200, setup);
+}
+
+/// Patching a linked target mid-run executes the new bytes (P2-4): links
+/// break on the write generation, the target rebuilds, state converges
+/// with a patched-from-the-start stepper run.
+#[test]
+fn patch_breaks_links() {
+    // Loop: MOVS r0,#1; SUBS r2,#1; BNE loop; STR; B . — patch the MOVS
+    // to #9 after links form, then re-run from the top with the cache
+    // (and stale links) intact: only fresh bytes may execute.
+    let e = ENTRY;
+    let loop_at = e;
+    let bne_at = e + 4;
+    let code = halves(&[
+        0x2001, // loop: MOVS r0, #1
+        0x3A01, // SUBS r2, #1
+        bcond(1, bne_at, loop_at),
+        0x6008, // STR r0, [r1]
+        b(e + 8, e + 8),
+    ]);
+    let setup = |m: &mut Machine<FlatMemory>| {
+        m.core.regs.r[0] = 0;
+        m.core.regs.r[2] = 3;
+    };
+    // Phase 1: converge links on the unpatched image.
+    let mut b = boot(&code);
+    setup(&mut b);
+    let mut runner = TbRunner::new();
+    let mut ops = 0u64;
+    while ops < 64 {
+        ops += b.run_tb_quantum(&mut runner, 16).unwrap().ops;
+    }
+    assert!(runner.stats().chained > 0, "links formed first");
+    // Phase 2: patch the body, reset registers (NOT the cache), re-run.
+    b.core.mem().write(ENTRY, 0x09).unwrap();
+    b.core.regs.pc = ENTRY;
+    b.core.regs.r[0] = 0;
+    b.core.regs.r[2] = 3;
+    let mut ops = 0u64;
+    while ops < 64 {
+        ops += b.run_tb_quantum(&mut runner, 16).unwrap().ops;
+    }
+    assert_eq!(
+        b.core.regs.r[0], 9,
+        "patched bytes executed, no stale links"
+    );
+    // Reference: patched image from the start, stepped + native alike.
+    let mut patched = code.clone();
+    patched[0] = 0x09;
+    let plen = patched.len() as u32;
+    check_with(&patched, plen, 64, setup);
+    // And the re-run state itself converges with the patched reference.
+    let mut r = boot(&patched);
+    setup(&mut r);
+    for _ in 0..64 {
+        r.step().unwrap();
+    }
+    assert_eq!(b.core.regs.r[0], r.core.regs.r[0]);
+    assert_eq!(b.core.regs.r[2], r.core.regs.r[2]);
 }
 
 #[test]

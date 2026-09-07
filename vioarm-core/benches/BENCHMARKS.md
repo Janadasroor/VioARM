@@ -162,6 +162,34 @@ block splitting is within run noise — the loop is store-free).
 Memory-heavy code gains most (interp loads pay full fetch + decode +
 dispatch per access). Still not G2: chaining (P2-4) is the next prize.
 
+## JIT Phase 2 checkpoint (P2-4, 2026-09-07)
+
+Chained edges (static + FALL + single-target dynamic) with per-call
+budgets. New `tb_call` soak (BL/BX lr ping-pong, n=10); ALU/mem soaks
+re-run (loop back-edges now chain — driver trips nearly gone):
+
+| Bench | Mean | Ratio vs stepper |
+|---|---|---|
+| `tb/step_ram_4k` | 432.5 µs | 1.00 |
+| `tb/quanta_ram_4k` | 49.7 µs | **8.70** |
+| `tb/step_flash_4k` | 537.0 µs | 1.00 |
+| `tb/quanta_flash_4k` | 50.6 µs | **10.61** |
+| `tb/step_mem_ram_4k` | 431.8 µs | 1.00 |
+| `tb/quanta_mem_ram_4k` | 54.2 µs | **7.97** |
+| `tb/step_mem_flash_4k` | 535.8 µs | 1.00 |
+| `tb/quanta_mem_flash_4k` | 56.4 µs | **9.50** |
+| `tb/step_call_ram_4k` | 620.7 µs | 1.00 |
+| `tb/quanta_call_ram_4k` | 111.6 µs | **5.56** |
+| `tb/step_call_flash_4k` | 641.1 µs | 1.00 |
+| `tb/quanta_call_flash_4k` | 112.3 µs | **5.71** |
+
+Flash already clears 10× on loop soaks; RAM close behind. Call-heavy
+code gains least (two polymorphic dynamic edges per round trip still
+exit to the driver on first sight + LR/memory traffic). Remaining path
+to a robust G2: wider coverage (P2-5: PUSH/POP/LDM/STM keep more code
+native between edges) — the per-edge cost is now tiny, so every edge
+that stays native compounds.
+
 ## Regression policy
 
 Wall-clock gating on shared CI runners is flake-prone, so CI runs the

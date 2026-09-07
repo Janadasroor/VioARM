@@ -316,9 +316,28 @@ Goal: 10–30× on compute loops.
   3.10×. Soundness side-find (fixed here): the write-generation gate must
   be per-entry, not global (a store in B must not mark A's stale bytes
   fresh) + regression coverage.
-- [ ] P2-4: branch templates + chaining (S2, T6: patchable hot edges).
-  Note: P2-2 covers 16-bit B/Bcond/CBZ exits via driver; P2-4 adds
-  32-bit/Bl/reg/table/return forms + direct inter-block jumps.
+- [x] P2-4: branch templates + chaining (S2, T6). Done 2026-09-07:
+  `BL` (native LR link), `B.W`, `Bcond.W`, `BX`/`BLX`-reg on x64 +
+  AArch64 mirrors; `BLX`-imm (always faults) and table branches
+  (memory+branch combo, P2-5) stay interpreted. Chaining uses runner-owned
+  `LinkSlot`s in plain writable memory (no SMC — emitted code only
+  reads): static edges (incl. `FALL` + taken-then-fall cond pairs) and
+  single-target dynamic edges gate on entry-stamped generation + link
+  epoch; per-call op/block budgets in `NativeCtx` bound native execution
+  (quanta overshoot stays atomic, exact counts preserved); chained blocks
+  contribute driver-identical accounting via accumulators flushed on every
+  exit. `BX` fast path is plain-Thumb-target-only (magic-range check
+  BEFORE the even check — the interpreter dispatches magic first;
+  even targets take the new `EXIT_HALT` → `Err(NonThumbTarget)`, magic
+  side-exits re-execute via the interpreter). Generalized side exit
+  (`EXIT_MMIO` also covers complex-tail re-execution, no fill when
+  `mem_access` is `None`). Caught by testing (5 bugs: harness/driver-entry
+  stub budget starvation, missing driver-entry jump-over (double-counted
+  acc), BX magic/even ordering divergence on even magics,
+  `reg_off(14)` reading `msp` instead of `lr` — broke `BX lr` AND latent
+  P2-2/P2-3 r14 lanes, fixed in both backends with regression tests;
+  two test-vector slips of mine). Soak: ALU 8.7× RAM / 10.6× flash,
+  mem-mix 8.0× / 9.5×, call-ret 5.6× / 5.7× — within reach of G2 already.
 - [ ] P2-5: PUSH/POP/LDM/STM (S3), IT blocks (S4), 32-bit subset (S5).
 - [ ] P2-6: callout plumbing for all of S6 (SVC/BKPT/barriers/MRS-MSR/
   exclusives/WFI-FE-FE/FP/DSP) + TB-ending rules.

@@ -133,6 +133,10 @@ impl<M: PeripheralBus> Machine<M> {
                 }
                 continue;
             }
+            // Native chaining (P2-4) stops exactly at the remainder: the
+            // quantum overshoot stays one entered block (same atomicity as
+            // before — chains never cross the budget line).
+            runner.set_chain_budgets(max_ops.saturating_sub(*ops).max(1), max_ops.max(1));
             match runner.run_block(&mut self.core)? {
                 Some(outcome) => *ops += outcome.ops as u64,
                 // Refusal: one accurate step (faults, hooks, sleep handling

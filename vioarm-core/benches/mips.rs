@@ -448,6 +448,24 @@ fn bench_tb_quanta(c: &mut Criterion) {
         m.core.xpsr.set(0x01000000);
         m
     };
+    // Call/return soak (P2-4): BL + BX lr pairs chaining across blocks.
+    // Layout at base: MOVS r2,#200; loop: BL func(+6); SUBS r2,#1;
+    // BNE loop(-10); B top(-14); func: ADDS r0,r0,r1; BX lr.
+    // BL #6 = (F000,F803); BNE -10 = D1FB; B -14 = E7F9.
+    let call_prog = vec![
+        0xC8, 0x22, 0x00, 0xF0, 0x03, 0xF8, 0x01, 0x3A, 0xFB, 0xD1, 0xF9, 0xE7, 0x40, 0x18, 0x70,
+        0x47,
+    ];
+    let call_setup = |base: u32| {
+        let mem = FlatMemory::with_layout(&[base], &[0x10000]);
+        let mut m = Machine::armv7m(mem);
+        m.load_image(&load_flat(base, &call_prog));
+        m.core.regs.pc = base;
+        m.core.regs.r[0] = 0;
+        m.core.regs.r[1] = 1;
+        m.core.xpsr.set(0x01000000);
+        m
+    };
     let mut g = c.benchmark_group("tb");
     for (name, base) in [("ram", 0x2000_0000u32), ("flash", 0x0800_0000u32)] {
         g.bench_function(format!("step_{name}_4k"), |b| {
@@ -504,6 +522,31 @@ fn bench_tb_quanta(c: &mut Criterion) {
         g.bench_function(format!("quanta_mem_{name}_4k"), |b| {
             b.iter_batched(
                 || (mem_setup(base), TbRunner::new()),
+                |(mut m, mut runner)| {
+                    let mut ops = 0u64;
+                    while ops < 4096 {
+                        ops += m.run_tb_quantum(&mut runner, 1024).unwrap().ops;
+                    }
+                    black_box(m.core.cyccnt)
+                },
+                BatchSize::SmallInput,
+            );
+        });
+        g.bench_function(format!("step_call_{name}_4k"), |b| {
+            b.iter_batched(
+                || call_setup(base),
+                |mut m| {
+                    for _ in 0..4096 {
+                        let _ = m.step();
+                    }
+                    black_box(m.core.cyccnt)
+                },
+                BatchSize::SmallInput,
+            );
+        });
+        g.bench_function(format!("quanta_call_{name}_4k"), |b| {
+            b.iter_batched(
+                || (call_setup(base), TbRunner::new()),
                 |(mut m, mut runner)| {
                     let mut ops = 0u64;
                     while ops < 4096 {

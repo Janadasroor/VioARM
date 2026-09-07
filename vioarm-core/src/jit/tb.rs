@@ -228,8 +228,10 @@ impl TbCache {
 
     /// Insert a block with its decoded ops, stamping the current epoch into
     /// its key. Overwrites any block with the same `(pc, secure, isa)` and
-    /// evicts least-recently used blocks past capacity (T4). Chained jump
-    /// patches to evicted blocks must be dropped by the chaining layer (T6).
+    /// evicts least-recently used blocks past capacity (T4). Eviction never
+    /// breaks chained edges (T6): bytes are unchanged by eviction, so the
+    /// link slots' mapping keepalives keep surviving edges sound (the
+    /// generation gate still guards later writes).
     pub fn insert(&mut self, meta: TbMeta, ops: Vec<TbOp>) {
         self.insert_inner(meta, BlockPayload::Interp(ops));
     }
@@ -574,7 +576,14 @@ mod tests {
 
         let mut cache = TbCache::with_capacity(1);
         let buf = assemble_smoke().expect("smoke for payload test");
-        let native = NativeBlock::new(buf, dynasmrt::AssemblyOffset(0), None);
+        let native = NativeBlock::new(
+            buf,
+            dynasmrt::AssemblyOffset(0),
+            dynasmrt::AssemblyOffset(0),
+            Box::new([]),
+            false,
+            None,
+        );
         // Hold a clone: eviction must return its count to 1, proving the
         // cache released the mapping (no executable-memory leak).
         let held = native.clone();

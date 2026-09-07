@@ -84,8 +84,12 @@ const EXC_RETURN_THREAD_PSP_FP: u32 = 0xFFFF_FFED;
 /// `EXC_RETURN_MIN_MAGIC`/`FNC_RETURN_MIN_MAGIC`).
 const EXC_RETURN_MIN_MAGIC: u32 = 0xFF00_0000;
 /// Lowest possible ARMv8-M `FNC_RETURN` value (`0xFEFFFFFF` is the lowest
-/// Non-secure call-return magic; QEMU uses `0xFEFFFFFE`).
-const FNC_RETURN_MIN_MAGIC: u32 = 0xFEFF_FFFE;
+/// Non-secure call-return magic; QEMU uses `0xFEFFFFFE`). Shared with the
+/// JIT: every magic branch target (`FNC_RETURN`, `EXC_RETURN`) sits at or
+/// above this, so native `BX`/`BLX` templates treat it as the fast-path
+/// ceiling on every ISA/mode (anything above side-exits to the
+/// interpreter, which owns the magic dispatch).
+pub(crate) const FNC_RETURN_MIN_MAGIC: u32 = 0xFEFF_FFFE;
 /// The `FNC_RETURN` value `BLXNS` loads into `LR` (and `BXNS` returns on) to
 /// mark a Non-secure function call.
 const FNC_RETURN: u32 = 0xFEFF_FFFF;
