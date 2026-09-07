@@ -106,6 +106,10 @@ pub struct ChainOutcome {
 #[derive(Debug)]
 pub struct TbRunner {
     cache: TbCache,
+    /// Page translation cache for native fast paths (runner-owned box:
+    /// stable address across calls; cleared with the TB cache on config
+    /// changes).
+    tlb: Box<super::tlb::Tlb>,
     verify_decodes: bool,
     /// Execute fully-templated blocks natively (default on). Off forces
     /// the interpreted loop everywhere: cycle-exact `cyccnt`, for the
@@ -114,11 +118,6 @@ pub struct TbRunner {
     /// Last bus config generation seen (`None` until the first poll, or
     /// permanently when the bus is untracked — which polls as changed).
     last_seen: Option<u64>,
-    /// Bus write generation at the last content validation (`None` until
-    /// the first validation, or permanently for untracked buses — which
-    /// revalidate every entry). While the generation is unchanged, no byte
-    /// could have changed, so entry re-hashing is skipped (P1-6).
-    last_validated: Option<u64>,
     stats: TbStats,
 }
 
@@ -128,10 +127,10 @@ impl TbRunner {
     pub fn new() -> Self {
         Self {
             cache: TbCache::new(),
+            tlb: Box::default(),
             verify_decodes: false,
             use_native: true,
             last_seen: None,
-            last_validated: None,
             stats: TbStats::default(),
         }
     }
@@ -142,10 +141,10 @@ impl TbRunner {
     pub fn with_verify() -> Self {
         Self {
             cache: TbCache::new(),
+            tlb: Box::default(),
             verify_decodes: true,
             use_native: true,
             last_seen: None,
-            last_validated: None,
             stats: TbStats::default(),
         }
     }
@@ -198,6 +197,17 @@ impl TbRunner {
             self.stats.fallbacks += 1;
             return Ok(None);
         }
+        // Armed hooks run interpreted (P3-3 refines to per-range bypass):
+        // native blocks neither fire per-insn hooks nor check watchpoints,
+        // and fast paths skip hook registries — so any armed hook forces
+        // the accurate path, which fires. Peripheral-only hooks need no
+        // gate (fast paths never touch devices; side exits go interpreted).
+        if let Some(hooks) = core.mem_mut().hooks() {
+            if hooks.has_before() || hooks.has_after() || hooks.has_read() || hooks.has_write() {
+                self.stats.fallbacks += 1;
+                return Ok(None);
+            }
+        }
         let pc = core.regs.pc;
         let (isa, secure) = (core.isa, core.secure);
         if !core.fetch_allowed(pc) {
@@ -224,11 +234,13 @@ impl TbRunner {
                 Got::Interp(meta, ops) => (*meta, None, ops.to_vec()),
             });
         let (meta, native, ops, cached) = match probed {
-            Some((meta, Some(native), _)) if self.use_native && self.validated(core, &meta) => {
+            Some((meta, Some(native), _))
+                if self.use_native && self.validated(core, &key, &meta) =>
+            {
                 self.stats.hits += 1;
                 (meta, Some(native), Vec::new(), true)
             }
-            Some((meta, None, ops)) if !ops.is_empty() && self.validated(core, &meta) => {
+            Some((meta, None, ops)) if !ops.is_empty() && self.validated(core, &key, &meta) => {
                 self.stats.hits += 1;
                 (meta, None, ops, true)
             }
@@ -275,25 +287,108 @@ impl TbRunner {
         native: &NativeBlock,
         cached: bool,
     ) -> Result<BlockOutcome, HaltCause> {
-        use super::native::{exit_pc, exit_reason, NativeCtx, EXIT_FALL};
+        use super::native::{exit_pc, exit_reason, NativeCtx, EXIT_FALL, EXIT_MMIO};
 
+        // Whole-core reads first (each borrow ends before the field
+        // borrows below begin).
+        let privileged = u32::from(core.is_privileged());
+        let write_gen = core
+            .mem_mut()
+            .write_epoch_ptr()
+            .unwrap_or(core::ptr::null_mut());
         let mut ctx = Box::new(NativeCtx {
             regs: &mut core.regs,
             xpsr: &mut core.xpsr,
+            tlb: self.tlb.as_mut() as *mut super::tlb::Tlb,
+            privileged,
+            write_gen,
+            ..Default::default()
         });
         let code = vioarm_jit_call::call1(native.entry_ptr(), &mut *ctx as *mut NativeCtx as u64);
-        let end_pc = exit_pc(code);
-        let fell_through = exit_reason(code) == EXIT_FALL;
+        let reason = exit_reason(code);
+        let npc = exit_pc(code);
+        if reason == EXIT_MMIO {
+            return self.native_mmio_exit(core, meta, npc, ctx.fault_addr);
+        }
+        let end_pc = npc;
+        let fell_through = reason == EXIT_FALL;
         let ops = meta.insns as u64;
         core.cycles += ops;
         core.cyccnt += meta.cycle_estimate;
-        core.clear_load_tracker();
+        core.set_load_tracker(native.last_load());
         core.regs.pc = end_pc;
         Ok(BlockOutcome {
             ops: ops as usize,
             end_pc,
             fell_through,
             cached,
+        })
+    }
+
+    /// A native memory side exit at `op_pc` (guard/TLB miss, page cross,
+    /// unaligned-with-trap, bitband): commit the native prefix op-by-op
+    /// (exact — every prefix op fell through, else an earlier exit would
+    /// have fired), re-execute the faulting op through the interpreter
+    /// (identical MMIO and precise-fault behavior), and attempt a TLB fill
+    /// from the reported address for next time. Re-fetching the ops is
+    /// sound: stores seal blocks, so only effect-free ALU ops precede any
+    /// op in a block and the bytes cannot have changed since entry
+    /// validation.
+    fn native_mmio_exit<B: PeripheralBus>(
+        &mut self,
+        core: &mut Core<B>,
+        meta: &TbMeta,
+        op_pc: u32,
+        fault_addr: u32,
+    ) -> Result<BlockOutcome, HaltCause> {
+        use super::templates::mem_access;
+        use super::tlb::fill_tlb;
+
+        let isa = core.isa;
+        let mut pc = meta.key.pc;
+        let mut ops = 0usize;
+        while pc != op_pc {
+            let Some((_, len)) = fetch_op(core.mem_mut(), pc, isa) else {
+                return Err(HaltCause::FetchAbort);
+            };
+            let next = pc.wrapping_add(len);
+            core.commit_step(pc, next);
+            ops += 1;
+            pc = next;
+        }
+        let Some((op, len)) = fetch_op(core.mem_mut(), op_pc, isa) else {
+            return Err(HaltCause::FetchAbort);
+        };
+        let npc = match op {
+            TbOp::V16(inst) => core.exec_tb16(op_pc, inst),
+            TbOp::V32(inst) => core.exec_tb32(op_pc, inst),
+        };
+        let npc = match npc {
+            Ok(Next::Advance(addr)) => addr,
+            Ok(Next::Stop(cause)) | Err(cause) => return Err(cause),
+        };
+        core.commit_step(op_pc, npc);
+        ops += 1;
+        if let Some((size, is_write)) = mem_access(&op) {
+            // Whole-core reads first (each borrow ends before `mem_mut`).
+            let privileged = core.is_privileged();
+            let ipsr = core.ipsr;
+            fill_tlb(
+                &mut self.tlb,
+                core.mem_mut(),
+                fault_addr,
+                size,
+                is_write,
+                privileged,
+                ipsr,
+            );
+        }
+        let fall = op_pc.wrapping_add(len);
+        Ok(BlockOutcome {
+            ops,
+            end_pc: npc,
+            fell_through: npc == fall,
+            cached: true,
         })
     }
 
@@ -361,35 +456,56 @@ impl TbRunner {
             return None;
         };
         meta.check = check;
-        if self.use_native {
-            if let Ok(native) = emit_block(&body) {
+        // Stamp this entry's generation: the hash just established its
+        // baseline (untracked buses stamp 0 and always revalidate).
+        // Native store templates bump the write generation on the fast
+        // path; untracked buses (no counter) keep store-containing blocks
+        // interpreted, where post-store revalidation covers them. Loads-only
+        // blocks go native regardless (entry revalidation suffices: no
+        // mid-block stores exist to track). The CCR unaligned-trap bit is
+        // sampled here (stable across the block by store-seal + purge).
+        meta.write_gen = core.mem_mut().write_epoch().unwrap_or(0);
+        let tracked = core.mem_mut().write_epoch_ptr().is_some();
+        let unalign_trap = core
+            .mem_mut()
+            .read_word(0xE000_ED14)
+            .map(|ccr| ccr & 8 != 0)
+            .unwrap_or(false);
+        if self.use_native && (body.store_mask == 0 || tracked) {
+            if let Ok(native) = emit_block(&body, unalign_trap) {
                 self.cache.insert_native(meta, native.clone());
                 self.stats.misses += 1;
-                self.last_validated = core.mem_mut().write_epoch();
                 return Some((meta, Some(native), Vec::new()));
             }
         }
         let ops = body.ops.clone();
         self.cache.insert(meta, body.ops);
         self.stats.misses += 1;
-        // The hash just established the baseline for this generation.
-        self.last_validated = core.mem_mut().write_epoch();
         Some((meta, None, ops))
     }
 
-    /// Entry content gate (P1-6): re-hash only when the bus reports writes
-    /// since the last validation — an unchanged generation proves no byte
-    /// could have changed, whatever the source. Untracked buses (`None`)
-    /// always re-hash. True when content is confirmed.
-    fn validated<B: PeripheralBus>(&mut self, core: &mut Core<B>, meta: &TbMeta) -> bool {
-        let gen = core.mem_mut().write_epoch();
-        if let (Some(g), Some(v)) = (gen, self.last_validated) {
-            if g == v {
+    /// Entry content gate (P2-3): re-hash only when the bus reports writes
+    /// since THIS entry validated — an unchanged generation proves no byte
+    /// could have changed, whatever the source. The generation is tracked
+    /// per cache entry (a global baseline is unsound: a store in block B
+    /// must not mark block A's stale bytes fresh). Untracked buses
+    /// (`None`) always re-hash. True when content is confirmed (and the
+    /// entry's generation is refreshed on a match).
+    fn validated<B: PeripheralBus>(
+        &mut self,
+        core: &mut Core<B>,
+        key: &TbKey,
+        meta: &TbMeta,
+    ) -> bool {
+        if let Some(g) = core.mem_mut().write_epoch() {
+            if g == meta.write_gen {
                 return true;
             }
         }
         if Self::code_matches(core, meta) {
-            self.last_validated = gen;
+            if let Some(g) = core.mem_mut().write_epoch() {
+                self.cache.note_validated(key, g);
+            }
             true
         } else {
             false
@@ -399,7 +515,12 @@ impl TbRunner {
     /// Re-check content + config after a write op (P1-6): true when the
     /// block went stale and execution must stop at the current PC. A
     /// matching revalidation refreshes the generation baseline.
-    fn revalidate<B: PeripheralBus>(&mut self, core: &mut Core<B>, meta: &TbMeta) -> bool {
+    fn revalidate<B: PeripheralBus>(
+        &mut self,
+        core: &mut Core<B>,
+        key: &TbKey,
+        meta: &TbMeta,
+    ) -> bool {
         if self.poll_config(core.mem_mut().config_epoch()) {
             return true;
         }
@@ -407,16 +528,19 @@ impl TbRunner {
             self.cache.invalidate_range(meta.key.pc, meta.len_bytes);
             return true;
         }
-        self.last_validated = core.mem_mut().write_epoch();
+        if let Some(g) = core.mem_mut().write_epoch() {
+            self.cache.note_validated(key, g);
+        }
         false
     }
 
     /// Poll the bus config generation; on change purge blocks translated
-    /// under the older configuration (T7). Returns whether it changed, in
-    /// which case block execution must stop at the current PC. Called at
-    /// block entry and after write ops only (never per-op: only stores can
-    /// change config mid-block). An untracked bus (`None`) always reports
-    /// change: entry purges every time (safe; rebuilds each block).
+    /// under the older configuration (T7) plus the whole TLB (mappings
+    /// may have moved). Returns whether it changed, in which case block
+    /// execution must stop at the current PC. Called at block entry and
+    /// after write ops only (never per-op: only stores can change config
+    /// mid-block). An untracked bus (`None`) always reports change: entry
+    /// purges every time (safe; rebuilds each block).
     fn poll_config(&mut self, bus_epoch: Option<u64>) -> bool {
         let changed = match bus_epoch {
             None => true,
@@ -424,6 +548,7 @@ impl TbRunner {
         };
         if changed {
             self.cache.bump_epoch();
+            self.tlb.clear();
             self.last_seen = bus_epoch;
         }
         changed
@@ -503,7 +628,7 @@ impl TbRunner {
             // A write op may have patched code (even later ops in this same
             // block) or reprogrammed the MPU: revalidate and exit at the
             // true PC on any change; the next block rebuilds fresh.
-            if mask & (1_u64 << i) != 0 && self.revalidate(core, meta) {
+            if mask & (1_u64 << i) != 0 && self.revalidate(core, key, meta) {
                 cur = npc;
                 fell_through = false;
                 break;

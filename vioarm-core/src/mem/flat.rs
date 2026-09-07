@@ -4,7 +4,7 @@
 
 use crate::error::BusError;
 use crate::hooks::Hooks;
-use crate::mem::bus::{Bus, PeripheralBus, Region};
+use crate::mem::bus::{Bus, DataTranslate, MpuAccess, PeripheralBus, Region};
 
 /// A single owned bank of bytes.
 #[derive(Debug)]
@@ -16,11 +16,14 @@ pub struct Bank {
 /// A `Bus` that services a list of fixed banks. Reads are always allowed;
 /// writes go to RAM banks and are ignored (consumed, no fault) in flash banks
 /// for compatibility with the "flash write ignored" behavior of many parts.
+///
 #[derive(Debug)]
 pub struct FlatMemory {
     banks: Vec<Bank>,
     hooks: Hooks,
     /// Bus-write generation for JIT content validation (see `write_epoch`).
+    /// Banks are fixed at construction (never reallocated), so host
+    /// pointers handed out by `translate` stay valid for the bus lifetime.
     write_epoch: u64,
 }
 
@@ -95,6 +98,37 @@ impl Bus for FlatMemory {
             self.hooks.fire_write(addr, val);
         }
         Ok(())
+    }
+
+    fn write_epoch_ptr(&mut self) -> Option<*mut u64> {
+        Some(&mut self.write_epoch as *mut u64)
+    }
+
+    fn translate(&mut self, addr: u32, _access: MpuAccess) -> DataTranslate {
+        let Some(idx) = self.banks.iter().position(|b| b.region.contains(addr)) else {
+            return DataTranslate::Indirect;
+        };
+        // Host address of the guest page start. Banks are fixed-size (see
+        // the struct docs), so this pointer is stable for the bus
+        // lifetime. A bank starting mid-page cannot serve its first page
+        // (split across banks): refuse rather than misalign.
+        let base = self.banks[idx].region.base;
+        let page_start = addr & !0xFFF;
+        if page_start < base {
+            return DataTranslate::Indirect;
+        }
+        let page_off = page_start - base;
+        let len = (self.banks[idx].bytes.len() as u32).saturating_sub(page_off);
+        if len == 0 {
+            return DataTranslate::Indirect;
+        }
+        DataTranslate::Direct {
+            ptr: self.banks[idx]
+                .bytes
+                .as_mut_ptr()
+                .wrapping_add(page_off as usize),
+            len,
+        }
     }
 }
 

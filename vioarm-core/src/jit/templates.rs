@@ -42,19 +42,102 @@ pub fn is_templated(op: &TbOp) -> bool {
             Inst16::Branch { .. } => true,
             Inst16::BranchCond { cond, .. } => cond <= 13,
             Inst16::CbzCbnz { rn, .. } => rn != 15,
+            // P2-3 single transfers (S1): no PC involvement (`r15`
+            // anywhere bails — the guest PC is stale mid-block; `rn ==
+            // 15` is allowed only for the integer-literal base form,
+            // whose address is static). Dual/multiple/exclusive/VFP
+            // forms stay interpreted (P2-5/P2-6).
+            Inst16::LsReg { rt, rn, rm, .. } => rt != 15 && rn != 15 && rm != 15,
+            Inst16::LsImm { rt, rn, .. } => rt != 15 && rn != 15,
+            Inst16::LsSp { rt, .. } => rt != 15,
+            Inst16::LdrLiteral { rt, .. } => rt != 15,
             _ => false,
         },
-        TbOp::V32(_) => false,
+        TbOp::V32(inst) => match inst {
+            crate::cpu::decode32::Inst32::Mem {
+                access,
+                rt,
+                rn,
+                rm,
+                writeback,
+                ..
+            } => {
+                use crate::cpu::decode32::MemOp as M;
+                let single = matches!(
+                    access,
+                    M::Ldr | M::Str | M::Ldrb | M::Strb | M::Ldrh | M::Strh | M::Ldrsb | M::Ldrsh
+                );
+                single
+                    && rt != 15
+                    && (rn != 15 || (!writeback && is_mem_load(access)))
+                    && rm.is_none_or(|r| r != 15)
+            }
+            _ => false,
+        },
+    }
+}
+
+/// Whether a 32-bit `Mem` access loads (vs stores).
+fn is_mem_load(access: crate::cpu::decode32::MemOp) -> bool {
+    use crate::cpu::decode32::MemOp as M;
+    matches!(access, M::Ldr | M::Ldrb | M::Ldrh | M::Ldrsb | M::Ldrsh)
+}
+
+/// Static memory-access descriptor shared by template emission and the
+/// side-exit fill path (single source: `(byte size, is_write)`).
+/// `None` for non-memory or deferred (dual/multiple/exclusive) ops.
+pub(crate) fn mem_access(op: &TbOp) -> Option<(u32, bool)> {
+    match *op {
+        TbOp::V16(inst) => {
+            use crate::cpu::decode16::{LsImm, LsReg};
+            match inst {
+                Inst16::LsReg { kind, .. } => match kind {
+                    LsReg::Str => Some((4, true)),
+                    LsReg::Ldr => Some((4, false)),
+                    LsReg::Strh => Some((2, true)),
+                    LsReg::Ldrh => Some((2, false)),
+                    LsReg::Strb => Some((1, true)),
+                    LsReg::Ldrb | LsReg::Ldrsb => Some((1, false)),
+                    LsReg::Ldrsh => Some((2, false)),
+                },
+                Inst16::LsImm { kind, .. } => match kind {
+                    LsImm::Str => Some((4, true)),
+                    LsImm::Ldr => Some((4, false)),
+                    LsImm::Strh => Some((2, true)),
+                    LsImm::Ldrh => Some((2, false)),
+                    LsImm::Strb => Some((1, true)),
+                    LsImm::Ldrb => Some((1, false)),
+                },
+                Inst16::LsSp { is_load, .. } => Some((4, !is_load)),
+                Inst16::LdrLiteral { .. } => Some((4, false)),
+                _ => None,
+            }
+        }
+        TbOp::V32(inst) => match inst {
+            crate::cpu::decode32::Inst32::Mem { access, .. } => {
+                use crate::cpu::decode32::MemOp as M;
+                match access {
+                    M::Str => Some((4, true)),
+                    M::Ldr => Some((4, false)),
+                    M::Strh => Some((2, true)),
+                    M::Ldrh => Some((2, false)),
+                    M::Strb => Some((1, true)),
+                    M::Ldrb | M::Ldrsb => Some((1, false)),
+                    M::Ldrsh => Some((2, false)),
+                }
+            }
+            _ => None,
+        },
     }
 }
 
 /// Emit one templated op at guest `pc` into an arch assembler. Returns
 /// `false` for untemplated ops (the block then stays interpreted).
-pub fn emit_op(ops: &mut arch::Assembler, op: &TbOp, pc: u32) -> bool {
+pub fn emit_op(ops: &mut arch::Assembler, op: &TbOp, pc: u32, unalign_trap: bool) -> bool {
     if !is_templated(op) {
         return false;
     }
-    arch::emit_op(ops, op, pc)
+    arch::emit_op(ops, op, pc, unalign_trap)
 }
 
 /// Assemble prologue + one template + epilogue for harness runs. S0 ops
@@ -62,8 +145,9 @@ pub fn emit_op(ops: &mut arch::Assembler, op: &TbOp, pc: u32) -> bool {
 pub(crate) fn assemble_single(
     op: &TbOp,
     pc: u32,
+    unalign_trap: bool,
 ) -> Result<super::native::NativeBlock, super::EmitError> {
-    arch::assemble_single(op, pc)
+    arch::assemble_single(op, pc, unalign_trap)
 }
 
 /// Emit a whole block natively: prologue, one template per op in order,
@@ -72,7 +156,10 @@ pub(crate) fn assemble_single(
 /// [`EmitError::Untemplated`] on the first untemplated op (the block then
 /// stays interpreted); the builder guarantees terminators only appear
 /// last, so anything after one would be unreachable anyway.
-pub fn emit_block(body: &super::TbBody) -> Result<super::native::NativeBlock, super::EmitError> {
+pub fn emit_block(
+    body: &super::TbBody,
+    unalign_trap: bool,
+) -> Result<super::native::NativeBlock, super::EmitError> {
     use super::builder::op_len;
     use super::native::{emit_epilogue, emit_prologue, NativeBlock, EXIT_FALL};
     use dynasmrt::AssemblyOffset;
@@ -82,7 +169,7 @@ pub fn emit_block(body: &super::TbBody) -> Result<super::native::NativeBlock, su
     let mut pc = body.pc;
     let mut terminated = false;
     for op in &body.ops {
-        if !emit_op(&mut ops, op, pc) {
+        if !emit_op(&mut ops, op, pc, unalign_trap) {
             return Err(super::EmitError::Untemplated);
         }
         terminated = matches!(
@@ -100,15 +187,53 @@ pub fn emit_block(body: &super::TbBody) -> Result<super::native::NativeBlock, su
     }
     // A terminator already returned: emitting another epilogue would only
     // append dead bytes (its `ret` ends the stream).
+    let last_load = last_op_load(body.ops.last());
     ops.finalize()
-        .map(|buf| NativeBlock::new(buf, AssemblyOffset(0)))
+        .map(|buf| NativeBlock::new(buf, AssemblyOffset(0), last_load))
         .map_err(|_| super::EmitError::Finalize)
+}
+
+/// Load-use tracker value stepping `op` (as a block tail) would leave
+/// behind, mirroring `base_cycles`: `Some(rt)` for single loads into
+/// `rt < 13`, else `None`. Timing-only state.
+fn last_op_load(op: Option<&TbOp>) -> Option<u8> {
+    use crate::cpu::decode16::{LsImm, LsReg};
+    use crate::cpu::decode32::MemOp;
+    let op = op?;
+    let rt = match *op {
+        TbOp::V16(crate::cpu::decode16::Inst16::LdrLiteral { rt, .. }) => rt,
+        TbOp::V16(crate::cpu::decode16::Inst16::LsSp {
+            rt, is_load: true, ..
+        }) => rt,
+        TbOp::V16(crate::cpu::decode16::Inst16::LsReg {
+            rt,
+            kind: LsReg::Ldr | LsReg::Ldrb | LsReg::Ldrh | LsReg::Ldrsb | LsReg::Ldrsh,
+            ..
+        }) => rt,
+        TbOp::V16(crate::cpu::decode16::Inst16::LsImm {
+            rt,
+            kind: LsImm::Ldr | LsImm::Ldrb | LsImm::Ldrh,
+            ..
+        }) => rt,
+        TbOp::V32(crate::cpu::decode32::Inst32::Mem {
+            rt,
+            access: MemOp::Ldr | MemOp::Ldrb | MemOp::Ldrh | MemOp::Ldrsb | MemOp::Ldrsh,
+            ..
+        }) => rt,
+        _ => return None,
+    };
+    if rt < 13 {
+        Some(rt)
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
 pub(crate) mod harness {
     use crate::cpu::registers::{Registers, Xpsr};
     use crate::cpu::Core;
+    use crate::error::HaltCause;
     use crate::jit::native::{exit_reason, NativeCtx};
     use crate::mem::flat::FlatMemory;
 
@@ -184,7 +309,7 @@ pub(crate) mod harness {
         use super::super::native::{emit_epilogue, emit_prologue, EXIT_FALL};
         let mut ops = super::arch::Assembler::new().unwrap();
         emit_prologue(&mut ops);
-        assert!(super::emit_op(&mut ops, op, 0x1000));
+        assert!(super::emit_op(&mut ops, op, 0x1000, false));
         emit_epilogue(&mut ops, EXIT_FALL, 0);
         let buf = ops.finalize().unwrap();
         buf.to_vec()
@@ -198,14 +323,16 @@ pub(crate) mod harness {
         regs: &Registers,
         xpsr: &Xpsr,
         pc: u32,
+        unalign_trap: bool,
     ) -> ((Registers, Xpsr), u64) {
         let mut r = *regs;
         let mut x = *xpsr;
         let mut ctx = Box::new(NativeCtx {
             regs: &mut r,
             xpsr: &mut x,
+            ..Default::default()
         });
-        let block = assemble_single(op, pc).expect("harness op is templated");
+        let block = assemble_single(op, pc, unalign_trap).expect("harness op is templated");
         let code = vioarm_jit_call::call1(block.entry_ptr(), &mut *ctx as *mut NativeCtx as u64);
         ((r, x), code)
     }
@@ -243,7 +370,7 @@ pub(crate) mod harness {
                 regs.r[*reg as usize] = vals[t as usize % vals.len()];
             }
             let xpsr = scratch_xpsr(&mut rng);
-            let ((nr, nx), code) = run_native(op, &regs, &xpsr, 0x1000);
+            let ((nr, nx), code) = run_native(op, &regs, &xpsr, 0x1000, false);
             assert_eq!(exit_reason(code), EXIT_FALL, "S0 always falls");
             let (ir, ix) = run_interp(op, &regs, &xpsr);
             assert_eq!((nr, nx), (ir, ix), "trial {t} for {op:?}");
@@ -253,6 +380,140 @@ pub(crate) mod harness {
     /// Convenience: no forced regs.
     pub fn check(op: &TbOp, trials: u32) {
         check_one(op, trials, &[]);
+    }
+
+    // ---- Memory-template harness (P2-3) ----
+    //
+    // Single ops execute against a real `FlatMemory` (vectors + stack for
+    // fault delivery, RAM for data) with a real TLB: the first run
+    // side-exits (cold TLB), the harness fills via the shared `fill_tlb`
+    // exactly like the driver, and the second run takes the fast path.
+    // The interpreter reference runs the same op over an identically
+    // initialized bus. Compared: regs, flags, and RAM bytes (fault tests
+    // additionally compare exception state: same `exec` path both sides).
+
+    use crate::jit::tlb::{fill_tlb, Tlb};
+    use crate::mem::bus::Bus;
+
+    pub(crate) const MEM_RAM: u32 = 0x2000_0000;
+    const MEM_VEC: u32 = 0x0000_0000;
+    const MEM_SP: u32 = 0x2000_0200;
+    const MEM_HANDLER: u32 = 0x2000_0300;
+
+    /// Deterministic bus image: vectors (all faults → handler), stack
+    /// area, and patterned RAM.
+    pub fn mem_bus() -> FlatMemory {
+        let mut bus = FlatMemory::with_layout(&[MEM_VEC, MEM_RAM], &[0x400, 0x1000]);
+        bus.write_word(MEM_VEC, MEM_SP).unwrap();
+        for vec in [0x08, 0x0C, 0x10, 0x18, 0x2C] {
+            bus.write_word(MEM_VEC + vec, MEM_HANDLER | 1).unwrap();
+        }
+        for i in 0..0x1000u32 {
+            let b = (i.wrapping_mul(0x9E37).wrapping_add(i >> 3) & 0xFF) as u8;
+            bus.write(MEM_RAM + i, b).unwrap();
+        }
+        bus
+    }
+
+    /// Snapshotted RAM window for comparison.
+    pub fn mem_snap(bus: &mut FlatMemory) -> Vec<u8> {
+        (0..0x100u32)
+            .map(|i| bus.read(MEM_RAM + i).unwrap())
+            .collect()
+    }
+
+    /// Scratch regs pointed at the harness RAM (sp valid for stacking).
+    pub fn mem_regs() -> Registers {
+        Registers {
+            r: [0u32; 13],
+            sp: MEM_SP,
+            msp: MEM_SP,
+            psp: 0,
+            lr: 0,
+            pc: MEM_RAM,
+        }
+    }
+
+    /// Run one memory op natively: cold TLB first (must side-exit with
+    /// `MMIO`), fill from the reported address exactly like the driver,
+    /// re-run (fast path or second exit). Returns end state + RAM +
+    /// `fault_addr` + both exit codes. Miss paths are effect-free by
+    /// template construction (scratch-only prefix), so both passes start
+    /// from the same initial state.
+    pub fn run_mem(
+        op: &TbOp,
+        regs: &Registers,
+        xpsr: &Xpsr,
+        pc: u32,
+        trap: bool,
+        bus: &mut FlatMemory,
+        tlb: &mut Tlb,
+        gen: &mut u64,
+    ) -> (
+        (Registers, Xpsr, Vec<u8>),
+        u64,
+        u32,
+        (Registers, Xpsr, Vec<u8>),
+        u64,
+    ) {
+        use super::super::native::{exit_reason, NativeCtx, EXIT_MMIO};
+        use super::mem_access;
+
+        let run_once = |bus: &mut FlatMemory, tlb: &mut Tlb, gen: &mut u64| {
+            let mut r = *regs;
+            let mut x = *xpsr;
+            let mut ctx = Box::new(NativeCtx {
+                regs: &mut r,
+                xpsr: &mut x,
+                tlb: &mut *tlb as *mut Tlb,
+                privileged: 1,
+                write_gen: &mut *gen as *mut u64,
+                ..Default::default()
+            });
+            let block = assemble_single(op, pc, trap).expect("harness op is templated");
+            let code =
+                vioarm_jit_call::call1(block.entry_ptr(), &mut *ctx as *mut NativeCtx as u64);
+            let fault = ctx.fault_addr;
+            ((r, x, mem_snap(bus)), code, fault)
+        };
+        let (st1, code1, fault) = run_once(bus, tlb, gen);
+        assert_eq!(exit_reason(code1), EXIT_MMIO, "cold TLB must side-exit");
+        if let Some((size, is_write)) = mem_access(op) {
+            fill_tlb(tlb, bus, fault, size, is_write, true, 0);
+        }
+        let (st2, code2, _) = run_once(bus, tlb, gen);
+        (st1, code1, fault, st2, code2)
+    }
+
+    /// Interpreter reference for one memory op over a twin bus.
+    pub fn run_mem_interp(
+        op: &TbOp,
+        regs: &Registers,
+        xpsr: &Xpsr,
+        pc: u32,
+        bus: FlatMemory,
+    ) -> ((Registers, Xpsr, Vec<u8>, u8), Option<HaltCause>) {
+        use crate::cpu::Next;
+
+        let mut core = Core::armv7m(bus);
+        core.regs = *regs;
+        core.xpsr = *xpsr;
+        core.itstate = 0;
+        let outcome = match *op {
+            TbOp::V16(inst) => core.exec_tb16(pc, inst),
+            TbOp::V32(inst) => core.exec_tb32(pc, inst),
+        };
+        let err = match outcome {
+            Ok(Next::Advance(a)) => {
+                // Commit exactly like the stepper tail (cycles irrelevant
+                // here; compared state is_regs/flags/RAM).
+                core.regs.pc = a;
+                None
+            }
+            Ok(Next::Stop(c)) | Err(c) => Some(c),
+        };
+        let ram = mem_snap(core.mem_mut());
+        ((core.regs, core.xpsr, ram, core.ipsr), err)
     }
 }
 
@@ -449,7 +710,7 @@ mod tests {
         use crate::jit::native::{exit_pc, exit_reason, EXIT_BRANCH};
 
         assert!(is_templated(op));
-        let ((nr, nx), code) = run_native(op, regs, &xpsr, pc);
+        let ((nr, nx), code) = run_native(op, regs, &xpsr, pc, false);
         assert_eq!(exit_reason(code), EXIT_BRANCH);
         assert_eq!(exit_pc(code), want_pc, "{op:?}");
         assert_eq!((nr, nx), (*regs, xpsr), "branches are stateless");
@@ -606,6 +867,381 @@ mod tests {
             });
             check_branch(&op, &regs, *take, 0x1000, 0x100A);
             check_branch(&op, &regs, *fall, 0x1000, 0x1002);
+        }
+    }
+
+    // ---- Memory templates (P2-3) ----
+
+    use super::harness::{mem_bus, mem_regs, run_mem, run_mem_interp, MEM_RAM};
+    use crate::jit::native::{exit_reason, EXIT_FALL, EXIT_MMIO};
+    use crate::jit::tlb::Tlb;
+    use crate::mem::bus::Bus;
+    use crate::mem::flat::FlatMemory;
+
+    /// Fresh harness triple per case (TLB + generation start cold/zero).
+    fn mem_setup() -> (FlatMemory, Tlb, u64) {
+        (mem_bus(), Tlb::new(), 0)
+    }
+
+    #[test]
+    fn mem_word_imm_fast_path() {
+        // STR then LDR word, imm offsets; fault_addr + values checked.
+        let mut regs = mem_regs();
+        regs.r[1] = MEM_RAM + 0x100;
+        regs.r[2] = 0xDEAD_BEEF;
+        let xpsr = Xpsr::default();
+        let (mut bus, mut tlb, mut gen) = mem_setup();
+        let str_op = TbOp::V16(Inst16::LsImm {
+            rt: 2,
+            rn: 1,
+            imm: 12,
+            kind: crate::cpu::decode16::LsImm::Str,
+        });
+        let (st1, c1, fault, _, c2) = run_mem(
+            &str_op, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen,
+        );
+        assert_eq!(exit_reason(c1), EXIT_MMIO);
+        assert_eq!(fault, MEM_RAM + 0x10C);
+        assert_eq!((st1.0, st1.1), (regs, xpsr), "miss is effect-free");
+        assert_eq!(exit_reason(c2), EXIT_FALL);
+        assert!(gen > 0, "fast store bumps the generation");
+        let ldr_op = TbOp::V16(Inst16::LsImm {
+            rt: 0,
+            rn: 1,
+            imm: 12,
+            kind: crate::cpu::decode16::LsImm::Ldr,
+        });
+        // Fresh TLB (the STR above warmed the shared one — same page).
+        let mut tlb2 = Tlb::new();
+        let (_, _, _, (nr2, _, _), c4) = run_mem(
+            &ldr_op, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb2, &mut gen,
+        );
+        assert_eq!(exit_reason(c4), EXIT_FALL);
+        assert_eq!(nr2.r[0], 0xDEAD_BEEF, "stored word reads back");
+        // Interpreter parity on a twin bus (fast path must equal it).
+        let (mut bus2, _, _) = mem_setup();
+        bus2.write_word(MEM_RAM + 0x10C, 0xDEAD_BEEF).unwrap();
+        let ((ir, _, _, _), err) = run_mem_interp(&ldr_op, &regs, &xpsr, 0x1000, bus2);
+        assert!(err.is_none());
+        assert_eq!(ir.r[0], nr2.r[0]);
+    }
+
+    #[test]
+    fn mem_unmapped_side_exits_and_faults_identically() {
+        // Unmapped data address: native side-exits (fill refuses), the
+        // interpreter takes the fault; miss paths must be effect-free.
+        let mut regs = mem_regs();
+        regs.r[1] = 0x4000_0000;
+        let xpsr = Xpsr::default();
+        let (mut bus, mut tlb, mut gen) = mem_setup();
+        let op = TbOp::V16(Inst16::LsImm {
+            rt: 0,
+            rn: 1,
+            imm: 0,
+            kind: crate::cpu::decode16::LsImm::Ldr,
+        });
+        let (st1, c1, fault, st2, c2) = run_mem(
+            &op, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen,
+        );
+        assert_eq!(exit_reason(c1), EXIT_MMIO);
+        assert_eq!(fault, 0x4000_0000);
+        assert_eq!(exit_reason(c2), EXIT_MMIO, "unfillable stays exited");
+        assert_eq!((st1.0, st1.1), (regs, xpsr), "miss is effect-free");
+        assert_eq!((st2.0, st2.1), (regs, xpsr), "miss is effect-free");
+        let (bus2, _, _) = mem_setup();
+        let ((ir, ix, _, ipsr), err) = run_mem_interp(&op, &regs, &xpsr, 0x1000, bus2);
+        assert!(err.is_none(), "fault delivers via Advance, not Err");
+        assert_eq!(ipsr, 3, "HardFault taken");
+        assert_eq!(ix, xpsr, "fault preserves flags word shape");
+    }
+
+    /// Fast-path differential for one memory op: miss→fill→hit must equal
+    /// the interpreter over a twin bus (regs, flags, RAM). `seed` prepares
+    /// both buses identically (test data beyond the image pattern).
+    fn check_mem_fast(
+        op: &TbOp,
+        regs: &Registers,
+        pc: u32,
+        trap: bool,
+        seed: impl Fn(&mut FlatMemory),
+    ) {
+        use crate::jit::native::{exit_reason, EXIT_FALL, EXIT_MMIO};
+
+        let xpsr = Xpsr::default();
+        let (mut bus, mut tlb, mut gen) = mem_setup();
+        seed(&mut bus);
+        let (_, c1, _, st2, c2) = run_mem(op, regs, &xpsr, pc, trap, &mut bus, &mut tlb, &mut gen);
+        assert_eq!(exit_reason(c1), EXIT_MMIO);
+        assert_eq!(exit_reason(c2), EXIT_FALL, "{op:?} must go fast");
+        let (mut bus2, _, _) = mem_setup();
+        seed(&mut bus2);
+        let ((ir, ix, ram_i, _), err) = run_mem_interp(op, regs, &xpsr, pc, bus2);
+        assert!(err.is_none(), "{op:?} interpreter must not fault");
+        // `pc` is driver-managed (no template reads `regs.pc`; literals
+        // use the emit-time pc), so normalize it out of the comparison.
+        let (mut nr, nx, nram) = st2;
+        nr.pc = ir.pc;
+        assert_eq!((nr, nx, nram), (ir, ix, ram_i), "{op:?}");
+    }
+
+    #[test]
+    fn mem_sizes_and_sign_extension() {
+        use crate::cpu::decode16::{LsImm, LsReg};
+        let mut regs = mem_regs();
+        regs.r[1] = MEM_RAM + 0x200;
+        regs.r[2] = 0xA5A5_F00D;
+        // Stores then loads across widths (STR/STRB/STRH + LDR/LDRB/LDRH).
+        for (rt, imm, kind) in [
+            (2u8, 0x00u16, LsImm::Str),
+            (2u8, 0x10u16, LsImm::Strb),
+            (2u8, 0x20u16, LsImm::Strh),
+        ] {
+            let op = TbOp::V16(Inst16::LsImm {
+                rt,
+                rn: 1,
+                imm: imm as usize,
+                kind,
+            });
+            check_mem_fast(&op, &regs, 0x1000, false, |_| {});
+        }
+        for (rt, imm, kind, want) in [
+            (0u8, 0x00u16, LsImm::Ldr, 0xA5A5_F00Du32),
+            (0u8, 0x10u16, LsImm::Ldrb, 0x0000_000Du32),
+            (0u8, 0x20u16, LsImm::Ldrh, 0x0000_F00Du32),
+        ] {
+            // Seed the slot the matching store above wrote.
+            let seed = move |bus: &mut FlatMemory| {
+                bus.write_word(MEM_RAM + 0x200 + imm as u32, 0xA5A5_F00D)
+                    .unwrap();
+            };
+            let op = TbOp::V16(Inst16::LsImm {
+                rt,
+                rn: 1,
+                imm: imm as usize,
+                kind,
+            });
+            check_mem_fast(&op, &regs, 0x1000, false, seed);
+            // Spot-check the decoded value, not just parity.
+            let (mut bus, mut tlb, mut gen) = mem_setup();
+            seed(&mut bus);
+            let xpsr = Xpsr::default();
+            let (_, _, _, (nr, _, _), _) = run_mem(
+                &op, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen,
+            );
+            assert_eq!(nr.r[rt as usize], want, "{op:?}");
+        }
+        // Register-offset + sign-extending loads.
+        let mut regs = mem_regs();
+        regs.r[1] = MEM_RAM + 0x300;
+        regs.r[2] = 8;
+        for kind in [LsReg::Ldrsb, LsReg::Ldrsh, LsReg::Ldrb] {
+            let op = TbOp::V16(Inst16::LsReg {
+                rt: 0,
+                rn: 1,
+                rm: 2,
+                kind,
+            });
+            // Seed 0x80/0xFF80 at the effective address (base + 8).
+            check_mem_fast(&op, &regs, 0x1000, false, |bus| {
+                bus.write(MEM_RAM + 0x308, 0x80).unwrap();
+                bus.write_word(MEM_RAM + 0x308, 0xFF80).unwrap();
+            });
+        }
+        // Sign-extension value assertions (parity above already proves
+        // equality; these pin the architected values).
+        let op = TbOp::V16(Inst16::LsReg {
+            rt: 0,
+            rn: 1,
+            rm: 2,
+            kind: LsReg::Ldrsb,
+        });
+        let (mut bus, mut tlb, mut gen) = mem_setup();
+        bus.write(MEM_RAM + 0x308, 0x80).unwrap();
+        let xpsr = Xpsr::default();
+        let (_, _, _, (nr, _, _), _) = run_mem(
+            &op, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen,
+        );
+        assert_eq!(nr.r[0], 0xFFFF_FF80, "sign extends");
+    }
+
+    #[test]
+    fn mem_sp_and_literal() {
+        use crate::cpu::decode16::LsImm;
+        // SP-relative store/load roundtrip (SP is never pinned: always the
+        // memory path, always fresh).
+        let mut regs = mem_regs();
+        regs.sp = MEM_RAM + 0x400;
+        regs.msp = MEM_RAM + 0x400;
+        regs.r[0] = 0x1234_5678;
+        let str_op = TbOp::V16(Inst16::LsSp {
+            rt: 0,
+            imm: 16,
+            is_load: false,
+        });
+        check_mem_fast(&str_op, &regs, 0x1000, false, |_| {});
+        let ldr_op = TbOp::V16(Inst16::LsSp {
+            rt: 1,
+            imm: 16,
+            is_load: true,
+        });
+        let (mut bus, mut tlb, mut gen) = mem_setup();
+        bus.write_word(MEM_RAM + 0x410, 0x1234_5678).unwrap();
+        let xpsr = Xpsr::default();
+        let (_, _, _, (nr, _, _), c2) = run_mem(
+            &ldr_op, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen,
+        );
+        assert_eq!(exit_reason(c2), EXIT_FALL);
+        assert_eq!(nr.r[1], 0x1234_5678);
+        let _ = LsImm::Ldr;
+        // PC-relative literal load (static base from the emit-time pc,
+        // placed in RAM so the page maps).
+        let lit_pc = MEM_RAM + 0x100;
+        let lit_op = TbOp::V16(Inst16::LdrLiteral { rt: 0, imm: 8 });
+        check_mem_fast(&lit_op, &regs, lit_pc, false, |bus| {
+            // Base = Align(lit_pc + 4, 4); literal at +8.
+            let base = (lit_pc.wrapping_add(4)) & !3;
+            bus.write_word(base + 8, 0xCAFEBABE).unwrap();
+        });
+        // Spot-check the decoded literal value.
+        let (mut bus, mut tlb, mut gen) = mem_setup();
+        let base = (lit_pc.wrapping_add(4)) & !3;
+        bus.write_word(base + 8, 0xCAFEBABE).unwrap();
+        let xpsr = Xpsr::default();
+        let (_, _, _, (nr, _, _), c2) = run_mem(
+            &lit_op, &regs, &xpsr, lit_pc, false, &mut bus, &mut tlb, &mut gen,
+        );
+        assert_eq!(exit_reason(c2), EXIT_FALL);
+        assert_eq!(nr.r[0], 0xCAFEBABE);
+    }
+
+    #[test]
+    fn mem_pre_post_writeback_and_aliasing() {
+        use crate::cpu::decode32::{Inst32, MemOp};
+        // Post-indexed store with writeback, then rt==rn aliasing load:
+        // access-then-writeback order must match the interpreter (the
+        // loaded value lands first, the base update overwrites it).
+        let mut regs = mem_regs();
+        regs.r[1] = MEM_RAM + 0x500;
+        regs.r[2] = 0x1111_2222;
+        let post = TbOp::V32(Inst32::Mem {
+            access: MemOp::Str,
+            rt: 2,
+            rn: 1,
+            off: 4,
+            rm: None,
+            shift: 0,
+            add: true,
+            index: false,
+            writeback: true,
+            unprivileged: false,
+        });
+        check_mem_fast(&post, &regs, 0x1000, false, |_| {});
+        // Verify the writeback actually advanced r1 (not just parity).
+        let (mut bus, mut tlb, mut gen) = mem_setup();
+        let xpsr = Xpsr::default();
+        let (_, _, _, (nr, _, _), _) = run_mem(
+            &post, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen,
+        );
+        assert_eq!(nr.r[1], MEM_RAM + 0x504);
+        // rt == rn aliasing load with writeback.
+        let mut regs = mem_regs();
+        regs.r[0] = MEM_RAM + 0x600;
+        let alias = TbOp::V32(Inst32::Mem {
+            access: MemOp::Ldr,
+            rt: 0,
+            rn: 0,
+            off: 4,
+            rm: None,
+            shift: 0,
+            add: true,
+            index: true,
+            writeback: true,
+            unprivileged: false,
+        });
+        check_mem_fast(&alias, &regs, 0x1000, false, |_| {});
+        // Pre-indexed with register offset + shift, unprivileged flag set
+        // (ignored exactly like the interpreter — fidelity match).
+        let mut regs = mem_regs();
+        regs.r[1] = MEM_RAM + 0x700;
+        regs.r[2] = 0x10;
+        let regoff = TbOp::V32(Inst32::Mem {
+            access: MemOp::Ldr,
+            rt: 0,
+            rn: 1,
+            off: 0,
+            rm: Some(2),
+            shift: 2,
+            add: true,
+            index: true,
+            writeback: true,
+            unprivileged: true,
+        });
+        check_mem_fast(&regoff, &regs, 0x1000, false, |_| {});
+    }
+
+    #[test]
+    fn mem_cross_page_side_exits() {
+        use crate::cpu::decode16::LsImm;
+        // Word straddling a page boundary (both pages mapped): the fast
+        // path must still refuse (host adjacency unproven) and the
+        // interpreter reference must agree on values.
+        let mut regs = mem_regs();
+        regs.r[1] = MEM_RAM + 0xFFD;
+        regs.r[2] = 0xAABB_CCDD;
+        let xpsr = Xpsr::default();
+        let op = TbOp::V16(Inst16::LsImm {
+            rt: 2,
+            rn: 1,
+            imm: 0,
+            kind: LsImm::Str,
+        });
+        let (mut bus, mut tlb, mut gen) = mem_setup();
+        let (_, c1, _, _, c2) = run_mem(
+            &op, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen,
+        );
+        assert_eq!(exit_reason(c1), EXIT_MMIO);
+        assert_eq!(exit_reason(c2), EXIT_MMIO, "page-crossing never goes fast");
+        // The interpreter performs it fine — same bytes both sides would
+        // see (proves the exit, not a fault).
+        let (bus2, _, _) = mem_setup();
+        let (_, err) = run_mem_interp(&op, &regs, &xpsr, 0x1000, bus2);
+        assert!(err.is_none(), "cross-page store succeeds interpreted");
+    }
+
+    #[test]
+    fn mem_unaligned_trap_modeled() {
+        use crate::cpu::decode16::LsImm;
+        // Halfword at an odd address: with the trap baked, side exit;
+        // without, the x86 host performs it natively (AArch64 always
+        // exits — conservative but value-identical via the interpreter).
+        let mut regs = mem_regs();
+        regs.r[1] = MEM_RAM + 0x101;
+        regs.r[2] = 0xBEEF;
+        let op = TbOp::V16(Inst16::LsImm {
+            rt: 2,
+            rn: 1,
+            imm: 0,
+            kind: LsImm::Strh,
+        });
+        let (mut bus, mut tlb, mut gen) = mem_setup();
+        let xpsr = Xpsr::default();
+        let (_, c1, _, _, c2) = run_mem(
+            &op, &regs, &xpsr, 0x1000, true, &mut bus, &mut tlb, &mut gen,
+        );
+        assert_eq!(exit_reason(c1), EXIT_MMIO);
+        assert_eq!(exit_reason(c2), EXIT_MMIO, "trapped unaligned exits");
+        #[cfg(target_arch = "x86_64")]
+        {
+            let (mut bus, mut tlb, mut gen) = mem_setup();
+            let (_, c1, _, (nr, _, _), c2) = run_mem(
+                &op, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen,
+            );
+            assert_eq!(exit_reason(c1), EXIT_MMIO);
+            assert_eq!(exit_reason(c2), EXIT_FALL, "x64 performs in-page unaligned");
+            let (bus2, _, _) = mem_setup();
+            let ((ir, _, _, _), err) = run_mem_interp(&op, &regs, &xpsr, 0x1000, bus2);
+            assert!(err.is_none());
+            assert_eq!(nr.r[2], ir.r[2]);
         }
     }
 

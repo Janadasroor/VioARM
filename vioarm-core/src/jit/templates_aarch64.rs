@@ -24,6 +24,23 @@ pub type Assembler = dynasmrt::aarch64::Assembler;
 
 type A = Assembler;
 
+/// NativeCtx field offsets (`u32` immediates below).
+fn tlb_off() -> u32 {
+    core::mem::offset_of!(super::native::NativeCtx, tlb) as u32
+}
+
+fn priv_off() -> u32 {
+    core::mem::offset_of!(super::native::NativeCtx, privileged) as u32
+}
+
+fn epoch_off() -> u32 {
+    core::mem::offset_of!(super::native::NativeCtx, write_gen) as u32
+}
+
+fn fault_off() -> u32 {
+    core::mem::offset_of!(super::native::NativeCtx, fault_addr) as u32
+}
+
 fn regs_off() -> u32 {
     core::mem::offset_of!(crate::jit::NativeCtx, regs) as u32
 }
@@ -130,30 +147,34 @@ fn merge_nz(ops: &mut A) {
 }
 
 /// Emit one S0 op. Returns `false` when `op` has no template.
-pub fn emit_op(ops: &mut A, op: &TbOp, pc: u32) -> bool {
+pub fn emit_op(ops: &mut A, op: &TbOp, pc: u32, unalign_trap: bool) -> bool {
     match *op {
-        TbOp::V16(inst) => emit16(ops, &inst, pc),
-        TbOp::V32(_) => false,
+        TbOp::V16(inst) => emit16(ops, &inst, pc, unalign_trap),
+        TbOp::V32(inst) => emit32(ops, &inst, pc, unalign_trap),
     }
 }
 
 /// Assemble prologue + one template + `FALL` epilogue.
-pub fn assemble_single(op: &TbOp, pc: u32) -> Result<super::native::NativeBlock, super::EmitError> {
+pub fn assemble_single(
+    op: &TbOp,
+    pc: u32,
+    unalign_trap: bool,
+) -> Result<super::native::NativeBlock, super::EmitError> {
     use super::native::{emit_epilogue, emit_prologue};
     use dynasmrt::AssemblyOffset;
 
     let mut ops = Assembler::new()?;
     emit_prologue(&mut ops);
-    if !emit_op(&mut ops, op, pc) {
+    if !emit_op(&mut ops, op, pc, unalign_trap) {
         return Err(super::EmitError::Untemplated);
     }
     emit_epilogue(&mut ops, super::native::EXIT_FALL, 0);
     ops.finalize()
-        .map(|buf| super::native::NativeBlock::new(buf, AssemblyOffset(0)))
+        .map(|buf| super::native::NativeBlock::new(buf, AssemblyOffset(0), None))
         .map_err(|_| super::EmitError::Finalize)
 }
 
-fn emit16(ops: &mut A, inst: &crate::cpu::decode16::Inst16, pc: u32) -> bool {
+fn emit16(ops: &mut A, inst: &crate::cpu::decode16::Inst16, pc: u32, unalign_trap: bool) -> bool {
     use crate::cpu::decode16::Inst16 as I;
     match *inst {
         I::MovImm { rd, imm } => {
@@ -209,6 +230,11 @@ fn emit16(ops: &mut A, inst: &crate::cpu::decode16::Inst16, pc: u32) -> bool {
             merge_nzcv(ops);
             true
         }
+        // --- Loads/stores (P2-3 S1, mirroring x64).
+        I::LsReg { rt, rn, rm, kind } => emit_lsreg(ops, rt, rn, rm, kind, pc, unalign_trap),
+        I::LsImm { rt, rn, imm, kind } => emit_lsimm(ops, rt, rn, imm, kind, pc, unalign_trap),
+        I::LsSp { rt, imm, is_load } => emit_lssp(ops, rt, imm, is_load, pc, unalign_trap),
+        I::LdrLiteral { rt, imm } => emit_ldrliteral(ops, rt, imm, pc, unalign_trap),
         // --- Terminators (P2-2 minimal set, mirroring x64).
         I::Branch { off } => {
             super::native::emit_epilogue(ops, super::native::EXIT_BRANCH, b_target(pc, off));
@@ -516,6 +542,357 @@ fn ror_reg_seq(ops: &mut A, rd: u8) -> bool {
     true
 }
 
+/// Memory guard + fast path (P2-3, mirroring x64): input `W1` = guest
+/// address; falls through with `X0` = host address; misses jump to
+/// `side`. Clobbers `W2`–`W6`/`X9`/`X10`; preserves `W11`/`W12` and pins.
+/// AArch64 always checks alignment for multi-byte accesses (the host may
+/// fault on unaligned `ldr`/`str` regardless of the guest TRP bit — the
+/// values still match via the interpreter on side exits).
+fn mem_guard(ops: &mut A, size: u32, is_write: bool, side: dynasmrt::DynamicLabel) {
+    // Cross-page check (size > 1 only).
+    if size > 1 {
+        let limit = 0x1000 - size;
+        dynasm!(ops
+            ; .arch aarch64
+            ; and w6, w1, #0xFFF
+            ; cmp w6, limit
+            ; b.hi =>side
+        );
+        // Alignment check (always on AArch64; TRP modeled implicitly —
+        // unaligned always exits, exactly like a trapped access would).
+        let mask = size - 1;
+        dynasm!(ops
+            ; .arch aarch64
+            ; tst w1, mask
+            ; b.ne =>side
+        );
+    }
+    let tlb = tlb_off();
+    let priv_off = priv_off();
+    let perm: u32 = if is_write { 2 } else { 1 };
+    dynasm!(ops
+        ; .arch aarch64
+        ; mov w10, w1
+        ; ldr x9, [sp, #48]
+        ; ldr x9, [x9, tlb]
+        ; lsr w2, w10, #12
+        ; and x3, x2, #63
+        ; lsl x3, x3, #4
+        ; lsl w2, w2, #1
+        ; ldr x10, [sp, #48]
+        ; ldr w4, [x10, priv_off]
+        ; orr w2, w2, w4
+        ; ldr w4, [x9, x3]
+        ; cmp w4, w2
+        ; b.ne =>side
+        ; add x3, x3, #4
+        ; ldrb w4, [x9, x3]
+        ; tst w4, perm
+        ; b.eq =>side
+        ; add x3, x3, #4
+        ; ldr x5, [x9, x3]
+        ; and w6, w1, #0xFFF
+        ; add x0, x5, x6
+    );
+}
+
+/// Side-exit handler: record the faulting guest address (still in `W1`
+/// per the guard contract) and exit with `(MMIO, op_pc)`.
+fn mem_side_exit(ops: &mut A, op_pc: u32) {
+    use super::native::{emit_epilogue, EXIT_MMIO};
+    let fault = fault_off();
+    dynasm!(ops
+        ; .arch aarch64
+        ; ldr x9, [sp, #48]
+        ; str w1, [x9, fault]
+    );
+    emit_epilogue(ops, EXIT_MMIO, op_pc);
+}
+
+/// One guarded memory site: address already in `W1`, then `fast`
+/// performs the access (host in `X0`), optional writeback, and the epoch
+/// bump for stores. Value/base spills live in `W11`/`W12` (guard-safe).
+fn mem_site(ops: &mut A, size: u32, is_write: bool, op_pc: u32, fast: impl FnOnce(&mut A)) {
+    let side = ops.new_dynamic_label();
+    let end = ops.new_dynamic_label();
+    // AArch64 folds the trap decision into the guard (always strict).
+    mem_guard(ops, size, is_write, side);
+    fast(ops);
+    dynasm!(ops ; .arch aarch64 ; b =>end);
+    dynasm!(ops ; .arch aarch64 ; =>side);
+    mem_side_exit(ops, op_pc);
+    dynasm!(ops ; .arch aarch64 ; =>end);
+}
+
+/// Shared access writer: fast load/store at host `X0`, optional
+/// writeback of `W12` to `rn`, epoch bump for stores.
+fn emit_access(ops: &mut A, size: u32, is_write: bool, sext: bool, rt: u8, wb_rn: Option<u8>) {
+    if is_write {
+        match size {
+            1 => dynasm!(ops ; .arch aarch64 ; strb w11, [x0]),
+            2 => dynasm!(ops ; .arch aarch64 ; strh w11, [x0]),
+            _ => dynasm!(ops ; .arch aarch64 ; str w11, [x0]),
+        }
+        bump_epoch(ops);
+    } else {
+        match (size, sext) {
+            (1, false) => dynasm!(ops ; .arch aarch64 ; ldrb w0, [x0]),
+            (1, true) => dynasm!(ops ; .arch aarch64 ; ldrsb w0, [x0]),
+            (2, false) => dynasm!(ops ; .arch aarch64 ; ldrh w0, [x0]),
+            (2, true) => dynasm!(ops ; .arch aarch64 ; ldrsh w0, [x0]),
+            _ => dynasm!(ops ; .arch aarch64 ; ldr w0, [x0]),
+        }
+        store(ops, rt);
+    }
+    if let Some(rn) = wb_rn {
+        dynasm!(ops ; .arch aarch64 ; mov w0, w12);
+        store(ops, rn);
+    }
+}
+
+/// Bump the bus write generation after a fast store.
+fn bump_epoch(ops: &mut A) {
+    let epoch = epoch_off();
+    dynasm!(ops
+        ; .arch aarch64
+        ; ldr x9, [sp, #48]
+        ; ldr x9, [x9, epoch]
+        ; ldr x10, [x9]
+        ; add x10, x10, #1
+        ; str x10, [x9]
+    );
+}
+
+/// 16-bit single-transfer emitters (S1). Conventions: guest address ends
+/// in `W1`; store values are preloaded to `W11`; writeback effects wait
+/// in `W12`; the guard preserves all three.
+fn emit_lsreg(
+    ops: &mut A,
+    rt: u8,
+    rn: u8,
+    rm: u8,
+    kind: crate::cpu::decode16::LsReg,
+    pc: u32,
+    trap: bool,
+) -> bool {
+    use crate::cpu::decode16::LsReg as K;
+    if rt == 15 || rn == 15 || rm == 15 {
+        return false;
+    }
+    let (size, is_write, sext) = match kind {
+        K::Str => (4, true, false),
+        K::Ldr => (4, false, false),
+        K::Strh => (2, true, false),
+        K::Ldrh => (2, false, false),
+        K::Strb => (1, true, false),
+        K::Ldrb => (1, false, false),
+        K::Ldrsb => (1, false, true),
+        K::Ldrsh => (2, false, true),
+    };
+    load(ops, rn, false);
+    load(ops, rm, true);
+    dynasm!(ops ; .arch aarch64 ; add w1, w1, w0);
+    if is_write {
+        load(ops, rt, true);
+        dynasm!(ops ; .arch aarch64 ; mov w11, w0);
+    }
+    let _ = trap;
+    mem_site(ops, size, is_write, pc, |ops| {
+        emit_access(ops, size, is_write, sext, rt, None);
+    });
+    true
+}
+
+fn emit_lsimm(
+    ops: &mut A,
+    rt: u8,
+    rn: u8,
+    imm: usize,
+    kind: crate::cpu::decode16::LsImm,
+    pc: u32,
+    trap: bool,
+) -> bool {
+    use crate::cpu::decode16::LsImm as K;
+    if rt == 15 || rn == 15 {
+        return false;
+    }
+    let (size, is_write, sext) = match kind {
+        K::Str => (4, true, false),
+        K::Ldr => (4, false, false),
+        K::Strh => (2, true, false),
+        K::Ldrh => (2, false, false),
+        K::Strb => (1, true, false),
+        K::Ldrb => (1, false, false),
+    };
+    let imm = imm as u32;
+    load(ops, rn, false);
+    dynasm!(ops ; .arch aarch64 ; add w1, w1, imm);
+    if is_write {
+        load(ops, rt, true);
+        dynasm!(ops ; .arch aarch64 ; mov w11, w0);
+    }
+    let _ = trap;
+    mem_site(ops, size, is_write, pc, |ops| {
+        emit_access(ops, size, is_write, sext, rt, None);
+    });
+    true
+}
+
+fn emit_lssp(ops: &mut A, rt: u8, imm: usize, is_load: bool, pc: u32, trap: bool) -> bool {
+    if rt == 15 {
+        return false;
+    }
+    let imm = imm as u32;
+    load(ops, 13, false);
+    dynasm!(ops ; .arch aarch64 ; add w1, w1, imm);
+    if !is_load {
+        load(ops, rt, true);
+        dynasm!(ops ; .arch aarch64 ; mov w11, w0);
+    }
+    let _ = trap;
+    mem_site(ops, 4, !is_load, pc, |ops| {
+        emit_access(ops, 4, !is_load, false, rt, None);
+    });
+    true
+}
+
+fn emit_ldrliteral(ops: &mut A, rt: u8, imm: usize, pc: u32, trap: bool) -> bool {
+    if rt == 15 {
+        return false;
+    }
+    let base = (pc.wrapping_add(4)) & !3;
+    let addr = base.wrapping_add(imm as u32);
+    let (lo, hi) = (addr & 0xFFFF, (addr >> 16) & 0xFFFF);
+    dynasm!(ops
+        ; .arch aarch64
+        ; movz w1, lo
+        ; movk w1, hi, lsl #16
+    );
+    let _ = trap;
+    mem_site(ops, 4, false, pc, |ops| {
+        emit_access(ops, 4, false, false, rt, None);
+    });
+    true
+}
+
+fn emit_mem32(
+    ops: &mut A,
+    access: crate::cpu::decode32::MemOp,
+    rt: u8,
+    rn: u8,
+    off: u32,
+    rm: Option<u8>,
+    shift: u8,
+    add: bool,
+    index: bool,
+    writeback: bool,
+    pc: u32,
+    trap: bool,
+) -> bool {
+    use crate::cpu::decode32::MemOp as M;
+    let (size, is_write, sext) = match access {
+        M::Str => (4, true, false),
+        M::Ldr => (4, false, false),
+        M::Strh => (2, true, false),
+        M::Ldrh => (2, false, false),
+        M::Strb => (1, true, false),
+        M::Ldrb => (1, false, false),
+        M::Ldrsb => (1, false, true),
+        M::Ldrsh => (2, false, true),
+    };
+    if rt == 15 {
+        return false;
+    }
+    if rn == 15 {
+        let base = (pc.wrapping_add(4)) & !3;
+        let (lo, hi) = (base & 0xFFFF, (base >> 16) & 0xFFFF);
+        dynasm!(ops
+            ; .arch aarch64
+            ; movz w1, lo
+            ; movk w1, hi, lsl #16
+        );
+    } else {
+        if rm == Some(15) {
+            return false;
+        }
+        load(ops, rn, false);
+    }
+    let mut wb = None;
+    if let Some(r) = rm {
+        load(ops, r, true);
+        let shift = shift as u32;
+        dynasm!(ops ; .arch aarch64 ; lsl w0, w0, shift);
+        if index {
+            dynasm!(ops ; .arch aarch64 ; add w1, w1, w0);
+            if writeback {
+                dynasm!(ops ; .arch aarch64 ; mov w12, w1);
+                wb = Some(rn);
+            }
+        } else {
+            dynasm!(ops ; .arch aarch64 ; mov w12, w1 ; add w12, w12, w0);
+            wb = Some(rn);
+        }
+    } else if index {
+        if add {
+            dynasm!(ops ; .arch aarch64 ; add w1, w1, off);
+        } else {
+            dynasm!(ops ; .arch aarch64 ; sub w1, w1, off);
+        }
+        if writeback {
+            dynasm!(ops ; .arch aarch64 ; mov w12, w1);
+            wb = Some(rn);
+        }
+    } else {
+        dynasm!(ops ; .arch aarch64 ; mov w12, w1);
+        if add {
+            dynasm!(ops ; .arch aarch64 ; add w12, w12, off);
+        } else {
+            dynasm!(ops ; .arch aarch64 ; sub w12, w12, off);
+        }
+        wb = Some(rn);
+    }
+    if is_write {
+        load(ops, rt, true);
+        dynasm!(ops ; .arch aarch64 ; mov w11, w0);
+    }
+    let _ = trap;
+    mem_site(ops, size, is_write, pc, |ops| {
+        emit_access(ops, size, is_write, sext, rt, wb);
+    });
+    true
+}
+
+fn emit32(ops: &mut A, inst: &crate::cpu::decode32::Inst32, pc: u32, unalign_trap: bool) -> bool {
+    use crate::cpu::decode32::Inst32 as I;
+    match *inst {
+        I::Mem {
+            access,
+            rt,
+            rn,
+            off,
+            rm,
+            shift,
+            add,
+            index,
+            writeback,
+            ..
+        } => emit_mem32(
+            ops,
+            access,
+            rt,
+            rn,
+            off,
+            rm,
+            shift,
+            add,
+            index,
+            writeback,
+            pc,
+            unalign_trap,
+        ),
+        _ => false,
+    }
+}
 /// ALU-op dispatcher (16-bit `Alu` family; `itstate == 0` throughout
 /// native blocks, so flags always update).
 fn emit_alu(ops: &mut A, rd: u8, rm: u8, op: crate::cpu::decode16::AluOp) -> bool {

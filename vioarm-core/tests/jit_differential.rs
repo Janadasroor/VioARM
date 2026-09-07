@@ -347,6 +347,47 @@ fn workload_smc() -> Vec<u8> {
     ])
 }
 
+/// Fixed-trip array-sum loop: native loads/stores/branches end to end
+/// (r1 = array base from the harness, r2 = trip count, r0 accumulates).
+fn workload_memloop() -> Vec<u8> {
+    let e = ENTRY;
+    // loop: LDR r3,[r1,#0]; ADDS r0,r0,r3; ADDS r1,#4; SUBS r2,#1;
+    // BNE loop; STR r0,[r1]; B .
+    let loop_at = e;
+    let bne_at = e + 8;
+    halves(&[
+        0x680B, // LDR r3, [r1, #0]
+        0x18C0, // ADDS r0, r0, r3
+        0x3104, // ADDS r1, #4
+        0x3A01, // SUBS r2, #1 (Rd = r2, not r3!)
+        bcond(1, bne_at, loop_at),
+        0x6008, // STR r0, [r1]
+        b(e + 12, e + 12),
+    ])
+}
+
+#[test]
+fn firmware_memloop_matches() {
+    let code = workload_memloop();
+    let code_len = code.len() as u32;
+    let setup = |m: &mut Machine<FlatMemory>| {
+        m.core.regs.r[0] = 0;
+        m.core.regs.r[2] = 8;
+        let mem = m.core.mem();
+        for i in 0..8u32 {
+            mem.write_word(0x2000_0800 + 4 * i, i + 1).unwrap();
+        }
+    };
+    let mut m = boot(&code);
+    setup(&mut m);
+    for _ in 0..60 {
+        m.step().unwrap();
+    }
+    assert_eq!(m.core.regs.r[0], 36, "1+..+8 accumulated");
+    drop(m);
+    check_with(&code, code_len, 200, setup);
+}
+
 #[test]
 fn firmware_smc_matches() {
     let code = workload_smc();

@@ -293,12 +293,29 @@ Goal: 10–30× on compute loops.
   Soundness side-find (fixed here, applies to Phase 1 too): blocks cached
   under `itstate == 0` must refuse hits under `itstate != 0` (plain `exec`
   does not predicate) — runner gates + regression test.
-- [ ] P2-3: load/store templates with guard + fast path + side exit (S1,
-  M1–M4 incl. UNALIGN_TRP + bitband exits). Note: native templates must
-  never emit bus writes except through the P2-3-checked paths (the P2-2
-  runner skips mid-block revalidation by construction); P2-3 also owns
-  the `last_load_rd` contract (currently reset on native exit, exact for
-  load-free blocks only).
+- [x] P2-3: load/store templates with guard + fast path + side exit.
+  Done 2026-09-07: S1 single transfers (16-bit all forms + 32-bit Mem
+  with reg/imm offsets, pre/post-index, writeback; dual/multiple/
+  exclusive stay P2-5/P2-6) on x64 + AArch64 mirrors; 64-entry
+  direct-mapped TLB (`(vpn<<1)|priv` tags per M2, R/W perms, whole-page
+  entries) via new `Bus::translate` (Flat direct / SystemMemory mirroring
+  dispatch incl. QSPI + flash-gate exclusions) with shared `fill_tlb`;
+  side exits re-execute the op through the interpreter (identical MMIO +
+  precise faults) with per-op-exact prefix commit; page-cross always
+  exits, UNALIGN_TRP baked at emit (x64 host-tolerates, AArch64 always
+  strict — values identical), bitband always exits (M4), `unprivileged`
+  ignored to match the interpreter (fidelity gap noted); builder seals
+  after stores (entry revalidation after every store, both engines);
+  fast stores bump the write generation (new `write_epoch_ptr`; untracked
+  buses keep store blocks interpreted); `last_load_rd` set from the last
+  op at native exit; hooks gate (any armed hook → interp, P3-3 refines).
+  Caught by testing (8 bugs incl. double-subtracted TLB base, `edi`
+  pointer truncation, stale `esi` across mem stores, split/partial pages,
+  flash erase-on-read epoch hole — now bumped in both program + erase
+  paths). Soak: mem-mix 3.19× RAM / 3.73× flash; ALU soak holds 2.47× /
+  3.10×. Soundness side-find (fixed here): the write-generation gate must
+  be per-entry, not global (a store in B must not mark A's stale bytes
+  fresh) + regression coverage.
 - [ ] P2-4: branch templates + chaining (S2, T6: patchable hot edges).
   Note: P2-2 covers 16-bit B/Bcond/CBZ exits via driver; P2-4 adds
   32-bit/Bl/reg/table/return forms + direct inter-block jumps.

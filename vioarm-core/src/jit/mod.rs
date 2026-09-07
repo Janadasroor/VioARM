@@ -28,10 +28,13 @@ mod templates;
 mod templates_aarch64;
 #[cfg(target_arch = "x86_64")]
 mod templates_x64;
+mod tlb;
 
 pub use builder::{build_tb, TbBody, TbEnd, TbOp};
 pub use emit::{assemble_smoke, EmitError};
-pub use native::{exit_code, exit_pc, exit_reason, NativeBlock, NativeCtx, EXIT_BRANCH, EXIT_FALL};
+pub use native::{
+    exit_code, exit_pc, exit_reason, NativeBlock, NativeCtx, EXIT_BRANCH, EXIT_FALL, EXIT_MMIO,
+};
 pub use quanta::{QuantumEnd, QuantumOutcome, DEFAULT_QUANTUM_OPS};
 pub use runner::{BlockOutcome, ChainEnd, ChainOutcome, TbRunner, TbStats};
 pub use tb::{BlockPayload, Got};
@@ -39,3 +42,4 @@ pub use tb::{
     MpuEpoch, TbCache, TbKey, TbMeta, DEFAULT_CAPACITY, MAX_TB_INSNS, PAGE_SHIFT, PAGE_SIZE,
 };
 pub use templates::{emit_op, is_templated};
+pub use tlb::{fill_tlb, Tlb, TlbEntry, TLB_MASK, TLB_READ, TLB_SIZE, TLB_WRITE};

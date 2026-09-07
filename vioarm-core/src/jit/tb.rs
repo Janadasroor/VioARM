@@ -94,6 +94,12 @@ pub struct TbMeta {
     /// drains, debugger writes, flash programming — can never execute
     /// stale (M5). Stamped by the runner, not the builder.
     pub check: u64,
+    /// Bus write generation at the last validation of this entry. The
+    /// runner skips re-hashing while the bus generation matches (no byte
+    /// could have changed); any store anywhere else advances the bus
+    /// generation and forces this entry to revalidate. Stamped by the
+    /// runner at insert, refreshed on every matching revalidation.
+    pub write_gen: u64,
     /// Bit `i` set when op `i` performs a bus write (stamped by the
     /// builder): the runner revalidates only after write ops, never after
     /// pure ALU/branch/load ops (P1-6).
@@ -295,6 +301,14 @@ impl TbCache {
         }
     }
 
+    /// Refresh one entry's validation generation after a matching
+    /// re-hash (no LRU side effects needed — lookup already refreshed).
+    pub fn note_validated(&mut self, key: &TbKey, gen: u64) {
+        if let Some(entry) = self.blocks.get_mut(key) {
+            entry.meta.write_gen = gen;
+        }
+    }
+
     /// Bump the MPU generation (T7): all cached blocks become stale and are
     /// purged now. Returns the number of blocks dropped.
     pub fn bump_epoch(&mut self) -> usize {
@@ -439,6 +453,7 @@ mod tests {
             page_count,
             cycle_estimate: 4,
             check: 0,
+            write_gen: 0,
             store_mask: 0,
         }
     }
@@ -559,7 +574,7 @@ mod tests {
 
         let mut cache = TbCache::with_capacity(1);
         let buf = assemble_smoke().expect("smoke for payload test");
-        let native = NativeBlock::new(buf, dynasmrt::AssemblyOffset(0));
+        let native = NativeBlock::new(buf, dynasmrt::AssemblyOffset(0), None);
         // Hold a clone: eviction must return its count to 1, proving the
         // cache released the mapping (no executable-memory leak).
         let held = native.clone();

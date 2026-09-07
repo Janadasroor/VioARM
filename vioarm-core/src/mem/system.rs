@@ -20,7 +20,9 @@ use crate::device::stm32::rcc::ClockState;
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
 use crate::hooks::Hooks;
-use crate::mem::bus::{Bus, IdauAttribution, MpuAccess, MpuLookup, PeripheralBus, Region, SauHit};
+use crate::mem::bus::{
+    Bus, DataTranslate, IdauAttribution, MpuAccess, MpuLookup, PeripheralBus, Region, SauHit,
+};
 use std::sync::{Arc, Mutex};
 
 /// One attached-device window in the route index below.
@@ -819,6 +821,12 @@ impl<M: Bus> SystemMemory<M> {
             drop(guard);
             let result = self.backing.write(addr, val);
             gate.lock().unwrap_or_else(|e| e.into_inner()).eop = true;
+            // Direct backing write (bypasses `write`): bump the generation
+            // by hand so JIT content validation sees the new bytes (a
+            // missed bump here is silent stale-code execution).
+            if result.is_ok() {
+                self.write_epoch = self.write_epoch.wrapping_add(1);
+            }
             result
         } else {
             guard.wrprterr = true;
@@ -843,6 +851,9 @@ impl<M: Bus> SystemMemory<M> {
     }
 
     /// Zero the backing flash bank for a page, sector, or mass erase.
+    /// Direct backing writes (bypassing `write`, and executing lazily on a
+    /// later read): bump the generation afterwards so JIT content
+    /// validation sees the erased bytes.
     fn perform_erase(&mut self, erase: FlashErase, region: Region, page_size: u32) {
         match erase {
             FlashErase::Mass => {
@@ -862,6 +873,7 @@ impl<M: Bus> SystemMemory<M> {
                 }
             }
         }
+        self.write_epoch = self.write_epoch.wrapping_add(1);
     }
 }
 
@@ -960,6 +972,50 @@ impl<M: Bus> Bus for SystemMemory<M> {
             }
         }
         Ok(())
+    }
+
+    fn write_epoch_ptr(&mut self) -> Option<*mut u64> {
+        Some(&mut self.write_epoch as *mut u64)
+    }
+
+    /// Translate a data access for the JIT fast path, mirroring the
+    /// read/write dispatch exactly: anything that is not plain backing
+    /// bytes (devices, SCB/NVIC/ITM, disabled QSPI windows, the gated
+    /// flash region with its erase-on-read and program semantics) is
+    /// `Indirect`, forcing a side exit to the interpreter.
+    fn translate(&mut self, addr: u32, _access: MpuAccess) -> DataTranslate {
+        if self.route_device(addr).is_some() {
+            return DataTranslate::Indirect;
+        }
+        if self.scb.ranges().iter().any(|r| r.contains(addr))
+            || self.nvic.ranges().iter().any(|r| r.contains(addr))
+            || self.itm.ranges().iter().any(|r| r.contains(addr))
+        {
+            return DataTranslate::Indirect;
+        }
+        // Disabled QSPI windows consume accesses (reads see zeros); an
+        // enabled window is plain backing flash (mirrors `read_backing`).
+        for gate in [&self.qspi, &self.qspi2].into_iter().flatten() {
+            let guard = gate.lock().unwrap_or_else(|e| e.into_inner());
+            if guard.region.contains(addr) {
+                if !guard.enabled {
+                    return DataTranslate::Indirect;
+                }
+                break;
+            }
+        }
+        // The gated flash region reads through erase handling and writes
+        // through program gating: never directly mapped.
+        if let Some(g) = &self.flash {
+            if g.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .region
+                .contains(addr)
+            {
+                return DataTranslate::Indirect;
+            }
+        }
+        self.backing.translate(addr, _access)
     }
 }
 

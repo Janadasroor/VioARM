@@ -8,7 +8,7 @@ pub mod bus;
 pub mod flat;
 pub mod system;
 
-pub use bus::{Bus, MpuAccess, MpuLookup, PeripheralBus, Region, SauHit};
+pub use bus::{Bus, DataTranslate, MpuAccess, MpuLookup, PeripheralBus, Region, SauHit};
 
 #[cfg(test)]
 mod tests {

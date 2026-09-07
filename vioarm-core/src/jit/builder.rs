@@ -9,6 +9,8 @@
 //! - any branch/call/return or PC-writing op (inclusive, [`TbEnd::ControlFlow`]);
 //! - any S6 callout op — system, exclusive, barrier, FP, DSP, `WFI`/`WFE`,
 //!   `IT` — or unpredictable PC-register form (inclusive, [`TbEnd::System`]);
+//! - any bus-writing op (inclusive, [`TbEnd::Store`]; P2-3: forces
+//!   entry revalidation after every store for both engines);
 //! - [`MAX_TB_INSNS`] ops (inclusive, [`TbEnd::MaxInsns`]);
 //! - a 4 KiB page-boundary cross (exclusive, [`TbEnd::PageCross`]);
 //! - an unfetchable/undecodable instruction (exclusive, [`TbEnd::Halt`];
@@ -55,6 +57,13 @@ pub enum TbEnd {
     ControlFlow,
     /// An S6 callout op or unpredictable PC-register form (included).
     System,
+    /// A bus-writing op (included; the block ends here with a fallthrough
+    /// exit). Stores seal blocks so a store is never followed by more
+    /// translated ops in the same block: the next block entry revalidates
+    /// content (self-modifying code) and config (MPU reprogramming) after
+    /// every store, for both engines (P2-3). Native templates additionally
+    /// bump the write generation on the fast path.
+    Store,
     /// The next instruction starts on another 4 KiB page (excluded).
     PageCross,
     /// The next instruction could not be fetched or decoded (excluded; the
@@ -110,6 +119,7 @@ impl TbBody {
             store_mask: self.store_mask,
             // The runner stamps the real content hash at insert time.
             check: 0,
+            write_gen: 0,
         }
     }
 }
@@ -184,6 +194,7 @@ pub fn build_tb<B: Bus>(
         cur = cur.wrapping_add(len);
         ops.push(op);
         match seal {
+            Seal::Continue if op_writes_memory(&op) => break TbEnd::Store,
             Seal::Continue => {}
             Seal::ControlFlow => break TbEnd::ControlFlow,
             Seal::System => break TbEnd::System,
@@ -461,9 +472,11 @@ mod tests {
 
         let mut mem = mem_with(0x1000, &[PUSH_LR, POP_PC]);
         let body = build_tb(&mut mem, 0x1000, false, Isa::Armv7M, 0).unwrap();
-        // PUSH continues (memory surcharge), POP-pc seals control flow.
-        assert_eq!((body.ops.len(), body.end), (2, TbEnd::ControlFlow));
-        assert_eq!(body.cycle_estimate, 2 + 2);
+        // PUSH seals as a store (P2-3); POP-pc seals the next block.
+        assert_eq!((body.ops.len(), body.end), (1, TbEnd::Store));
+        assert_eq!(body.cycle_estimate, 2);
+        let body = build_tb(&mut mem, 0x1002, false, Isa::Armv7M, 0).unwrap();
+        assert_eq!((body.ops.len(), body.end), (1, TbEnd::ControlFlow));
     }
 
     #[test]
@@ -572,21 +585,37 @@ mod tests {
     }
 
     #[test]
-    fn store_mask_marks_write_ops_only() {
-        // STR (bit 0), NOP, LDR (loads never mutate): mask 0b001.
-        // Exactly-sized memory: no zero padding to decode through.
-        let mut mem = VecMem::new(0x1000, 6);
-        mem.poke_half(0x1000, 0x600A);
-        mem.poke_half(0x1002, NOP);
-        mem.poke_half(0x1004, 0x4800);
+    fn stores_seal_blocks_inclusive() {
+        // STR seals (P2-3): the NOP after it starts a new block.
+        let mut mem = mem_with(0x1000, &[0x600A, NOP, B_SELF]);
         let body = build_tb(&mut mem, 0x1000, false, Isa::Armv7M, 0).unwrap();
-        assert_eq!(body.ops.len(), 3);
-        assert_eq!(body.store_mask, 0b001);
-        assert_eq!(body.to_meta().store_mask, 0b001);
-        // PUSH stores (bit 0); POP-pc loads do not (bit 1 clear).
+        assert_eq!((body.ops.len(), body.end), (1, TbEnd::Store));
+        assert_eq!(body.end_pc, 0x1002);
+        // Pure loads do not seal.
+        let mut mem = mem_with(0x1000, &[0x4800, NOP, B_SELF]);
+        let body = build_tb(&mut mem, 0x1000, false, Isa::Armv7M, 0).unwrap();
+        assert_eq!((body.ops.len(), body.end), (3, TbEnd::ControlFlow));
+    }
+
+    #[test]
+    fn store_mask_marks_write_ops_only() {
+        // STR seals (P2-3), so single-op blocks: mask bit 0 set.
+        // Exactly-sized memory: no zero padding to decode through.
+        let mut mem = VecMem::new(0x1000, 2);
+        mem.poke_half(0x1000, 0x600A);
+        let body = build_tb(&mut mem, 0x1000, false, Isa::Armv7M, 0).unwrap();
+        assert_eq!((body.ops.len(), body.end), (1, TbEnd::Store));
+        assert_eq!(body.store_mask, 0b1);
+        assert_eq!(body.to_meta().store_mask, 0b1);
+        // PUSH seals the same way (bit 0); a lone LDR has an empty mask.
         let mut mem = mem_with(0x1000, &[PUSH_LR, POP_PC]);
         let body = build_tb(&mut mem, 0x1000, false, Isa::Armv7M, 0).unwrap();
-        assert_eq!(body.store_mask, 0b01);
+        assert_eq!((body.ops.len(), body.end), (1, TbEnd::Store));
+        assert_eq!(body.store_mask, 0b1);
+        let mut mem = VecMem::new(0x1000, 2);
+        mem.poke_half(0x1000, 0x4800);
+        let body = build_tb(&mut mem, 0x1000, false, Isa::Armv7M, 0).unwrap();
+        assert_eq!(body.store_mask, 0);
     }
 
     #[test]

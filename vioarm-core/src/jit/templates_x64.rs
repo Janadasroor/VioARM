@@ -31,18 +31,22 @@ type A = Assembler;
 
 /// Assemble prologue + one template + `FALL` epilogue (harness + block
 /// emission share this shape).
-pub fn assemble_single(op: &TbOp, pc: u32) -> Result<super::native::NativeBlock, super::EmitError> {
+pub fn assemble_single(
+    op: &TbOp,
+    pc: u32,
+    unalign_trap: bool,
+) -> Result<super::native::NativeBlock, super::EmitError> {
     use super::native::{emit_epilogue, emit_prologue};
     use dynasmrt::AssemblyOffset;
 
     let mut ops = Assembler::new()?;
     emit_prologue(&mut ops);
-    if !emit_op(&mut ops, op, pc) {
+    if !emit_op(&mut ops, op, pc, unalign_trap) {
         return Err(super::EmitError::Untemplated);
     }
     emit_epilogue(&mut ops, super::native::EXIT_FALL, 0);
     ops.finalize()
-        .map(|buf| super::native::NativeBlock::new(buf, AssemblyOffset(0)))
+        .map(|buf| super::native::NativeBlock::new(buf, AssemblyOffset(0), None))
         .map_err(|_| super::EmitError::Finalize)
 }
 
@@ -155,12 +159,30 @@ fn merge_nz(ops: &mut A) {
 /// Emit one templated op at guest `pc`. Returns `false` when `op` has no
 /// template (the block then stays interpreted — see `is_templated`).
 /// Terminator arms emit their epilogue directly (P2-2: exits via driver;
-/// direct chaining is P2-4).
-pub fn emit_op(ops: &mut A, op: &TbOp, pc: u32) -> bool {
+/// direct chaining is P2-4). `unalign_trap` is the emit-time CCR bit
+/// (P2-3: stable across the block by store-seal + config purge).
+pub fn emit_op(ops: &mut A, op: &TbOp, pc: u32, unalign_trap: bool) -> bool {
     match *op {
-        TbOp::V16(inst) => emit16(ops, &inst, pc),
-        TbOp::V32(_) => false,
+        TbOp::V16(inst) => emit16(ops, &inst, pc, unalign_trap),
+        TbOp::V32(inst) => emit32(ops, &inst, pc, unalign_trap),
     }
+}
+
+/// NativeCtx field offsets (all `i32` immediates below).
+fn tlb_off() -> i32 {
+    core::mem::offset_of!(super::native::NativeCtx, tlb) as i32
+}
+
+fn priv_off() -> i32 {
+    core::mem::offset_of!(super::native::NativeCtx, privileged) as i32
+}
+
+fn epoch_off() -> i32 {
+    core::mem::offset_of!(super::native::NativeCtx, write_gen) as i32
+}
+
+fn fault_off() -> i32 {
+    core::mem::offset_of!(super::native::NativeCtx, fault_addr) as i32
 }
 
 /// 16-bit control flow is `pc + 4`-relative.
@@ -172,7 +194,7 @@ fn lr_off() -> i32 {
     core::mem::offset_of!(Registers, lr) as i32
 }
 
-fn emit16(ops: &mut A, inst: &crate::cpu::decode16::Inst16, pc: u32) -> bool {
+fn emit16(ops: &mut A, inst: &crate::cpu::decode16::Inst16, pc: u32, unalign_trap: bool) -> bool {
     use super::native::{emit_epilogue, EXIT_BRANCH};
     use crate::cpu::decode16::Inst16 as I;
     match *inst {
@@ -219,6 +241,11 @@ fn emit16(ops: &mut A, inst: &crate::cpu::decode16::Inst16, pc: u32) -> bool {
             merge_nzcv(ops);
             true
         }
+        // --- Loads/stores (P2-3 S1).
+        I::LsReg { rt, rn, rm, kind } => emit_lsreg(ops, rt, rn, rm, kind, pc, unalign_trap),
+        I::LsImm { rt, rn, imm, kind } => emit_lsimm(ops, rt, rn, imm, kind, pc, unalign_trap),
+        I::LsSp { rt, imm, is_load } => emit_lssp(ops, rt, imm, is_load, pc, unalign_trap),
+        I::LdrLiteral { rt, imm } => emit_ldrliteral(ops, rt, imm, pc, unalign_trap),
         // --- Terminators (P2-2 minimal set): static targets exit via the
         // static epilogue; conditions select at runtime into edx for the
         // dynamic epilogue. BlxImm/registers/table branches stay
@@ -392,6 +419,369 @@ fn cmp_ri(ops: &mut A, rn: u8, imm: i32) -> bool {
     dynasm!(ops ; .arch x64 ; sub eax, ecx ; cmc ; seto dl ; lahf);
     merge_nzcv(ops);
     true
+}
+
+/// Memory guard + fast path (P2-3). Input `ECX` = guest address.
+/// Falls through with `RAX` = host address; misses jump to `side`.
+/// Clobbers `EAX`/`EDX`/`ESI`/`EDI`; preserves `R8D`–`R11D` and pins.
+/// `trap` bakes CCR.UNALIGN_TRP (x64 needs no alignment check otherwise:
+/// the host tolerates in-page unaligned accesses natively).
+fn mem_guard(ops: &mut A, size: u32, is_write: bool, trap: bool, side: dynasmrt::DynamicLabel) {
+    if size > 1 {
+        // Page-cross check (host pages need not be adjacent).
+        let limit = (0x1000 - size) as i32;
+        dynasm!(ops
+            ; .arch x64
+            ; mov edx, ecx
+            ; and edx, 0xFFF
+            ; cmp edx, limit
+            ; ja =>side
+        );
+        if trap {
+            let mask = (size - 1) as i32;
+            dynasm!(ops
+                ; .arch x64
+                ; test ecx, mask
+                ; jnz =>side
+            );
+        }
+    }
+    let tlb = tlb_off();
+    let priv_off = priv_off();
+    let perm = if is_write { 2i8 } else { 1i8 };
+    dynasm!(ops
+        ; .arch x64
+        ; mov r10d, ecx
+        ; mov rsi, [rsp]
+        ; mov rsi, [rsi + tlb]
+        ; mov eax, r10d
+        ; shr eax, 12
+        ; mov edx, eax
+        ; and edx, 63
+        ; shl edx, 4
+        ; shl eax, 1
+        ; mov rdi, [rsp]
+        ; or eax, [rdi + priv_off]
+        ; cmp DWORD [rsi + rdx], eax
+        ; jne =>side
+        ; test BYTE [rsi + rdx + 4], perm
+        ; jz =>side
+        ; mov rdx, [rsi + rdx + 8]
+        ; mov eax, r10d
+        ; and eax, 0xFFF
+        ; add rax, rdx
+    );
+}
+
+/// Side-exit handler for a memory miss: record the faulting guest address
+/// (saved in `R10D` by the guard contract) and exit with `(MMIO, op_pc)`
+/// for driver handling (interp re-execution + TLB fill attempt).
+fn mem_side_exit(ops: &mut A, op_pc: u32) {
+    use super::native::{emit_epilogue, EXIT_MMIO};
+    let fault = fault_off();
+    dynasm!(ops
+        ; .arch x64
+        ; mov rdi, [rsp]
+        ; mov [rdi + fault], r10d
+    );
+    emit_epilogue(ops, EXIT_MMIO, op_pc);
+}
+
+/// One guarded memory site: address already in `ECX`, then `fast`
+/// performs the access (host in `RAX` after the guard), optional
+/// writeback, and the epoch bump for stores. Skips the miss handler on
+/// hits. Value/base spills live in `R8D`/`R9D` (guard-safe).
+fn mem_site(
+    ops: &mut A,
+    size: u32,
+    is_write: bool,
+    trap: bool,
+    op_pc: u32,
+    fast: impl FnOnce(&mut A),
+) {
+    let side = ops.new_dynamic_label();
+    let end = ops.new_dynamic_label();
+    mem_guard(ops, size, is_write, trap, side);
+    fast(ops);
+    dynasm!(ops ; .arch x64 ; jmp =>end);
+    dynasm!(ops ; .arch x64 ; =>side);
+    mem_side_exit(ops, op_pc);
+    dynasm!(ops ; .arch x64 ; =>end);
+}
+
+/// Bump the bus write generation after a fast store (keeps the
+/// entry-gate invariant absolute: every bus write advances it).
+fn bump_epoch(ops: &mut A) {
+    let epoch = epoch_off();
+    dynasm!(ops
+        ; .arch x64
+        ; mov rsi, [rsp]
+        ; mov rsi, [rsi + epoch]
+        ; inc QWORD [rsi]
+    );
+}
+
+/// 16-bit single-transfer emitters (S1). Conventions: guest address ends
+/// in `ECX`; store values are preloaded to `R9D`; writeback effects wait
+/// in `R8D`; the guard preserves all three. `pc` feeds literal bases and
+/// side-exit PCs; `trap` bakes CCR.UNALIGN_TRP.
+fn emit_lsreg(
+    ops: &mut A,
+    rt: u8,
+    rn: u8,
+    rm: u8,
+    kind: crate::cpu::decode16::LsReg,
+    pc: u32,
+    trap: bool,
+) -> bool {
+    use crate::cpu::decode16::LsReg as K;
+    if rt == 15 || rn == 15 || rm == 15 {
+        return false;
+    }
+    let (size, is_write, sext) = match kind {
+        K::Str => (4, true, false),
+        K::Ldr => (4, false, false),
+        K::Strh => (2, true, false),
+        K::Ldrh => (2, false, false),
+        K::Strb => (1, true, false),
+        K::Ldrb => (1, false, false),
+        K::Ldrsb => (1, false, true),
+        K::Ldrsh => (2, false, true),
+    };
+    load(ops, rn, false);
+    load(ops, rm, true);
+    dynasm!(ops ; .arch x64 ; add ecx, eax);
+    if is_write {
+        load(ops, rt, true);
+        dynasm!(ops ; .arch x64 ; mov r9d, eax);
+    }
+    mem_site(ops, size, is_write, trap, pc, |ops| {
+        emit_access(ops, size, is_write, sext, rt, None);
+    });
+    true
+}
+
+fn emit_lsimm(
+    ops: &mut A,
+    rt: u8,
+    rn: u8,
+    imm: usize,
+    kind: crate::cpu::decode16::LsImm,
+    pc: u32,
+    trap: bool,
+) -> bool {
+    use crate::cpu::decode16::LsImm as K;
+    if rt == 15 || rn == 15 {
+        return false;
+    }
+    let (size, is_write, sext) = match kind {
+        K::Str => (4, true, false),
+        K::Ldr => (4, false, false),
+        K::Strh => (2, true, false),
+        K::Ldrh => (2, false, false),
+        K::Strb => (1, true, false),
+        K::Ldrb => (1, false, false),
+    };
+    let imm = imm as i32;
+    load(ops, rn, false);
+    dynasm!(ops ; .arch x64 ; add ecx, imm);
+    if is_write {
+        load(ops, rt, true);
+        dynasm!(ops ; .arch x64 ; mov r9d, eax);
+    }
+    mem_site(ops, size, is_write, trap, pc, |ops| {
+        emit_access(ops, size, is_write, sext, rt, None);
+    });
+    true
+}
+
+fn emit_lssp(ops: &mut A, rt: u8, imm: usize, is_load: bool, pc: u32, trap: bool) -> bool {
+    if rt == 15 {
+        return false;
+    }
+    let imm = imm as i32;
+    // SP is never pinned: always the memory path (fresh every access).
+    load(ops, 13, false);
+    dynasm!(ops ; .arch x64 ; add ecx, imm);
+    if !is_load {
+        load(ops, rt, true);
+        dynasm!(ops ; .arch x64 ; mov r9d, eax);
+    }
+    mem_site(ops, 4, !is_load, trap, pc, |ops| {
+        emit_access(ops, 4, !is_load, false, rt, None);
+    });
+    true
+}
+
+fn emit_ldrliteral(ops: &mut A, rt: u8, imm: usize, pc: u32, trap: bool) -> bool {
+    if rt == 15 {
+        return false;
+    }
+    // Static base: word-aligned `pc + 4` plus the literal offset.
+    let base = ((pc.wrapping_add(4)) & !3).wrapping_add(imm as u32) as i32;
+    dynasm!(ops ; .arch x64 ; mov ecx, base);
+    mem_site(ops, 4, false, trap, pc, |ops| {
+        emit_access(ops, 4, false, false, rt, None);
+    });
+    true
+}
+
+/// 32-bit single transfer (S1): full addressing modes (register offset
+/// with shift, ±immediate, offset/pre/post-indexed, writeback). Matches
+/// the interpreter's access-then-writeback order exactly (including
+/// `rt == rn` aliasing: the loaded value lands first, the base update
+/// overwrites it). `unprivileged` is ignored to match the interpreter
+/// (documented fidelity gap, not a template decision). Coverage gated
+/// upstream by `is_templated` (no `r15` dynamics, no dual forms).
+fn emit_mem32(
+    ops: &mut A,
+    access: crate::cpu::decode32::MemOp,
+    rt: u8,
+    rn: u8,
+    off: u32,
+    rm: Option<u8>,
+    shift: u8,
+    add: bool,
+    index: bool,
+    writeback: bool,
+    pc: u32,
+    trap: bool,
+) -> bool {
+    use crate::cpu::decode32::MemOp as M;
+    let (size, is_write, sext) = match access {
+        M::Str => (4, true, false),
+        M::Ldr => (4, false, false),
+        M::Strh => (2, true, false),
+        M::Ldrh => (2, false, false),
+        M::Strb => (1, true, false),
+        M::Ldrb => (1, false, false),
+        M::Ldrsb => (1, false, true),
+        M::Ldrsh => (2, false, true),
+    };
+    if rt == 15 {
+        return false;
+    }
+    if rn == 15 {
+        // Literal base (loads only, never writeback — gated upstream):
+        // static address, no base register traffic.
+        let base = ((pc.wrapping_add(4)) & !3) as i32;
+        dynasm!(ops ; .arch x64 ; mov ecx, base);
+    } else {
+        if rm == Some(15) {
+            return false;
+        }
+        load(ops, rn, false);
+    }
+    // Offset into the address; writeback effects wait in R8D.
+    let mut wb = None;
+    if let Some(r) = rm {
+        load(ops, r, true);
+        let shift = shift as i8;
+        dynasm!(ops ; .arch x64 ; shl eax, shift);
+        if index {
+            dynasm!(ops ; .arch x64 ; add ecx, eax);
+            if writeback {
+                dynasm!(ops ; .arch x64 ; mov r8d, ecx);
+                wb = Some(rn);
+            }
+        } else {
+            // Post-indexed: address stays base; effect steps it.
+            dynasm!(ops ; .arch x64 ; mov r8d, ecx ; add r8d, eax);
+            wb = Some(rn);
+        }
+    } else {
+        let off = off as i32;
+        if index {
+            if add {
+                dynasm!(ops ; .arch x64 ; add ecx, off);
+            } else {
+                dynasm!(ops ; .arch x64 ; sub ecx, off);
+            }
+            if writeback {
+                dynasm!(ops ; .arch x64 ; mov r8d, ecx);
+                wb = Some(rn);
+            }
+        } else {
+            // Post-indexed immediate.
+            dynasm!(ops ; .arch x64 ; mov r8d, ecx);
+            if add {
+                dynasm!(ops ; .arch x64 ; add r8d, off);
+            } else {
+                dynasm!(ops ; .arch x64 ; sub r8d, off);
+            }
+            wb = Some(rn);
+        }
+    }
+    if is_write {
+        load(ops, rt, true);
+        dynasm!(ops ; .arch x64 ; mov r9d, eax);
+    }
+    mem_site(ops, size, is_write, trap, pc, |ops| {
+        emit_access(ops, size, is_write, sext, rt, wb);
+    });
+    true
+}
+
+/// Shared access writer: fast load/store at host `RAX`, optional
+/// writeback of `R8D` to `rn`, epoch bump for stores. `rt` names the
+/// transfer register (loads) or is unused (stores read `R9D`).
+fn emit_access(ops: &mut A, size: u32, is_write: bool, sext: bool, rt: u8, wb_rn: Option<u8>) {
+    if is_write {
+        match size {
+            1 => dynasm!(ops ; .arch x64 ; mov [rax], r9b),
+            2 => dynasm!(ops ; .arch x64 ; mov [rax], r9w),
+            _ => dynasm!(ops ; .arch x64 ; mov [rax], r9d),
+        }
+        bump_epoch(ops);
+    } else {
+        match (size, sext) {
+            (1, false) => dynasm!(ops ; .arch x64 ; movzx eax, BYTE [rax]),
+            (1, true) => dynasm!(ops ; .arch x64 ; movsx eax, BYTE [rax]),
+            (2, false) => dynasm!(ops ; .arch x64 ; movzx eax, WORD [rax]),
+            (2, true) => dynasm!(ops ; .arch x64 ; movsx eax, WORD [rax]),
+            _ => dynasm!(ops ; .arch x64 ; mov eax, [rax]),
+        }
+        store(ops, rt);
+    }
+    // Writeback after the access (matches `exec_ls_at` + post-access
+    // write: on success the base update lands last, so rt==rn aliasing
+    // resolves identically).
+    if let Some(rn) = wb_rn {
+        dynasm!(ops ; .arch x64 ; mov eax, r8d);
+        store(ops, rn);
+    }
+}
+
+fn emit32(ops: &mut A, inst: &crate::cpu::decode32::Inst32, pc: u32, unalign_trap: bool) -> bool {
+    use crate::cpu::decode32::Inst32 as I;
+    match *inst {
+        I::Mem {
+            access,
+            rt,
+            rn,
+            off,
+            rm,
+            shift,
+            add,
+            index,
+            writeback,
+            ..
+        } => emit_mem32(
+            ops,
+            access,
+            rt,
+            rn,
+            off,
+            rm,
+            shift,
+            add,
+            index,
+            writeback,
+            pc,
+            unalign_trap,
+        ),
+        _ => false,
+    }
 }
 
 /// Merge a precomposed NZCV word from `esi` (N/Z/C/V at ARM positions).

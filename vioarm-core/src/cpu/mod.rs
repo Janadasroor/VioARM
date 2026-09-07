@@ -694,11 +694,19 @@ impl<B: PeripheralBus> Core<B> {
         &mut self.mem
     }
 
-    /// Reset the load-use tracker after a native block: S0+terminator
-    /// blocks perform no loads, which is exactly what stepping them would
-    /// leave behind (P2-2; P2-3 memory templates set this precisely).
-    pub(crate) fn clear_load_tracker(&mut self) {
-        self.last_load_rd = None;
+    /// Whether a data access is MPU-permitted (the check `step` performs
+    /// before loads/stores via `exec_ls_at`). The JIT TLB fill uses this
+    /// with live privilege state, exactly like the stepper — including the
+    /// `unprivileged`-flag blind spot (matching-interp, documented).
+    pub(crate) fn data_allowed(&mut self, addr: u32, access: MpuAccess) -> bool {
+        self.mpu_allows(addr, access)
+    }
+
+    /// Set the load-use tracker after a native block to what stepping its
+    /// ops would leave behind (`Some(rt)` when the block's last op is a
+    /// single load into `rt < 13`, else `None`). Timing-only state.
+    pub(crate) fn set_load_tracker(&mut self, rd: Option<u8>) {
+        self.last_load_rd = rd;
     }
 
     /// Execute one pre-decoded 16-bit instruction (JIT runner entry).
@@ -5052,8 +5060,15 @@ impl<B: PeripheralBus> Core<B> {
     /// The privilege comes from `CONTROL.nPRIV` in Thread mode; a bus with no
     /// MPU (or one still disabled) always answers true.
     fn mpu_allows(&mut self, addr: u32, access: MpuAccess) -> bool {
-        let privileged = !(self.ipsr == 0 && self.control & 1 != 0);
-        self.mem.mpu_check(addr, access, privileged, self.ipsr)
+        self.mem
+            .mpu_check(addr, access, self.is_privileged(), self.ipsr)
+    }
+
+    /// Whether the core currently executes privileged (Thread mode honors
+    /// `CONTROL.nPRIV`; Handler mode is always privileged). Single source
+    /// for the MPU check and the JIT TLB tags (M2).
+    pub(crate) const fn is_privileged(&self) -> bool {
+        !(self.ipsr == 0 && self.control & 1 != 0)
     }
 
     /// Take a `MemManage` fault for an MPU access violation at `addr` (from the

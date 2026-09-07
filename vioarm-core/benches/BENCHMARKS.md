@@ -145,6 +145,23 @@ templates (P2-3), direct chaining (P2-4, removes per-block prologue /
 epilogue + driver lookup on hot edges), and wider coverage (P2-5).
 Trajectory 0.64 → 0.86 → 1.27 → 2.63/3.26 supports continuing.
 
+## JIT Phase 2 checkpoint (P2-3, 2026-09-07)
+
+New `tb_mem` soak (array-sum loop: native LDR/STR/branches; n=10):
+
+| Bench | Mean | Ratio vs stepper |
+|---|---|---|
+| `tb/step_mem_ram_4k` | 452.7 µs | 1.00 |
+| `tb/quanta_mem_ram_4k` | 142.1 µs | **3.19** |
+| `tb/step_mem_flash_4k` | 556.8 µs | 1.00 |
+| `tb/quanta_mem_flash_4k` | 149.1 µs | **3.73** |
+
+ALU soak holds (`tb/quanta_ram_4k` 165.8 µs ≈ 2.47×,
+`tb/quanta_flash_4k` 159.6 µs ≈ 3.10×; small move from store-seal
+block splitting is within run noise — the loop is store-free).
+Memory-heavy code gains most (interp loads pay full fetch + decode +
+dispatch per access). Still not G2: chaining (P2-4) is the next prize.
+
 ## Regression policy
 
 Wall-clock gating on shared CI runners is flake-prone, so CI runs the

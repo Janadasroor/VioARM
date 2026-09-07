@@ -63,6 +63,28 @@ pub trait Bus {
         Ok(u16::from_le_bytes([lo, hi]))
     }
 
+    /// Raw pointer to the write-generation counter, for JIT fast-path
+    /// stores (one `inc` per emitted store keeps the generation exact).
+    /// Creating the pointer is safe; dereferencing happens in machine
+    /// code. Default `None`: blocks containing stores then stay
+    /// interpreted on such buses (safe, slower).
+    fn write_epoch_ptr(&mut self) -> Option<*mut u64> {
+        None
+    }
+
+    /// Translate a data access to host memory (P2-3): `Direct` hands out a
+    /// page-aligned host base plus the contiguous length available from
+    /// it (the caller verifies the access fits one page); `Indirect`
+    /// covers devices, gated regions, and unmapped addresses, which the
+    /// JIT side-exits to the interpreter for. Creating the pointer is
+    /// safe; the JIT dereferences it only after a TLB tag+permission hit,
+    /// and mappings are stable: banks never reallocate, and any
+    /// reconfiguration purges the TLB (see `config_epoch`). Default:
+    /// `Indirect` (safe everywhere).
+    fn translate(&mut self, _addr: u32, _access: MpuAccess) -> DataTranslate {
+        DataTranslate::Indirect
+    }
+
     /// Write a little-endian halfword.
     ///
     /// # Errors
@@ -99,6 +121,19 @@ pub trait Bus {
         self.write(addr.wrapping_add(2), b2)?;
         self.write(addr.wrapping_add(3), b3)
     }
+}
+
+/// A translated data access (P2-3): either directly-mapped host bytes or
+/// a side exit. See `Bus::translate`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DataTranslate {
+    /// Host page base (page-aligned) plus contiguous bytes available from
+    /// it. The page alignment is load-bearing: the JIT checks page
+    /// crossings against it, and the TLB tags whole pages.
+    Direct { ptr: *mut u8, len: u32 },
+    /// Device window, gated region, or unmapped address: the JIT side-exits
+    /// and the interpreter performs the access (MMIO semantics, faults).
+    Indirect,
 }
 
 /// What the CPU is doing with an address, as far as MPU permission checks are

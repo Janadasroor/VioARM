@@ -47,7 +47,9 @@
 //! after, or spill to the pad slot first. Terminator templates (P2-2)
 //! must additionally preserve the pinned set: scratch is `eax`/`ecx`/
 //! `edx`/`esi` (`w0`/`w1`/`w9`–`w11`) only, and dynamic exits deliver the
-//! target PC in `edx`/`w0` for the dynamic epilogue.
+//! target PC in `edx`/`w0` for the dynamic epilogue. Pointers (ctx, TLB,
+//! epoch, host bases) ALWAYS use 64-bit moves (`rdi`, never `edi` —
+//! truncating a 48-bit heap address faults; caught by differential).
 //!
 //! # Exit codes
 //!
@@ -77,6 +79,7 @@ use std::sync::Arc;
 
 use dynasmrt::{dynasm, AssemblyOffset, DynasmApi, ExecutableBuffer};
 
+use super::tlb::Tlb;
 use crate::cpu::registers::{Registers, Xpsr};
 
 /// Exit reason: fell off the block end (next block chainable at `next_pc`).
@@ -84,7 +87,12 @@ pub const EXIT_FALL: u32 = 0;
 /// Exit reason: control flow diverged inside the block (branch taken,
 /// call, return — `next_pc` is the true PC).
 pub const EXIT_BRANCH: u32 = 1;
-// Reserved for P2-2: CALLOUT_RESULT = 2, SLEEP = 3, MMIO_TOUCH = 4.
+/// Exit reason: memory side exit (guard/TLB miss, page cross, unaligned-
+/// with-trap, bitband): `next_pc` carries the faulting op's PC. The
+/// driver re-executes that op through the interpreter (identical MMIO and
+/// fault behavior) and attempts a TLB fill from the reported address.
+/// Reserved: CALLOUT_RESULT = 3, SLEEP = 4 (P2-6).
+pub const EXIT_MMIO: u32 = 2;
 
 /// Pack an epilogue exit code.
 #[must_use]
@@ -113,6 +121,30 @@ pub struct NativeCtx {
     pub regs: *mut Registers,
     /// Live flags word (`repr(transparent)` u32).
     pub xpsr: *mut Xpsr,
+    /// Page translation cache (runner-owned, stable address).
+    pub tlb: *mut Tlb,
+    /// Effective privilege for TLB tags this execution (M2: 0/1).
+    pub privileged: u32,
+    /// Bus write-generation counter (bumped by fast-path stores).
+    /// Always valid when a native block containing stores executes
+    /// (untracked buses keep such blocks interpreted).
+    pub write_gen: *mut u64,
+    /// Faulting guest address, stored by templates on side exits (the
+    /// driver fills the TLB from it; size/direction come from the op).
+    pub fault_addr: u32,
+}
+
+impl Default for NativeCtx {
+    fn default() -> Self {
+        Self {
+            regs: core::ptr::null_mut(),
+            xpsr: core::ptr::null_mut(),
+            tlb: core::ptr::null_mut(),
+            privileged: 0,
+            write_gen: core::ptr::null_mut(),
+            fault_addr: 0,
+        }
+    }
 }
 
 /// A committed native block: executable code plus its entry offset.
@@ -122,15 +154,20 @@ pub struct NativeCtx {
 pub struct NativeBlock {
     code: Arc<ExecutableBuffer>,
     entry: AssemblyOffset,
+    /// Load-use tracker value stepping this block would leave behind
+    /// (`Some(rt)` when its last op is a single load into `rt < 13`).
+    /// Timing-only state, set by the emitter (P2-3).
+    last_load: Option<u8>,
 }
 
 impl NativeBlock {
     /// Wrap a committed buffer (entry at `entry`).
     #[must_use]
-    pub fn new(code: ExecutableBuffer, entry: AssemblyOffset) -> Self {
+    pub fn new(code: ExecutableBuffer, entry: AssemblyOffset, last_load: Option<u8>) -> Self {
         Self {
             code: Arc::new(code),
             entry,
+            last_load,
         }
     }
 
@@ -153,6 +190,12 @@ impl NativeBlock {
     #[must_use]
     pub fn strong_count(&self) -> usize {
         Arc::strong_count(&self.code)
+    }
+
+    /// Load-use tracker value for the block exit (see the field docs).
+    #[must_use]
+    pub const fn last_load(&self) -> Option<u8> {
+        self.last_load
     }
 }
 
@@ -268,7 +311,7 @@ pub(crate) fn assemble_trivial(
     emit_prologue(&mut ops);
     emit_epilogue(&mut ops, reason, next_pc);
     ops.finalize()
-        .map(|buf| NativeBlock::new(buf, AssemblyOffset(0)))
+        .map(|buf| NativeBlock::new(buf, AssemblyOffset(0), None))
         .map_err(|_| crate::jit::EmitError::Finalize)
 }
 
@@ -389,7 +432,7 @@ pub(crate) fn assemble_trivial(
     emit_prologue(&mut ops);
     emit_epilogue(&mut ops, reason, next_pc);
     ops.finalize()
-        .map(|buf| NativeBlock::new(buf, AssemblyOffset(0)))
+        .map(|buf| NativeBlock::new(buf, AssemblyOffset(0), None))
         .map_err(|_| crate::jit::EmitError::Finalize)
 }
 
@@ -460,6 +503,7 @@ mod tests {
         let mut ctx = Box::new(NativeCtx {
             regs: &mut regs,
             xpsr: &mut xpsr,
+            ..Default::default()
         });
         let block = assemble_trivial(EXIT_FALL, 0x1000).expect("trivial block");
         assert!(block.size() > 0);
@@ -498,7 +542,7 @@ mod tests {
         );
         emit_epilogue(&mut ops, EXIT_FALL, 0x2000);
         ops.finalize()
-            .map(|buf| NativeBlock::new(buf, AssemblyOffset(0)))
+            .map(|buf| NativeBlock::new(buf, AssemblyOffset(0), None))
             .map_err(|_| crate::jit::EmitError::Finalize)
     }
 
@@ -527,7 +571,7 @@ mod tests {
         );
         emit_epilogue(&mut ops, EXIT_FALL, 0x2000);
         ops.finalize()
-            .map(|buf| NativeBlock::new(buf, AssemblyOffset(0)))
+            .map(|buf| NativeBlock::new(buf, AssemblyOffset(0), None))
             .map_err(|_| crate::jit::EmitError::Finalize)
     }
 
@@ -541,6 +585,7 @@ mod tests {
         let mut ctx = Box::new(NativeCtx {
             regs: &mut regs,
             xpsr: &mut xpsr,
+            ..Default::default()
         });
         let want = &mut *ctx as *mut NativeCtx as u64;
         RECORDED.store(0, SeqCst);

@@ -418,6 +418,36 @@ fn bench_tb_quanta(c: &mut Criterion) {
         0x00, 0x20, 0x01, 0x21, 0xC8, 0x23, 0x40, 0x18, 0x49, 0x31, 0x91, 0x3B, 0xFB, 0xD1, 0xF7,
         0xE7,
     ];
+    // Memory-mix soak (P2-3): fixed-trip array-sum loop exercising
+    // native loads/stores/branches (LDR/ADDS/ADDS/SUBS/BNE + STR tail).
+    // Loop body at ram_base: LDR r3,[r1]; ADDS r0,r0,r3; ADDS r1,#4;
+    // SUBS r2,#1; BNE loop. BNE @+8 -> +0: off -12 -> 0xD1FA.
+    let mem_prog = vec![
+        0x0B, 0x68, 0xC0, 0x18, 0x04, 0x31, 0x01, 0x3A, 0xFA, 0xD1, 0x08, 0x60,
+    ];
+    let mem_setup = |base: u32| {
+        // Array clear of the code (RAM-hosted code starts at the bank).
+        let array = if base == 0x2000_0000 {
+            0x2000_1000
+        } else {
+            0x2000_0000
+        };
+        let mem = FlatMemory::with_layout(&[base, 0x2000_0000], &[0x10000, 0x10000]);
+        let mut m = Machine::armv7m(mem);
+        m.load_image(&load_flat(base, &mem_prog));
+        for i in 0..4096u32 {
+            let v = i.wrapping_mul(2654435761).wrapping_add(0x9E37);
+            for (j, b) in v.to_le_bytes().iter().enumerate() {
+                m.core.mem().write(array + 4 * i + j as u32, *b).unwrap();
+            }
+        }
+        m.core.regs.pc = base;
+        m.core.regs.r[0] = 0;
+        m.core.regs.r[1] = array;
+        m.core.regs.r[2] = 100000;
+        m.core.xpsr.set(0x01000000);
+        m
+    };
     let mut g = c.benchmark_group("tb");
     for (name, base) in [("ram", 0x2000_0000u32), ("flash", 0x0800_0000u32)] {
         g.bench_function(format!("step_{name}_4k"), |b| {
@@ -449,6 +479,31 @@ fn bench_tb_quanta(c: &mut Criterion) {
                     m.core.xpsr.set(0x01000000);
                     (m, TbRunner::new())
                 },
+                |(mut m, mut runner)| {
+                    let mut ops = 0u64;
+                    while ops < 4096 {
+                        ops += m.run_tb_quantum(&mut runner, 1024).unwrap().ops;
+                    }
+                    black_box(m.core.cyccnt)
+                },
+                BatchSize::SmallInput,
+            );
+        });
+        g.bench_function(format!("step_mem_{name}_4k"), |b| {
+            b.iter_batched(
+                || mem_setup(base),
+                |mut m| {
+                    for _ in 0..4096 {
+                        let _ = m.step();
+                    }
+                    black_box(m.core.cyccnt)
+                },
+                BatchSize::SmallInput,
+            );
+        });
+        g.bench_function(format!("quanta_mem_{name}_4k"), |b| {
+            b.iter_batched(
+                || (mem_setup(base), TbRunner::new()),
                 |(mut m, mut runner)| {
                     let mut ops = 0u64;
                     while ops < 4096 {
