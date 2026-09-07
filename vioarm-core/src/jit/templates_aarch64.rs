@@ -304,8 +304,104 @@ fn emit16(
         // --- Extends/reversals (P2-5): pure ALU, never any flags.
         I::Extend { rd, rm, kind } => emit_extend(ops, rd, rm, kind),
         I::Reverse { rd, rm, kind } => emit_reverse(ops, rd, rm, kind),
+        // --- Hints (P2-6, S6 mirror): inline field ops.
+        I::Hint { kind } => emit_hint(ops, kind),
         // Terminators live in `emit_terminator` (slot-consuming edges).
-        _ => false,
+        // Anything else templated is a flush + driver re-execution tail
+        // (mirrors x64; terminators excluded for their edges).
+        _ => {
+            let op = TbOp::V16(*inst);
+            if !super::templates::is_terminator(&op) && super::templates::is_templated(&op) {
+                mem_side_exit(ops, pc);
+                true
+            } else {
+                false
+            }
+        }
+    }
+}
+
+/// Context field offsets for S6 templates (bus-independent `NativeCtx`
+/// offsets only — mirrors x64).
+fn primask_off() -> u32 {
+    core::mem::offset_of!(super::native::NativeCtx, primask) as u32
+}
+
+fn ipsr_off() -> u32 {
+    core::mem::offset_of!(super::native::NativeCtx, ipsr) as u32
+}
+
+fn control_off() -> u32 {
+    core::mem::offset_of!(super::native::NativeCtx, control) as u32
+}
+
+fn event_off() -> u32 {
+    core::mem::offset_of!(super::native::NativeCtx, event) as u32
+}
+
+fn sleeping_off() -> u32 {
+    core::mem::offset_of!(super::native::NativeCtx, sleeping) as u32
+}
+
+/// Hint execution (P2-6, S6 mirror): same shapes as x64 (field stores
+/// through the context pointers; `WFE` branches on the latched byte).
+fn emit_hint(ops: &mut A, kind: crate::cpu::decode16::Hint) -> bool {
+    use crate::cpu::decode16::Hint as H;
+    match kind {
+        H::Nop | H::Yield => true,
+        H::Sev => {
+            let event = event_off();
+            let sleeping = sleeping_off();
+            dynasm!(ops
+                ; .arch aarch64
+                ; ldr x9, [sp, #48]
+                ; ldr x9, [x9, event]
+                ; movz w10, #1
+                ; strb w10, [x9]
+                ; ldr x9, [sp, #48]
+                ; ldr x9, [x9, sleeping]
+                ; movz w10, #0
+                ; strb w10, [x9]
+            );
+            true
+        }
+        H::Wfi => {
+            let sleeping = sleeping_off();
+            dynasm!(ops
+                ; .arch aarch64
+                ; ldr x9, [sp, #48]
+                ; ldr x9, [x9, sleeping]
+                ; movz w10, #1
+                ; strb w10, [x9]
+            );
+            true
+        }
+        H::Wfe => {
+            let sleep = ops.new_dynamic_label();
+            let done = ops.new_dynamic_label();
+            let event = event_off();
+            let sleeping = sleeping_off();
+            dynasm!(ops
+                ; .arch aarch64
+                ; ldr x9, [sp, #48]
+                ; ldr x9, [x9, event]
+                ; ldrb w10, [x9]
+                ; cbz w10, =>sleep
+                ; movz w10, #0
+                ; strb w10, [x9]
+                ; b =>done
+                ; =>sleep
+            );
+            dynasm!(ops
+                ; .arch aarch64
+                ; ldr x9, [sp, #48]
+                ; ldr x9, [x9, sleeping]
+                ; movz w10, #1
+                ; strb w10, [x9]
+                ; =>done
+            );
+            true
+        }
     }
 }
 
@@ -841,9 +937,14 @@ fn mem_guard(ops: &mut A, size: u32, is_write: bool, side: dynasmrt::DynamicLabe
 
 /// Side-exit handler: record the faulting guest address (still in `W1`
 /// per the guard contract) and exit with `(MMIO, op_pc)`.
+/// Side-exit handler (P2-6: flushes pins first — same contract as x64).
+/// Record the faulting guest address (still in `W1` per the guard
+/// contract) and exit with `(MMIO, op_pc)`.
 fn mem_side_exit(ops: &mut A, op_pc: u32) {
-    use super::native::{emit_epilogue, EXIT_MMIO};
+    use super::native::{emit_epilogue, emit_pin_flush, EXIT_MMIO};
     let fault = fault_off();
+    // Flush first: `w1` (fault address) survives it (scratch is x9/x10).
+    emit_pin_flush(ops);
     dynasm!(ops
         ; .arch aarch64
         ; ldr x9, [sp, #48]
@@ -2047,6 +2148,269 @@ fn emit_reverse(ops: &mut A, rd: u8, rm: u8, kind: crate::cpu::decode16::Reverse
     true
 }
 
+/// Materialize a 32-bit mask into `w9` (P2-6: ARM logical immediates
+/// only encode single-run patterns, so multi-run flag masks go through
+/// two moves — always encodable, no questions).
+fn mask_w9(ops: &mut A, mask: u32) {
+    let (lo, hi) = (mask & 0xFFFF, (mask >> 16) & 0xFFFF);
+    dynasm!(ops
+        ; .arch aarch64
+        ; movz w9, lo
+        ; movk w9, hi, lsl #16
+    );
+}
+
+/// `MRS` (P2-6, S6 mirror): field-only forms inline; the rest side-exit
+/// (same split as x64). Unprivileged gates and bank selects mirror the
+/// interpreter rule-for-rule.
+fn emit_mrs(ops: &mut A, rd: u8, sys: crate::cpu::decode32::SysReg, pc: u32) -> bool {
+    use crate::cpu::decode32::SysReg as S;
+    use crate::cpu::registers::{APSR_QFLAGS, XPSR_T};
+    if rd == 15 {
+        return false;
+    }
+    match sys {
+        S::Apsr | S::ApsrG | S::ApsrNzvCqg => {
+            // Reads return the whole APSR regardless of qualifier.
+            mask_w9(ops, APSR_QFLAGS);
+            dynasm!(ops ; .arch aarch64 ; and w0, w23, w9);
+            store(ops, rd);
+            true
+        }
+        S::Xpsr => {
+            // ITSTATE bits read zero (same proof as x64: native `MRS`
+            // never runs predicated).
+            mask_w9(ops, APSR_QFLAGS | XPSR_T);
+            dynasm!(ops
+                ; .arch aarch64
+                ; and w0, w23, w9
+                ; orr w0, w0, #0x1000000
+            );
+            store(ops, rd);
+            true
+        }
+        S::Epsr => {
+            let t = XPSR_T;
+            dynasm!(ops ; .arch aarch64 ; mov w0, t);
+            store(ops, rd);
+            true
+        }
+        S::Ipsr => {
+            mrs_unpriv(ops, |ops| {
+                let ipsr = ipsr_off();
+                dynasm!(ops
+                    ; .arch aarch64
+                    ; ldr x9, [sp, #48]
+                    ; ldr x9, [x9, ipsr]
+                    ; ldrb w0, [x9]
+                );
+            });
+            store(ops, rd);
+            true
+        }
+        S::Msp => {
+            mrs_unpriv(ops, |ops| {
+                mrs_sp_bank(ops, true);
+            });
+            store(ops, rd);
+            true
+        }
+        S::Psp => {
+            mrs_unpriv(ops, |ops| {
+                mrs_sp_bank(ops, false);
+            });
+            store(ops, rd);
+            true
+        }
+        S::Primask => {
+            mrs_unpriv(ops, |ops| {
+                let primask = primask_off();
+                dynasm!(ops
+                    ; .arch aarch64
+                    ; ldr x9, [sp, #48]
+                    ; ldr x9, [x9, primask]
+                    ; ldrb w0, [x9]
+                );
+            });
+            store(ops, rd);
+            true
+        }
+        S::Control => {
+            let control = control_off();
+            dynasm!(ops
+                ; .arch aarch64
+                ; ldr x9, [sp, #48]
+                ; ldr x9, [x9, control]
+                ; ldr w0, [x9]
+            );
+            store(ops, rd);
+            true
+        }
+        _ => {
+            mem_side_exit(ops, pc);
+            true
+        }
+    }
+}
+
+/// Unprivileged gate for `MRS` (P2-6 mirror): 0 when Thread+unprivileged,
+/// else `present` computes into `w0`.
+fn mrs_unpriv(ops: &mut A, present: impl FnOnce(&mut A)) {
+    let present_lbl = ops.new_dynamic_label();
+    let done = ops.new_dynamic_label();
+    let ipsr = ipsr_off();
+    let control = control_off();
+    dynasm!(ops
+        ; .arch aarch64
+        ; ldr x9, [sp, #48]
+        ; ldr x9, [x9, ipsr]
+        ; ldrb w10, [x9]
+        ; cbnz w10, =>present_lbl
+        ; ldr x9, [sp, #48]
+        ; ldr x9, [x9, control]
+        ; ldr w10, [x9]
+        ; tst w10, #1
+        ; b.eq =>present_lbl
+        ; movz w0, #0
+        ; b =>done
+        ; =>present_lbl
+    );
+    present(ops);
+    dynasm!(ops ; .arch aarch64 ; =>done);
+}
+
+/// Active-stack read for `MRS MSP/PSP` (P2-6 mirror): same rule as x64
+/// (`process = (control & 2) && thread`), result in `w0`.
+fn mrs_sp_bank(ops: &mut A, main: bool) {
+    let use_sp = ops.new_dynamic_label();
+    let done = ops.new_dynamic_label();
+    let ctx = regs_off();
+    let sp_off = core::mem::offset_of!(Registers, sp) as u32;
+    let msp = core::mem::offset_of!(Registers, msp) as u32;
+    let psp = core::mem::offset_of!(Registers, psp) as u32;
+    let control = control_off();
+    let ipsr = ipsr_off();
+    dynasm!(ops
+        ; .arch aarch64
+        ; ldr x9, [sp, #48]
+        ; ldr x9, [x9, control]
+        ; ldr w10, [x9]
+        ; tst w10, #2
+        ; b.eq =>use_sp
+        ; ldr x9, [sp, #48]
+        ; ldr x9, [x9, ipsr]
+        ; ldrb w10, [x9]
+        ; cbnz w10, =>use_sp
+    );
+    if main {
+        dynasm!(ops
+            ; .arch aarch64
+            ; ldr x9, [sp, #48]
+            ; ldr x9, [x9, ctx]
+            ; ldr w0, [x9, msp]
+            ; b =>done
+        );
+    } else {
+        dynasm!(ops
+            ; .arch aarch64
+            ; ldr x9, [sp, #48]
+            ; ldr x9, [x9, ctx]
+            ; ldr w0, [x9, sp_off]
+            ; b =>done
+        );
+    }
+    dynasm!(ops ; .arch aarch64 ; =>use_sp);
+    if main {
+        dynasm!(ops
+            ; .arch aarch64
+            ; ldr x9, [sp, #48]
+            ; ldr x9, [x9, ctx]
+            ; ldr w0, [x9, sp_off]
+        );
+    } else {
+        dynasm!(ops
+            ; .arch aarch64
+            ; ldr x9, [sp, #48]
+            ; ldr x9, [x9, ctx]
+            ; ldr w0, [x9, psp]
+        );
+    }
+    dynasm!(ops ; .arch aarch64 ; =>done);
+}
+
+/// `MSR` (P2-6, S6 mirror): flag merges plus the PRIMASK byte store;
+/// everything else side-exits.
+fn emit_msr(ops: &mut A, rn: u8, sys: crate::cpu::decode32::SysReg, pc: u32) -> bool {
+    use crate::cpu::decode32::SysReg as S;
+    use crate::cpu::registers::{APSR_FLAGS, APSR_GE, APSR_Q, APSR_QFLAGS};
+    if rn == 15 {
+        return false;
+    }
+    load(ops, rn, true);
+    match sys {
+        S::Apsr => {
+            mask_w9(ops, !(APSR_FLAGS | APSR_Q));
+            let (t_lo, t_hi) = (
+                ((APSR_FLAGS | APSR_Q) & 0xFFFF) as u32,
+                (((APSR_FLAGS | APSR_Q) >> 16) & 0xFFFF) as u32,
+            );
+            dynasm!(ops
+                ; .arch aarch64
+                ; movz w10, t_lo
+                ; movk w10, t_hi, lsl #16
+                ; and w9, w23, w9
+                ; and w0, w0, w10
+                ; orr w0, w0, w9
+                ; mov w23, w0
+            );
+            true
+        }
+        S::ApsrG => {
+            mask_w9(ops, !APSR_GE);
+            dynasm!(ops
+                ; .arch aarch64
+                ; and w9, w23, w9
+                ; and w0, w0, #0xF0000
+                ; orr w0, w0, w9
+                ; mov w23, w0
+            );
+            true
+        }
+        S::ApsrNzvCqg => {
+            mask_w9(ops, !APSR_QFLAGS);
+            let (t_lo, t_hi) = (
+                (APSR_QFLAGS & 0xFFFF) as u32,
+                ((APSR_QFLAGS >> 16) & 0xFFFF) as u32,
+            );
+            dynasm!(ops
+                ; .arch aarch64
+                ; movz w10, t_lo
+                ; movk w10, t_hi, lsl #16
+                ; and w9, w23, w9
+                ; and w0, w0, w10
+                ; orr w0, w0, w9
+                ; mov w23, w0
+            );
+            true
+        }
+        S::Primask => {
+            let primask = primask_off();
+            dynasm!(ops
+                ; .arch aarch64
+                ; and w0, w0, #1
+                ; ldr x9, [sp, #48]
+                ; ldr x9, [x9, primask]
+                ; strb w0, [x9]
+            );
+            true
+        }
+        _ => {
+            mem_side_exit(ops, pc);
+            true
+        }
+    }
+}
+
 fn emit32(ops: &mut A, inst: &crate::cpu::decode32::Inst32, pc: u32, unalign_trap: bool) -> bool {
     use crate::cpu::decode32::Inst32 as I;
     match *inst {
@@ -2115,7 +2479,20 @@ fn emit32(ops: &mut A, inst: &crate::cpu::decode32::Inst32, pc: u32, unalign_tra
         I::MovWide { rd, imm, high } => emit_movwide(ops, rd, imm, high),
         I::Div { signed, rd, rn, rm } => emit_div(ops, signed, rd, rn, rm, pc),
         I::Mul { op, rd, rn, rm, ra } => emit_mul(ops, op, rd, rn, rm, ra),
-        _ => false,
+        // P2-6 (S6 mirror): MRS/MSR split inline vs side-exit.
+        I::Mrs { rd, sys } => emit_mrs(ops, rd, sys, pc),
+        I::Msr { rn, sys } => emit_msr(ops, rn, sys, pc),
+        // Anything else templated is a flush + driver re-execution tail
+        // (mirrors x64; terminators excluded for their edges).
+        _ => {
+            let op = TbOp::V32(*inst);
+            if !super::templates::is_terminator(&op) && super::templates::is_templated(&op) {
+                mem_side_exit(ops, pc);
+                true
+            } else {
+                false
+            }
+        }
     }
 }
 /// ALU-op dispatcher (16-bit `Alu` family; `itstate == 0` throughout

@@ -15,7 +15,7 @@
 
 use vioarm_core::cpu::registers::{Registers, Xpsr};
 use vioarm_core::error::HaltCause;
-use vioarm_core::jit::TbRunner;
+use vioarm_core::jit::{QuantumEnd, TbRunner};
 use vioarm_core::loader::load_flat;
 use vioarm_core::machine::Machine;
 use vioarm_core::mem::flat::FlatMemory;
@@ -574,6 +574,249 @@ fn movw_push_pop_calls_match() {
         m.step().unwrap();
     }
     assert_eq!(m.core.regs.r[0], 0x1235, "MOVW materialized + inc returned");
+    drop(m);
+    check(&code, code_len, 60);
+}
+
+/// Chained side exit (P2-6 `cur_pc`): a page-crossing word load
+/// side-exits on EVERY execution (the guard refuses cross-page host
+/// adjacency even warm) while its block is chained into — the driver must
+/// commit the faulting block's prefix and attribute the exit to it, not
+/// to the entered block. Both pages are genuinely mapped (the
+/// interpreter performs the access: no fault, no writes, stable
+/// generation, so the edges really do chain).
+fn workload_crossloop() -> Vec<u8> {
+    let e = ENTRY;
+    // A: B loop; loop: LDR r3,[r1,#0]; SUBS r2,#1; BNE A; STR r0,[r1];
+    // B . — r1 aims at 0x20000FFD (word straddles into 0x20001xxx).
+    halves(&[
+        b(e, e + 2), // A: B loop
+        0x680B,      // loop: LDR r3, [r1, #0]
+        0x3A01,      // SUBS r2, #1
+        bcond(1, e + 6, e),
+        0x6008, // STR r0, [r1]
+        b(e + 10, e + 10),
+    ])
+}
+
+#[test]
+fn chained_cross_page_side_exit_matches() {
+    let code = workload_crossloop();
+    let code_len = code.len() as u32;
+    let setup = |m: &mut Machine<FlatMemory>| {
+        m.core.regs.r[0] = 0;
+        m.core.regs.r[1] = 0x2000_0FFD;
+        m.core.regs.r[2] = 4;
+    };
+    let mut m = boot(&code);
+    setup(&mut m);
+    for _ in 0..24 {
+        m.step().unwrap();
+    }
+    drop(m);
+    check_with(&code, code_len, 80, setup);
+}
+
+/// Sleep/wake latches (P2-6): `SEV` arms the event, the first `WFE`
+/// consumes it, the second sleeps; `WFI` always sleeps. Native stores
+/// drive the same latches the stepper does.
+#[test]
+fn wfi_wfe_sev_match() {
+    // SEV; WFE (consumes); WFE (sleeps); B .
+    let e = ENTRY;
+    let code = halves(&[0xBF40, 0xBF20, 0xBF20, b(e + 6, e + 6)]);
+    let code_len = code.len() as u32;
+    let mut a = boot(&code);
+    for _ in 0..3 {
+        a.step().unwrap();
+    }
+    assert!(a.core.sleeping, "second WFE sleeps (stepper)");
+    assert!(!a.core.event, "event consumed");
+    let mut b = boot(&code);
+    let mut runner = TbRunner::new();
+    let mut ops = 0u64;
+    let end = loop {
+        let q = b.run_tb_quantum(&mut runner, 4).unwrap();
+        ops += q.ops;
+        if q.end != QuantumEnd::Budget || ops > 16 {
+            break q.end;
+        }
+    };
+    assert_eq!(end, QuantumEnd::Sleep);
+    assert!(b.core.sleeping);
+    assert!(!b.core.event);
+    assert_eq!(b.core.regs.pc, a.core.regs.pc);
+    assert!(
+        runner.stats().native > 0,
+        "the WFI block ran natively, not via fallback"
+    );
+    let _ = code_len;
+}
+
+/// Lock/unlock dance (P2-6): `CPSID i`, `MSR PRIMASK`, `MRS` reads, and
+/// `CPSIE i` around a counter, all converging stepper-vs-quanta.
+fn workload_locks() -> Vec<u8> {
+    let e = ENTRY;
+    // loop: CPSID i; ADDS r0,#1; MRS r3, PRIMASK; CPSIE i; SUBS r2,#1;
+    // BNE loop; STR r0,[r1]; B .
+    // CPSID i = B672; CPSIE i = B662; MRS r3, PRIMASK = F3EF 8310.
+    let loop_at = e;
+    let bne_at = e + 12;
+    halves(&[
+        0xB672, // loop: CPSID i
+        0x3001, // ADDS r0, #1
+        0xF3EF,
+        0x8310, // MRS r3, PRIMASK
+        0xB662, // CPSIE i
+        0x3A01, // SUBS r2, #1
+        bcond(1, bne_at, loop_at),
+        0x6008, // STR r0, [r1]
+        b(e + 16, e + 16),
+    ])
+}
+
+#[test]
+fn locks_match() {
+    let code = workload_locks();
+    let code_len = code.len() as u32;
+    let setup = |m: &mut Machine<FlatMemory>| {
+        m.core.regs.r[0] = 0;
+        m.core.regs.r[2] = 4;
+    };
+    let mut m = boot(&code);
+    setup(&mut m);
+    for _ in 0..40 {
+        m.step().unwrap();
+    }
+    assert_eq!(m.core.regs.r[0], 4, "counter retired under locks");
+    assert!(!m.core.primask, "unlocked at the end");
+    drop(m);
+    check_with(&code, code_len, 120, setup);
+}
+
+/// `MRS` under handler mode and unprivileged thread (P2-6): IPSR reads
+/// live, unprivileged reads RAZ.
+#[test]
+fn mrs_modes_match() {
+    // MRS r0, IPSR (sys 5); MRS r1, CONTROL (sys 0x14); MRS r2, MSP
+    // (sys 8); B . — sys numbers per the decoder's `SysReg::from`.
+    let code = halves(&[0xF3EF, 0x8005, 0xF3EF, 0x8114, 0xF3EF, 0x8208]);
+    let code_len = code.len() as u32;
+    // Handler mode (ipsr set): live values, no RAZ.
+    let setup_handler = |m: &mut Machine<FlatMemory>| {
+        m.core.ipsr = 8;
+    };
+    check_with(&code, code_len, 12, setup_handler);
+    // Unprivileged thread (nPRIV, no handler): IPSR/MSP RAZ, CONTROL live.
+    let setup_unpriv = |m: &mut Machine<FlatMemory>| {
+        m.core.control = 1;
+    };
+    let mut m = boot(&code);
+    setup_unpriv(&mut m);
+    for _ in 0..4 {
+        m.step().unwrap();
+    }
+    assert_eq!(m.core.regs.r[0], 0, "IPSR RAZ unprivileged");
+    assert_eq!(m.core.regs.r[2], 0, "MSP RAZ unprivileged");
+    drop(m);
+    check_with(&code, code_len, 12, setup_unpriv);
+}
+
+/// Exclusive spinlock shape (P2-6): `LDREX`/`STREX` retry loop, side-exit
+/// tails with the monitor owned by the interpreter. (`CBNZ` cannot loop
+/// backward, so the retry tests the STREX status with `CMP`+`BNE`.)
+fn workload_excl() -> Vec<u8> {
+    let e = ENTRY;
+    // loop: LDREX r0,[r1]; ADDS r0,#1; STREX r3,r0,[r1]; CMP r3,#0;
+    // BNE loop; STR r0,[r1]; B .
+    // LDREX r0,[r1] = E851 0F00; STREX r3,r0,[r1] = E841 0300
+    // (decoder vectors: `strex r1, r0, [r2]` = E842 0100).
+    let loop_at = e;
+    let bne_at = e + 12;
+    halves(&[
+        0xE851,
+        0x0F00, // loop: LDREX r0, [r1]
+        0x3001, // ADDS r0, #1
+        0xE841,
+        0x0300, // STREX r3, r0, [r1]
+        0x2C00, // CMP r3, #0
+        bcond(1, bne_at, loop_at),
+        0x6008, // STR r0, [r1]
+        b(e + 16, e + 16),
+    ])
+}
+
+#[test]
+fn exclusives_match() {
+    let code = workload_excl();
+    let code_len = code.len() as u32;
+    let setup = |m: &mut Machine<FlatMemory>| {
+        m.core.regs.r[0] = 0;
+        m.core.mem().write_word(STORE, 41).unwrap();
+    };
+    let mut m = boot(&code);
+    setup(&mut m);
+    for _ in 0..16 {
+        m.step().unwrap();
+    }
+    assert_eq!(m.core.regs.r[0], 42, "exclusive increment retired");
+    drop(m);
+    check_with(&code, code_len, 60, setup);
+}
+
+/// FP around native code (P2-6): `VADD` side-exits every touch (the
+/// interpreter owns the FP context), but the surrounding integer blocks
+/// stay native — values round-trip through `VMOV` and must match bit-exactly.
+fn workload_fp() -> Vec<u8> {
+    use vioarm_core::cpu::decode32::{decode32_v7m, Inst32, Vfp3Op};
+    // `vadd.f32 s0, s0, s1` + `vmov s1, r0` (derived in-test,
+    // decoder-verified: fail-loud if the derivation slips).
+    assert_eq!(
+        decode32_v7m(0xEE30, 0x0A20),
+        Ok(Inst32::Vfp3 {
+            op: Vfp3Op::Vadd,
+            vd: 0,
+            vn: 0,
+            vm: 1,
+            is_dp: false,
+        })
+    );
+    assert_eq!(
+        decode32_v7m(0xEE00, 0x0A90),
+        Ok(Inst32::VfpMov {
+            to_gp: false,
+            vd: 1,
+            rt: 0,
+        })
+    );
+    let e = ENTRY;
+    // MOVS r0,#1; VMOV S0,r0; VMOV S1,r0; VADD S0,S0,S1; VMOV r0,S0;
+    // STR r0,[r1]; B .
+    halves(&[
+        0x2001, // MOVS r0, #1
+        0xEE00,
+        0x0A10, // VMOV S0, r0
+        0xEE00,
+        0x0A90, // VMOV S1, r0
+        0xEE30,
+        0x0A20, // VADD.F32 S0, S0, S1
+        0xEE10,
+        0x0A10, // VMOV r0, S0
+        0x6008, // STR r0, [r1] (e+18)
+        b(e + 20, e + 20),
+    ])
+}
+
+#[test]
+fn fp_around_native_matches() {
+    let code = workload_fp();
+    let code_len = code.len() as u32;
+    let mut m = boot(&code);
+    for _ in 0..16 {
+        m.step().unwrap();
+    }
+    // 0x00000001 + 0x00000001 as f32 denormals doubles the mantissa.
+    assert_eq!(m.core.regs.r[0], 2, "fp round-trips bit-exactly");
     drop(m);
     check(&code, code_len, 60);
 }

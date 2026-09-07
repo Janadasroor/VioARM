@@ -134,6 +134,19 @@ struct LinkKey {
     isa: Isa,
 }
 
+/// The exit-owning block's linkage data (P2-6, resolved per native exit):
+/// which block's edge fired, for tracker attribution and linking.
+struct ExitBlock {
+    /// Link-map key of the exit-owning block.
+    key: LinkKey,
+    /// Its start PC (prefix walks begin here).
+    pc: u32,
+    /// Its executable payload (for exit-shape mapping).
+    native: NativeBlock,
+    /// Its load-use tail value (for the tracker).
+    last_load: Option<u8>,
+}
+
 /// Interpreted-TB execution driver over a [`TbCache`].
 #[derive(Debug)]
 pub struct TbRunner {
@@ -348,12 +361,14 @@ impl TbRunner {
 
     /// Execute a native block: enter through the trampoline, decode the
     /// exit, commit block-level accounting. Cycle accounting is per-block
-    /// (D7): `cycles` counts retired ops exactly, `cyccnt` takes the block
-    /// estimate, and the load-use tracker resets to the block's tail value.
-    /// Chained blocks (P2-4) contribute their exact driver-equivalent
-    /// share through the context accumulators, flushed here for every
-    /// exit reason (halts included: consumed cycles settle before `Err`,
-    /// mirroring the quanta contract).
+    /// (D7): `cycles` counts retired ops exactly (`meta.insns` for the
+    /// entered block plus the chained accumulators, which cover every
+    /// chained block including the last), `cyccnt` takes the block
+    /// estimates the same way. The load-use tracker, edge linking, and
+    /// side-exit prefix walks resolve the *exit-owning* block through
+    /// `ctx.cur_pc` (P2-6: with chaining that is usually not the entered
+    /// block — using the entered metadata there walks foreign bytes,
+    /// misattributes the tracker, and mislinks edges).
     fn exec_native<B: PeripheralBus>(
         &mut self,
         core: &mut Core<B>,
@@ -382,10 +397,16 @@ impl TbRunner {
             tlb: self.tlb.as_mut() as *mut super::tlb::Tlb,
             privileged,
             itstate: &mut core.itstate,
+            primask: &mut core.primask,
+            ipsr: &mut core.ipsr,
+            control: &mut core.control,
+            event: &mut core.event,
+            sleeping: &mut core.sleeping,
             write_gen,
             budget_ops: self.chain_ops.saturating_sub(u64::from(meta.insns)) as i64,
             budget_blocks: self.chain_blocks.saturating_sub(1) as i64,
             link_epoch: self.link_epoch,
+            cur_pc: meta.key.pc,
             ..Default::default()
         });
         let code = vioarm_jit_call::call1(native.entry_ptr(), &mut *ctx as *mut NativeCtx as u64);
@@ -400,31 +421,38 @@ impl TbRunner {
         core.cyccnt += ctx.acc_cyccnt;
         self.stats.chained += ch_blocks;
         self.stats.hits += ch_blocks;
+        // Exit-owning block (P2-6): the entered one, unless the chain
+        // moved on (its stub stamps every entry). Resolved once here for
+        // the tracker, the linker, and the side-exit walks below.
+        let exit = self.exit_block(meta, native, ctx.cur_pc);
         if reason == EXIT_MMIO {
-            return self.native_mmio_exit(core, meta, npc, ctx.fault_addr, ch_ops, ch_blocks);
+            return self.native_mmio_exit(core, exit.pc, npc, ctx.fault_addr, ch_ops, ch_blocks);
         }
         if reason == EXIT_POP_BRANCH {
-            return self.native_pop_branch(core, meta, npc, ctx.fault_addr, ch_ops, ch_blocks);
+            return self.native_pop_branch(core, exit.pc, npc, ctx.fault_addr, ch_ops, ch_blocks);
         }
         if reason == EXIT_HALT {
             // Architected halt at the faulting op (`BX`/`BLX` to an even
             // target): commit the native prefix exactly, then report what
             // the stepper reports — no commit for the trapping op itself.
-            self.commit_prefix(core, meta, npc)?;
+            self.commit_prefix(core, exit.pc, npc)?;
             return Err(HaltCause::NonThumbTarget);
         }
         let end_pc = npc;
-        let fell_through = reason == EXIT_FALL;
+        // A sleeping core never chains on (mirrors the interpreted tail:
+        // only `WFI`/`WFE` sleep, and both seal their block — but the exit
+        // reason is still `FALL`, so gate explicitly).
+        let fell_through = reason == EXIT_FALL && !core.sleeping;
         let ops = u64::from(meta.insns) + ch_ops;
         let blocks = (1 + ch_blocks).min(u64::from(u32::MAX)) as u32;
         core.cycles += u64::from(meta.insns);
         core.cyccnt += meta.cycle_estimate;
-        core.set_load_tracker(native.last_load());
+        core.set_load_tracker(exit.last_load);
         core.regs.pc = end_pc;
         // Link the traversed edge for next time (tracked buses only: the
         // native gate dereferences the generation counter).
         if tracked && (reason == EXIT_FALL || reason == EXIT_BRANCH) {
-            self.link_edge(core, meta, native, npc);
+            self.link_edge(core, exit.key, &exit.native, npc);
         }
         Ok(BlockOutcome {
             ops: ops as usize,
@@ -435,19 +463,74 @@ impl TbRunner {
         })
     }
 
+    /// The exit-owning block's linkage data (P2-6): its key, executable
+    /// payload (shared mapping), and load-use tail value. The entered
+    /// block when nothing chained; otherwise a cache probe on `cur_pc`
+    /// (chained blocks cannot evict mid-`call1` — inserts only happen
+    /// driver-side — so a miss is impossible, and falls back to the
+    /// entered block defensively).
+    fn exit_block(&mut self, meta: &TbMeta, native: &NativeBlock, cur_pc: u32) -> ExitBlock {
+        if cur_pc == meta.key.pc {
+            return ExitBlock {
+                key: LinkKey {
+                    pc: meta.key.pc,
+                    secure: meta.key.secure,
+                    isa: meta.key.isa,
+                },
+                native: native.clone(),
+                last_load: native.last_load(),
+                pc: meta.key.pc,
+            };
+        }
+        let found: Option<(TbMeta, NativeBlock)> = self
+            .cache
+            .get(cur_pc, meta.key.secure, meta.key.isa)
+            .and_then(|hit| match hit {
+                Got::Native(tmeta, tnative) => Some((*tmeta, tnative.clone())),
+                Got::Interp(..) => None,
+            });
+        match found {
+            Some((tmeta, tnative)) => ExitBlock {
+                key: LinkKey {
+                    pc: tmeta.key.pc,
+                    secure: tmeta.key.secure,
+                    isa: tmeta.key.isa,
+                },
+                last_load: tnative.last_load(),
+                native: tnative,
+                pc: tmeta.key.pc,
+            },
+            None => {
+                debug_assert!(false, "chained block evicted mid-call");
+                ExitBlock {
+                    key: LinkKey {
+                        pc: meta.key.pc,
+                        secure: meta.key.secure,
+                        isa: meta.key.isa,
+                    },
+                    native: native.clone(),
+                    last_load: native.last_load(),
+                    pc: meta.key.pc,
+                }
+            }
+        }
+    }
+
     /// Commit the native prefix before `op_pc` op-by-op (exact — every
     /// prefix op fell through, else an earlier exit would have fired).
-    /// Returns the committed op count. Re-fetching the ops is sound:
-    /// stores seal blocks, so only effect-free ALU ops precede any exit
-    /// site and the bytes cannot have changed since entry validation.
+    /// Returns the committed op count. The walk starts at the
+    /// exit-owning block (`start_pc`, usually not the entered one under
+    /// chaining — P2-6). Re-fetching the ops is sound: stores seal
+    /// blocks, so only effect-free ALU ops precede any exit site and the
+    /// bytes cannot have changed since entry validation.
     fn commit_prefix<B: PeripheralBus>(
         &mut self,
         core: &mut Core<B>,
-        meta: &TbMeta,
+        start_pc: u32,
         op_pc: u32,
     ) -> Result<usize, HaltCause> {
         let isa = core.isa;
-        let mut pc = meta.key.pc;
+        let mut pc = start_pc;
         let mut ops = 0usize;
         while pc != op_pc {
             let Some((_, len)) = fetch_op(core.mem_mut(), pc, isa) else {
@@ -471,7 +554,7 @@ impl TbRunner {
     fn native_mmio_exit<B: PeripheralBus>(
         &mut self,
         core: &mut Core<B>,
-        meta: &TbMeta,
+        start_pc: u32,
         op_pc: u32,
         fault_addr: u32,
         chained_ops: u64,
@@ -480,7 +563,7 @@ impl TbRunner {
         use super::templates::mem_access;
         use super::tlb::fill_tlb;
 
-        let mut ops = self.commit_prefix(core, meta, op_pc)?;
+        let mut ops = self.commit_prefix(core, start_pc, op_pc)?;
         let isa = core.isa;
         let Some((op, len)) = fetch_op(core.mem_mut(), op_pc, isa) else {
             return Err(HaltCause::FetchAbort);
@@ -528,13 +611,13 @@ impl TbRunner {
     fn native_pop_branch<B: PeripheralBus>(
         &mut self,
         core: &mut Core<B>,
-        meta: &TbMeta,
+        start_pc: u32,
         op_pc: u32,
         target: u32,
         chained_ops: u64,
         chained_blocks: u64,
     ) -> Result<BlockOutcome, HaltCause> {
-        let mut ops = self.commit_prefix(core, meta, op_pc)?;
+        let mut ops = self.commit_prefix(core, start_pc, op_pc)?;
         let npc = match core.branch_native(target) {
             Ok(Next::Advance(addr)) => addr,
             Ok(Next::Stop(cause)) | Err(cause) => return Err(cause),
@@ -556,16 +639,17 @@ impl TbRunner {
         })
     }
 
-    /// Link the traversed edge `source -> npc` (P2-4, T6): when the target
-    /// is cached natively and validates, stamp its chain entry into the
-    /// source block's edge slot. Static edges map by exit-PC position;
-    /// anything else is the block's single dynamic (`BX`/`BLX`) edge.
-    /// Overwrites unconditionally (self-healing: any driver-observed exit
-    /// implies the edge did not chain this time).
+    /// Link the traversed edge `source -> npc` (P2-4, T6; P2-6 sources it
+    /// from the exit-owning block): when the target is cached natively and
+    /// validates, stamp its chain entry into the source block's edge slot.
+    /// Static edges map by exit-PC position; anything else is the block's
+    /// single dynamic (`BX`/`BLX`) edge. Overwrites unconditionally
+    /// (self-healing: any driver-observed exit implies the edge did not
+    /// chain this time).
     fn link_edge<B: PeripheralBus>(
         &mut self,
         core: &mut Core<B>,
-        meta: &TbMeta,
+        key: LinkKey,
         native: &NativeBlock,
         npc: u32,
     ) {
@@ -575,21 +659,16 @@ impl TbRunner {
             None if native.has_dynamic() => statics.len(),
             None => return,
         };
-        let key = LinkKey {
-            pc: meta.key.pc,
-            secure: meta.key.secure,
-            isa: meta.key.isa,
-        };
         let target_key = TbKey {
             pc: npc,
-            secure: meta.key.secure,
-            isa: meta.key.isa,
+            secure: key.secure,
+            isa: key.isa,
             mpu_epoch: self.cache.epoch(),
         };
         // Probe without holding the borrow across validation/linking.
         let target: Option<(TbMeta, NativeBlock)> = self
             .cache
-            .get(npc, meta.key.secure, meta.key.isa)
+            .get(npc, key.secure, key.isa)
             .and_then(|hit| match hit {
                 Got::Native(tmeta, tnative) => Some((*tmeta, tnative.clone())),
                 Got::Interp(..) => None,
@@ -1345,6 +1424,8 @@ mod tests {
     fn runner_matches_stepper_cycle_for_cycle() {
         // One block of four ops (MOVS, LDR-literal, NOP, B .): the runner
         // must match four stepper steps in pc, counters, and registers.
+        // Interpreted mode (P2-6: `NOP` templates natively now, and native
+        // mode commits approximate block `cyccnt` — exactness lives here).
         let halves = [MOVS_R0_1, 0x4800, NOP, B_SELF];
         let mut ref_core = core_at(&halves);
         for _ in 0..4 {
@@ -1352,6 +1433,7 @@ mod tests {
         }
         let mut core = core_at(&halves);
         let mut runner = TbRunner::new();
+        runner.set_native(false);
         let outcome = runner.run_block(&mut core).unwrap().unwrap();
         assert_eq!(outcome.ops, 4);
         assert!(!outcome.fell_through);

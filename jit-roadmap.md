@@ -363,8 +363,24 @@ Goal: 10–30× on compute loops.
   traversal), so they pay full driver trips; native is still 2×+ better
   than the interp-blocks fallback (0.29×) there. Follow-up: split
   code/data write generations so data-only loops chain.
-- [ ] P2-6: callout plumbing for all of S6 (SVC/BKPT/barriers/MRS-MSR/
-  exclusives/WFI-FE-FE/FP/DSP) + TB-ending rules.
+- [x] P2-6: S6 coverage + TB-ending rules. Done 2026-09-07: no FFI
+  callouts were needed — the space splits into inline templates (no-ops:
+  barriers/NOP/YIELD; field stores: SEV/WFI/WFE; MRS/MSR field-only
+  forms with runtime unprivileged/bank rules; MSR flag merges) and
+  flush + driver side-exit tails (SVC/BKPT/CPS/exclusives/acquire-
+  release/DSP/all VFP/TT/SG/hairy MRS-MSR — re-executed identically, no
+  double effects). TB rules: barriers/SEV continue, TT flips to System
+  (mid-block re-entry churned overlapping entries), everything else keeps
+  its seal; `STREX` joins the store mask. Prerequisite fixes done here:
+  `cur_pc` tracking (chained side exits committed foreign prefixes,
+  misattributed the tracker, and mislinked — caught by a new cross-page
+  chained-exit differential that FetchAborts unfixed), uniform pin flush
+  on side exits (latent stale-`Rm` on `BX`-magic re-execution), and a
+  sleeping-aware `fell_through`. Caught by testing (4 more: MRS spot
+  expectation (mine), TST-needs-seed recurrence in TEQ form, `revsh`
+  encoding gap on AArch64 (rev16+sxth), VMOV-S1 bit derivation). No new
+  soak: S6's prize is coverage (prefixes stay native up to the faulting
+  op), measured by the existing suites going native more often.
 - [ ] P2-7: per-TB cycle estimates (D7 accounting) + monotonicity tests.
 - [ ] GATE G2: template fuzz (each template vs interpreter, randomized)
   green + soak ≥10× on x86-64, else stop (emitter approach wrong — fall

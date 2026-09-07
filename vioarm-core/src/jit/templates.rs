@@ -68,6 +68,14 @@ pub fn is_templated(op: &TbOp) -> bool {
             // store materializes the set); nested `IT` never emits (the
             // builder breaks before it).
             Inst16::It { .. } => true,
+            // P2-6 (S6): hints inline (even sleep — field stores, no
+            // faults); `CPS`/`SVC`/`BKPT` are side-exit tails (the driver
+            // re-executes with full `Core` access — exception entry,
+            // semihosting, and mask rules stay in one place).
+            Inst16::Hint { .. } => true,
+            Inst16::Cps { .. } => true,
+            Inst16::Svc { .. } => true,
+            Inst16::Bkpt { .. } => true,
             // P2-3 single transfers (S1): no PC involvement (`r15`
             // anywhere bails — the guest PC is stale mid-block; `rn ==
             // 15` is allowed only for the integer-literal base form,
@@ -149,6 +157,49 @@ pub fn is_templated(op: &TbOp) -> bool {
                     && rm != 15
                     && (matches!(op, O::Mul) || ra != 15)
             }
+            // P2-6 (S6): barriers are no-ops (the interpreter advances
+            // past every form).
+            crate::cpu::decode32::Inst32::Barrier { .. } => true,
+            // P2-6 (S6): `MRS`/`MSR` split — field-only forms inline
+            // (below), everything else side-exits (banking, limits,
+            // TrustZone, FPSCR, reserved encodings — all owned by the
+            // interpreter). `rd == 15` faults, `rn == 15` reads the stale
+            // PC: both stay interpreted exactly like the stepper.
+            crate::cpu::decode32::Inst32::Mrs { rd, .. } => rd != 15,
+            crate::cpu::decode32::Inst32::Msr { rn, .. } => rn != 15,
+            // P2-6 (S6): exclusives, acquire-release, DSP, FP, `TT`, and
+            // `SG` are side-exit tails (monitor/MPU/FPU/DSP state lives
+            // outside pins — the driver re-executes identically). No
+            // operand gating: nothing executes natively, so even exotic
+            // register forms are safe. FP coverage reuses the
+            // interpreter's own classifier (single source, cannot drift).
+            crate::cpu::decode32::Inst32::Ldrex { .. } => true,
+            crate::cpu::decode32::Inst32::Strex { .. } => true,
+            crate::cpu::decode32::Inst32::Clrex => true,
+            crate::cpu::decode32::Inst32::Lda { .. } => true,
+            crate::cpu::decode32::Inst32::Stl { .. } => true,
+            crate::cpu::decode32::Inst32::DspMul { .. } => true,
+            crate::cpu::decode32::Inst32::DualMul { .. } => true,
+            crate::cpu::decode32::Inst32::Tt { .. } => true,
+            crate::cpu::decode32::Inst32::Sg => true,
+            // FP family (keep in sync with `Core::inst_is_vfp` — the
+            // interpreter's classifier that gates the FP-context
+            // mechanics; the ARMv7-M set is architecturally fixed).
+            crate::cpu::decode32::Inst32::Vfp3 { .. } => true,
+            crate::cpu::decode32::Inst32::Vfp2 { .. } => true,
+            crate::cpu::decode32::Inst32::VfpCmp { .. } => true,
+            crate::cpu::decode32::Inst32::VfpVrint { .. } => true,
+            crate::cpu::decode32::Inst32::VfpCvtInt { .. } => true,
+            crate::cpu::decode32::Inst32::VfpCvtFix { .. } => true,
+            crate::cpu::decode32::Inst32::VfpCvt { .. } => true,
+            crate::cpu::decode32::Inst32::VfpMovImm { .. } => true,
+            crate::cpu::decode32::Inst32::VfpMov { .. } => true,
+            crate::cpu::decode32::Inst32::VfpMov64 { .. } => true,
+            crate::cpu::decode32::Inst32::VfpMrsVmsr { .. } => true,
+            crate::cpu::decode32::Inst32::VfpLdSt { .. } => true,
+            crate::cpu::decode32::Inst32::VfpLdStD { .. } => true,
+            crate::cpu::decode32::Inst32::VfpLdStMult { .. } => true,
+            crate::cpu::decode32::Inst32::VfpLdStMultD { .. } => true,
             _ => false,
         },
     }
@@ -493,7 +544,12 @@ pub fn emit_block(
         .labels()
         .resolve_dynamic(chain_lbl)
         .map_err(|_| super::EmitError::Finalize)?;
-    let brk = emit_chain_entry(&mut ops, body.ops.len() as u32, body.cycle_estimate);
+    let brk = emit_chain_entry(
+        &mut ops,
+        body.pc,
+        body.ops.len() as u32,
+        body.cycle_estimate,
+    );
     arch::mark_label(&mut ops, body_lbl);
     // ITSTATE exit store first (P2-5, S4): the value is fully static, and
     // nothing native reads the field mid-block (conditions are static,
@@ -708,13 +764,24 @@ pub(crate) mod harness {
         let mut r = *regs;
         let mut x = *xpsr;
         let mut itstate = 0u8;
+        let mut primask = false;
+        let mut ipsr = 0u8;
+        let mut control = 0u32;
+        let mut event = false;
+        let mut sleeping = false;
         let mut ctx = Box::new(NativeCtx {
             regs: &mut r,
             xpsr: &mut x,
             itstate: &mut itstate,
-            // Unbounded budgets: harness blocks never chain (slots stay
-            // unlinked), but the chained-entry stub still gates the body
-            // on them — zero would break out before running anything.
+            primask: &mut primask,
+            ipsr: &mut ipsr,
+            control: &mut control,
+            event: &mut event,
+            sleeping: &mut sleeping,
+            // Harness blocks never chain (slots stay unlinked): the exit
+            // owner is always this block. Unbounded budgets for the same
+            // reason (zero would break out before running anything).
+            cur_pc: pc,
             budget_ops: i64::MAX,
             budget_blocks: i64::MAX,
             ..Default::default()
@@ -858,6 +925,11 @@ pub(crate) mod harness {
             let mut r = *regs;
             let mut x = *xpsr;
             let mut itstate = 0u8;
+            let mut primask = false;
+            let mut ipsr = 0u8;
+            let mut control = 0u32;
+            let mut event = false;
+            let mut sleeping = false;
             let mut ctx = Box::new(NativeCtx {
                 regs: &mut r,
                 xpsr: &mut x,
@@ -865,6 +937,12 @@ pub(crate) mod harness {
                 privileged: 1,
                 write_gen: &mut *gen as *mut u64,
                 itstate: &mut itstate,
+                primask: &mut primask,
+                ipsr: &mut ipsr,
+                control: &mut control,
+                event: &mut event,
+                sleeping: &mut sleeping,
+                cur_pc: pc,
                 budget_ops: i64::MAX,
                 budget_blocks: i64::MAX,
                 ..Default::default()
@@ -1072,15 +1150,13 @@ mod tests {
 
     #[test]
     fn untemplated_ops_bail() {
-        // System ops, PC forms, unpredictable register branches, secure
-        // branches, always-faulting `BLX`-immediate, long/exclusive/DSP
-        // multiplies, and the remaining 32-bit ops have no template: the
-        // emitter reports false and the block stays interpreted.
-        // (`POP {pc}`, table branches, and the S3/S5 sets went native in
-        // P2-5 — they must NOT appear here.)
+        // Unpredictable PC forms, secure branches, always-faulting
+        // `BLX`-immediate, long/exclusive/DSP multiplies, and the
+        // remaining 32-bit ops have no template: the emitter reports
+        // false and the block stays interpreted. (`POP {pc}`, table
+        // branches, the S3/S5 sets, and the S6 side-exit tails went native
+        // in P2-5/P2-6 — they must NOT appear here.)
         let cases = [
-            TbOp::V16(Inst16::Svc { imm: 0 }),
-            TbOp::V16(Inst16::Bkpt { imm: 0 }),
             TbOp::V16(Inst16::MovImm { rd: 15, imm: 1 }),
             TbOp::V16(Inst16::AddReg {
                 rd: 0,
@@ -2653,6 +2729,8 @@ mod tests {
             let mut it = 0u8;
             let mut tlb = Tlb::new();
             let mut gen = 0u64;
+            let (mut primask, mut ipsr, mut control, mut event, mut sleeping) =
+                (false, 0u8, 0u32, false, false);
             let mut ctx = Box::new(NativeCtx {
                 regs: &mut r,
                 xpsr: &mut x,
@@ -2660,6 +2738,12 @@ mod tests {
                 privileged: 1,
                 write_gen: &mut gen as *mut u64,
                 itstate: &mut it,
+                primask: &mut primask,
+                ipsr: &mut ipsr,
+                control: &mut control,
+                event: &mut event,
+                sleeping: &mut sleeping,
+                cur_pc: 0x1000,
                 budget_ops: i64::MAX,
                 budget_blocks: i64::MAX,
                 ..Default::default()
@@ -2725,6 +2809,177 @@ mod tests {
             ..plain.clone()
         };
         assert_eq!(exit_itstate(&drain), it_advance(it_advance(0x08)));
+    }
+
+    // ---- System ops (P2-6, S6) ----
+
+    use crate::cpu::decode16::Hint as H;
+    use crate::cpu::decode32::SysReg as SR;
+
+    #[test]
+    fn mrs_easy_forms_match() {
+        use crate::cpu::decode32::Inst32 as I32d;
+        // (sys, rd): privileged-thread paths (harness scratch ipsr and
+        // control are zero, like the interpreter reference).
+        for (sys, rd) in [
+            (SR::Apsr, 1u8),
+            (SR::ApsrG, 2),
+            (SR::ApsrNzvCqg, 3),
+            (SR::Xpsr, 4),
+            (SR::Epsr, 5),
+            (SR::Ipsr, 6),
+            (SR::Msp, 7),
+            (SR::Psp, 8),
+            (SR::Primask, 0),
+            (SR::Control, 1),
+        ] {
+            let op = TbOp::V32(I32d::Mrs { rd, sys });
+            assert!(is_templated(&op), "{sys:?} inline");
+            check(&op, 64);
+        }
+        // Spot values (not just parity): APSR masking + constant EPSR.
+        // Input N/C/V set: masked read keeps exactly those three.
+        let xpsr = flags_nzcv(true, false, true, true);
+        let regs = blank_regs();
+        let ((nr, _), _) = run_native(
+            &TbOp::V32(I32d::Mrs {
+                rd: 0,
+                sys: SR::Apsr,
+            }),
+            &regs,
+            &xpsr,
+            0x1000,
+            false,
+        );
+        assert_eq!(nr.r[0], 0xB000_0000);
+        let ((nr, _), _) = run_native(
+            &TbOp::V32(I32d::Mrs {
+                rd: 0,
+                sys: SR::Epsr,
+            }),
+            &regs,
+            &xpsr,
+            0x1000,
+            false,
+        );
+        assert_eq!(nr.r[0], crate::cpu::registers::XPSR_T);
+    }
+
+    #[test]
+    fn msr_easy_forms_match() {
+        use crate::cpu::decode32::Inst32 as I32d;
+        for sys in [SR::Apsr, SR::ApsrG, SR::ApsrNzvCqg, SR::Primask] {
+            let op = TbOp::V32(I32d::Msr { rn: 2, sys });
+            assert!(is_templated(&op), "{sys:?} inline");
+            check(&op, 128);
+        }
+        // MSR APSR writes NZCV+Q, preserves GE: pin the composition.
+        let mut regs = blank_regs();
+        regs.r[2] = 0xFFFF_FFFF;
+        let xpsr = flags_nzcv(false, false, false, false);
+        let ((nr, nx), _) = run_native(
+            &TbOp::V32(I32d::Msr {
+                rn: 2,
+                sys: SR::Apsr,
+            }),
+            &regs,
+            &xpsr,
+            0x1000,
+            false,
+        );
+        assert_eq!(nx.get() & crate::cpu::registers::APSR_QFLAGS, 0xF800_0000);
+    }
+
+    /// Side-exit-tail check: `MMIO` exit with the op PC, end state equal
+    /// to input (the flush writes back identical values; the driver owns
+    /// all effects on re-execution).
+    fn check_side_tail(op: &TbOp) {
+        use crate::jit::native::{exit_pc, EXIT_MMIO};
+        assert!(is_templated(op));
+        let regs = blank_regs();
+        let xpsr = flags_nzcv(true, false, true, false);
+        let ((nr, nx), code) = run_native(op, &regs, &xpsr, 0x1000, false);
+        assert_eq!(exit_reason(code), EXIT_MMIO, "{op:?} side-exits");
+        assert_eq!(exit_pc(code), 0x1000, "side exit carries the op PC");
+        assert_eq!((nr, nx), (regs, xpsr), "miss is effect-free");
+    }
+
+    #[test]
+    fn side_exit_tails_match() {
+        use crate::cpu::decode32::Inst32 as I32d;
+        check_side_tail(&TbOp::V16(Inst16::Svc { imm: 1 }));
+        check_side_tail(&TbOp::V16(Inst16::Bkpt { imm: 3 }));
+        check_side_tail(&TbOp::V16(Inst16::Cps {
+            disable: true,
+            im: 2,
+        }));
+        check_side_tail(&TbOp::V32(I32d::Mrs {
+            rd: 0,
+            sys: SR::Basepri,
+        }));
+        check_side_tail(&TbOp::V32(I32d::Msr {
+            rn: 0,
+            sys: SR::Control,
+        }));
+        check_side_tail(&TbOp::V32(I32d::Ldrex {
+            rt: 0,
+            rn: 1,
+            size: crate::cpu::decode32::ExSize::Word,
+            off: 0,
+        }));
+        check_side_tail(&TbOp::V32(I32d::Strex {
+            rd: 0,
+            rt: 1,
+            rn: 2,
+            size: crate::cpu::decode32::ExSize::Word,
+            off: 0,
+        }));
+        check_side_tail(&TbOp::V32(I32d::VfpMovImm {
+            vd: 0,
+            imm: 0,
+            is_dp: false,
+        }));
+        check_side_tail(&TbOp::V32(I32d::DspMul {
+            op: crate::cpu::decode32::DspMulOp::Smulbb,
+            rd: 0,
+            rn: 1,
+            rm: 2,
+            ra: 3,
+        }));
+        check_side_tail(&TbOp::V32(I32d::Tt {
+            variant: crate::cpu::decode32::TtVariant::Tt,
+            rd: 0,
+            rn: 1,
+        }));
+        check_side_tail(&TbOp::V32(I32d::Sg));
+        check_side_tail(&TbOp::V32(I32d::Clrex));
+        check_side_tail(&TbOp::V32(I32d::Lda {
+            rt: 0,
+            rn: 1,
+            size: crate::cpu::decode32::ExSize::Word,
+            exclusive: false,
+        }));
+    }
+
+    #[test]
+    fn hints_and_barriers_match() {
+        use crate::cpu::decode32::Inst32 as I32d;
+        // NOP/YIELD assemble to nothing (FALL, untouched).
+        for kind in [H::Nop, H::Yield] {
+            let op = TbOp::V16(Inst16::Hint { kind });
+            assert!(is_templated(&op));
+            check(&op, 64);
+        }
+        // Barriers advance silently (all forms).
+        for kind in [
+            crate::cpu::decode32::Barrier::Dmb,
+            crate::cpu::decode32::Barrier::Dsb,
+            crate::cpu::decode32::Barrier::Isb,
+        ] {
+            let op = TbOp::V32(I32d::Barrier { kind });
+            assert!(is_templated(&op));
+            check(&op, 64);
+        }
     }
 
     #[test]

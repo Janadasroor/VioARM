@@ -315,6 +315,10 @@ fn op_writes_memory(op: &TbOp) -> bool {
             }
             Inst32::LdrdStrd { is_load, .. } => !is_load,
             Inst32::LdmStm { is_load, .. } => !is_load,
+            // `STREX` writes conditionally — still a bus write for the
+            // revalidation mask (a store through a live reservation can
+            // patch code like any other store).
+            Inst32::Strex { .. } => true,
             // Store-release always writes (exclusive forms seal the block
             // anyway); load-acquire never does.
             Inst32::Stl { .. } => true,
@@ -373,18 +377,22 @@ fn seal16(inst: &Inst16) -> Seal {
             Seal::System
         }
         Inst16::Hint { kind } => match kind {
-            Hint::Nop | Hint::Yield => Seal::Continue,
-            Hint::Wfe | Hint::Wfi | Hint::Sev => Seal::System,
+            // P2-6: `SEV` is an inline field write (no exit); `WFI`/`WFE`
+            // sleep (the block ends, the runner naps the chain).
+            Hint::Nop | Hint::Yield | Hint::Sev => Seal::Continue,
+            Hint::Wfe | Hint::Wfi => Seal::System,
         },
         _ => Seal::Continue,
     }
 }
 
 /// T2 classification for 32-bit instructions: the S0–S5 continuer set is
-/// plain DP (no PC destination), plain loads/stores (no PC target), and
-/// `DIV`/`MUL`; everything else — branches, system/exclusive/barrier,
-/// acquire-release-exclusive, DSP, FP, `SG`/`TT`-adjacent state readers —
-/// seals the block. (`TT` itself is a pure attribution read: continue.)
+/// plain DP (no PC destination), plain loads/stores (no PC target),
+/// `DIV`/`MUL`, and barrier hints (P2-6: no-ops); everything else —
+/// branches, system/exclusive, acquire-release-exclusive, DSP, FP, `SG`/
+/// `TT` — seals the block. (`TT` side-exits natively but would re-enter
+/// mid-block on every touch, churning overlapping entries — ending the
+/// block there is cleaner for the same trips.)
 fn seal32(inst: &Inst32) -> Seal {
     match inst {
         Inst32::Bl { .. }
@@ -408,7 +416,7 @@ fn seal32(inst: &Inst32) -> Seal {
         | Inst32::Mem { .. }
         | Inst32::LdrdStrd { .. }
         | Inst32::LdmStm { .. }
-        | Inst32::Tt { .. } => Seal::Continue,
+        | Inst32::Barrier { .. } => Seal::Continue,
         Inst32::Lda {
             exclusive: false, ..
         }

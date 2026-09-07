@@ -155,6 +155,20 @@ pub struct NativeCtx {
     /// simulated exit value here. Always valid on native entry (the driver
     /// points it at the core field; the harness uses scratch).
     pub itstate: *mut u8,
+    /// Core flag/word fields for S6 inline templates (P2-6): plain
+    /// pointers, because `Core<B>` field offsets vary with the bus type
+    /// and can never be baked as immediates (only `Registers`/`NativeCtx`
+    /// offsets are bus-independent). Always valid on native entry.
+    /// PRIMASK latch.
+    pub primask: *mut bool,
+    /// Exception number (0 = Thread mode).
+    pub ipsr: *mut u8,
+    /// CONTROL register (nPRIV + SPSEL + FPCA).
+    pub control: *mut u32,
+    /// Event latch (`SEV`/`WFE`).
+    pub event: *mut bool,
+    /// Sleep latch (`WFI`/`WFE`).
+    pub sleeping: *mut bool,
     /// Chaining budgets, set by the driver per `call1` (P2-4): each
     /// chained-block entry subtracts its block size and stops the chain
     /// (`FALL` to its own PC) at zero. Bounds native execution within one
@@ -165,6 +179,15 @@ pub struct NativeCtx {
     /// Link-epoch value for this call (copied from the runner): chained
     /// edges compare their slot's stamped epoch against this.
     pub link_epoch: u64,
+    /// Start PC of the block currently executing (P2-6): the driver sets
+    /// it to the entered block; every chained entry overwrites it with its
+    /// own (baked) PC *before* the budget checks. Side exits (MMIO, HALT,
+    /// pop-branch) commit the prefix from here — not from the entered
+    /// block (a chained exit's faulting op lives in a different block;
+    /// walking from the entered PC would commit foreign bytes). The
+    /// FALL/BRANCH path likewise reads the *last* block's accounting and
+    /// links its edge from here.
+    pub cur_pc: u32,
     /// Chained accounting accumulators (P2-4): each chained entry adds its
     /// block's exact driver-equivalent contribution; the driver flushes
     /// them into `Core` after the call returns (all exit reasons).
@@ -187,6 +210,12 @@ impl Default for NativeCtx {
             write_gen: core::ptr::null_mut(),
             fault_addr: 0,
             itstate: core::ptr::null_mut(),
+            cur_pc: 0,
+            primask: core::ptr::null_mut(),
+            ipsr: core::ptr::null_mut(),
+            control: core::ptr::null_mut(),
+            event: core::ptr::null_mut(),
+            sleeping: core::ptr::null_mut(),
             // Fail-safe: a stray chain entry with zero budgets breaks out
             // immediately instead of running away.
             budget_ops: 0,
@@ -369,16 +398,19 @@ pub(crate) fn emit_prologue(ops: &mut dynasmrt::x64::Assembler) {
     );
 }
 
-/// Chained-entry stub (P2-4, T6): budgets gate chain length (signed
-/// subtract-and-branch: zero still runs — exact-fit is allowed),
-/// accumulators collect the driver-equivalent accounting. Entered by
-/// linked edges with pins live and the driver frame active; falls through
-/// to the body. Returns the break label: the caller binds it after the
-/// body with a `FALL`-to-`block_pc` epilogue (the driver re-runs the block
-/// with fresh budgets — progress, never a skip).
+/// Chained-entry stub (P2-4, T6; P2-6 records the block): budgets gate
+/// chain length (signed subtract-and-branch: zero still runs — exact-fit
+/// is allowed), accumulators collect the driver-equivalent accounting.
+/// The block PC stamps `cur_pc` FIRST (before the budget checks — a
+/// budget break exits as this block, so it must already own the exit).
+/// Entered by linked edges with pins live and the driver frame active;
+/// falls through to the body. Returns the break label: the caller binds
+/// it after the body with a `FALL`-to-`block_pc` epilogue (the driver
+/// re-runs the block with fresh budgets — progress, never a skip).
 #[cfg(target_arch = "x86_64")]
 pub(crate) fn emit_chain_entry(
     ops: &mut dynasmrt::x64::Assembler,
+    block_pc: u32,
     insns: u32,
     estimate: u64,
 ) -> dynasmrt::DynamicLabel {
@@ -392,10 +424,13 @@ pub(crate) fn emit_chain_entry(
     // always suffices (loud in debug if that ever changes).
     debug_assert!(estimate <= u64::from(u32::MAX));
     let (insns, est) = (insns as i32, estimate as i32);
+    let c_cur = core::mem::offset_of!(NativeCtx, cur_pc) as i32;
+    let pc = block_pc as i32;
     let brk = ops.new_dynamic_label();
     dynasm!(ops
         ; .arch x64
         ; mov rax, [rsp]
+        ; mov DWORD [rax + c_cur], pc
         ; sub QWORD [rax + budg_ops], insns
         ; js =>brk
         ; sub QWORD [rax + budg_blk], 1
@@ -507,21 +542,10 @@ pub(crate) fn emit_dynamic_edge(ops: &mut dynasmrt::x64::Assembler, slot: u64) {
 /// runtime (conditional branches). `eax`/`ecx` are scratch as usual.
 #[cfg(target_arch = "x86_64")]
 pub(crate) fn emit_epilogue_dynamic(ops: &mut dynasmrt::x64::Assembler, reason: u32) {
-    let ctx_regs = core::mem::offset_of!(NativeCtx, regs) as i32;
-    let ctx_xpsr = core::mem::offset_of!(NativeCtx, xpsr) as i32;
-    let (o0, o1, o2, o3) = (reg_offset(0), reg_offset(1), reg_offset(2), reg_offset(3));
     let reason = reason as i32;
+    emit_pin_flush(ops);
     dynasm!(ops
         ; .arch x64
-        // Write pinned set back (same as the static epilogue).
-        ; mov rax, [rsp]
-        ; mov rcx, [rax + ctx_regs]
-        ; mov [rcx + o0], ebx
-        ; mov [rcx + o1], r12d
-        ; mov [rcx + o2], r13d
-        ; mov [rcx + o3], r14d
-        ; mov rcx, [rax + ctx_xpsr]
-        ; mov [rcx], r15d
         // Compose (reason << 32) | next_pc from edx.
         ; mov eax, edx
         ; mov ecx, reason
@@ -537,15 +561,20 @@ pub(crate) fn emit_epilogue_dynamic(ops: &mut dynasmrt::x64::Assembler, reason: 
     );
 }
 
+/// Write the pinned set (`r0`–`r3` + flags word) back to `Core` (P2-6):
+/// shared by the epilogues and every side exit. Side exits re-execute
+/// through the interpreter, which observes `Core` — without the flush a
+/// prefix-modified pin would read stale there (e.g. `BX Rm` after an ALU
+/// op writing `Rm`). Uniform flush is a superset of the old behavior
+/// (re-execution overwrites whatever it reads) at zero hot-path cost —
+/// side exits never fire hot.
 #[cfg(target_arch = "x86_64")]
-pub(crate) fn emit_epilogue(ops: &mut dynasmrt::x64::Assembler, reason: u32, next_pc: u32) {
+pub(crate) fn emit_pin_flush(ops: &mut dynasmrt::x64::Assembler) {
     let ctx_regs = core::mem::offset_of!(NativeCtx, regs) as i32;
     let ctx_xpsr = core::mem::offset_of!(NativeCtx, xpsr) as i32;
     let (o0, o1, o2, o3) = (reg_offset(0), reg_offset(1), reg_offset(2), reg_offset(3));
-    let code = exit_code(reason, next_pc) as i64;
     dynasm!(ops
         ; .arch x64
-        // Write pinned set back.
         ; mov rax, [rsp]
         ; mov rcx, [rax + ctx_regs]
         ; mov [rcx + o0], ebx
@@ -554,6 +583,15 @@ pub(crate) fn emit_epilogue(ops: &mut dynasmrt::x64::Assembler, reason: u32, nex
         ; mov [rcx + o3], r14d
         ; mov rcx, [rax + ctx_xpsr]
         ; mov [rcx], r15d
+    );
+}
+
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn emit_epilogue(ops: &mut dynasmrt::x64::Assembler, reason: u32, next_pc: u32) {
+    let code = exit_code(reason, next_pc) as i64;
+    emit_pin_flush(ops);
+    dynasm!(ops
+        ; .arch x64
         // Exit code + teardown.
         ; mov rax, QWORD code
         ; add rsp, 16
@@ -620,8 +658,10 @@ pub(crate) fn emit_prologue(ops: &mut dynasmrt::aarch64::Assembler) {
     );
 }
 
+/// Write the pinned set back to `Core` (P2-6, AArch64 mirror — same
+/// contract as the x64 form; scratch is `x9`/`x10` only).
 #[cfg(target_arch = "aarch64")]
-pub(crate) fn emit_epilogue(ops: &mut dynasmrt::aarch64::Assembler, reason: u32, next_pc: u32) {
+pub(crate) fn emit_pin_flush(ops: &mut dynasmrt::aarch64::Assembler) {
     let ctx_regs = core::mem::offset_of!(NativeCtx, regs) as u32;
     let ctx_xpsr = core::mem::offset_of!(NativeCtx, xpsr) as u32;
     let (o0, o1, o2, o3) = (
@@ -630,16 +670,8 @@ pub(crate) fn emit_epilogue(ops: &mut dynasmrt::aarch64::Assembler, reason: u32,
         reg_offset(2) as u32,
         reg_offset(3) as u32,
     );
-    let code = exit_code(reason, next_pc);
-    let (c0, c1, c2, c3) = (
-        (code & 0xFFFF) as u32,
-        ((code >> 16) & 0xFFFF) as u32,
-        ((code >> 32) & 0xFFFF) as u32,
-        ((code >> 48) & 0xFFFF) as u32,
-    );
     dynasm!(ops
         ; .arch aarch64
-        // Write pinned set back.
         ; ldr x9, [sp, #48]
         ; ldr x10, [x9, ctx_regs]
         ; str w19, [x10, o0]
@@ -648,6 +680,21 @@ pub(crate) fn emit_epilogue(ops: &mut dynasmrt::aarch64::Assembler, reason: u32,
         ; str w22, [x10, o3]
         ; ldr x10, [x9, ctx_xpsr]
         ; str w23, [x10]
+    );
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn emit_epilogue(ops: &mut dynasmrt::aarch64::Assembler, reason: u32, next_pc: u32) {
+    let code = exit_code(reason, next_pc);
+    let (c0, c1, c2, c3) = (
+        (code & 0xFFFF) as u32,
+        ((code >> 16) & 0xFFFF) as u32,
+        ((code >> 32) & 0xFFFF) as u32,
+        ((code >> 48) & 0xFFFF) as u32,
+    );
+    emit_pin_flush(ops);
+    dynasm!(ops
+        ; .arch aarch64
         // Exit code + teardown.
         ; movz x0, c0, lsl #0
         ; movk x0, c1, lsl #16
@@ -702,6 +749,7 @@ fn emit_movabs_x9(ops: &mut dynasmrt::aarch64::Assembler, addr: u64) {
 #[cfg(target_arch = "aarch64")]
 pub(crate) fn emit_chain_entry(
     ops: &mut dynasmrt::aarch64::Assembler,
+    block_pc: u32,
     insns: u32,
     estimate: u64,
 ) -> dynasmrt::DynamicLabel {
@@ -711,13 +759,18 @@ pub(crate) fn emit_chain_entry(
     let acc_cyc = core::mem::offset_of!(NativeCtx, acc_cycles) as u32;
     let acc_cc = core::mem::offset_of!(NativeCtx, acc_cyccnt) as u32;
     let acc_blk = core::mem::offset_of!(NativeCtx, acc_blocks) as u32;
+    let c_cur = core::mem::offset_of!(NativeCtx, cur_pc) as u32;
     debug_assert!(insns <= 64);
     debug_assert!(estimate <= 4095);
     let (insns, est) = (insns, estimate as u32);
+    let (p_lo, p_hi) = (block_pc & 0xFFFF, (block_pc >> 16) & 0xFFFF);
     let brk = ops.new_dynamic_label();
     dynasm!(ops
         ; .arch aarch64
         ; ldr x9, [sp, #48]
+        ; movz w10, p_lo
+        ; movk w10, p_hi, lsl #16
+        ; str w10, [x9, c_cur]
         ; ldr x10, [x9, budg_ops]
         ; subs xzr, x10, #insns
         ; b.mi =>brk
@@ -826,25 +879,10 @@ pub(crate) fn emit_dynamic_edge(ops: &mut dynasmrt::aarch64::Assembler, slot: u6
 /// preserve the pinned set (scratch is `w0`/`w1`/`w9`–`w11` only).
 #[cfg(target_arch = "aarch64")]
 pub(crate) fn emit_epilogue_dynamic(ops: &mut dynasmrt::aarch64::Assembler, reason: u32) {
-    let ctx_regs = core::mem::offset_of!(NativeCtx, regs) as u32;
-    let ctx_xpsr = core::mem::offset_of!(NativeCtx, xpsr) as u32;
-    let (o0, o1, o2, o3) = (
-        reg_offset(0) as u32,
-        reg_offset(1) as u32,
-        reg_offset(2) as u32,
-        reg_offset(3) as u32,
-    );
     let r = reason & 0xFFFF;
+    emit_pin_flush(ops);
     dynasm!(ops
         ; .arch aarch64
-        ; ldr x9, [sp, #48]
-        ; ldr x10, [x9, ctx_regs]
-        ; str w19, [x10, o0]
-        ; str w20, [x10, o1]
-        ; str w21, [x10, o2]
-        ; str w22, [x10, o3]
-        ; ldr x10, [x9, ctx_xpsr]
-        ; str w23, [x10]
         ; movz x1, r
         ; lsl x1, x1, #32
         ; orr x0, x0, x1
