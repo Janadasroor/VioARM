@@ -255,16 +255,14 @@ impl TbRunner {
             self.stats.fallbacks += 1;
             return Ok(None);
         }
-        // Predicated bodies never enter blocks (hits or misses): plain
-        // `exec` does not predicate (the stepper wraps it in `exec_it_step`
-        // for that), so a block cached under `itstate == 0` must not run
-        // under `itstate != 0` — e.g. a branch landing inside someone
-        // else's IT body. The fallback stepper owns predicated execution
-        // until the IT state drains (Phase-1 IT policy; S4 goes native).
-        if core.itstate != 0 {
-            self.stats.fallbacks += 1;
-            return Ok(None);
-        }
+        // Predicated execution gates on an exact ITSTATE match (P2-5, S4):
+        // plain `exec` does not predicate (the stepper wraps it in
+        // `exec_it_step`), so a block runs natively only under the ITSTATE
+        // it was built for — plain blocks record 0 (a branch landing
+        // inside someone else's IT body still falls back), predicated-
+        // continuation blocks record their entry mask. Mismatches rebuild
+        // below (or refuse, routing to the fallback stepper).
+        let it_entry = core.itstate;
         // Armed hooks run interpreted (P3-3 refines to per-range bypass):
         // native blocks neither fire per-insn hooks nor check watchpoints,
         // and fast paths skip hook registries — so any armed hook forces
@@ -303,12 +301,19 @@ impl TbRunner {
             });
         let (meta, native, ops, cached) = match probed {
             Some((meta, Some(native), _))
-                if self.use_native && self.validated(core, &key, &meta) =>
+                if self.use_native
+                    && meta.it_entry == it_entry
+                    && self.validated(core, &key, &meta) =>
             {
                 self.stats.hits += 1;
                 (meta, Some(native), Vec::new(), true)
             }
-            Some((meta, None, ops)) if !ops.is_empty() && self.validated(core, &key, &meta) => {
+            Some((meta, None, ops))
+                if !ops.is_empty()
+                    && meta.it_entry == 0
+                    && it_entry == 0
+                    && self.validated(core, &key, &meta) =>
+            {
                 self.stats.hits += 1;
                 (meta, None, ops, true)
             }
@@ -358,6 +363,7 @@ impl TbRunner {
     ) -> Result<BlockOutcome, HaltCause> {
         use super::native::{
             exit_pc, exit_reason, NativeCtx, EXIT_BRANCH, EXIT_FALL, EXIT_HALT, EXIT_MMIO,
+            EXIT_POP_BRANCH,
         };
 
         // Whole-core reads first (each borrow ends before the field
@@ -375,6 +381,7 @@ impl TbRunner {
             xpsr: &mut core.xpsr,
             tlb: self.tlb.as_mut() as *mut super::tlb::Tlb,
             privileged,
+            itstate: &mut core.itstate,
             write_gen,
             budget_ops: self.chain_ops.saturating_sub(u64::from(meta.insns)) as i64,
             budget_blocks: self.chain_blocks.saturating_sub(1) as i64,
@@ -395,6 +402,9 @@ impl TbRunner {
         self.stats.hits += ch_blocks;
         if reason == EXIT_MMIO {
             return self.native_mmio_exit(core, meta, npc, ctx.fault_addr, ch_ops, ch_blocks);
+        }
+        if reason == EXIT_POP_BRANCH {
+            return self.native_pop_branch(core, meta, npc, ctx.fault_addr, ch_ops, ch_blocks);
         }
         if reason == EXIT_HALT {
             // Architected halt at the faulting op (`BX`/`BLX` to an even
@@ -500,6 +510,43 @@ impl TbRunner {
             );
         }
         let fall = op_pc.wrapping_add(len);
+        Ok(BlockOutcome {
+            ops: ops + chained_ops as usize,
+            blocks: (1 + chained_blocks).min(u64::from(u32::MAX)) as u32,
+            end_pc: npc,
+            fell_through: npc == fall,
+            cached: true,
+        })
+    }
+
+    /// A native multi-load to a magic target (P2-5 `POP {pc}`/`LDM pc`):
+    /// the transfers already happened natively (two-phase: no partial
+    /// state exists), so only the branch dispatch runs — through
+    /// [`Core::branch_native`], never a re-execution (re-reading the stack
+    /// would double side effects). Multi-loads leave the load-use tracker
+    /// clear (they absorb latency in their own count — the `loaded` rule).
+    fn native_pop_branch<B: PeripheralBus>(
+        &mut self,
+        core: &mut Core<B>,
+        meta: &TbMeta,
+        op_pc: u32,
+        target: u32,
+        chained_ops: u64,
+        chained_blocks: u64,
+    ) -> Result<BlockOutcome, HaltCause> {
+        let mut ops = self.commit_prefix(core, meta, op_pc)?;
+        let npc = match core.branch_native(target) {
+            Ok(Next::Advance(addr)) => addr,
+            Ok(Next::Stop(cause)) | Err(cause) => return Err(cause),
+        };
+        core.commit_step(op_pc, npc);
+        ops += 1;
+        core.set_load_tracker(None);
+        let isa = core.isa;
+        let fall = match fetch_op(core.mem_mut(), op_pc, isa) {
+            Some((_, len)) => op_pc.wrapping_add(len),
+            None => return Err(HaltCause::FetchAbort),
+        };
         Ok(BlockOutcome {
             ops: ops + chained_ops as usize,
             blocks: (1 + chained_blocks).min(u64::from(u32::MAX)) as u32,
@@ -653,7 +700,17 @@ impl TbRunner {
             .read_word(0xE000_ED14)
             .map(|ccr| ccr & 8 != 0)
             .unwrap_or(false);
-        if self.use_native && (body.store_mask == 0 || tracked) {
+        // v8-M stack-limit gate (P2-5): the native PUSH fast path skips
+        // the limit check — sound only where it can never fire (non-v8-M).
+        // v8-M cores keep PUSH blocks interpreted, where the check runs.
+        // (16-bit STM cannot address `sp` — 3-bit `rn` — and no 32-bit
+        // store checks limits, so PUSH is the only gated form.)
+        let limit_risk = core.is_v8m()
+            && body
+                .ops
+                .iter()
+                .any(|op| matches!(op, TbOp::V16(crate::cpu::decode16::Inst16::Push { .. })));
+        if self.use_native && (body.store_mask == 0 || tracked) && !limit_risk {
             // Fresh (or reset) edge slots for this block's exit shape;
             // stale links never survive a rebuild (the new bytes may
             // branch elsewhere entirely).
@@ -673,6 +730,13 @@ impl TbRunner {
                 self.stats.misses += 1;
                 return Some((meta, Some(native), Vec::new()));
             }
+        }
+        if body.it_entry != 0 {
+            // Predicated continuations only run natively (the interpreted
+            // loop cannot predicate — it would execute suppressed ops).
+            // The fallback stepper owns them instead.
+            self.stats.fallbacks += 1;
+            return None;
         }
         let ops = body.ops.clone();
         self.cache.insert(meta, body.ops);
@@ -1110,11 +1174,13 @@ mod tests {
     }
 
     #[test]
-    fn itstate_hit_refuses_despite_cache() {
-        // The hole: a block cached under itstate==0 must not execute (even
-        // partially) under itstate!=0, where plain `exec` would ignore
-        // predication. A branch landing inside someone else's IT body hits
-        // this; the fallback stepper predicates correctly.
+    fn itstate_mismatch_falls_back_and_rebuilds() {
+        // The hole (P2-5 exact-match gating): a block cached under
+        // itstate==0 must not execute (even partially) under itstate!=0,
+        // where plain `exec` would ignore predication. A branch landing
+        // inside someone else's IT body hits this; the fallback stepper
+        // predicates correctly. The mismatch evicts the plain block (a
+        // different ITSTATE is a different block), so draining rebuilds.
         let mut core = core_at(&[NOP, NOP]);
         let mut runner = TbRunner::new();
         let _ = runner.run_block(&mut core).unwrap().unwrap();
@@ -1123,10 +1189,12 @@ mod tests {
         core.itstate = 1;
         assert!(runner.run_block(&mut core).unwrap().is_none());
         assert_eq!(runner.stats().fallbacks, 1);
-        // Drained again: the cached block runs.
+        // Drained again: a fresh plain block builds and runs (the NOPs are
+        // not predicable, so nothing native ever ran predicated).
         core.itstate = 0;
         let outcome = runner.run_block(&mut core).unwrap().unwrap();
-        assert!(outcome.cached);
+        assert!(!outcome.cached);
+        assert_eq!(core.regs.pc, 0x1004);
     }
 
     #[test]

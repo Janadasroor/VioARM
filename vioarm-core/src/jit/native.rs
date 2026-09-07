@@ -105,6 +105,12 @@ pub const EXIT_MMIO: u32 = 2;
 /// driver flushes chained accounting, then reports
 /// `Err(HaltCause::NonThumbTarget)` exactly like the stepper.
 pub const EXIT_HALT: u32 = 5;
+/// Exit reason: native multi-load to a magic target (P2-5 `POP {pc}` /
+/// `LDM pc`): the transfers already happened natively, so the driver
+/// only runs the branch dispatch (`branch_native` — no re-execution, no
+/// TLB fill). `next_pc` carries the op PC; `fault_addr` carries the
+/// loaded target.
+pub const EXIT_POP_BRANCH: u32 = 6;
 
 /// Pack an epilogue exit code.
 #[must_use]
@@ -143,7 +149,12 @@ pub struct NativeCtx {
     pub write_gen: *mut u64,
     /// Faulting guest address, stored by templates on side exits (the
     /// driver fills the TLB from it; size/direction come from the op).
+    /// Pop-branch exits (P2-5) reuse it for the loaded branch target.
     pub fault_addr: u32,
+    /// Live IT state (P2-5, S4): predicated blocks store their statically
+    /// simulated exit value here. Always valid on native entry (the driver
+    /// points it at the core field; the harness uses scratch).
+    pub itstate: *mut u8,
     /// Chaining budgets, set by the driver per `call1` (P2-4): each
     /// chained-block entry subtracts its block size and stops the chain
     /// (`FALL` to its own PC) at zero. Bounds native execution within one
@@ -175,6 +186,7 @@ impl Default for NativeCtx {
             privileged: 0,
             write_gen: core::ptr::null_mut(),
             fault_addr: 0,
+            itstate: core::ptr::null_mut(),
             // Fail-safe: a stray chain entry with zero budgets breaks out
             // immediately instead of running away.
             budget_ops: 0,
@@ -394,6 +406,21 @@ pub(crate) fn emit_chain_entry(
         ; add QWORD [rax + acc_blk], 1
     );
     brk
+}
+
+/// Store the statically simulated ITSTATE exit value (P2-5, S4) through
+/// the context pointer. Emitted once per IT-involving block, before the
+/// body, so every exit (edges + budget-break) observes it.
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn emit_itstate_store(ops: &mut dynasmrt::x64::Assembler, it: u8) {
+    let c_it = core::mem::offset_of!(NativeCtx, itstate) as i32;
+    let it = it as i8;
+    dynasm!(ops
+        ; .arch x64
+        ; mov rsi, [rsp]
+        ; mov rsi, [rsi + c_it]
+        ; mov BYTE [rsi], it
+    );
 }
 
 /// One chained static edge (P2-4): `slot` is the baked [`LinkSlot`]
@@ -631,6 +658,21 @@ pub(crate) fn emit_epilogue(ops: &mut dynasmrt::aarch64::Assembler, reason: u32,
         ; ldp x19, x20, [sp]
         ; add sp, sp, #64
         ; ret
+    );
+}
+
+/// Store the statically simulated ITSTATE exit value (P2-5, S4,
+/// AArch64): same placement contract as the x64 form.
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn emit_itstate_store(ops: &mut dynasmrt::aarch64::Assembler, it: u8) {
+    let c_it = core::mem::offset_of!(NativeCtx, itstate) as u32;
+    let it = u32::from(it);
+    dynasm!(ops
+        ; .arch aarch64
+        ; ldr x9, [sp, #48]
+        ; ldr x9, [x9, c_it]
+        ; movz w10, it
+        ; strb w10, [x9]
     );
 }
 

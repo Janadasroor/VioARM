@@ -104,6 +104,10 @@ pub struct TbMeta {
     /// builder): the runner revalidates only after write ops, never after
     /// pure ALU/branch/load ops (P1-6).
     pub store_mask: u64,
+    /// ITSTATE at block entry (P2-5, S4; stamped by the builder): the
+    /// runner enters native blocks only on an exact match (plain blocks
+    /// record 0, unifying the old blanket `itstate != 0` refusal).
+    pub it_entry: u8,
 }
 
 impl TbMeta {
@@ -457,6 +461,7 @@ mod tests {
             check: 0,
             write_gen: 0,
             store_mask: 0,
+            it_entry: 0,
         }
     }
 

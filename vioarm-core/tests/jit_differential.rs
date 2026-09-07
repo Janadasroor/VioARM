@@ -94,6 +94,50 @@ fn bcond_w(cond: u8, from: u32, to: u32) -> (u16, u16) {
     )
 }
 
+/// `TBB [rn, rm]` halves (verified against the decoder below).
+fn tbb(rn: u8, rm: u8) -> (u16, u16) {
+    (0xE8D0 | u16::from(rn), 0xF000 | u16::from(rm))
+}
+
+/// `MOVW rd, #imm16` halves (`imm = imm4:i:imm3:imm8` per the decoder:
+/// `imm4 = h0[3:0]`, `i = h0[10]`, `imm3 = h1[14:12]`; verified below).
+fn movw(rd: u8, imm: u16) -> (u16, u16) {
+    let i = (imm >> 11) & 1;
+    let imm4 = (imm >> 12) & 0xF;
+    let imm3 = (imm >> 8) & 0x7;
+    let imm8 = imm & 0xFF;
+    (
+        0xF240 | (i << 10) | imm4,
+        (u16::from(rd) << 8) | (imm3 << 12) | imm8,
+    )
+}
+
+#[test]
+fn encoding_helpers_match_decoder_vectors() {
+    use vioarm_core::cpu::decode32::{decode32_v7m, Inst32};
+    // TBB/TBH + MOVW helpers reproduce the decoder's own vectors (proves
+    // the helpers, not the emitter).
+    assert_eq!(tbb(2, 5), (0xE8D2, 0xF005));
+    assert_eq!(
+        decode32_v7m(tbb(2, 5).0, tbb(2, 5).1),
+        Ok(Inst32::TblBranch {
+            rn: 2,
+            rm: 5,
+            half: false
+        })
+    );
+    assert_eq!(movw(9, 0x1234), (0xF241, 0x2934));
+    assert_eq!(
+        decode32_v7m(movw(9, 0x1234).0, movw(9, 0x1234).1),
+        Ok(Inst32::MovWide {
+            rd: 9,
+            imm: 0x1234,
+            high: false
+        })
+    );
+    assert_eq!(movw(0, 0), (0xF240, 0x0000));
+}
+
 #[test]
 fn wide_branch_helpers_match_decoder_vectors() {
     // B.W +10 / -12 / +16384 / +16380 and BEQ.W +8, straight from the
@@ -426,6 +470,112 @@ fn wide_branches_match() {
     assert_eq!(m.core.regs.r[2], 0, "countdown drained");
     drop(m);
     check(&code, code_len, 120);
+}
+
+/// IT-block loop (P2-5, S4): predicated ADDS fires only on EQ, then the
+/// countdown exits. The IT setter + predicated body go native together.
+fn workload_it() -> Vec<u8> {
+    let e = ENTRY;
+    // MOVS r0,#0; MOVS r2,#3; loop: ADDS r0,#1; SUBS r2,#1; IT EQ;
+    // ADDEQ r0,r0; BNE loop; STR r0,[r1]; B .
+    let loop_at = e + 4;
+    let bne_at = e + 12;
+    halves(&[
+        0x2000, // MOVS r0, #0
+        0x2203, // MOVS r2, #3
+        0x3001, // loop: ADDS r0, #1
+        0x3A01, // SUBS r2, #1
+        0xBF08, // IT EQ
+        0x1800, // ADDEQ r0, r0
+        bcond(1, bne_at, loop_at),
+        0x6008, // STR r0, [r1]
+        b(e + 16, e + 16),
+    ])
+}
+
+#[test]
+fn it_blocks_match() {
+    let code = workload_it();
+    let code_len = code.len() as u32;
+    let mut m = boot(&code);
+    for _ in 0..24 {
+        m.step().unwrap();
+    }
+    // 3 iterations (+1 each) plus the EQ-fired double on drain: 3*2 = 6.
+    assert_eq!(m.core.regs.r[0], 6, "predicated double fired once");
+    drop(m);
+    check(&code, code_len, 80);
+}
+
+/// TBB dispatch (P2-5): table-driven jump to a MOVS + store tail.
+fn workload_tbb() -> Vec<u8> {
+    let e = ENTRY;
+    // MOVS r0,#0; TBB [pc, r2] (table at e+8); table byte; target at
+    // e+8+2*idx: MOVS r0,#7; STR r0,[r1]; B .
+    let (t0, t1) = tbb(15, 2);
+    halves(&[
+        0x2000, // MOVS r0, #0
+        t0,
+        t1,     // TBB [pc, r2] (table base pc+4 = e+6)
+        0xBF02, // table index 2 (low) + padding (high)
+        0xBF00, // padding (skipped by dispatch)
+        0x2007, // target (e+6+2*2 = e+10): MOVS r0, #7
+        0x6008, // STR r0, [r1]
+        b(e + 14, e + 14),
+    ])
+}
+
+#[test]
+fn tbb_dispatch_matches() {
+    let code = workload_tbb();
+    let code_len = code.len() as u32;
+    let setup = |m: &mut Machine<FlatMemory>| {
+        m.core.regs.r[2] = 0;
+    };
+    let mut m = boot(&code);
+    setup(&mut m);
+    for _ in 0..8 {
+        m.step().unwrap();
+    }
+    assert_eq!(m.core.regs.r[0], 7, "dispatched to the MOVS #7 arm");
+    drop(m);
+    check_with(&code, code_len, 40, setup);
+}
+
+/// MOVW immediates + native PUSH/POP calls in one loop (S5 + S3).
+fn workload_movw_calls() -> Vec<u8> {
+    let e = ENTRY;
+    // main: MOVW r0,#0x1234 (top half zeroed); BL inc; STR r0,[r1]; B .
+    // inc: PUSH {lr}; ADDS r0,#1; POP {pc}.
+    let bl_at = e + 4;
+    let inc_at = e + 12;
+    let (b1h, b1l) = bl(bl_at, inc_at);
+    let (w0h, w0l) = movw(0, 0x1234);
+    let b_at = e + 10;
+    halves(&[
+        w0h,
+        w0l, // MOVW r0, #0x1234
+        b1h,
+        b1l,           // BL inc
+        0x6008,        // STR r0, [r1]
+        b(b_at, b_at), // B .
+        0xB500,        // inc: PUSH {lr}
+        0x3001,        // ADDS r0, #1
+        0xBD00,        // POP {pc}
+    ])
+}
+
+#[test]
+fn movw_push_pop_calls_match() {
+    let code = workload_movw_calls();
+    let code_len = code.len() as u32;
+    let mut m = boot(&code);
+    for _ in 0..16 {
+        m.step().unwrap();
+    }
+    assert_eq!(m.core.regs.r[0], 0x1235, "MOVW materialized + inc returned");
+    drop(m);
+    check(&code, code_len, 60);
 }
 
 /// `BX` to an even target halts identically (stepper `Err` vs runner

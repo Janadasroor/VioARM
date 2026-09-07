@@ -156,12 +156,32 @@ fn merge_nz(ops: &mut A) {
     );
 }
 
-/// Emit one S0 op. Returns `false` when `op` has no template.
+/// Emit one plain op. Returns `false` when `op` has no template.
+/// Terminators go through [`emit_terminator`].
 pub fn emit_op(ops: &mut A, op: &TbOp, pc: u32, unalign_trap: bool) -> bool {
     match *op {
-        TbOp::V16(inst) => emit16(ops, &inst, pc, unalign_trap),
+        TbOp::V16(inst) => emit16(ops, &inst, pc, unalign_trap, false),
         TbOp::V32(inst) => emit32(ops, &inst, pc, unalign_trap),
     }
+}
+
+/// Emit one predicated op under IT condition `cond` (P2-5, S4, AArch64
+/// mirror): `cond_bit` + skip + plain emission with merge suppression.
+/// Same gate as x64 (memory ops must never predicate).
+pub fn emit_predicated(ops: &mut A, op: &TbOp, pc: u32, unalign_trap: bool, cond: u8) -> bool {
+    use super::templates::is_predicable;
+    if cond > 13 || !is_predicable(op) {
+        return false;
+    }
+    cond_bit(ops, cond);
+    let skip = ops.new_dynamic_label();
+    dynasm!(ops ; .arch aarch64 ; b.eq =>skip);
+    let ok = match *op {
+        TbOp::V16(inst) => emit16(ops, &inst, pc, unalign_trap, true),
+        TbOp::V32(inst) => emit32(ops, &inst, pc, unalign_trap),
+    };
+    dynasm!(ops ; .arch aarch64 ; =>skip);
+    ok
 }
 
 /// Define a marker label at the current position (slot/chain plumbing).
@@ -192,6 +212,8 @@ pub fn emit_terminator(
     unalign_trap: bool,
     tape: &mut super::templates::SlotTape<'_>,
 ) -> bool {
+    // `unalign_trap` feeds table-branch sites (AArch64 folds it into the
+    // always-strict guard — ignored here, like the P2-3 memory sites).
     let _ = unalign_trap;
     match *op {
         TbOp::V16(inst) => emit16_term(ops, &inst, pc, tape),
@@ -199,7 +221,15 @@ pub fn emit_terminator(
     }
 }
 
-fn emit16(ops: &mut A, inst: &crate::cpu::decode16::Inst16, pc: u32, unalign_trap: bool) -> bool {
+/// `pred` suppresses flag merges for 16-bit S-forms under ITSTATE (P2-5,
+/// S4 — mirrors x64); test forms, flagless ops, and 32-bit DP ignore it.
+fn emit16(
+    ops: &mut A,
+    inst: &crate::cpu::decode16::Inst16,
+    pc: u32,
+    unalign_trap: bool,
+    pred: bool,
+) -> bool {
     use crate::cpu::decode16::Inst16 as I;
     match *inst {
         I::MovImm { rd, imm } => {
@@ -210,15 +240,19 @@ fn emit16(ops: &mut A, inst: &crate::cpu::decode16::Inst16, pc: u32, unalign_tra
             dynasm!(ops ; .arch aarch64 ; mov w0, imm);
             store(ops, rd);
             dynasm!(ops ; .arch aarch64 ; tst w0, w0);
-            merge_nz(ops);
+            if !pred {
+                if !pred {
+                    merge_nz(ops);
+                }
+            }
             true
         }
-        I::AddReg { rd, rn, rm } => alu_rr(ops, rd, rn, rm, false),
-        I::SubReg { rd, rn, rm } => alu_rr(ops, rd, rn, rm, true),
-        I::AddImm3 { rd, rn, imm } => alu_ri(ops, rd, rn, u32::from(imm), false),
-        I::SubImm3 { rd, rn, imm } => alu_ri(ops, rd, rn, u32::from(imm), true),
-        I::AddImm8 { rd, imm } => alu_ri(ops, rd, rd, u32::from(imm), false),
-        I::SubImm8 { rd, imm } => alu_ri(ops, rd, rd, u32::from(imm), true),
+        I::AddReg { rd, rn, rm } => alu_rr(ops, rd, rn, rm, false, pred),
+        I::SubReg { rd, rn, rm } => alu_rr(ops, rd, rn, rm, true, pred),
+        I::AddImm3 { rd, rn, imm } => alu_ri(ops, rd, rn, u32::from(imm), false, pred),
+        I::SubImm3 { rd, rn, imm } => alu_ri(ops, rd, rn, u32::from(imm), true, pred),
+        I::AddImm8 { rd, imm } => alu_ri(ops, rd, rd, u32::from(imm), false, pred),
+        I::SubImm8 { rd, imm } => alu_ri(ops, rd, rd, u32::from(imm), true, pred),
         I::CmpImm { rn, imm } => {
             if rn == 15 {
                 return false;
@@ -235,16 +269,16 @@ fn emit16(ops: &mut A, inst: &crate::cpu::decode16::Inst16, pc: u32, unalign_tra
             rm,
             kind,
             amount,
-        } => emit_shift_imm(ops, rd, rm, kind, amount),
+        } => emit_shift_imm(ops, rd, rm, kind, amount, pred),
         I::ShiftReg { rd, rn, rm, kind } => {
             if rd == 15 || rn == 15 || rm == 15 {
                 return false;
             }
             load(ops, rn, true);
             load(ops, rm, false);
-            shift_reg_seq(ops, rd, kind)
+            shift_reg_seq(ops, rd, kind, pred)
         }
-        I::Alu { rd, rm, op } => emit_alu(ops, rd, rm, op),
+        I::Alu { rd, rm, op } => emit_alu(ops, rd, rm, op, pred),
         I::SpecialCmp { rn, rm } => {
             if rn == 15 || rm == 15 {
                 return false;
@@ -260,6 +294,16 @@ fn emit16(ops: &mut A, inst: &crate::cpu::decode16::Inst16, pc: u32, unalign_tra
         I::LsImm { rt, rn, imm, kind } => emit_lsimm(ops, rt, rn, imm, kind, pc, unalign_trap),
         I::LsSp { rt, imm, is_load } => emit_lssp(ops, rt, imm, is_load, pc, unalign_trap),
         I::LdrLiteral { rt, imm } => emit_ldrliteral(ops, rt, imm, pc, unalign_trap),
+        // --- Stack/multiple (P2-5 S3, mirroring x64).
+        I::Push { regs, include_lr } => emit_push(ops, regs, include_lr, pc),
+        I::Pop {
+            regs,
+            load_pc: false,
+        } => emit_pop(ops, regs, pc),
+        I::LdmStm { is_load, rn, regs } => emit_ldmstm16(ops, is_load, rn, regs, pc),
+        // --- Extends/reversals (P2-5): pure ALU, never any flags.
+        I::Extend { rd, rm, kind } => emit_extend(ops, rd, rm, kind),
+        I::Reverse { rd, rm, kind } => emit_reverse(ops, rd, rm, kind),
         // Terminators live in `emit_terminator` (slot-consuming edges).
         _ => false,
     }
@@ -307,6 +351,10 @@ fn emit16_term(
         }
         I::Bx { rm } => emit_bx(ops, rm, pc, false, tape),
         I::Blx { rm } => emit_bx(ops, rm, pc, true, tape),
+        I::Pop {
+            regs,
+            load_pc: true,
+        } => emit_pop_pc(ops, regs, pc, tape),
         _ => false,
     }
 }
@@ -337,6 +385,23 @@ fn emit32_term(
             emit_cond_pair(ops, cond, b_target(pc, off), pc.wrapping_add(4), tape);
             true
         }
+        I::LdmStm {
+            is_load,
+            rn,
+            regs,
+            writeback,
+            dec_before,
+        } => emit_ldmstm32(
+            ops,
+            is_load,
+            rn,
+            regs,
+            writeback,
+            dec_before,
+            pc,
+            Some(tape),
+        ),
+        I::TblBranch { rn, rm, half } => emit_tblbranch(ops, rn, rm, half, pc, tape),
         _ => false,
     }
 }
@@ -505,7 +570,7 @@ fn cond_bit(ops: &mut A, cond: u8) {
 
 /// `Wd = Wn +/- Wm` with full NZCV (`subs`/`adds` match the interpreter
 /// with no fixups: C is NOT-borrow natively).
-fn alu_rr(ops: &mut A, rd: u8, rn: u8, rm: u8, sub: bool) -> bool {
+fn alu_rr(ops: &mut A, rd: u8, rn: u8, rm: u8, sub: bool, pred: bool) -> bool {
     if rd == 15 || rn == 15 || rm == 15 {
         return false;
     }
@@ -517,12 +582,16 @@ fn alu_rr(ops: &mut A, rd: u8, rn: u8, rm: u8, sub: bool) -> bool {
         dynasm!(ops ; .arch aarch64 ; adds w0, w0, w1);
     }
     store(ops, rd);
-    merge_nzcv(ops);
+    if !pred {
+        if !pred {
+            merge_nzcv(ops);
+        }
+    }
     true
 }
 
 /// `Wd = Wn +/- imm` with full NZCV.
-fn alu_ri(ops: &mut A, rd: u8, rn: u8, imm: u32, sub: bool) -> bool {
+fn alu_ri(ops: &mut A, rd: u8, rn: u8, imm: u32, sub: bool, pred: bool) -> bool {
     if rd == 15 || rn == 15 {
         return false;
     }
@@ -533,7 +602,11 @@ fn alu_ri(ops: &mut A, rd: u8, rn: u8, imm: u32, sub: bool) -> bool {
         dynasm!(ops ; .arch aarch64 ; adds w0, w0, imm);
     }
     store(ops, rd);
-    merge_nzcv(ops);
+    if !pred {
+        if !pred {
+            merge_nzcv(ops);
+        }
+    }
     true
 }
 
@@ -541,10 +614,10 @@ fn alu_ri(ops: &mut A, rd: u8, rn: u8, imm: u32, sub: bool) -> bool {
 /// count. Saves the value in `w10`, stores the result, merges per the
 /// interpreter's `shift_reg`/`shift_by_count` truth tables. Labels are
 /// dynamic (fresh per emission), so multi-op blocks never collide.
-fn shift_reg_seq(ops: &mut A, rd: u8, kind: crate::cpu::decode16::Shift) -> bool {
+fn shift_reg_seq(ops: &mut A, rd: u8, kind: crate::cpu::decode16::Shift, pred: bool) -> bool {
     use crate::cpu::decode16::Shift as S;
     if kind == S::Ror {
-        return ror_reg_seq(ops, rd);
+        return ror_reg_seq(ops, rd, pred);
     }
     let big = ops.new_dynamic_label();
     let copy = ops.new_dynamic_label();
@@ -587,13 +660,17 @@ fn shift_reg_seq(ops: &mut A, rd: u8, kind: crate::cpu::decode16::Shift) -> bool
         }
         S::Ror => unreachable!("dispatched above"),
     }
-    carry_in_w1(ops);
+    if !pred {
+        carry_in_w1(ops);
+    }
     dynasm!(ops ; .arch aarch64 ; b =>end);
     // Zero count: copy through with N/Z set, C preserved, V cleared.
     dynasm!(ops ; .arch aarch64 ; =>copy);
     store(ops, rd);
     dynasm!(ops ; .arch aarch64 ; tst w0, w0);
-    merge_nz(ops);
+    if !pred {
+        merge_nz(ops);
+    }
     dynasm!(ops ; .arch aarch64 ; b =>end);
     // Big counts per kind.
     dynasm!(ops ; .arch aarch64 ; =>big);
@@ -612,7 +689,9 @@ fn shift_reg_seq(ops: &mut A, rd: u8, kind: crate::cpu::decode16::Shift) -> bool
                 ; orr w10, w10, #0x40000000
                 ; mov w9, w10
             );
-            writeback(ops);
+            if !pred {
+                writeback(ops);
+            }
         }
         S::Lsr => {
             // Result 0; C = (count == 32) & bit31(v); N = 0, Z = 1, V = 0.
@@ -628,7 +707,9 @@ fn shift_reg_seq(ops: &mut A, rd: u8, kind: crate::cpu::decode16::Shift) -> bool
                 ; orr w10, w10, #0x40000000
                 ; mov w9, w10
             );
-            writeback(ops);
+            if !pred {
+                writeback(ops);
+            }
         }
         S::Asr => {
             // Result signfill; C = N = sign(v); Z = !sign; V = 0.
@@ -645,7 +726,9 @@ fn shift_reg_seq(ops: &mut A, rd: u8, kind: crate::cpu::decode16::Shift) -> bool
                 ; orr w11, w11, w9
                 ; mov w9, w11
             );
-            writeback(ops);
+            if !pred {
+                writeback(ops);
+            }
         }
         S::Ror => unreachable!("dispatched above"),
     }
@@ -656,7 +739,7 @@ fn shift_reg_seq(ops: &mut A, rd: u8, kind: crate::cpu::decode16::Shift) -> bool
 /// Register-controlled rotate. Classes: zero (unchanged, C preserved),
 /// nonzero multiple of 32 (unchanged, C = bit31), else rotate with
 /// result-bit31 carry. Dynamic labels.
-fn ror_reg_seq(ops: &mut A, rd: u8) -> bool {
+fn ror_reg_seq(ops: &mut A, rd: u8, pred: bool) -> bool {
     let mult32 = ops.new_dynamic_label();
     let copy = ops.new_dynamic_label();
     let end = ops.new_dynamic_label();
@@ -675,13 +758,17 @@ fn ror_reg_seq(ops: &mut A, rd: u8) -> bool {
         ; lsr w1, w0, #31
         ; and w1, w1, #1
     );
-    carry_in_w1(ops);
+    if !pred {
+        carry_in_w1(ops);
+    }
     dynasm!(ops ; .arch aarch64 ; b =>end);
     // Zero count: copy through with N/Z set, C preserved, V cleared.
     dynasm!(ops ; .arch aarch64 ; =>copy);
     store(ops, rd);
     dynasm!(ops ; .arch aarch64 ; tst w0, w0);
-    merge_nz(ops);
+    if !pred {
+        merge_nz(ops);
+    }
     dynasm!(ops ; .arch aarch64 ; b =>end);
     // Nonzero multiple of 32: unchanged, C = bit31, V = 0.
     dynasm!(ops ; .arch aarch64 ; =>mult32);
@@ -691,7 +778,9 @@ fn ror_reg_seq(ops: &mut A, rd: u8) -> bool {
         ; lsr w1, w10, #31
         ; and w1, w1, #1
     );
-    carry_in_w1(ops);
+    if !pred {
+        carry_in_w1(ops);
+    }
     dynasm!(ops ; .arch aarch64 ; =>end);
     true
 }
@@ -815,6 +904,274 @@ fn bump_epoch(ops: &mut A) {
         ; add x10, x10, #1
         ; str x10, [x9]
     );
+}
+
+/// Store `w11` to the guest `sp` field (memory path — never pinned).
+fn store_sp_w11(ops: &mut A) {
+    let ctx = regs_off();
+    let off = core::mem::offset_of!(Registers, sp) as u32;
+    dynasm!(ops
+        ; .arch aarch64
+        ; ldr x9, [sp, #48]
+        ; ldr x9, [x9, ctx]
+        ; str w11, [x9, off]
+    );
+}
+
+fn sp_off() -> u32 {
+    core::mem::offset_of!(Registers, sp) as u32
+}
+
+/// One multi-word transfer slot (P2-5, S3, AArch64 mirror): word index
+/// from the cursor in `W11` plus the phase-2 action (`W12` parks values
+/// and pop-branch targets — both guard-safe).
+#[derive(Clone, Copy)]
+enum WordSlot {
+    Store(u8),
+    Load(u8),
+    LoadTarget,
+}
+
+/// Shared tail for multi-word emitters (single generation bump for
+/// stores; effect-free side exit). Mirrors x64 `multi_tail`.
+fn multi_tail(ops: &mut A, op_pc: u32, store: bool, side: dynasmrt::DynamicLabel) {
+    let done = ops.new_dynamic_label();
+    if store {
+        bump_epoch(ops);
+    }
+    dynasm!(ops ; .arch aarch64 ; b =>done);
+    dynasm!(ops ; .arch aarch64 ; =>side);
+    mem_side_exit(ops, op_pc);
+    dynasm!(ops ; .arch aarch64 ; =>done);
+}
+
+/// `PUSH {regs, lr?}` (P2-5, S3, AArch64 mirror): cursor `W11 = sp - 4n`,
+/// ascending probes then transfers, `sp` update, one bump. No phase-0
+/// alignment pre-check (the guard strict-aligns every word anyway, with
+/// identical first-word reporting).
+fn emit_push(ops: &mut A, regs: u8, include_lr: bool, pc: u32) -> bool {
+    let mut count = 0u32;
+    for r in 0..8u8 {
+        if regs & (1 << r) != 0 {
+            count += 1;
+        }
+    }
+    if include_lr {
+        count += 1;
+    }
+    if count == 0 {
+        return true;
+    }
+    let side = ops.new_dynamic_label();
+    load(ops, 13, false);
+    let bytes = 4 * count;
+    dynasm!(ops
+        ; .arch aarch64
+        ; mov w11, w1
+        ; sub w11, w11, bytes
+    );
+    // Phase 1: probe every word effect-free, ascending.
+    let mut idx = 0u32;
+    for r in 0..8u8 {
+        if regs & (1 << r) == 0 {
+            continue;
+        }
+        let off = idx * 4;
+        idx += 1;
+        dynasm!(ops ; .arch aarch64 ; add w1, w11, off);
+        mem_guard(ops, 4, true, side);
+    }
+    if include_lr {
+        let off = idx * 4;
+        dynasm!(ops ; .arch aarch64 ; add w1, w11, off);
+        mem_guard(ops, 4, true, side);
+    }
+    // Phase 2: transfer (proven hits).
+    idx = 0;
+    for r in 0..8u8 {
+        if regs & (1 << r) == 0 {
+            continue;
+        }
+        let off = idx * 4;
+        idx += 1;
+        dynasm!(ops ; .arch aarch64 ; add w1, w11, off);
+        load(ops, r, true);
+        dynasm!(ops ; .arch aarch64 ; mov w12, w0);
+        mem_guard(ops, 4, true, side);
+        dynasm!(ops ; .arch aarch64 ; str w12, [x0]);
+    }
+    if include_lr {
+        let off = idx * 4;
+        dynasm!(ops ; .arch aarch64 ; add w1, w11, off);
+        load(ops, 14, true);
+        dynasm!(ops ; .arch aarch64 ; mov w12, w0);
+        mem_guard(ops, 4, true, side);
+        dynasm!(ops ; .arch aarch64 ; str w12, [x0]);
+    }
+    store_sp_w11(ops);
+    multi_tail(ops, pc, true, side);
+    true
+}
+
+/// `POP {regs}` without `pc` (P2-5, S3 mirror): ascending loads, `sp`
+/// steps up. The `pc` form is a terminator (see `emit_pop_pc`).
+fn emit_pop(ops: &mut A, regs: u8, pc: u32) -> bool {
+    let n = regs.count_ones();
+    if n == 0 {
+        return true;
+    }
+    let side = ops.new_dynamic_label();
+    load(ops, 13, false);
+    dynasm!(ops ; .arch aarch64 ; mov w11, w1);
+    let mut idx = 0u32;
+    for r in 0..8u8 {
+        if regs & (1 << r) == 0 {
+            continue;
+        }
+        let off = idx * 4;
+        idx += 1;
+        dynasm!(ops ; .arch aarch64 ; add w1, w11, off);
+        mem_guard(ops, 4, false, side);
+    }
+    idx = 0;
+    for r in 0..8u8 {
+        if regs & (1 << r) == 0 {
+            continue;
+        }
+        let off = idx * 4;
+        idx += 1;
+        dynasm!(ops ; .arch aarch64 ; add w1, w11, off);
+        mem_guard(ops, 4, false, side);
+        dynasm!(ops ; .arch aarch64 ; ldr w0, [x0]);
+        store(ops, r);
+    }
+    let bytes = 4 * n;
+    dynasm!(ops ; .arch aarch64 ; add w11, w11, bytes);
+    store_sp_w11(ops);
+    multi_tail(ops, pc, false, side);
+    true
+}
+
+/// `POP {regs, pc}` (P2-5, S3 terminator mirror): register words transfer,
+/// the `pc` word parks in `W12`, `sp` updates, then classify — fast plain
+/// targets chain (target moved to `w0` for the edge), the rest exit
+/// `POP_BRANCH` for driver-only branch dispatch.
+fn emit_pop_pc(ops: &mut A, regs: u8, pc: u32, tape: &mut super::templates::SlotTape<'_>) -> bool {
+    use super::native::{emit_dynamic_edge, emit_epilogue, EXIT_POP_BRANCH};
+    use crate::cpu::FNC_RETURN_MIN_MAGIC;
+    let n = regs.count_ones();
+    let side = ops.new_dynamic_label();
+    let pb = ops.new_dynamic_label();
+    load(ops, 13, false);
+    dynasm!(ops ; .arch aarch64 ; mov w11, w1);
+    let mut idx = 0u32;
+    for r in 0..8u8 {
+        if regs & (1 << r) == 0 {
+            continue;
+        }
+        let off = idx * 4;
+        idx += 1;
+        dynasm!(ops ; .arch aarch64 ; add w1, w11, off);
+        mem_guard(ops, 4, false, side);
+    }
+    let pc_off = idx * 4;
+    dynasm!(ops ; .arch aarch64 ; add w1, w11, pc_off);
+    mem_guard(ops, 4, false, side);
+    idx = 0;
+    for r in 0..8u8 {
+        if regs & (1 << r) == 0 {
+            continue;
+        }
+        let off = idx * 4;
+        idx += 1;
+        dynasm!(ops ; .arch aarch64 ; add w1, w11, off);
+        mem_guard(ops, 4, false, side);
+        dynasm!(ops ; .arch aarch64 ; ldr w0, [x0]);
+        store(ops, r);
+    }
+    dynasm!(ops ; .arch aarch64 ; add w1, w11, pc_off);
+    mem_guard(ops, 4, false, side);
+    dynasm!(ops ; .arch aarch64 ; ldr w12, [x0]);
+    let bytes = 4 * (n + 1);
+    dynasm!(ops ; .arch aarch64 ; add w11, w11, bytes);
+    store_sp_w11(ops);
+    let (m_lo, m_hi) = (
+        (FNC_RETURN_MIN_MAGIC & 0xFFFF) as u32,
+        ((FNC_RETURN_MIN_MAGIC >> 16) & 0xFFFF) as u32,
+    );
+    dynasm!(ops
+        ; .arch aarch64
+        ; movz w9, m_lo
+        ; movk w9, m_hi, lsl #16
+        ; cmp w12, w9
+        ; b.hs =>pb
+        ; tbz w12, #0, =>pb
+        ; lsl w0, w12, #1
+        ; lsr w0, w0, #1
+    );
+    emit_dynamic_edge(ops, tape.take());
+    dynasm!(ops ; .arch aarch64 ; =>pb);
+    let fault = fault_off();
+    dynasm!(ops
+        ; .arch aarch64
+        ; ldr x9, [sp, #48]
+        ; str w12, [x9, fault]
+    );
+    emit_epilogue(ops, EXIT_POP_BRANCH, pc);
+    let done = ops.new_dynamic_label();
+    dynasm!(ops ; .arch aarch64 ; b =>done);
+    dynasm!(ops ; .arch aarch64 ; =>side);
+    mem_side_exit(ops, pc);
+    dynasm!(ops ; .arch aarch64 ; =>done);
+    true
+}
+
+/// 16-bit `LDMIA`/`STMIA` (P2-5, S3 mirror): ascending words from `Rn`
+/// (3-bit — never special), mandatory writeback (loaded `rn` wins,
+/// static), unaligned bases fault trap-independently (the strict guard
+/// reports the base word identically).
+fn emit_ldmstm16(ops: &mut A, is_load: bool, rn: u8, regs: u8, pc: u32) -> bool {
+    let side = ops.new_dynamic_label();
+    load(ops, rn, false);
+    dynasm!(ops ; .arch aarch64 ; mov w11, w1);
+    let mut idx = 0u32;
+    for r in 0..8u8 {
+        if regs & (1 << r) == 0 {
+            continue;
+        }
+        let off = idx * 4;
+        idx += 1;
+        dynasm!(ops ; .arch aarch64 ; add w1, w11, off);
+        mem_guard(ops, 4, !is_load, side);
+    }
+    idx = 0;
+    for r in 0..8u8 {
+        if regs & (1 << r) == 0 {
+            continue;
+        }
+        let off = idx * 4;
+        idx += 1;
+        dynasm!(ops ; .arch aarch64 ; add w1, w11, off);
+        if !is_load {
+            load(ops, r, true);
+            dynasm!(ops ; .arch aarch64 ; mov w12, w0);
+        }
+        mem_guard(ops, 4, !is_load, side);
+        if is_load {
+            dynasm!(ops ; .arch aarch64 ; ldr w0, [x0]);
+            store(ops, r);
+        } else {
+            dynasm!(ops ; .arch aarch64 ; str w12, [x0]);
+        }
+    }
+    let n = regs.count_ones();
+    if !is_load || regs & (1 << rn) == 0 {
+        let bytes = 4 * n;
+        dynasm!(ops ; .arch aarch64 ; add w0, w11, bytes);
+        store(ops, rn);
+    }
+    multi_tail(ops, pc, !is_load && n > 0, side);
+    true
 }
 
 /// 16-bit single-transfer emitters (S1). Conventions: guest address ends
@@ -1016,6 +1373,680 @@ fn emit_mem32(
     true
 }
 
+/// 32-bit `LDM`/`STM` (P2-5, S3 mirror): cursor `W11`, writeback
+/// re-derived symmetrically, `pc` loads use the pop-branch protocol
+/// (needs `tape`; `None` fails closed). Effect register `W13` is free
+/// scratch here (nothing live outside `w0`/`w1`/`w9`–`w12`).
+fn emit_ldmstm32(
+    ops: &mut A,
+    is_load: bool,
+    rn: u8,
+    regs: u16,
+    writeback: bool,
+    dec_before: bool,
+    pc: u32,
+    tape: Option<&mut super::templates::SlotTape<'_>>,
+) -> bool {
+    use super::native::{emit_dynamic_edge, emit_epilogue, EXIT_POP_BRANCH};
+    use crate::cpu::FNC_RETURN_MIN_MAGIC;
+    if rn == 15 {
+        return false;
+    }
+    let has_pc = is_load && regs & 0x8000 != 0;
+    let mut tape = match (has_pc, tape) {
+        (false, _) => None,
+        (true, Some(t)) => Some(t),
+        (true, None) => return false,
+    };
+    let n = regs.count_ones();
+    let side = ops.new_dynamic_label();
+    load(ops, rn, false);
+    dynasm!(ops ; .arch aarch64 ; mov w11, w1);
+    if dec_before {
+        let bytes = 4 * n;
+        dynasm!(ops ; .arch aarch64 ; sub w11, w11, bytes);
+    }
+    let mut idx = 0u32;
+    for r in 0..16u8 {
+        if regs & (1u16 << r) == 0 {
+            continue;
+        }
+        let off = idx * 4;
+        idx += 1;
+        dynasm!(ops ; .arch aarch64 ; add w1, w11, off);
+        mem_guard(ops, 4, !is_load, side);
+    }
+    idx = 0;
+    for r in 0..16u8 {
+        if regs & (1u16 << r) == 0 {
+            continue;
+        }
+        let off = idx * 4;
+        idx += 1;
+        dynasm!(ops ; .arch aarch64 ; add w1, w11, off);
+        if r != 15 && !is_load {
+            load(ops, r, true);
+            dynasm!(ops ; .arch aarch64 ; mov w12, w0);
+        }
+        mem_guard(ops, 4, !is_load, side);
+        if r == 15 {
+            dynasm!(ops ; .arch aarch64 ; ldr w12, [x0]);
+        } else if is_load {
+            dynasm!(ops ; .arch aarch64 ; ldr w0, [x0]);
+            store(ops, r);
+        } else {
+            dynasm!(ops ; .arch aarch64 ; str w12, [x0]);
+        }
+    }
+    if writeback && (!is_load || regs & (1u16 << rn) == 0) {
+        if !dec_before {
+            let bytes = 4 * n;
+            dynasm!(ops ; .arch aarch64 ; add w11, w11, bytes);
+        }
+        dynasm!(ops ; .arch aarch64 ; mov w0, w11);
+        store(ops, rn);
+    }
+    if !has_pc {
+        multi_tail(ops, pc, !is_load, side);
+        return true;
+    }
+    let tape = tape.take().expect("pc slot checked above");
+    let pb = ops.new_dynamic_label();
+    let (m_lo, m_hi) = (
+        (FNC_RETURN_MIN_MAGIC & 0xFFFF) as u32,
+        ((FNC_RETURN_MIN_MAGIC >> 16) & 0xFFFF) as u32,
+    );
+    dynasm!(ops
+        ; .arch aarch64
+        ; movz w9, m_lo
+        ; movk w9, m_hi, lsl #16
+        ; cmp w12, w9
+        ; b.hs =>pb
+        ; tbz w12, #0, =>pb
+        ; lsl w0, w12, #1
+        ; lsr w0, w0, #1
+    );
+    emit_dynamic_edge(ops, tape.take());
+    dynasm!(ops ; .arch aarch64 ; =>pb);
+    let fault = fault_off();
+    dynasm!(ops
+        ; .arch aarch64
+        ; ldr x9, [sp, #48]
+        ; str w12, [x9, fault]
+    );
+    emit_epilogue(ops, EXIT_POP_BRANCH, pc);
+    let done = ops.new_dynamic_label();
+    dynasm!(ops ; .arch aarch64 ; b =>done);
+    dynasm!(ops ; .arch aarch64 ; =>side);
+    mem_side_exit(ops, pc);
+    dynasm!(ops ; .arch aarch64 ; =>done);
+    true
+}
+
+/// `LDRD`/`STRD` (P2-5, S3 mirror): cursor `W11`, writeback effect parked
+/// in `W13` (free scratch — nothing live there), ascending words.
+fn emit_ldrdstrd(
+    ops: &mut A,
+    is_load: bool,
+    rt: u8,
+    rt2: u8,
+    rn: u8,
+    imm: u32,
+    add: bool,
+    index: bool,
+    writeback: bool,
+    pc: u32,
+) -> bool {
+    if rt == 15 || rt2 == 15 {
+        return false;
+    }
+    if rn == 15 && (!is_load || writeback) {
+        return false;
+    }
+    let side = ops.new_dynamic_label();
+    if rn == 15 {
+        let base = ((pc.wrapping_add(4)) & !3) as u32;
+        let (b_lo, b_hi) = (base & 0xFFFF, (base >> 16) & 0xFFFF);
+        dynasm!(ops
+            ; .arch aarch64
+            ; movz w1, b_lo
+            ; movk w1, b_hi, lsl #16
+        );
+    } else {
+        load(ops, rn, false);
+    }
+    if add {
+        dynasm!(ops ; .arch aarch64 ; add w13, w1, imm);
+    } else {
+        dynasm!(ops ; .arch aarch64 ; sub w13, w1, imm);
+    }
+    if index {
+        dynasm!(ops ; .arch aarch64 ; mov w11, w13);
+    } else {
+        dynasm!(ops ; .arch aarch64 ; mov w11, w1);
+    }
+    dynasm!(ops ; .arch aarch64 ; mov w1, w11);
+    mem_guard(ops, 4, !is_load, side);
+    dynasm!(ops ; .arch aarch64 ; add w1, w11, #4);
+    mem_guard(ops, 4, !is_load, side);
+    for (rt, off) in [(rt, 0u32), (rt2, 4u32)] {
+        if off == 0 {
+            dynasm!(ops ; .arch aarch64 ; mov w1, w11);
+        } else {
+            dynasm!(ops ; .arch aarch64 ; add w1, w11, #4);
+        }
+        if !is_load {
+            load(ops, rt, true);
+            dynasm!(ops ; .arch aarch64 ; mov w12, w0);
+        }
+        mem_guard(ops, 4, !is_load, side);
+        if is_load {
+            dynasm!(ops ; .arch aarch64 ; ldr w0, [x0]);
+            store(ops, rt);
+        } else {
+            dynasm!(ops ; .arch aarch64 ; str w12, [x0]);
+        }
+    }
+    if writeback {
+        dynasm!(ops ; .arch aarch64 ; mov w0, w13);
+        store(ops, rn);
+    }
+    multi_tail(ops, pc, !is_load, side);
+    true
+}
+
+/// `TBB`/`TBH` (P2-5 terminator mirror): guarded table read then
+/// `target = (pc + 4) + 2 * index` into the dynamic edge. Alignment is
+/// host-strict (odd halfword tables side-exit to the identical
+/// interpreter result — P2-3 rule).
+fn emit_tblbranch(
+    ops: &mut A,
+    rn: u8,
+    rm: u8,
+    half: bool,
+    pc: u32,
+    tape: &mut super::templates::SlotTape<'_>,
+) -> bool {
+    use super::native::emit_dynamic_edge;
+    if rm == 15 {
+        return false;
+    }
+    if rn == 15 {
+        let base = pc.wrapping_add(4);
+        let (b_lo, b_hi) = (base & 0xFFFF, (base >> 16) & 0xFFFF);
+        dynasm!(ops
+            ; .arch aarch64
+            ; movz w1, b_lo
+            ; movk w1, b_hi, lsl #16
+        );
+    } else {
+        load(ops, rn, false);
+    }
+    load(ops, rm, true);
+    if half {
+        dynasm!(ops ; .arch aarch64 ; lsl w0, w0, #1);
+    }
+    dynasm!(ops ; .arch aarch64 ; add w1, w1, w0);
+    let size = if half { 2 } else { 1 };
+    // Target survives `mem_site` in `w0` on the hit path (misses exit
+    // inside the site); `(pc + 4)` folds in as a split immediate.
+    let base = pc.wrapping_add(4);
+    let (b_lo, b_hi) = (base & 0xFFFF, (base >> 16) & 0xFFFF);
+    mem_site(ops, size, false, pc, |ops| {
+        if half {
+            dynasm!(ops ; .arch aarch64 ; ldrh w0, [x0]);
+        } else {
+            dynasm!(ops ; .arch aarch64 ; ldrb w0, [x0]);
+        }
+        dynasm!(ops
+            ; .arch aarch64
+            ; lsl w0, w0, #1
+            ; movz w1, b_lo
+            ; movk w1, b_hi, lsl #16
+            ; add w0, w0, w1
+        );
+    });
+    emit_dynamic_edge(ops, tape.take());
+    true
+}
+
+/// Seed host C from the pinned word (P2-5, S5 mirror of the P2-2
+/// `Adc`/`Sbc` idiom): branchless is impossible, so two labels select a
+/// C-setting compare. Only C matters downstream.
+fn seed_carry(ops: &mut A) {
+    let c0 = ops.new_dynamic_label();
+    let c1 = ops.new_dynamic_label();
+    dynasm!(ops
+        ; .arch aarch64
+        ; lsr w9, w23, #29
+        ; and w9, w9, #1
+        ; cbz w9, =>c0
+        ; cmp w9, w9
+        ; b =>c1
+        ; =>c0
+        ; subs w9, w9, #2
+        ; =>c1
+    );
+}
+
+/// Carry source for flag-setting logical ops (P2-5, S5, AArch64 mirror):
+/// an explicit bit, the live C, or a bit saved in `W12` by the shift
+/// prologue (mirrors x64 `CarrySrc` with the local scratch set).
+#[derive(Clone, Copy)]
+enum CarrySrc {
+    Static(bool),
+    Current,
+    SavedW12,
+}
+
+/// Flag-setting logical tail (P2-5, S5 mirror): N/Z/C/V composed
+/// explicitly (`w0` = result) — AArch64 has no direct CF write, so the
+/// carry arrives as a bit like everything else. Scratch `w9`–`w12`
+/// (`w12` may hold the saved carry on entry — it is extracted first).
+fn merge_nzcv_carry(ops: &mut A, carry: CarrySrc) {
+    match carry {
+        CarrySrc::Static(c) => {
+            let c = u32::from(c);
+            dynasm!(ops ; .arch aarch64 ; movz w11, c);
+        }
+        CarrySrc::Current => dynasm!(ops
+            ; .arch aarch64
+            ; lsr w11, w23, #29
+            ; and w11, w11, #1
+        ),
+        CarrySrc::SavedW12 => dynasm!(ops ; .arch aarch64 ; and w11, w12, #1),
+    }
+    dynasm!(ops
+        ; .arch aarch64
+        ; lsr w12, w23, #28
+        ; and w12, w12, #1
+        ; lsr w9, w0, #31
+        ; cmp w0, #0
+        ; cset w10, eq
+        ; lsl w9, w9, #31
+        ; lsl w10, w10, #30
+        ; lsl w11, w11, #29
+        ; lsl w12, w12, #28
+        ; orr w9, w9, w10
+        ; orr w9, w9, w11
+        ; orr w9, w9, w12
+        ; bfi w23, w9, #28, #4
+    );
+}
+
+/// Shift `Rm` into `W1` for 32-bit DP (P2-5, S5 mirror): same table as
+/// x64 (RRX split, explicit carry-out — AArch64 shifts set no flags, so
+/// the carry is always computed, never read). `amount <= 31`, gated
+/// upstream; shift counts fit imm6.
+fn shift_rm_to_w1(
+    ops: &mut A,
+    rm: u8,
+    shift: crate::cpu::decode32::ShiftType,
+    amount: u8,
+) -> CarrySrc {
+    use crate::cpu::decode32::ShiftType as S;
+    load(ops, rm, true);
+    match (shift, amount) {
+        (S::Ror, 0) => {
+            // RRX: `op2 = (rm >> 1) | (C << 31)`, carry = bit0(rm).
+            dynasm!(ops
+                ; .arch aarch64
+                ; and w12, w0, #1
+                ; lsr w0, w0, #1
+                ; lsr w9, w23, #29
+                ; and w9, w9, #1
+                ; bfi w0, w9, #31, #1
+                ; mov w1, w0
+            );
+            CarrySrc::SavedW12
+        }
+        (S::Ror, _) => {
+            let n = u32::from(amount);
+            let c = n - 1;
+            dynasm!(ops
+                ; .arch aarch64
+                ; lsr w12, w0, c
+                ; and w12, w12, #1
+                ; ror w0, w0, n
+                ; mov w1, w0
+            );
+            CarrySrc::SavedW12
+        }
+        (S::Lsl, 0) | (S::Lsr, 0) | (S::Asr, 0) => {
+            dynasm!(ops ; .arch aarch64 ; mov w1, w0);
+            CarrySrc::Current
+        }
+        (S::Lsl, _) => {
+            let n = u32::from(amount);
+            let c = 32 - n;
+            dynasm!(ops
+                ; .arch aarch64
+                ; lsr w12, w0, c
+                ; and w12, w12, #1
+                ; lsl w0, w0, n
+                ; mov w1, w0
+            );
+            CarrySrc::SavedW12
+        }
+        (S::Lsr, _) | (S::Asr, _) => {
+            let n = u32::from(amount);
+            let c = n - 1;
+            // Carry first (pre-shift bit), then shift — the reverse order
+            // reads the shifted value (caught in review before testing).
+            dynasm!(ops
+                ; .arch aarch64
+                ; lsr w12, w0, c
+                ; and w12, w12, #1
+            );
+            if matches!(shift, S::Lsr) {
+                dynasm!(ops ; .arch aarch64 ; lsr w0, w0, n);
+            } else {
+                dynasm!(ops ; .arch aarch64 ; asr w0, w0, n);
+            }
+            dynasm!(ops ; .arch aarch64 ; mov w1, w0);
+            CarrySrc::SavedW12
+        }
+    }
+}
+
+/// 32-bit DP compute+merge core (P2-5, S5 mirror): `w0` = Rn value,
+/// `w1` = op2. Arithmetic sets flags natively (ARM semantics, no x86
+/// fixups); logical tails compose explicitly. `set_flags = false`
+/// computes + stores with zero flag traffic.
+fn exec_dp_op(
+    ops: &mut A,
+    op: crate::cpu::decode32::DpOp,
+    rd: u8,
+    set_flags: bool,
+    carry: CarrySrc,
+) {
+    use crate::cpu::decode32::DpOp as O;
+    let writes = super::templates::dp_writes_rd(op);
+    match op {
+        O::And => {
+            dynasm!(ops ; .arch aarch64 ; and w0, w0, w1);
+            store(ops, rd);
+            if set_flags {
+                merge_nzcv_carry(ops, carry);
+            }
+        }
+        O::Eor | O::Teq => {
+            dynasm!(ops ; .arch aarch64 ; eor w0, w0, w1);
+            if writes {
+                store(ops, rd);
+            }
+            if set_flags {
+                merge_nzcv_carry(ops, carry);
+            }
+        }
+        O::Bic => {
+            dynasm!(ops ; .arch aarch64 ; bic w0, w0, w1);
+            store(ops, rd);
+            if set_flags {
+                merge_nzcv_carry(ops, carry);
+            }
+        }
+        O::Orr => {
+            dynasm!(ops ; .arch aarch64 ; orr w0, w0, w1);
+            store(ops, rd);
+            if set_flags {
+                merge_nzcv_carry(ops, carry);
+            }
+        }
+        O::Orn => {
+            dynasm!(ops ; .arch aarch64 ; orn w0, w1, w0);
+            store(ops, rd);
+            if set_flags {
+                merge_nzcv_carry(ops, carry);
+            }
+        }
+        O::Mov => {
+            dynasm!(ops ; .arch aarch64 ; mov w0, w1);
+            store(ops, rd);
+            if set_flags {
+                merge_nzcv_carry(ops, carry);
+            }
+        }
+        O::Mvn => {
+            dynasm!(ops ; .arch aarch64 ; mvn w0, w1);
+            store(ops, rd);
+            if set_flags {
+                merge_nzcv_carry(ops, carry);
+            }
+        }
+        O::Tst => {
+            // Gated like x64 (32-bit test forms honor S): N/Z from the
+            // materialized test, C carried, V preserved.
+            dynasm!(ops ; .arch aarch64 ; and w0, w0, w1);
+            if set_flags {
+                merge_nzcv_carry(ops, carry);
+            }
+        }
+        O::Add | O::Cmn => {
+            dynasm!(ops ; .arch aarch64 ; adds w0, w0, w1);
+            if writes {
+                store(ops, rd);
+            }
+            if set_flags {
+                merge_nzcv(ops);
+            }
+        }
+        O::Adc => {
+            seed_carry(ops);
+            dynasm!(ops ; .arch aarch64 ; adcs w0, w0, w1);
+            store(ops, rd);
+            if set_flags {
+                merge_nzcv(ops);
+            }
+        }
+        O::Sub | O::Cmp => {
+            dynasm!(ops ; .arch aarch64 ; subs w0, w0, w1);
+            if writes {
+                store(ops, rd);
+            }
+            if set_flags {
+                merge_nzcv(ops);
+            }
+        }
+        O::Sbc => {
+            seed_carry(ops);
+            dynasm!(ops ; .arch aarch64 ; sbcs w0, w0, w1);
+            store(ops, rd);
+            if set_flags {
+                merge_nzcv(ops);
+            }
+        }
+        O::Rsb => {
+            dynasm!(ops ; .arch aarch64 ; subs w0, w1, w0);
+            store(ops, rd);
+            if set_flags {
+                merge_nzcv(ops);
+            }
+        }
+    }
+}
+
+/// `DpImm` (P2-5, S5 mirror): static op2 into `w1` (split immediate, like
+/// the table-branch base) plus the shared core.
+fn emit_dpimm(
+    ops: &mut A,
+    op: crate::cpu::decode32::DpOp,
+    rd: u8,
+    rn: u8,
+    imm12: u16,
+    expand: bool,
+    set_flags: bool,
+) -> bool {
+    use crate::cpu::decode32::thumb_expand_imm;
+    if rn == 15 {
+        return false;
+    }
+    if super::templates::dp_writes_rd(op) && rd == 15 {
+        return false;
+    }
+    let op2 = if expand {
+        thumb_expand_imm(imm12)
+    } else {
+        u32::from(imm12)
+    };
+    let carry = if expand && imm12 & 0xC00 != 0 {
+        CarrySrc::Static(op2 >> 31 & 1 != 0)
+    } else {
+        CarrySrc::Current
+    };
+    load(ops, rn, true);
+    let (o_lo, o_hi) = (op2 & 0xFFFF, (op2 >> 16) & 0xFFFF);
+    dynasm!(ops
+        ; .arch aarch64
+        ; movz w1, o_lo
+        ; movk w1, o_hi, lsl #16
+    );
+    exec_dp_op(ops, op, rd, set_flags, carry);
+    true
+}
+
+/// `DpReg` (P2-5, S5 mirror): shifted-`Rm` op2 plus the shared core.
+fn emit_dpreg(
+    ops: &mut A,
+    op: crate::cpu::decode32::DpOp,
+    rd: u8,
+    rn: u8,
+    rm: u8,
+    shift: crate::cpu::decode32::ShiftType,
+    amount: u8,
+    set_flags: bool,
+) -> bool {
+    if rn == 15 || rm == 15 {
+        return false;
+    }
+    if super::templates::dp_writes_rd(op) && rd == 15 {
+        return false;
+    }
+    let shifted = shift_rm_to_w1(ops, rm, shift, amount);
+    let carry = match shifted {
+        CarrySrc::SavedW12 => CarrySrc::SavedW12,
+        CarrySrc::Current => CarrySrc::Current,
+        CarrySrc::Static(_) => unreachable!("shifts never produce static carry"),
+    };
+    load(ops, rn, true);
+    exec_dp_op(ops, op, rd, set_flags, carry);
+    true
+}
+
+/// `MOVW`/`MOVT` (P2-5, S5 mirror): `movz` clears, `movk` preserves-then-
+/// fills — each a single instruction after the load. No flags.
+fn emit_movwide(ops: &mut A, rd: u8, imm: u16, high: bool) -> bool {
+    if rd == 15 {
+        return false;
+    }
+    if high {
+        load(ops, rd, true);
+        let imm = u32::from(imm);
+        dynasm!(ops ; .arch aarch64 ; movk w0, imm, lsl #16);
+        store(ops, rd);
+    } else {
+        let imm = u32::from(imm);
+        dynasm!(ops ; .arch aarch64 ; movz w0, imm);
+        store(ops, rd);
+    }
+    true
+}
+
+/// `MUL`/`MLA`/`MLS` (P2-5, S5 mirror): `mul`/`madd`/`msub`, no flags.
+fn emit_mul(ops: &mut A, op: crate::cpu::decode32::MulOp, rd: u8, rn: u8, rm: u8, ra: u8) -> bool {
+    use crate::cpu::decode32::MulOp as O;
+    if rd == 15 || rn == 15 || rm == 15 {
+        return false;
+    }
+    if !matches!(op, O::Mul) && ra == 15 {
+        return false;
+    }
+    load(ops, rn, true);
+    load(ops, rm, false);
+    match op {
+        O::Mul => dynasm!(ops ; .arch aarch64 ; mul w0, w0, w1),
+        O::Mla => {
+            dynasm!(ops ; .arch aarch64 ; mul w0, w0, w1);
+            load(ops, ra, false);
+            dynasm!(ops ; .arch aarch64 ; add w0, w0, w1);
+        }
+        O::Mls => {
+            dynasm!(ops ; .arch aarch64 ; mul w0, w0, w1);
+            load(ops, ra, false);
+            dynasm!(ops ; .arch aarch64 ; sub w1, w1, w0 ; mov w0, w1);
+        }
+        _ => return false,
+    }
+    store(ops, rd);
+    true
+}
+
+/// `SDIV`/`UDIV` (P2-5, S5 mirror): zero divisors side-exit (the
+/// interpreter owns `DIV_0_TRP`-vs-zero); `sdiv` saturates `MIN / -1`
+/// architecturally, so no x86-style pre-check. No flags.
+fn emit_div(ops: &mut A, signed: bool, rd: u8, rn: u8, rm: u8, pc: u32) -> bool {
+    if rd == 15 || rn == 15 || rm == 15 {
+        return false;
+    }
+    let side = ops.new_dynamic_label();
+    let done = ops.new_dynamic_label();
+    load(ops, rm, false);
+    dynasm!(ops ; .arch aarch64 ; cbz w1, =>side);
+    load(ops, rn, true);
+    if signed {
+        dynasm!(ops ; .arch aarch64 ; sdiv w0, w0, w1);
+    } else {
+        dynasm!(ops ; .arch aarch64 ; udiv w0, w0, w1);
+    }
+    store(ops, rd);
+    dynasm!(ops ; .arch aarch64 ; b =>done);
+    dynasm!(ops ; .arch aarch64 ; =>side);
+    mem_side_exit(ops, pc);
+    dynasm!(ops ; .arch aarch64 ; =>done);
+    true
+}
+
+/// `SXTH`/`SXTB`/`UXTH`/`UXTB` (P2-5 mirror): one instruction, no flags.
+fn emit_extend(ops: &mut A, rd: u8, rm: u8, kind: crate::cpu::decode16::ExtendKind) -> bool {
+    use crate::cpu::decode16::ExtendKind as K;
+    if rd == 15 || rm == 15 {
+        return false;
+    }
+    load(ops, rm, true);
+    match kind {
+        K::Sxth => dynasm!(ops ; .arch aarch64 ; sxth w0, w0),
+        K::Sxtb => dynasm!(ops ; .arch aarch64 ; sxtb w0, w0),
+        K::Uxth => dynasm!(ops ; .arch aarch64 ; uxth w0, w0),
+        K::Uxtb => dynasm!(ops ; .arch aarch64 ; uxtb w0, w0),
+    }
+    store(ops, rd);
+    true
+}
+
+/// `REV`/`REV16`/`REVSH` (P2-5 mirror): native reversals, no flags
+/// (`revsh` matches `REVSH` exactly: low-half bytes flipped, sign
+/// extended).
+fn emit_reverse(ops: &mut A, rd: u8, rm: u8, kind: crate::cpu::decode16::ReverseKind) -> bool {
+    use crate::cpu::decode16::ReverseKind as K;
+    if rd == 15 || rm == 15 {
+        return false;
+    }
+    load(ops, rm, true);
+    match kind {
+        K::Rev => dynasm!(ops ; .arch aarch64 ; rev w0, w0),
+        K::Rev16 => dynasm!(ops ; .arch aarch64 ; rev16 w0, w0),
+        // No `revsh` in dynasm's tables: `REVSH` is `rev16` on the low
+        // half plus sign extension (identical semantics).
+        K::Revsh => dynasm!(ops
+            ; .arch aarch64
+            ; rev16 w0, w0
+            ; sxth w0, w0
+        ),
+    }
+    store(ops, rd);
+    true
+}
+
 fn emit32(ops: &mut A, inst: &crate::cpu::decode32::Inst32, pc: u32, unalign_trap: bool) -> bool {
     use crate::cpu::decode32::Inst32 as I;
     match *inst {
@@ -1044,12 +2075,52 @@ fn emit32(ops: &mut A, inst: &crate::cpu::decode32::Inst32, pc: u32, unalign_tra
             pc,
             unalign_trap,
         ),
+        // P2-5 (S3): dual + multiple (plain forms; `pc` loads need a slot
+        // — see `emit32_term`).
+        I::LdrdStrd {
+            is_load,
+            rt,
+            rt2,
+            rn,
+            imm,
+            add,
+            index,
+            writeback,
+        } => emit_ldrdstrd(ops, is_load, rt, rt2, rn, imm, add, index, writeback, pc),
+        I::LdmStm {
+            is_load,
+            rn,
+            regs,
+            writeback,
+            dec_before,
+        } => emit_ldmstm32(ops, is_load, rn, regs, writeback, dec_before, pc, None),
+        // P2-5 (S5): 32-bit data processing.
+        I::DpReg {
+            op,
+            rd,
+            rn,
+            rm,
+            shift,
+            amount,
+            set_flags,
+        } => emit_dpreg(ops, op, rd, rn, rm, shift, amount, set_flags),
+        I::DpImm {
+            op,
+            rd,
+            rn,
+            imm12,
+            expand,
+            set_flags,
+        } => emit_dpimm(ops, op, rd, rn, imm12, expand, set_flags),
+        I::MovWide { rd, imm, high } => emit_movwide(ops, rd, imm, high),
+        I::Div { signed, rd, rn, rm } => emit_div(ops, signed, rd, rn, rm, pc),
+        I::Mul { op, rd, rn, rm, ra } => emit_mul(ops, op, rd, rn, rm, ra),
         _ => false,
     }
 }
 /// ALU-op dispatcher (16-bit `Alu` family; `itstate == 0` throughout
 /// native blocks, so flags always update).
-fn emit_alu(ops: &mut A, rd: u8, rm: u8, op: crate::cpu::decode16::AluOp) -> bool {
+fn emit_alu(ops: &mut A, rd: u8, rm: u8, op: crate::cpu::decode16::AluOp, pred: bool) -> bool {
     use crate::cpu::decode16::AluOp as O;
     if rd == 15 || rm == 15 {
         return false;
@@ -1065,7 +2136,7 @@ fn emit_alu(ops: &mut A, rd: u8, rm: u8, op: crate::cpu::decode16::AluOp) -> boo
                 O::Asr => crate::cpu::decode16::Shift::Asr,
                 _ => crate::cpu::decode16::Shift::Ror,
             };
-            return shift_reg_seq(ops, rd, kind);
+            return shift_reg_seq(ops, rd, kind, pred);
         }
         O::Adc | O::Sbc => {
             load(ops, rd, true);
@@ -1092,7 +2163,9 @@ fn emit_alu(ops: &mut A, rd: u8, rm: u8, op: crate::cpu::decode16::AluOp) -> boo
                 _ => dynasm!(ops ; .arch aarch64 ; sbcs w0, w0, w1),
             }
             store(ops, rd);
-            merge_nzcv(ops);
+            if !pred {
+                merge_nzcv(ops);
+            }
             return true;
         }
         _ => {}
@@ -1114,25 +2187,33 @@ fn emit_alu(ops: &mut A, rd: u8, rm: u8, op: crate::cpu::decode16::AluOp) -> boo
             dynasm!(ops ; .arch aarch64 ; and w0, w0, w1);
             store(ops, rd);
             dynasm!(ops ; .arch aarch64 ; tst w0, w0);
-            merge_nz(ops);
+            if !pred {
+                merge_nz(ops);
+            }
         }
         O::Eor => {
             dynasm!(ops ; .arch aarch64 ; eor w0, w0, w1);
             store(ops, rd);
             dynasm!(ops ; .arch aarch64 ; tst w0, w0);
-            merge_nz(ops);
+            if !pred {
+                merge_nz(ops);
+            }
         }
         O::Orr => {
             dynasm!(ops ; .arch aarch64 ; orr w0, w0, w1);
             store(ops, rd);
             dynasm!(ops ; .arch aarch64 ; tst w0, w0);
-            merge_nz(ops);
+            if !pred {
+                merge_nz(ops);
+            }
         }
         O::Bic => {
             dynasm!(ops ; .arch aarch64 ; bic w0, w0, w1);
             store(ops, rd);
             dynasm!(ops ; .arch aarch64 ; tst w0, w0);
-            merge_nz(ops);
+            if !pred {
+                merge_nz(ops);
+            }
         }
         O::Tst => {
             dynasm!(ops ; .arch aarch64 ; tst w0, w1);
@@ -1150,27 +2231,33 @@ fn emit_alu(ops: &mut A, rd: u8, rm: u8, op: crate::cpu::decode16::AluOp) -> boo
             dynasm!(ops ; .arch aarch64 ; mul w0, w0, w1);
             store(ops, rd);
             dynasm!(ops ; .arch aarch64 ; tst w0, w0);
-            merge_nz(ops);
+            if !pred {
+                merge_nz(ops);
+            }
         }
         O::Mvn => {
             dynasm!(ops ; .arch aarch64 ; mvn w0, w1);
             store(ops, rd);
             dynasm!(ops ; .arch aarch64 ; tst w0, w0);
-            merge_nz(ops);
+            if !pred {
+                merge_nz(ops);
+            }
         }
         O::Neg => {
             // RSB: `neg` (sub-from-zero alias) carries natively, result in
             // place for the store (no x86-style fixup needed).
             dynasm!(ops ; .arch aarch64 ; neg w0, w1);
             store(ops, rd);
-            merge_nzcv(ops);
+            if !pred {
+                merge_nzcv(ops);
+            }
         }
         _ => unreachable!("shifts/adc/sbc handled above"),
     }
     true
 }
 
-fn emit_shift_imm(ops: &mut A, rd: u8, rm: u8, kind: ShiftImm, amount: u8) -> bool {
+fn emit_shift_imm(ops: &mut A, rd: u8, rm: u8, kind: ShiftImm, amount: u8, pred: bool) -> bool {
     if rd == 15 || rm == 15 {
         return false;
     }
@@ -1179,7 +2266,9 @@ fn emit_shift_imm(ops: &mut A, rd: u8, rm: u8, kind: ShiftImm, amount: u8) -> bo
     if n == 0 {
         store(ops, rd);
         dynasm!(ops ; .arch aarch64 ; tst w0, w0);
-        merge_nz(ops);
+        if !pred {
+            merge_nz(ops);
+        }
         return true;
     }
     // Save the original for carry (shifts set no flags here): C is
@@ -1218,7 +2307,9 @@ fn emit_shift_imm(ops: &mut A, rd: u8, rm: u8, kind: ShiftImm, amount: u8) -> bo
             );
         }
     }
-    carry_in_w1(ops);
+    if !pred {
+        carry_in_w1(ops);
+    }
     true
 }
 

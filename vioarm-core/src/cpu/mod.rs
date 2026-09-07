@@ -1278,9 +1278,19 @@ impl<B: PeripheralBus> Core<B> {
     ///
     /// ARMv8-M baseline mixes 16-bit and 32-bit instructions like ARMv7-M and
     /// Whether this core implements the ARMv8-M Security Extension (baseline
-    /// and mainline alike; ARMv6-M/ARMv7-M never do).
-    fn is_v8m(&self) -> bool {
+    /// and mainline alike; ARMv6-M/ARMv7-M never do). Shared with the JIT:
+    /// the native PUSH fast path skips the stack-limit check, which can
+    /// only fire here — so v8-M cores keep stack pushes interpreted.
+    pub(crate) fn is_v8m(&self) -> bool {
         matches!(self.isa, Isa::Armv8MBaseline | Isa::Armv8MMainline)
+    }
+
+    /// Take a native-loaded branch target (P2-5 `POP {pc}`/`LDM pc` with a
+    /// magic target): the register transfers already happened natively, so
+    /// only the branch dispatch re-runs — no double reads, identical to
+    /// the interpreter's tail.
+    pub(crate) fn branch_native(&mut self, target: u32) -> Result<Next, HaltCause> {
+        self.branch(target)
     }
 
     /// Decode one 32-bit instruction for the current v8-M ISA: the baseline

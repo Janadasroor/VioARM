@@ -190,6 +190,29 @@ to a robust G2: wider coverage (P2-5: PUSH/POP/LDM/STM keep more code
 native between edges) — the per-edge cost is now tiny, so every edge
 that stays native compounds.
 
+## JIT Phase 2 checkpoint (P2-5, 2026-09-07)
+
+New `tb_push` soak (PUSH/POP pairs with real stack traffic, n=10):
+
+| Bench | Mean | Ratio vs stepper |
+|---|---|---|
+| `tb/step_push_ram_4k` | 542.3 µs | 1.00 |
+| `tb/quanta_push_ram_4k` | 850.0 µs | **0.64** |
+| `tb/step_push_flash_4k` | 657.2 µs | 1.00 |
+| `tb/quanta_push_flash_4k` | 865.5 µs | **0.76** |
+
+The sub-unity push ratio is understood, not a missed bug: a store
+intervenes between every link and its next traversal, so no edge in a
+store loop ever observes a matching generation — every block pays the
+full driver trip (probe + entry rehash + `call1` + prologue/epilogue)
+plus two guards per word (probe + transfer). The same loop under
+interpreted blocks runs 0.29× (per-op re-decode dominates), so native
+multis are still 2×+ better than their real fallback; and cold
+call-site spills (the common case) pay no chaining penalty at all.
+Unlocking store-loop chaining needs split code/data write generations
+(a data-only loop must not invalidate code freshness) — recorded as
+Phase-2 follow-up work, since it changes the bus write chokepoint.
+
 ## Regression policy
 
 Wall-clock gating on shared CI runners is flake-prone, so CI runs the

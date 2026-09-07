@@ -55,6 +55,10 @@ pub enum TbEnd {
     MaxInsns,
     /// A branch/call/return or genuine PC load (included).
     ControlFlow,
+    /// A predicated-position op the native predicated set cannot cover
+    /// (P2-5, S4: excluded — the interpreter owns predicated execution of
+    /// branches, memory, and system ops).
+    ItBreak,
     /// An S6 callout op or unpredictable PC-register form (included).
     System,
     /// A bus-writing op (included; the block ends here with a fallthrough
@@ -98,6 +102,11 @@ pub struct TbBody {
     /// without stores pay no per-op polling. At most [`MAX_TB_INSNS`] ops,
     /// so a `u64` always suffices.
     pub store_mask: u64,
+    /// ITSTATE at block entry (P2-5, S4): nonzero for predicated-
+    /// continuation blocks built under an active IT block. The runner
+    /// enters native blocks only on an exact match (unifying the old
+    /// blanket `itstate != 0` refusal: plain blocks record 0).
+    pub it_entry: u8,
 }
 
 impl TbBody {
@@ -117,6 +126,7 @@ impl TbBody {
             page_count: self.page_count,
             cycle_estimate: self.cycle_estimate,
             store_mask: self.store_mask,
+            it_entry: self.it_entry,
             // The runner stamps the real content hash at insert time.
             check: 0,
             write_gen: 0,
@@ -142,8 +152,17 @@ pub(crate) const fn op_len(op: &TbOp) -> u32 {
 }
 
 /// Build a translation block starting at `pc`, or `None` when no block can
-/// start here (non-zero ITSTATE, odd PC, or first fetch/decode failure).
-/// `bus` is read with the same halfword fetches the stepper performs.
+/// start here (odd PC, first fetch/decode failure, or a predicated-
+/// continuation start whose first op the native predicated set cannot
+/// cover — the interpreter owns that op). `bus` is read with the same
+/// halfword fetches the stepper performs.
+///
+/// A nonzero `itstate` builds a predicated-continuation block (P2-5, S4):
+/// each op must be predicable (ALU-only — branches, memory, and system
+/// ops seal the block before them with [`TbEnd::ItBreak`); ITSTATE is
+/// simulated statically over the body (draining back to straight-line
+/// code when the mask runs out). The runner enters the block natively
+/// only on an exact ITSTATE match.
 pub fn build_tb<B: Bus>(
     bus: &mut B,
     pc: u32,
@@ -151,7 +170,7 @@ pub fn build_tb<B: Bus>(
     isa: Isa,
     itstate: u8,
 ) -> Option<TbBody> {
-    if itstate != 0 || pc & 1 != 0 {
+    if pc & 1 != 0 {
         return None;
     }
     let start_page = pc >> PAGE_SHIFT;
@@ -159,6 +178,7 @@ pub fn build_tb<B: Bus>(
     let mut cur = pc;
     let mut cycles: u64 = 0;
     let mut store_mask: u64 = 0;
+    let mut it = itstate;
 
     let end = loop {
         if ops.len() >= usize::from(MAX_TB_INSNS) {
@@ -182,6 +202,19 @@ pub fn build_tb<B: Bus>(
         if (last_byte >> PAGE_SHIFT) != start_page && !ops.is_empty() {
             break TbEnd::PageCross;
         }
+        // Predicated positions only admit the native predicated set (S4);
+        // anything else seals before it (or refuses an empty start, so the
+        // fallback stepper — which owns predication there — makes progress).
+        // `IT` itself always joins, even nested: the fresh value replaces
+        // the stale one under both engines, and whatever follows is gated
+        // on the fresh mask either way (native simulation or interp).
+        let is_it = matches!(op, TbOp::V16(Inst16::It { .. }));
+        if it != 0 && !is_it && !super::templates::is_predicable(&op) {
+            if ops.is_empty() {
+                return None;
+            }
+            break TbEnd::ItBreak;
+        }
         let seal = match op {
             TbOp::V16(inst) => seal16(&inst),
             TbOp::V32(inst) => seal32(&inst),
@@ -193,6 +226,14 @@ pub fn build_tb<B: Bus>(
         }
         cur = cur.wrapping_add(len);
         ops.push(op);
+        if is_it {
+            let TbOp::V16(Inst16::It { cond, mask }) = op else {
+                unreachable!("matched IT above")
+            };
+            it = (cond << 4) | mask;
+        } else if it != 0 {
+            it = super::templates::it_advance(it);
+        }
         match seal {
             Seal::Continue if op_writes_memory(&op) => break TbEnd::Store,
             Seal::Continue => {}
@@ -217,6 +258,7 @@ pub fn build_tb<B: Bus>(
         page_count,
         cycle_estimate: cycles,
         store_mask,
+        it_entry: itstate,
     })
 }
 

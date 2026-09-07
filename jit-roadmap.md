@@ -338,7 +338,31 @@ Goal: 10–30× on compute loops.
   P2-2/P2-3 r14 lanes, fixed in both backends with regression tests;
   two test-vector slips of mine). Soak: ALU 8.7× RAM / 10.6× flash,
   mem-mix 8.0× / 9.5×, call-ret 5.6× / 5.7× — within reach of G2 already.
-- [ ] P2-5: PUSH/POP/LDM/STM (S3), IT blocks (S4), 32-bit subset (S5).
+- [x] P2-5: PUSH/POP/LDM/STM (S3), IT blocks (S4), 32-bit subset (S5).
+  Done 2026-09-07: 16-bit PUSH/POP/LDM/STM + 32-bit LDM/STM (IA/DB,
+  writeback, loaded-rn-wins static) + LDRD/STRD (offset/pre/post-index,
+  literal) + TBB/TBH (guarded table read + dynamic edge) + MOVW/T,
+  DpReg/DpImm (all 16 ops, shifts incl. RRX, expand-carry rule),
+  MUL/MLA/MLS, DIV (zero side-exits, MIN/-1 saturates), SXTx/UXTx,
+  REV/REV16/REVSH on x64 + AArch64 mirrors. Multi-word uses two-phase
+  guarded transfers (probe all words effect-free, then transfer —
+  identical MMIO/partial-fault behavior); `POP {pc}`/`LDM pc` use the new
+  `EXIT_POP_BRANCH` (driver runs only the branch dispatch — no transfer
+  re-execution, no double reads). IT blocks: builder continuation mode
+  (`ItBreak` seal, `it_entry` match-gated), no-op `IT` template, static
+  cond guards with 16-bit merge suppression (`_it` variants), single exit
+  store (never materialized mid-block). v8-M `PUSH` stays interpreted
+  (stack-limit check; runner-gated). Caught by testing (9 bugs: R9D guard
+  ordering SEGV in 3 emitters, MIN/-1 fallthrough SIGFPE, SBC carry seed,
+  TST/TEQ live-V seed, TST merge_nz-vs-nzcv, REV16-as-bswap, logical-tail
+  retest, `reg_off(14)` preload, interp-mode predicated execution hole —
+  predicated continuations are native-or-fallback now). Plus a bench
+  typo of mine (0xFC for 0xFB) that framed the JIT for a runaway stack.
+  Soak: push-loop 0.64× RAM / 0.76× flash — store loops cannot chain on
+  a global write generation (a store always intervenes between link and
+  traversal), so they pay full driver trips; native is still 2×+ better
+  than the interp-blocks fallback (0.29×) there. Follow-up: split
+  code/data write generations so data-only loops chain.
 - [ ] P2-6: callout plumbing for all of S6 (SVC/BKPT/barriers/MRS-MSR/
   exclusives/WFI-FE-FE/FP/DSP) + TB-ending rules.
 - [ ] P2-7: per-TB cycle estimates (D7 accounting) + monotonicity tests.
