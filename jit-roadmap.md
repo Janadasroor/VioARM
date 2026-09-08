@@ -428,10 +428,18 @@ Goal: 10–30× on compute loops.
   in-test (caught two vd-bit derivation slips before they could hide).
   Boundaries kept: default rounding, single-precision, no fixed-point
   converts.
-- [ ] P3-2: differential FUZZING in CI (new `fuzz/fuzz_jit.rs` target +
+- [x] P3-2: differential FUZZING in CI (new `fuzz/fuzz_jit.rs` target +
   nightly-fuzz corpus seeds + a short bounded run in the CI fuzz job):
   random Thumb programs, TB-vs-interpreter state compare after N steps.
   Non-negotiable (M4/M5 bug class).
+  Done 2026-09-08: the G2 generator moved into `vioarm_core::jit::fuzz`
+  (single source: `tests/jit_fuzz.rs` deterministic trials + the new
+  binary share draws, shapes, state, and compare). `fuzz_jit` runs
+  `--trials N`, `--dump-trial K` (seed generation), and raw seed files
+  (libFuzzer-shaped entry for later). 12 corpus seeds in
+  `fuzz/corpus/fuzz_jit/` (all four shapes, all replay green); new
+  `jit-fuzz` CI job builds the target, runs the corpus, and runs a
+  bounded `--trials 150` smoke. Nightly extends via `--trials 20000`.
 - [ ] P3-3: host surfaces X1–X7 implemented + tested.
 - [ ] P3-4: per-platform baselines recorded (x86-64 Linux + mac ARM;
   Windows smoke): soak workloads = (a) board NOP soak 1M steps,

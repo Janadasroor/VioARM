@@ -256,3 +256,39 @@ jobs:
         # they can only dry-run after core is really published (order and
         # tokens are in RELEASING.md).
         run: cargo publish --dry-run -p vioarm-core
+
+  jit-fuzz:
+    name: JIT differential fuzz (ubuntu-latest, stable)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            fuzz/target
+          key: jit-fuzz-cargo-${{ hashFiles('fuzz/Cargo.lock') }}
+
+      # P3-2: the seed corpus must pass byte-for-byte through the raw
+      # differential entry, then a short bounded deterministic run.
+      # Nightly extends this with `--trials 20000` (or a libFuzzer loop
+      # over the same entry — see fuzz/src/bin/fuzz_jit.rs).
+      - name: Build fuzz_jit
+        working-directory: fuzz
+        run: cargo build --release --bin fuzz_jit
+
+      - name: Corpus seeds
+        working-directory: fuzz
+        run: ./target/release/fuzz_jit corpus/fuzz_jit/trial_*.bin
+
+      - name: Bounded trials
+        working-directory: fuzz
+        run: ./target/release/fuzz_jit --trials 150

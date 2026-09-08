@@ -7,7 +7,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
-vioarm-core = { path = "../vioarm-core" }
+vioarm-core = { path = "../vioarm-core", features = ["jit"] }
 arbitrary = "1.4"
 
 [[bin]]
@@ -25,3 +25,7 @@ path = "src/bin/fuzz_decode.rs"
 [[bin]]
 name = "fuzz_rsp"
 path = "src/bin/fuzz_rsp.rs"
+
+[[bin]]
+name = "fuzz_jit"
+path = "src/bin/fuzz_jit.rs"

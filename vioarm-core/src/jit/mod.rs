@@ -19,6 +19,7 @@
 
 mod builder;
 mod emit;
+pub mod fuzz;
 mod native;
 mod quanta;
 mod runner;
