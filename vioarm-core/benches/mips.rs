@@ -603,6 +603,170 @@ fn bench_tb_quanta(c: &mut Criterion) {
             );
         });
     }
+    // P3-4 baselines: board NOP soak at 1M steps (flash WS realism via
+    // the ACR writes below, like board_nop_1k). Outside the ram/flash
+    // loop: the board address is fixed.
+    g.bench_function("step_board_nop_1M", |b| {
+        b.iter_batched(
+            || {
+                let mem = board::stm32f103();
+                let mut m = Machine::armv7m(mem);
+                for (i, b) in 0x4567_0123u32.to_le_bytes().iter().enumerate() {
+                    m.core.mem().write(0x4002_2004 + i as u32, *b).unwrap();
+                }
+                for (i, b) in 0xCDEF_89ABu32.to_le_bytes().iter().enumerate() {
+                    m.core.mem().write(0x4002_2004 + i as u32, *b).unwrap();
+                }
+                m.core.mem().write(0x4002_2010, 1).unwrap();
+                let mut code = Vec::new();
+                for _ in 0..1000 {
+                    code.extend_from_slice(&[0x00, 0xBF]);
+                }
+                code.extend_from_slice(&[0xFE, 0xE7]);
+                let img = load_flat(0x0800_0000, &code);
+                m.load_image(&img);
+                m.core.regs.pc = 0x0800_0000;
+                m.core.xpsr.set(0x01000000);
+                m
+            },
+            |mut m| {
+                for _ in 0..1_000_000 {
+                    let _ = m.step();
+                }
+                black_box(m.core.cyccnt)
+            },
+            BatchSize::SmallInput,
+        );
+    });
+    g.bench_function("quanta_board_nop_1M", |b| {
+        b.iter_batched(
+            || {
+                let mem = board::stm32f103();
+                let mut m = Machine::armv7m(mem);
+                for (i, b) in 0x4567_0123u32.to_le_bytes().iter().enumerate() {
+                    m.core.mem().write(0x4002_2004 + i as u32, *b).unwrap();
+                }
+                for (i, b) in 0xCDEF_89ABu32.to_le_bytes().iter().enumerate() {
+                    m.core.mem().write(0x4002_2004 + i as u32, *b).unwrap();
+                }
+                m.core.mem().write(0x4002_2010, 1).unwrap();
+                let mut code = Vec::new();
+                for _ in 0..1000 {
+                    code.extend_from_slice(&[0x00, 0xBF]);
+                }
+                code.extend_from_slice(&[0xFE, 0xE7]);
+                let img = load_flat(0x0800_0000, &code);
+                m.load_image(&img);
+                m.core.regs.pc = 0x0800_0000;
+                m.core.xpsr.set(0x01000000);
+                (m, TbRunner::new())
+            },
+            |(mut m, mut runner)| {
+                let mut ops = 0u64;
+                while ops < 1_000_000 {
+                    ops += m.run_tb_quantum(&mut runner, 4096).unwrap().ops;
+                }
+                black_box(m.core.cyccnt)
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    // P3-4 ALU torture: every 16-bit DP form (assembler-verified
+    // halves), plus MOVW/SDIV/CBNZ, looping. RAM only.
+    let torture: Vec<u16> = vec![
+        0x205A, 0x21A5, 0x271F, 0x1842, 0x1A0B, 0x1DEC, 0x1EFE, 0x0100, 0x0A09, 0x17D2, 0x191B,
+        0x436C, 0x4035, 0x407E, 0x4307, 0x4388, 0x43D1, 0x415A, 0x4193, 0x422C, 0x42B5, 0x42FE,
+        0x4247, 0x4088, 0x41D1, 0xB21A, 0xB2E3, 0xBA2C, 0xBA75, 0xBAFE, 0xB901, 0x2000, 0xF241,
+        0x2234, 0xFB91, 0xF3F2, 0x3F01, 0xD1DC, 0xE7DB,
+    ];
+    let torture_setup = |base: u32| {
+        let mem = FlatMemory::with_layout(&[base], &[0x10000]);
+        let mut m = Machine::armv7m(mem);
+        let bytes: Vec<u8> = torture.iter().flat_map(|h| h.to_le_bytes()).collect();
+        m.load_image(&load_flat(base, &bytes));
+        m.core.regs.pc = base;
+        m.core.xpsr.set(0x01000000);
+        // Loud on bad halves (benches ignore step errors by design).
+        for _ in 0..10 {
+            m.step().expect("torture image must step");
+        }
+        m.core.regs.pc = base;
+        m.core.xpsr.set(0x01000000);
+        m
+    };
+    g.bench_function("step_torture_ram_4k", |b| {
+        b.iter_batched(
+            || torture_setup(0x2000_0000),
+            |mut m| {
+                for _ in 0..4096 {
+                    let _ = m.step();
+                }
+                black_box(m.core.cyccnt)
+            },
+            BatchSize::SmallInput,
+        );
+    });
+    g.bench_function("quanta_torture_ram_4k", |b| {
+        b.iter_batched(
+            || (torture_setup(0x2000_0000), TbRunner::new()),
+            |(mut m, mut runner)| {
+                let mut ops = 0u64;
+                while ops < 4096 {
+                    ops += m.run_tb_quantum(&mut runner, 1024).unwrap().ops;
+                }
+                black_box(m.core.cyccnt)
+            },
+            BatchSize::SmallInput,
+        );
+    });
+    // P3-4 SHA-256 loop: gcc-compiled compression firmware (see
+    // benches/data/sha256.c + scripts/gen-sha256-blob.sh), proven against
+    // the NIST vector in tests/sha_blob.rs. Linked at RAM base; entry at
+    // offset 0. RAM only.
+    const SHA_BLOB: &[u8] = include_bytes!("data/sha256.bin");
+    const SHA_BASE: u32 = 0x2000_0000;
+    let sha_setup = |base: u32| {
+        let mem = FlatMemory::with_layout(&[base], &[0x10000]);
+        let mut m = Machine::armv7m(mem);
+        m.load_image(&load_flat(base, SHA_BLOB));
+        m.core.regs.pc = base;
+        m.core.regs.sp = base + 0x8000;
+        m.core.xpsr.set(0x01000000);
+        // Loud on blob rot (benches ignore step errors by design).
+        for _ in 0..10 {
+            m.step().expect("sha blob must step");
+        }
+        m.core.regs.pc = base;
+        m.core.regs.sp = base + 0x8000;
+        m.core.xpsr.set(0x01000000);
+        m
+    };
+    g.bench_function("step_sha_ram_4k", |b| {
+        b.iter_batched(
+            || sha_setup(SHA_BASE),
+            |mut m| {
+                for _ in 0..4096 {
+                    let _ = m.step();
+                }
+                black_box(m.core.cyccnt)
+            },
+            BatchSize::SmallInput,
+        );
+    });
+    g.bench_function("quanta_sha_ram_4k", |b| {
+        b.iter_batched(
+            || (sha_setup(SHA_BASE), TbRunner::new()),
+            |(mut m, mut runner)| {
+                let mut ops = 0u64;
+                while ops < 4096 {
+                    ops += m.run_tb_quantum(&mut runner, 1024).unwrap().ops;
+                }
+                black_box(m.core.cyccnt)
+            },
+            BatchSize::SmallInput,
+        );
+    });
     g.finish();
 }
 

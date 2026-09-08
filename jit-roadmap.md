@@ -456,9 +456,18 @@ Goal: 10–30× on compute loops.
   `--jit` on `run`/`record` (+`gdb`), `--fast` conflict error,
   `Machine::run_tb`, matrix in help. X7 `Fabric::step_mixed` +
   byte-identical rerun test with a JIT radio member.
-- [ ] P3-4: per-platform baselines recorded (x86-64 Linux + mac ARM;
+- [x] P3-4: per-platform baselines recorded (x86-64 Linux + mac ARM;
   Windows smoke): soak workloads = (a) board NOP soak 1M steps,
   (b) SHA-256 loop, (c) ALU torture loop. Gate numbers on x86-64.
+  Done 2026-09-08 (x86-64 Linux; mac ARM + Windows smoke pending CI
+  runs there): board NOP 1M **79.9×**, SHA-256 loop **0.73×**, ALU
+  torture **4.95×** (`tb/*` benches + BENCHMARKS table). SHA firmware
+  is gcc-compiled C (`benches/data/sha256.c`, exact build scripted,
+  blob proven vs the NIST vector in `tests/sha_blob.rs`); torture is
+  programmatic assembler-verified Thumb. SHA's sub-unity is the
+  store-fenced chaining gap (CHAIN=0 measured) — split code/data write
+  generations is now THE critical path to G3 (geomean over these three
+  cannot reach 50× with SHA below unity).
 - [ ] P3-5: book section (JIT architecture, contract, when-NOT-to-use),
   CHANGELOG, `BENCHMARKS.md` JIT table.
 - [ ] GATE G3 (acceptance): geometric mean ≥50× over the three soak

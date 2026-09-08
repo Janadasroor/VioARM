@@ -243,6 +243,33 @@ number sits at the 10× line with run variance (±3%), so the gate
 verdict below stays with the owner. Flash loop soaks clear 10×
 (`quanta_flash_4k` 12.1×).
 
+## P3-4 per-platform baselines (x86-64 Linux)
+
+Soak workloads for G3 acceptance (gate numbers on x86-64; mac ARM and
+Windows smoke pending CI runs on those hosts):
+
+| Soak (cold, per-iteration fresh runner) | Stepper | JIT | Ratio |
+|---|---|---|---|
+| board NOP 1M (`step_board_nop_1M`) | 2.6476 s | 33.132 ms | **79.9** |
+| SHA-256 loop (`step_sha_ram_4k`) | 838.42 µs | 1154.2 µs | **0.73** |
+| ALU torture (`step_torture_ram_4k`) | 416.82 µs | 84.259 µs | **4.95** |
+
+- Board NOP: stm32f103 flash sled (WS realism via ACR), 1M ops/iter.
+  Translation amortizes to nothing; sustained rate dominates.
+- SHA-256: gcc-compiled compression firmware (`benches/data/sha256.c`,
+  exact build in `scripts/gen-sha256-blob.sh`), proven against the NIST
+  "abc" vector in `tests/sha_blob.rs`. The 0.73× is understood, not a
+  missed bug: volatile-RAM schedule traffic fences every chained edge
+  (a store intervenes between every link and its traversal — the same
+  mechanism as the push soak), so blocks run solo with full driver
+  trips. Fixing it is the split code/data write generations follow-up,
+  now the critical path to G3's 50× geomean (with SHA below unity no
+  geomean over these three can reach 50×).
+- ALU torture: every 16-bit DP form (assembler-verified halves) plus
+  MOVW/SDIV/CBNZ in a 36-op loop. Flag-dense templates cost ~2× the
+  lean ALU soak per op; templates are fuzz-proven, so this is rate,
+  not correctness.
+
 ## Regression policy
 
 Wall-clock gating on shared CI runners is flake-prone, so CI runs the
