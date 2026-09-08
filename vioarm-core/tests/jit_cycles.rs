@@ -145,19 +145,30 @@ fn core_at(code: &[u16]) -> Core<TestBus> {
     core
 }
 
-/// One native block (after a warmup lap that builds it, fills the TLB,
-/// and links its edges) must retire exactly what stepping its ops does:
-/// same state, same `cycles`, same `cyccnt`.
+/// Native blocks (after a warmup lap that builds them, fills the TLB,
+/// and links their edges) must retire exactly what stepping their ops
+/// does: same state, same `cycles`, same `cyccnt`. Measured calls run
+/// with unit chaining budgets so each retires exactly its entered block
+/// (emission groups link first-visit edges, so default budgets would
+/// chain several blocks per call — correct, but uncountable here).
 fn check_case(name: &str, code: &[u16], setup: impl Fn(&mut Core<TestBus>), steps: usize) {
     let mut runner = TbRunner::new();
     let mut warm = core_at(code);
     setup(&mut warm);
-    let _ = runner.run_block(&mut warm).unwrap().unwrap();
+    let _ = runner.run_chain(&mut warm, 6);
 
     let mut n = core_at(code);
     setup(&mut n);
-    let outcome = runner.run_block(&mut n).unwrap().unwrap();
-    assert_eq!(outcome.ops, steps, "native op count ({name})");
+    let mut total = 0usize;
+    for _ in 0..16 {
+        if total >= steps {
+            break;
+        }
+        runner.set_chain_budgets(1, 1);
+        let outcome = runner.run_block(&mut n).unwrap().unwrap();
+        total += outcome.ops;
+    }
+    assert_eq!(total, steps, "native op count ({name})");
 
     let mut s = core_at(code);
     setup(&mut s);
@@ -361,10 +372,11 @@ fn div_nonzero_documents_minimum() {
     let mut warm = core_at(&code);
     warm.regs.r[1] = 7;
     warm.regs.r[2] = 2;
-    let _ = runner.run_block(&mut warm).unwrap().unwrap();
+    let _ = runner.run_chain(&mut warm, 4);
     let mut n = core_at(&code);
     n.regs.r[1] = 7;
     n.regs.r[2] = 2;
+    runner.set_chain_budgets(1, 1);
     let outcome = runner.run_block(&mut n).unwrap().unwrap();
     assert_eq!(outcome.ops, 2);
     let mut s = core_at(&code);

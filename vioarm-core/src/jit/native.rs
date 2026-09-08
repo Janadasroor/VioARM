@@ -319,8 +319,31 @@ impl NativeBlock {
         has_dynamic: bool,
         last_load: Option<u8>,
     ) -> Self {
+        Self::new_shared(
+            &Arc::new(code),
+            entry,
+            chain_entry,
+            static_exits,
+            has_dynamic,
+            last_load,
+        )
+    }
+
+    /// Wrap a sub-range of an already-committed shared buffer (emission
+    /// groups, G2): several blocks share one finalize/mapping, each with
+    /// its own entry offsets. Eviction still drops per entry; the mapping
+    /// unmaps when the last sibling's `Arc` drops.
+    #[must_use]
+    pub(crate) fn new_shared(
+        code: &Arc<ExecutableBuffer>,
+        entry: AssemblyOffset,
+        chain_entry: AssemblyOffset,
+        static_exits: Box<[u32]>,
+        has_dynamic: bool,
+        last_load: Option<u8>,
+    ) -> Self {
         Self {
-            code: Arc::new(code),
+            code: code.clone(),
             entry,
             chain_entry,
             static_exits,

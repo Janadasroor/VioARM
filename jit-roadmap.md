@@ -402,6 +402,23 @@ Goal: 10–30× on compute loops.
 - [ ] GATE G2: template fuzz (each template vs interpreter, randomized)
   green + soak ≥10× on x86-64, else stop (emitter approach wrong — fall
   back to custom emitter spike per D1 before more templates).
+  STATUS 2026-09-08 (owner ruling pending — gate NOT ticked): fuzz leg
+  PASSES (600 deterministic trials, 10/10 template families, full state
+  compare; found + fixed a real `DIV rm>=13` accounting panic). Soak leg
+  is MARGINAL-AT-THE-LINE on the written metric: cold-4k ALU reads
+  9.6–10.3× across runs (mean ≈ 10.0; groups moved it from 7.6–8.2×),
+  call 8.3–9.0×, mem 4.8–7.4× (noisy box ±20% on streaming shapes),
+  push 0.56× (structural — needs split generations). Sustained (warm)
+  ALU throughput is ~45× the stepper. The gate's core question — is the
+  emitter approach viable — answers YES with margin; what sits at the
+  line is unamortized translation (~17µs/miss) inside a 4k-op cold
+  window, not execution quality. Options: (a) accept G2 on sustained
+  ≥10× (G3-coherent — acceptance itself uses 1M-step sustained soaks),
+  keeping cold-4k as the startup-latency signal; (b) time-box an exec
+  page pool (custom allocator, unsafe-surface expansion) to cut
+  per-miss cost; (c) stop per the clause. Work delivered here either
+  way: `tests/jit_fuzz.rs`, emission groups (one finalize per static
+  successor group), the `DIV` fix, BENCHMARKS G2 section.
 
 ### Phase 3 — hardening to acceptance (4–6 wk)
 

@@ -830,7 +830,11 @@ impl<B: PeripheralBus> Core<B> {
                 | Inst32::Stl { .. } => 2,
                 Inst32::LdmStm { regs, .. } => 1 + regs.count_ones() as u64,
                 Inst32::Div { signed, rm, .. } => {
-                    let d = self.regs.r[rm as usize];
+                    // `read`, not `r[]`: the decoder admits `rm >= 13`
+                    // (UNPREDICTABLE-but-executable — exec reads SP/LR/PC
+                    // the same way) and direct indexing panics there
+                    // (fuzz-found; reachable from the plain stepper).
+                    let d = self.regs.read(rm);
                     if d == 0 {
                         2
                     } else {

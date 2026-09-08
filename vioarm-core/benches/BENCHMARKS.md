@@ -213,6 +213,36 @@ Unlocking store-loop chaining needs split code/data write generations
 (a data-only loop must not invalidate code freshness) — recorded as
 Phase-2 follow-up work, since it changes the bus write chokepoint.
 
+## JIT G2 work (2026-09-08, x86-64)
+
+Two legs. (1) Template fuzz (`jit_fuzz`, 600 deterministic trials):
+class-uniform random programs (ALU/mem/multi/branch/sys/VFP × 16/32)
+run natively vs the stepper with full state compare — green, and it
+caught a real product panic on the way (`DIV` with `rm >= 13` indexed
+`regs.r[]` in cycle accounting; now `regs.read`, matching exec).
+(2) Emission groups: a miss now translates static successors
+(taken-first, depth ≤ 2, ≤ 4 bodies, ≤ 12 ops) into the same
+assembler/finalize — one ~17µs mapping tax per group instead of per
+block. Same-session A/B (groups on/off):
+
+| Soak (RAM, cold-4k) | Groups off | Groups on |
+|---|---|---|
+| ALU (`quanta_ram_4k`) | 44.4 µs (8.2×) | 33.9 µs (**10.3×**) |
+| call (`quanta_call_ram_4k`) | 107.7 µs (4.7×) | 60.5 µs (**8.3×**) |
+| mem (`quanta_mem_ram_4k`) | 51.7 µs (7.4×) | 66.2 µs (5.7×) |
+| push (`quanta_push_ram_4k`) | 0.57× | 0.57× |
+
+Loop/call shapes win big (their successors run hot — the saved
+finalizes dominate); the mem soak's fallthrough successor never runs in
+the 4k window, so speculation there is pure (bounded) waste plus
+second-order mapping effects. Groups stay: net strongly positive, and
+the waste is capped (no 64-op zero monsters, one page per group).
+Sustained (warm) ALU throughput is ~3.0ns/op ≈ **45×** the stepper —
+the emitter approach the gate questions is healthy; the cold-4k ALU
+number sits at the 10× line with run variance (±3%), so the gate
+verdict below stays with the owner. Flash loop soaks clear 10×
+(`quanta_flash_4k` 12.1×).
+
 ## Regression policy
 
 Wall-clock gating on shared CI runners is flake-prone, so CI runs the

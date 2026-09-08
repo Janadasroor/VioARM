@@ -70,7 +70,9 @@ fn reset_slots(slots: &mut [LinkSlot], statics: &[u32]) {
 pub struct TbStats {
     /// Cache hits that executed.
     pub hits: u64,
-    /// Cold misses that built, inserted, and executed.
+    /// Blocks built and inserted on cold misses (emission groups insert
+    /// several per miss event; only the entered block executes in the
+    /// same call).
     pub misses: u64,
     /// Builder/MPU/sleep refusals (caller steps normally).
     pub fallbacks: u64,
@@ -775,6 +777,87 @@ impl TbRunner {
     /// bytes vanishing between build and hash (fall back so the stepper
     /// faults identically). Emission failures (including resource
     /// exhaustion) degrade gracefully to interpreted execution.
+    /// Speculative emission group (G2): the entered body plus its static
+    /// successors (taken-first order, depth ≤ 2, ≤ 4 bodies, ≤ 12 ops)
+    /// share one assembler/finalize — one ~17µs mapping tax per group
+    /// instead of one per block. Every body is built, hashed, and gated
+    /// exactly like a solo miss (same `build_tb` refusal rules, same
+    /// per-body native gates); successors already native-cached are
+    /// skipped (linking reuses them), interp-cached ones are rebuilt and
+    /// upgraded. Successors build with `itstate == 0` — a branch landing
+    /// mid-IT-body still materializes its predicated variant lazily at
+    /// entry (conservative: one extra miss, rare). Pure translation
+    /// batching: entry validation, linking, and eviction are unchanged
+    /// per body.
+    fn collect_group<B: PeripheralBus>(
+        &mut self,
+        core: &mut Core<B>,
+        meta: &TbMeta,
+        body: &super::builder::TbBody,
+        secure: bool,
+        isa: Isa,
+        tracked: bool,
+        v8m: bool,
+    ) -> Vec<(TbMeta, super::builder::TbBody)> {
+        use super::templates::exit_shape;
+
+        let mut group = vec![(*meta, body.clone())];
+        let mut seen = std::collections::HashSet::from([meta.key.pc]);
+        let mut ops_total = meta.insns as u32;
+        let mut frontier = vec![(meta.key.pc, 0u8)];
+        // Cap: ≤ 4 bodies, depth ≤ 2, ≤ 12 guest ops total. Small groups
+        // stay in one mapping page (no double remaps) and bound wasted
+        // speculative encode; 64-op monsters (zero padding) never join.
+        while let Some((at, depth)) = frontier.pop() {
+            if depth >= 2 || group.len() >= 4 || ops_total >= 12 {
+                continue;
+            }
+            let Some(src) = group.iter().find(|(_, b)| b.pc == at) else {
+                continue;
+            };
+            let (statics, _) = exit_shape(&src.1);
+            // Clone out (the borrow ends before building below).
+            let statics = statics.clone();
+            for t in statics {
+                if group.len() >= 4 || ops_total >= 12 || !seen.insert(t) {
+                    continue;
+                }
+                // Native-cached successors need no emission (edges link to
+                // them directly).
+                if matches!(self.cache.get(t, secure, isa), Some(Got::Native(..))) {
+                    continue;
+                }
+                let Some(sbody) = build_tb(core.mem_mut(), t, secure, isa, 0) else {
+                    continue;
+                };
+                // Same per-body native gates as the entered block.
+                if sbody.store_mask != 0 && !tracked {
+                    continue;
+                }
+                if v8m
+                    && sbody.ops.iter().any(|op| {
+                        matches!(op, TbOp::V16(crate::cpu::decode16::Inst16::Push { .. }))
+                    })
+                {
+                    continue;
+                }
+                let mut smeta = sbody.to_meta();
+                let Some(check) = Self::hash_code(core, &smeta) else {
+                    continue;
+                };
+                smeta.check = check;
+                smeta.write_gen = core.mem_mut().write_epoch().unwrap_or(0);
+                let (sstatics, _) = exit_shape(&sbody);
+                smeta.branch_delta =
+                    u64::from(sstatics.len() == 2) * u64::from(super::native::BRANCH_TAKEN_EXTRA);
+                ops_total += smeta.insns as u32;
+                frontier.push((t, depth + 1));
+                group.push((smeta, sbody));
+            }
+        }
+        group
+    }
+
     fn miss<B: PeripheralBus>(
         &mut self,
         core: &mut Core<B>,
@@ -782,7 +865,7 @@ impl TbRunner {
         secure: bool,
         isa: Isa,
     ) -> Option<(TbMeta, Option<NativeBlock>, Vec<TbOp>)> {
-        use super::templates::{emit_block, exit_shape};
+        use super::templates::{emit_group, exit_shape};
 
         // Explicit `else` (not `?`): every refusal counts a fallback.
         let itstate = core.itstate;
@@ -822,29 +905,65 @@ impl TbRunner {
                 .iter()
                 .any(|op| matches!(op, TbOp::V16(crate::cpu::decode16::Inst16::Push { .. })));
         if self.use_native && (body.store_mask == 0 || tracked) && !limit_risk {
-            // Fresh (or reset) edge slots for this block's exit shape;
-            // stale links never survive a rebuild (the new bytes may
-            // branch elsewhere entirely). The conditional-taken delta
-            // derives from the same shape (exactly the two-static
-            // `taken + fall` seals estimate fall-through) — zero drift by
-            // construction.
-            let (statics, has_dynamic) = exit_shape(&body);
+            // The conditional-taken delta derives from the exit shape
+            // (exactly the two-static `taken + fall` seals estimate
+            // fall-through) — zero drift by construction.
+            let (statics, _) = exit_shape(&body);
             meta.branch_delta =
                 u64::from(statics.len() == 2) * u64::from(super::native::BRANCH_TAKEN_EXTRA);
-            let key = LinkKey { pc, secure, isa };
-            let slot_count = statics.len() + usize::from(has_dynamic);
-            let entry = self
-                .links
-                .entry(key)
-                .or_insert_with(|| empty_slots(slot_count));
-            if entry.len() != slot_count {
-                *entry = empty_slots(slot_count);
-            }
-            reset_slots(entry, &statics);
-            if let Ok(native) = emit_block(&body, unalign_trap, entry) {
-                self.cache.insert_native(meta, native.clone());
-                self.stats.misses += 1;
-                return Some((meta, Some(native), Vec::new()));
+            // Emission group (G2): entered + speculative successors, one
+            // finalize. Slots are (re)created per body before emission
+            // (stale links never survive a rebuild); on group failure the
+            // entered block retries solo (today's exact path), then
+            // interpreted execution.
+            let group = self.collect_group(core, &meta, &body, secure, isa, tracked, core.is_v8m());
+            // Group attempt, then solo-entered retry (today's exact path),
+            // then interpreted execution. Slot boxes are built locally and
+            // MOVED into the link map after emission — moving a box keeps
+            // its heap address, so baked edge addresses stay valid (and no
+            // borrow fights the map mid-emission).
+            let mut attempt = group.len();
+            loop {
+                let mut holders: Vec<(LinkKey, Box<[LinkSlot]>)> = Vec::with_capacity(attempt);
+                for (gmeta, gbody) in group.iter().take(attempt) {
+                    let (statics, has_dynamic) = exit_shape(gbody);
+                    let mut slots = empty_slots(statics.len() + usize::from(has_dynamic));
+                    reset_slots(&mut slots, &statics);
+                    holders.push((
+                        LinkKey {
+                            pc: gmeta.key.pc,
+                            secure,
+                            isa,
+                        },
+                        slots,
+                    ));
+                }
+                let refs: Vec<(&super::builder::TbBody, &[LinkSlot])> = group
+                    .iter()
+                    .take(attempt)
+                    .zip(holders.iter())
+                    .map(|((_, b), (_, s))| (b, &s[..]))
+                    .collect();
+                match emit_group(&refs, unalign_trap) {
+                    Ok(natives) => {
+                        debug_assert_eq!(natives.len(), attempt);
+                        for ((gmeta, _), native) in group.iter().take(attempt).zip(natives.iter()) {
+                            self.cache.insert_native(*gmeta, native.clone());
+                            self.stats.misses += 1;
+                        }
+                        for (key, slots) in holders {
+                            self.links.insert(key, slots);
+                        }
+                        // Entered is group[0] by construction.
+                        let (emeta, enative) = (group[0].0, natives[0].clone());
+                        return Some((emeta, Some(enative), Vec::new()));
+                    }
+                    Err(_) if attempt > 1 => {
+                        attempt = 1;
+                        continue;
+                    }
+                    Err(_) => break,
+                }
             }
         }
         if body.it_entry != 0 {
@@ -1284,9 +1403,11 @@ mod tests {
             }
         );
         assert_eq!(core.regs.r[1], 2);
-        // Block shapes: [B](diverge) [MOVS,B](diverge) [B](hit) [B](hit).
+        // Block shapes: [B](miss) [MOVS,B](hit: pre-built by the emission
+        // group) [B](hit) [B](hit). Misses count built bodies (3, all in
+        // the first miss event); reaches that used to miss are now hits.
         assert_eq!(runner.stats().misses, 3);
-        assert_eq!(runner.stats().hits, 1);
+        assert_eq!(runner.stats().hits, 3);
     }
 
     #[test]

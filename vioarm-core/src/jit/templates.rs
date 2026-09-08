@@ -528,29 +528,104 @@ pub fn emit_block(
     unalign_trap: bool,
     slots: &[LinkSlot],
 ) -> Result<super::native::NativeBlock, super::EmitError> {
-    use super::native::{emit_chain_entry, emit_epilogue, emit_prologue, NativeBlock, EXIT_FALL};
-    use dynasmrt::AssemblyOffset;
+    use super::native::NativeBlock;
 
     let mut ops = arch::Assembler::new()?;
-    emit_prologue(&mut ops);
+    let (entry, chain_entry) = emit_one(&mut ops, body, unalign_trap, slots)?;
+    let (statics, has_dynamic) = exit_shape(body);
+    ops.finalize()
+        .map(|buf| {
+            NativeBlock::new(
+                buf,
+                entry,
+                chain_entry,
+                statics.into_boxed_slice(),
+                has_dynamic,
+                last_op_load(body.ops.last()),
+            )
+        })
+        .map_err(|_| super::EmitError::Finalize)
+}
+
+/// Emit several blocks into one assembler/finalize (emission groups, G2):
+/// one mapping tax for the whole group instead of one per block. Each
+/// body gets its own prologue/entry/edges (identical bytes to separate
+/// emission); the returned blocks share the mapping and evict
+/// independently. Any `Err` aborts the group (the caller falls back to a
+/// smaller group or interpreted execution — the assembler is discarded).
+pub fn emit_group(
+    bodies: &[(&super::TbBody, &[LinkSlot])],
+    unalign_trap: bool,
+) -> Result<Vec<super::native::NativeBlock>, super::EmitError> {
+    use super::native::NativeBlock;
+    use std::sync::Arc;
+
+    let mut ops = arch::Assembler::new()?;
+    let mut offs = Vec::with_capacity(bodies.len());
+    for (body, slots) in bodies {
+        offs.push(emit_one(&mut ops, body, unalign_trap, slots)?);
+    }
+    let buf = ops.finalize().map_err(|_| super::EmitError::Finalize)?;
+    let shared = Arc::new(buf);
+    Ok(bodies
+        .iter()
+        .zip(offs)
+        .map(|((body, _), (entry, chain_entry))| {
+            let (statics, has_dynamic) = exit_shape(body);
+            NativeBlock::new_shared(
+                &shared,
+                entry,
+                chain_entry,
+                statics.into_boxed_slice(),
+                has_dynamic,
+                last_op_load(body.ops.last()),
+            )
+        })
+        .collect())
+}
+
+/// Append one block's native code to an assembler: prologue, the
+/// chained-entry stub (P2-4), one template per op in order, then the
+/// terminator's own edges — or, when the block ends in plain ops, a
+/// `FALL` edge to the fallthrough address. Returns the (entry,
+/// chained-entry) offsets for this body. Same failure contract as
+/// [`emit_block`].
+fn emit_one(
+    ops: &mut arch::Assembler,
+    body: &super::TbBody,
+    unalign_trap: bool,
+    slots: &[LinkSlot],
+) -> Result<(dynasmrt::AssemblyOffset, dynasmrt::AssemblyOffset), super::EmitError> {
+    use super::native::{emit_chain_entry, emit_epilogue, emit_prologue, EXIT_FALL};
+
+    // Entry marker first: its resolved offset is this body's driver entry
+    // (offset 0 for a fresh assembler — identical to the old hardcoded
+    // entry for single-block emission).
+    let entry_lbl = ops.new_dynamic_label();
+    arch::mark_label(&mut *ops, entry_lbl);
+    let entry = ops
+        .labels()
+        .resolve_dynamic(entry_lbl)
+        .map_err(|_| super::EmitError::Finalize)?;
+    emit_prologue(&mut *ops);
     // Driver entry skips the chained-entry stub (budgets/accumulators are
     // a chaining resource — the entered block must not consume them).
-    let body_lbl = arch::emit_entry_jump(&mut ops);
+    let body_lbl = arch::emit_entry_jump(&mut *ops);
     // Marker label: its resolved offset is the chained entry (linked edges
     // jump here with pins live and the driver frame active).
     let chain_lbl = ops.new_dynamic_label();
-    arch::mark_label(&mut ops, chain_lbl);
+    arch::mark_label(&mut *ops, chain_lbl);
     let chain_entry = ops
         .labels()
         .resolve_dynamic(chain_lbl)
         .map_err(|_| super::EmitError::Finalize)?;
     let brk = emit_chain_entry(
-        &mut ops,
+        &mut *ops,
         body.pc,
         body.ops.len() as u32,
         body.cycle_estimate,
     );
-    arch::mark_label(&mut ops, body_lbl);
+    arch::mark_label(&mut *ops, body_lbl);
     // ITSTATE exit store first (P2-5, S4): the value is fully static, and
     // nothing native reads the field mid-block (conditions are static,
     // guards read flags) — so it can land before the body and cover every
@@ -558,7 +633,7 @@ pub fn emit_block(
     // pre-S4 block (zero added bytes there).
     let exit_it = exit_itstate(body);
     if exit_it != body.it_entry {
-        super::native::emit_itstate_store(&mut ops, exit_it);
+        super::native::emit_itstate_store(&mut *ops, exit_it);
     }
     let mut tape = SlotTape::new(slots);
     let mut pc = body.pc;
@@ -573,25 +648,25 @@ pub fn emit_block(
         } else if it != 0 {
             // Predicated body op (S4): the builder guarantees predicable
             // (arch double-gates via `emit_op` failing closed).
-            if !arch::emit_predicated(&mut ops, op, pc, unalign_trap, it >> 4) {
+            if !arch::emit_predicated(&mut *ops, op, pc, unalign_trap, it >> 4) {
                 return Err(super::EmitError::Untemplated);
             }
             it = it_advance(it);
         } else if i + 1 == n {
-            if emit_op(&mut ops, op, pc, unalign_trap) {
-                arch::emit_fall_edge(&mut ops, body.end_pc, tape.take());
-            } else if !arch::emit_terminator(&mut ops, op, pc, unalign_trap, &mut tape) {
+            if emit_op(&mut *ops, op, pc, unalign_trap) {
+                arch::emit_fall_edge(&mut *ops, body.end_pc, tape.take());
+            } else if !arch::emit_terminator(&mut *ops, op, pc, unalign_trap, &mut tape) {
                 return Err(super::EmitError::Untemplated);
             }
             edged = true;
-        } else if !emit_op(&mut ops, op, pc, unalign_trap) {
+        } else if !emit_op(&mut *ops, op, pc, unalign_trap) {
             return Err(super::EmitError::Untemplated);
         }
         pc = pc.wrapping_add(op_len(op));
     }
     if !edged {
         // Predicated or `IT` tail: no terminator emitted its own edge.
-        arch::emit_fall_edge(&mut ops, body.end_pc, tape.take());
+        arch::emit_fall_edge(&mut *ops, body.end_pc, tape.take());
     }
     assert!(
         tape.done(),
@@ -599,22 +674,9 @@ pub fn emit_block(
     );
     // Budget-break exit: pins writeback + `FALL` to the block's own PC
     // (the driver re-runs it with fresh budgets).
-    arch::mark_label(&mut ops, brk);
-    emit_epilogue(&mut ops, EXIT_FALL, body.pc);
-    let last_load = last_op_load(body.ops.last());
-    let (statics, has_dynamic) = exit_shape(body);
-    ops.finalize()
-        .map(|buf| {
-            NativeBlock::new(
-                buf,
-                AssemblyOffset(0),
-                chain_entry,
-                statics.into_boxed_slice(),
-                has_dynamic,
-                last_load,
-            )
-        })
-        .map_err(|_| super::EmitError::Finalize)
+    arch::mark_label(&mut *ops, brk);
+    emit_epilogue(&mut *ops, EXIT_FALL, body.pc);
+    Ok((entry, chain_entry))
 }
 
 /// Load-use tracker value stepping `op` (as a block tail) would leave
