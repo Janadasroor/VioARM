@@ -6,6 +6,30 @@ Step benches exclude setup (`iter_batched`); the means below divide into
 per-step costs. Cycle assertions in each bench pin the simulated behavior,
 so a perf change that alters timing fails loudly instead of silently.
 
+## JIT summary (P3-5 consolidated table, x86-64)
+
+Cold per-iteration means (fresh runner + machine; translation included)
+unless noted. Detail sections below hold the history.
+
+| Soak | Stepper | JIT | Ratio |
+|---|---|---|---|
+| ALU loop RAM 4k (`tb/*_ram_4k`) | 345–350 µs | ~34 µs | **~10** |
+| ALU loop flash 4k (`tb/*_flash_4k`) | ~420 µs | ~35 µs | **~12** |
+| mem-mix RAM 4k | ~377 µs | ~66 µs | **~5.7** |
+| mem-mix flash 4k | ~440 µs | ~68 µs | **~6.5** |
+| call/ret RAM 4k | ~503 µs | ~61 µs | **~8.3** |
+| push/pop RAM 4k | ~500 µs | ~890 µs | **0.56** |
+| board NOP 1M | 2.6476 s | 33.132 ms | **79.9** |
+| SHA-256 loop RAM 4k | 838.42 µs | 1154.2 µs | **0.73** |
+| ALU torture RAM 4k | 416.82 µs | 84.259 µs | **4.95** |
+| ALU loop sustained (warm, per op) | 135 ns | 3.0 ns | **~45** |
+
+Sub-unity soaks are store-fenced chaining gaps (one driver trip per
+block; see the push note and the P3-4 section), not missed bugs — the
+fix is split code/data write generations (G3 critical path). G3
+acceptance: geometric mean ≥50× over board NOP 1M, SHA-256, ALU
+torture on x86-64 release.
+
 ## Baselines (2026-09-04, pre-G2)
 
 | Bench | Window | Mean | Per-op |
