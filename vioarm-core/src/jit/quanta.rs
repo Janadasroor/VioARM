@@ -64,6 +64,64 @@ pub struct QuantumOutcome {
 }
 
 impl<M: PeripheralBus> Machine<M> {
+    /// Run translated blocks to `budget` retired ops (the JIT analogue
+    /// of [`Machine::run`], X6): quanta of [`DEFAULT_QUANTUM_OPS`] until
+    /// the budget retires or a halt propagates (flushed first, like
+    /// `run`'s settle-before-`Err`). Always ends with
+    /// [`HaltCause::CycleBudgetExhausted`] when nothing halts first, so
+    /// CLI/reporting code matches on the same halt contract.
+    ///
+    /// # Errors
+    ///
+    /// Propagates halts exactly as the stepper reports them.
+    pub fn run_tb(&mut self, runner: &mut TbRunner, budget: u64) -> Result<(), HaltCause> {
+        let mut ops = 0u64;
+        while ops < budget {
+            // Cap each quantum at the remainder so small budgets don't
+            // overshoot by a full 1024-op quantum (blocks stay atomic —
+            // overshoot is at most one trailing block, same as before).
+            let cap = (budget - ops).clamp(1, DEFAULT_QUANTUM_OPS);
+            ops += self.run_tb_quantum(runner, cap)?.ops;
+        }
+        Err(HaltCause::CycleBudgetExhausted)
+    }
+
+    /// Step one translation block and report every retired instruction's
+    /// PC (X2: GDB single-step in JIT mode steps translated blocks but
+    /// reports per-insn stops). Falls back to one accurate step where no
+    /// block runs (sleeping core, MPU refusal, builder refusal, hooked
+    /// ranges — all sound single-step owners). The PCs decode forward
+    /// from the entry PC over the retired op count (P2-6 exit rules make
+    /// that walk exact: stores and branches seal, side exits commit the
+    /// prefix plus the faulting op). Never empty on success.
+    ///
+    /// # Errors
+    ///
+    /// Propagates halts exactly as the stepper reports them.
+    pub fn step_tb_block(&mut self, runner: &mut TbRunner) -> Result<Vec<u32>, HaltCause> {
+        let start = self.core.regs.pc;
+        let Some(outcome) = runner.run_block(&mut self.core)? else {
+            self.step()?;
+            return Ok(vec![start]);
+        };
+        let mut pcs = Vec::with_capacity(outcome.ops);
+        let mut pc = start;
+        let isa = self.core.isa;
+        for _ in 0..outcome.ops {
+            pcs.push(pc);
+            // Validated bytes decode (entry validation + store seals);
+            // break defensively rather than over-report past a hole.
+            let Some((_, len)) = super::builder::fetch_op(self.core.mem_mut(), pc, isa) else {
+                break;
+            };
+            pc = pc.wrapping_add(len);
+        }
+        if pcs.is_empty() {
+            pcs.push(start);
+        }
+        Ok(pcs)
+    }
+
     /// Run translated blocks up to `max_ops` retired ops, then one boundary
     /// (device flush + single IRQ delivery). See the module docs for the
     /// time model. Requires `fast_quantum() == 0`.

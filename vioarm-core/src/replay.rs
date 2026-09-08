@@ -47,6 +47,9 @@ pub struct RecordMeta {
     pub semihost: bool,
     /// Fast-mode quantum the run used (`0` = accurate).
     pub fast: u64,
+    /// Translated-block run (X5/X6): replay runs the same mode and
+    /// compares memory/device state only (counters excluded per D7).
+    pub jit: bool,
 }
 
 /// The outcome of one run: counters, halts, channels, RAM digests.
@@ -64,6 +67,8 @@ pub struct Golden {
     pub semihost: bool,
     /// Fast-mode quantum the run used.
     pub fast: u64,
+    /// Translated-block run (see [`RecordMeta::jit`]).
+    pub jit: bool,
     /// SHA-256 of the loaded image bytes, hex.
     pub image_sha256: String,
     /// Halt cause display (`"breakpoint"`, `"cycle budget exhausted"`, ...).
@@ -135,6 +140,7 @@ impl Golden {
         out.push_str(&format!("budget {}\n", self.budget));
         out.push_str(&format!("semihost {}\n", self.semihost));
         out.push_str(&format!("fast {}\n", self.fast));
+        out.push_str(&format!("jit {}\n", self.jit));
         out.push_str(&format!("image-sha256 {}\n", self.image_sha256));
         out.push_str(&format!("halt {}\n", self.halt));
         out.push_str(&format!("cycles {}\n", self.cycles));
@@ -183,6 +189,16 @@ impl Golden {
         let fast: u64 = get("fast", &mut lines)?
             .parse()
             .map_err(|_| "bad fast".to_owned())?;
+        // `jit` postdates v1 goldens: absent means accurate (old files
+        // keep parsing; old binaries reject new files at `unknown
+        // golden line`, which is correct — they cannot replay JIT mode).
+        let jit: bool = match lines.clone().next() {
+            Some(l) if l.starts_with("jit ") => {
+                lines.next();
+                l[4..].parse().map_err(|_| "bad jit".to_owned())?
+            }
+            _ => false,
+        };
         let image_sha256 = get("image-sha256", &mut lines)?;
         if image_sha256.len() != 64 || unhex(&image_sha256).is_err() {
             return Err("bad image-sha256".to_owned());
@@ -226,6 +242,7 @@ impl Golden {
             budget,
             semihost,
             fast,
+            jit,
             image_sha256,
             halt,
             cycles,
@@ -280,7 +297,31 @@ pub fn record(
     image: &[u8],
     snaps: &[(u32, u32)],
 ) -> Result<Golden, String> {
+    #[cfg(feature = "jit")]
+    if meta.jit {
+        if meta.fast != 0 {
+            return Err("jit mode needs fast == 0 (see --jit help)".to_owned());
+        }
+        let mut runner = crate::jit::TbRunner::new();
+        let err = m.run_tb(&mut runner, meta.budget);
+        return finish(m, meta, image, snaps, err);
+    }
+    #[cfg(not(feature = "jit"))]
+    if meta.jit {
+        return Err("golden needs a jit build".to_owned());
+    }
     let err = m.run(meta.budget);
+    finish(m, meta, image, snaps, err)
+}
+
+/// Shared golden tail after the run (both engines).
+fn finish(
+    m: &mut Machine<BoardMemory>,
+    meta: &RecordMeta,
+    image: &[u8],
+    snaps: &[(u32, u32)],
+    err: Result<(), crate::error::HaltCause>,
+) -> Result<Golden, String> {
     let halt = match err {
         Err(cause) => format!("{cause}"),
         Ok(()) => unreachable!("run always halts"),
@@ -305,6 +346,7 @@ pub fn record(
         budget: meta.budget,
         semihost: meta.semihost,
         fast: meta.fast,
+        jit: meta.jit,
         image_sha256: sha256_hex(image),
         halt,
         cycles: m.cycles(),
@@ -332,6 +374,11 @@ pub fn replay(
     }
     // Faithful replay runs in the recorded mode.
     m.set_fast_quantum(golden.fast);
+    #[cfg(not(feature = "jit"))]
+    if golden.jit {
+        diffs.push("golden needs a jit build".to_owned());
+        return diffs;
+    }
     for (addr, val) in patches {
         // Reserved drops are the caller's bug; the diff below still speaks.
         let _ = m.core.mem().write(*addr, *val);
@@ -342,6 +389,7 @@ pub fn replay(
         budget: golden.budget,
         semihost: golden.semihost,
         fast: golden.fast,
+        jit: golden.jit,
     };
     let rerun = match record(m, &meta, image, snaps) {
         Ok(g) => g,
@@ -356,17 +404,22 @@ pub fn replay(
             golden.halt, rerun.halt
         ));
     }
-    if rerun.cycles != golden.cycles {
-        diffs.push(format!(
-            "cycles: golden {} != replay {}",
-            golden.cycles, rerun.cycles
-        ));
-    }
-    if rerun.cyccnt != golden.cyccnt {
-        diffs.push(format!(
-            "cyccnt: golden {} != replay {}",
-            golden.cyccnt, rerun.cyccnt
-        ));
+    // Counters compare only on the exact path: under JIT, `cyccnt` is
+    // block estimates (D7), so replay compares memory/device state
+    // only (halt, channels, semihost output, snaps below).
+    if !golden.jit {
+        if rerun.cycles != golden.cycles {
+            diffs.push(format!(
+                "cycles: golden {} != replay {}",
+                golden.cycles, rerun.cycles
+            ));
+        }
+        if rerun.cyccnt != golden.cyccnt {
+            diffs.push(format!(
+                "cyccnt: golden {} != replay {}",
+                golden.cyccnt, rerun.cyccnt
+            ));
+        }
     }
     if rerun.channels != golden.channels {
         diffs.push(format!(
@@ -432,6 +485,7 @@ mod tests {
             budget: 1_000,
             semihost: false,
             fast: 0,
+            jit: false,
         }
     }
 
@@ -448,6 +502,37 @@ mod tests {
         // Serialize/parse round-trips exactly.
         let text = golden.serialize();
         assert_eq!(Golden::parse(&text).unwrap(), golden);
+    }
+
+    /// JIT record/replay round-trips on state only (X5): the golden
+    /// carries the marker, counters are excluded from the diff, and an
+    /// old (marker-less) golden still parses as accurate mode.
+    #[cfg(feature = "jit")]
+    #[test]
+    fn jit_record_then_replay_matches_state_only() {
+        let mut meta = meta();
+        meta.jit = true;
+        let mut m = machine();
+        let golden = record(&mut m, &meta, &image(), &[(SNAP, 4)]).unwrap();
+        assert!(golden.jit, "marker recorded");
+        assert_eq!(golden.halt, "cycle budget exhausted");
+        // RAM effects identical to the accurate run (STR r0=#0x5A).
+        let mut m2 = machine();
+        let diffs = replay(&mut m2, &golden, &image(), &[], &[(SNAP, 4)]);
+        assert_eq!(diffs, Vec::<String>::new(), "clean JIT replay matches");
+        // Serialize/parse round-trips exactly, marker included.
+        let text = golden.serialize();
+        assert!(text.lines().any(|l| l == "jit true"));
+        assert_eq!(Golden::parse(&text).unwrap(), golden);
+        // Pre-marker goldens parse as accurate mode (back-compat).
+        let old = text
+            .lines()
+            .filter(|l| !l.starts_with("jit "))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        let parsed = Golden::parse(&old).unwrap();
+        assert!(!parsed.jit);
     }
 
     #[test]

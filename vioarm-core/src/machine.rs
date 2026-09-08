@@ -495,6 +495,18 @@ impl<M: PeripheralBus> Machine<M> {
         }
     }
 
+    /// Remove a pre- (`before`) or post-instruction hook over exactly
+    /// `start..end` (X2: GDB breakpoint withdrawal un-bypasses the range).
+    /// Returns how many entries were removed (0 when the memory has no
+    /// registry or nothing matched).
+    pub fn remove_instruction(&mut self, before: bool, start: u32, end: u32) -> usize {
+        if let Some(h) = self.core.mem().hooks_mut() {
+            h.remove_instruction(before, start, end)
+        } else {
+            0
+        }
+    }
+
     /// A peripheral-access hook: `write` selects direction, `name` (if
     /// given) restricts to one device (`Peripheral::name`, e.g. `"usart1"`).
     /// See [`Machine::on_instruction`] for the return value.

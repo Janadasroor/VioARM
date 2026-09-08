@@ -74,6 +74,16 @@ pub struct SpiPair {
 /// reporting its cause; stepping it again is harmless).
 pub type StepOutcomes = Vec<Result<(), HaltCause>>;
 
+/// One member's outcome in a [`Fabric::step_mixed`] round.
+#[cfg(feature = "jit")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MixedOutcome {
+    /// Accurate single step.
+    Stepped(Result<(), HaltCause>),
+    /// TB quantum retired-op count.
+    Quantum(Result<u64, HaltCause>),
+}
+
 /// Two or more machines with virtual wires, stepped in lockstep.
 pub struct Fabric<M: PeripheralBus> {
     machines: Vec<Machine<M>>,
@@ -184,6 +194,37 @@ impl<M: PeripheralBus> Fabric<M> {
             // Peripheral staged bytes become the controller's next MISO.
             Self::move_bytes(&mut self.machines, &pair.peripheral, &pair.controller);
         }
+    }
+
+    /// One mixed lockstep round (X7): member `jit` advances one TB
+    /// quantum of `quantum_ops` retired ops, every other member steps
+    /// once, then wires pump in attach order (same as [`Fabric::step`]).
+    /// Rerunning the same rounds is byte-identical (see
+    /// `tests/jit_fabric.rs`); mixing granularities only changes
+    /// interleaving density, never determinism. Firmware must not halt
+    /// mid-scenario (halts surface per member for the caller to assert).
+    #[cfg(feature = "jit")]
+    pub fn step_mixed(
+        &mut self,
+        jit: usize,
+        runner: &mut crate::jit::TbRunner,
+        quantum_ops: u64,
+    ) -> Vec<MixedOutcome> {
+        let mut outcomes = Vec::with_capacity(self.machines.len());
+        for (i, m) in self.machines.iter_mut().enumerate() {
+            if i == jit {
+                outcomes.push(MixedOutcome::Quantum(
+                    m.run_tb_quantum(runner, quantum_ops).map(|q| q.ops),
+                ));
+            } else {
+                outcomes.push(MixedOutcome::Stepped(m.step()));
+            }
+        }
+        self.pump_uart();
+        self.pump_can();
+        self.pump_radio();
+        self.pump_spi();
+        outcomes
     }
 
     /// One lockstep round: step every machine in index order, then pump

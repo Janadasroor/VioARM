@@ -112,6 +112,10 @@ pub struct TbMeta {
     /// builder): the runner revalidates only after write ops, never after
     /// pure ALU/branch/load ops (P1-6).
     pub store_mask: u64,
+    /// Bit `i` set when op `i` performs a bus read (stamped by the
+    /// builder): under an armed read watchpoint the block runs
+    /// interpreted (X1 — native fast paths skip hook registries).
+    pub load_mask: u64,
     /// ITSTATE at block entry (P2-5, S4; stamped by the builder): the
     /// runner enters native blocks only on an exact match (plain blocks
     /// record 0, unifying the old blanket `itstate != 0` refusal).
@@ -470,6 +474,7 @@ mod tests {
             check: 0,
             write_gen: 0,
             store_mask: 0,
+            load_mask: 0,
             it_entry: 0,
         }
     }

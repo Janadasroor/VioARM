@@ -68,6 +68,10 @@ pub struct Hooks {
     has_write: bool,
     has_prd: bool,
     has_pwr: bool,
+    /// Registration generation (X1): bumped on every add/remove so the
+    /// JIT runner can fence stale chained edges (a hook armed after
+    /// linking would otherwise be bypassed mid-chain).
+    gen: u64,
 }
 
 impl std::fmt::Debug for Hooks {
@@ -90,6 +94,7 @@ impl Hooks {
             has_write: false,
             has_prd: false,
             has_pwr: false,
+            gen: 0,
         }
     }
 }
@@ -109,6 +114,7 @@ impl Hooks {
         } else {
             self.has_after = true;
         }
+        self.gen = self.gen.wrapping_add(1);
         self.entries.push(Entry {
             kind: if before { Kind::Before } else { Kind::After },
             start,
@@ -121,6 +127,7 @@ impl Hooks {
     /// A read watchpoint over `start..end`.
     pub fn on_read(&mut self, start: u32, end: u32, callback: impl FnMut(&HookEvent) + 'static) {
         self.has_read = true;
+        self.gen = self.gen.wrapping_add(1);
         self.entries.push(Entry {
             kind: Kind::Read,
             start,
@@ -133,6 +140,7 @@ impl Hooks {
     /// A write watchpoint over `start..end`.
     pub fn on_write(&mut self, start: u32, end: u32, callback: impl FnMut(&HookEvent) + 'static) {
         self.has_write = true;
+        self.gen = self.gen.wrapping_add(1);
         self.entries.push(Entry {
             kind: Kind::Write,
             start,
@@ -155,6 +163,7 @@ impl Hooks {
         } else {
             self.has_prd = true;
         }
+        self.gen = self.gen.wrapping_add(1);
         self.entries.push(Entry {
             kind: if write {
                 Kind::PeripheralWrite
@@ -168,6 +177,12 @@ impl Hooks {
         });
     }
 
+    /// Registration generation for JIT link fencing (X1).
+    #[must_use]
+    pub(crate) const fn gen(&self) -> u64 {
+        self.gen
+    }
+
     /// No callbacks registered at all (the fast path).
     #[must_use]
     pub const fn is_empty(&self) -> bool {
@@ -177,6 +192,34 @@ impl Hooks {
             && !self.has_write
             && !self.has_prd
             && !self.has_pwr
+    }
+
+    /// Whether any pre/post-instruction range overlaps `start..end` (X1):
+    /// a translation block covering hooked code must run interpreted so
+    /// every retired instruction fires exactly like the stepper.
+    #[must_use]
+    pub fn overlaps_insn(&self, start: u32, end: u32) -> bool {
+        self.entries
+            .iter()
+            .any(|e| matches!(e.kind, Kind::Before | Kind::After) && e.start < end && start < e.end)
+    }
+
+    /// Remove pre/post-instruction hooks over exactly `start..end` (X2:
+    /// GDB breakpoint withdrawal). Recomputes the armed flags from the
+    /// survivors (they are set on registration, never cleared piecemeal).
+    /// Returns how many entries were removed.
+    pub fn remove_instruction(&mut self, before: bool, start: u32, end: u32) -> usize {
+        let kind = if before { Kind::Before } else { Kind::After };
+        let before_len = self.entries.len();
+        self.entries
+            .retain(|e| !(e.kind == kind && e.start == start && e.end == end));
+        let removed = before_len - self.entries.len();
+        if removed > 0 {
+            self.has_before = self.entries.iter().any(|e| e.kind == Kind::Before);
+            self.has_after = self.entries.iter().any(|e| e.kind == Kind::After);
+            self.gen = self.gen.wrapping_add(1);
+        }
+        removed
     }
 
     pub(crate) const fn has_before(&self) -> bool {

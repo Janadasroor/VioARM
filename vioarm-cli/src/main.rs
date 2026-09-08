@@ -1613,6 +1613,12 @@ enum Commands {
         /// Fast-mode quantum (`0` = accurate mode; see `Machine::set_fast_quantum`)
         #[arg(long, default_value_t = 0)]
         fast: u64,
+        /// Translated-block engine (default off; needs `--fast 0`.
+        /// Modes: accurate (`--fast 0`, no `--jit`), fast-coarse
+        /// (`--fast K`, K > 0), JIT (`--jit`, approximate `cyccnt` per D7
+        /// while state stays exact).
+        #[arg(long)]
+        jit: bool,
     },
     /// Record a golden trace (deterministic replay artifact)
     Record {
@@ -1633,6 +1639,11 @@ enum Commands {
         /// Golden file to write
         #[arg(long)]
         output: PathBuf,
+        /// Record in translated-block mode (marks the golden JIT;
+        /// replay then compares state only, counters excluded per D7;
+        /// needs `--fast 0`)
+        #[arg(long)]
+        jit: bool,
         /// RAM spans to digest (`BASE:LEN`, repeatable; default snapshots
         /// the first 4 KiB of `0x20000000`)
         #[arg(long)]
@@ -1696,6 +1707,10 @@ enum Commands {
         image: PathBuf,
         #[arg(long, default_value_t = 3333)]
         port: u16,
+        /// Debug translated blocks (X2: per-insn stops from TB metadata,
+        /// quanta continue, breakpoint pages bypass translation)
+        #[arg(long)]
+        jit: bool,
         #[arg(long, value_enum, default_value_t = Board::Virtual)]
         board: Board,
         #[arg(long, default_value_t = 0, value_parser = parse_u32)]
@@ -1797,8 +1812,14 @@ fn machine_for(board: Board, img: &LoadedImage) -> Machine<board::BoardMemory> {
     m
 }
 
-fn run_quiet(m: &mut Machine<board::BoardMemory>, budget: u64) {
-    match m.run(budget) {
+fn run_quiet(m: &mut Machine<board::BoardMemory>, budget: u64, jit: bool) {
+    let outcome = if jit {
+        let mut runner = vioarm_core::jit::TbRunner::new();
+        m.run_tb(&mut runner, budget)
+    } else {
+        m.run(budget)
+    };
+    match outcome {
         Err(HaltCause::CycleBudgetExhausted) => {
             let (regs, xpsr, cycles) = m.core.snapshot();
             println!(
@@ -2087,13 +2108,21 @@ fn main() {
                 budget,
                 semihost,
                 fast,
+                jit,
             } => {
+                if jit && fast != 0 {
+                    eprintln!(
+                        "{} --jit needs --fast 0 (quanta need the accurate time model)",
+                        "error:".red().bold()
+                    );
+                    std::process::exit(2);
+                }
                 let (img, _) = load_image_auto(&image, base);
                 let mut m = machine_for(board, &img);
                 m.semihost_enable(semihost);
                 m.set_fast_quantum(fast);
                 banner();
-                run_quiet(&mut m, budget);
+                run_quiet(&mut m, budget, jit);
             }
             Commands::Record {
                 image,
@@ -2104,6 +2133,7 @@ fn main() {
                 fast,
                 output,
                 snap,
+                jit,
             } => {
                 use vioarm_core::replay::{parse_snap, record, RecordMeta};
                 let (img, _) = load_image_auto(&image, base);
@@ -2123,12 +2153,20 @@ fn main() {
                         })
                         .collect()
                 };
+                if jit && fast != 0 {
+                    eprintln!(
+                        "{} --jit needs --fast 0 (quanta need the accurate time model)",
+                        "error:".red().bold()
+                    );
+                    std::process::exit(2);
+                }
                 let meta = RecordMeta {
                     board: format!("{board:?}").to_ascii_lowercase(),
                     base,
                     budget,
                     semihost,
                     fast,
+                    jit,
                 };
                 match record(&mut m, &meta, &image_bytes, &spans) {
                     Ok(golden) => {
@@ -2257,6 +2295,7 @@ fn main() {
                 board,
                 base,
                 semihost,
+                jit,
             } => {
                 let (img, _) = load_image_auto(&image, base);
                 let mut m = machine_for(board, &img);
@@ -2273,7 +2312,7 @@ fn main() {
                     "{} waiting for gdb on 127.0.0.1:{port}",
                     "gdbserver:".bright_magenta().bold()
                 );
-                if let Err(e) = vioarm_gdb::serve(&mut m, &listener) {
+                if let Err(e) = vioarm_gdb::serve_jit(&mut m, &listener, jit) {
                     eprintln!("{} gdb session error: {e}", "error:".red().bold());
                     std::process::exit(3);
                 }
@@ -2350,7 +2389,7 @@ fn main() {
             "{} waiting for gdb on 127.0.0.1:{port}",
             "gdbserver:".bright_magenta().bold()
         );
-        if let Err(e) = vioarm_gdb::serve(&mut m, &listener) {
+        if let Err(e) = vioarm_gdb::serve_jit(&mut m, &listener, false) {
             eprintln!("{} gdb session error: {e}", "error:".red().bold());
             std::process::exit(3);
         }
@@ -2360,7 +2399,7 @@ fn main() {
     if cli.trace {
         run_traced(&mut m, cli.budget);
     } else {
-        run_quiet(&mut m, cli.budget);
+        run_quiet(&mut m, cli.budget, false);
     }
     for device in m.core.mem().devices_mut() {
         let tx = device.drain_output();

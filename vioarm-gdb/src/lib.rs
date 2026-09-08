@@ -10,12 +10,13 @@
 //! The protocol core (`Session`) is transport-independent and unit-tested; the
 //! TCP framing and socket loop live in [`serve`].
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt::Write as _;
 use std::io::{self, ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
 
 use vioarm_core::error::HaltCause;
+use vioarm_core::jit::TbRunner;
 use vioarm_core::machine::Machine;
 use vioarm_core::mem::PeripheralBus;
 
@@ -152,6 +153,17 @@ enum Stop {
 /// A transport-independent RSP session against one machine.
 pub struct Session<'a, M: PeripheralBus> {
     machine: &'a mut Machine<M>,
+    /// Translated-block engine for JIT-mode stepping/continue (X2).
+    runner: TbRunner,
+    /// JIT mode: single-steps run translated blocks (per-insn stops from
+    /// TB metadata) and continues run quanta; breakpoint pages bypass
+    /// translation through X1 hook markers (see [`Session::set_jit`]).
+    jit: bool,
+    /// Queued per-insn stop PCs from the in-flight translated block.
+    pending: VecDeque<u32>,
+    /// Last reported stop PC (the user-visible PC while stops are queued;
+    /// live regs already ran the block ahead).
+    stop_pc: Option<u32>,
     /// The last stop signal, reported by a later `?`.
     last_signal: u8,
     /// `QStartNoAckMode` negotiated.
@@ -169,14 +181,40 @@ impl<'a, M: PeripheralBus> Session<'a, M> {
     pub fn new(machine: &'a mut Machine<M>) -> Self {
         Self {
             machine,
+            runner: TbRunner::new(),
+            jit: false,
+            pending: VecDeque::new(),
+            stop_pc: None,
             last_signal: 5,
             no_ack: false,
             bps: HashMap::new(),
         }
     }
 
+    /// Enable or disable JIT-mode stepping/continue (X2). Switching
+    /// modes flushes queued per-insn stops (they belong to already
+    /// retired code under the other engine).
+    pub fn set_jit(&mut self, on: bool) {
+        self.jit = on;
+        self.pending.clear();
+    }
+
+    /// Drop queued per-insn stops (live state changed underneath: memory
+    /// or register writes, breakpoint updates, mode switches).
+    fn flush_pending(&mut self) {
+        self.pending.clear();
+        self.stop_pc = None;
+    }
+
     /// Read architectural register number `reg` (see [`REG_COUNT`]).
     fn read_reg(&self, reg: u8) -> Option<u32> {
+        // While per-insn stops are queued, the user-visible PC is the
+        // last reported stop (live regs already ran the block ahead).
+        if reg == 15 {
+            if let Some(pc) = self.stop_pc {
+                return Some(pc);
+            }
+        }
         if reg < 16 {
             return Some(self.machine.core.regs.read(reg));
         }
@@ -240,8 +278,10 @@ impl<'a, M: PeripheralBus> Session<'a, M> {
             .map_err(|_| HaltCause::BusFault { address: addr })
     }
 
-    /// Write one byte of guest-visible memory.
+    /// Write one byte of guest-visible memory (flushes queued per-insn
+    /// stops: patched bytes invalidate already-retired reports).
     fn write_mem_byte(&mut self, addr: u32, value: u8) -> Result<(), HaltCause> {
+        self.flush_pending();
         self.machine
             .core
             .mem()
@@ -261,6 +301,7 @@ impl<'a, M: PeripheralBus> Session<'a, M> {
                             return Outcome::Reply("E01".to_owned());
                         }
                     }
+                    self.flush_pending();
                     Outcome::Reply("OK".to_owned())
                 }
                 None => Outcome::Reply("E01".to_owned()),
@@ -342,6 +383,7 @@ impl<'a, M: PeripheralBus> Session<'a, M> {
                 return Outcome::Reply("E01".to_owned());
             };
             if self.write_reg(reg, value).is_some() {
+                self.flush_pending();
                 Outcome::Reply("OK".to_owned())
             } else {
                 Outcome::Reply("E01".to_owned())
@@ -441,6 +483,14 @@ impl<'a, M: PeripheralBus> Session<'a, M> {
             self.bps.remove(&addr);
             return Outcome::Reply("E01".to_owned());
         }
+        // X2: breakpoint pages bypass translation through the X1 hook
+        // mechanism (a marker pre-hook over the patched halfword). The
+        // bus write already invalidated covering blocks; the marker keeps
+        // them interpreted so the swapped `bkpt` always traps in the
+        // stepper path with identical stops.
+        self.machine
+            .on_instruction(true, addr, addr.wrapping_add(2), |_| {});
+        self.flush_pending();
         Outcome::Reply("OK".to_owned())
     }
 
@@ -451,6 +501,9 @@ impl<'a, M: PeripheralBus> Session<'a, M> {
         if self.machine.core.mem().write_half(addr, original).is_err() {
             return Outcome::Reply("E01".to_owned());
         }
+        self.machine
+            .remove_instruction(true, addr, addr.wrapping_add(2));
+        self.flush_pending();
         Outcome::Reply("OK".to_owned())
     }
 
@@ -502,6 +555,7 @@ impl<'a, M: PeripheralBus> Session<'a, M> {
     fn resume(&mut self, stream: &TcpStream, step: bool, addr: Option<u32>) -> io::Result<Stop> {
         if let Some(addr) = addr {
             self.machine.core.regs.write(15, addr);
+            self.flush_pending();
         }
         if self.bps.contains_key(&self.machine.core.regs.pc) {
             if let Some(stop) = self.step_over(step) {
@@ -521,6 +575,7 @@ impl<'a, M: PeripheralBus> Session<'a, M> {
     /// hit during the step, or when the single step *is* the requested step;
     /// returns `None` when the machine should keep running.
     fn step_over(&mut self, step: bool) -> Option<Stop> {
+        self.flush_pending();
         let pc = self.machine.core.regs.pc;
         let original = self.bps.remove(&pc)?;
         let _ = self.write_mem_byte(pc, u8::try_from(original & 0xFF).unwrap_or(0));
@@ -546,6 +601,43 @@ impl<'a, M: PeripheralBus> Session<'a, M> {
         }
     }
 
+    /// Map a halt to a stop reply: software breakpoints (ours, swapped
+    /// into the target) report SIGTRAP even when the core escalated them
+    /// to a fault; everything else maps by cause. Shared by the stepper
+    /// and JIT arms.
+    fn map_halt(&mut self, cause: HaltCause) -> Stop {
+        if let HaltCause::SemihostExit { code } = cause {
+            return Stop::Exited(exit_byte(code));
+        }
+        if self.bps.contains_key(&self.machine.core.regs.pc) {
+            self.last_signal = 5;
+        } else {
+            self.last_signal = gdb_signal(cause);
+        }
+        Stop::Signal(self.last_signal)
+    }
+
+    /// One JIT single-step (X2): drain a queued per-insn stop if present,
+    /// else run one translated block and queue its stops (the executing
+    /// step reports the first). `step_tb_block` decodes the retired op
+    /// PCs from TB metadata; breakpoint-overlapping blocks never arrive
+    /// here (X1 markers force the exact single-step path instead).
+    fn jit_step(&mut self) -> Result<(), HaltCause> {
+        if self.pending.is_empty() {
+            let pcs = self.machine.step_tb_block(&mut self.runner)?;
+            let end = self.machine.core.regs.pc;
+            // pcs[0] is the address stepped FROM (already reported);
+            // queue the landing PCs plus the final fallthrough.
+            self.pending.extend(pcs.into_iter().skip(1));
+            self.pending.push_back(end);
+        }
+        // The popped stop is what the user now sees (read_reg shadows it
+        // until the queue drains onto the live PC).
+        self.stop_pc = self.pending.pop_front();
+        self.last_signal = 5;
+        Ok(())
+    }
+
     fn run_until_stop(&mut self, stream: &TcpStream, step: bool) -> io::Result<Stop> {
         loop {
             let mut peek = [0u8; 1];
@@ -555,6 +647,22 @@ impl<'a, M: PeripheralBus> Session<'a, M> {
                 Ok(_) => {}
                 Err(e) if e.kind() == ErrorKind::WouldBlock => {}
                 Err(e) => return Err(e),
+            }
+            if self.jit {
+                if step {
+                    match self.jit_step() {
+                        Ok(()) => return Ok(Stop::Signal(self.last_signal)),
+                        Err(cause) => return Ok(self.map_halt(cause)),
+                    }
+                }
+                // Continue: quanta until halt/breakpoint/Ctrl-C (breakpoint
+                // pages bypass via X1 markers, so swapped bkpts trap in
+                // the stepper path with identical stops).
+                match self.machine.run_tb_quantum(&mut self.runner, 1024) {
+                    Ok(_) => {}
+                    Err(cause) => return Ok(self.map_halt(cause)),
+                }
+                continue;
             }
             match self.machine.step() {
                 Ok(()) => {
@@ -634,8 +742,25 @@ fn send_packet(stream: &mut TcpStream, payload: &str) -> io::Result<()> {
 /// Returns the first socket I/O error that breaks the session, or the accept
 /// error if the listener fails.
 pub fn serve<M: PeripheralBus>(machine: &mut Machine<M>, listener: &TcpListener) -> io::Result<()> {
+    serve_jit(machine, listener, false)
+}
+
+/// Accept one connection and run a full debug session, optionally in JIT
+/// mode (X2: translated-block stepping with per-insn stops, quanta
+/// continue, breakpoint pages bypassing translation).
+///
+/// # Errors
+///
+/// Returns the first socket I/O error that breaks the session, or the accept
+/// error if the listener fails.
+pub fn serve_jit<M: PeripheralBus>(
+    machine: &mut Machine<M>,
+    listener: &TcpListener,
+    jit: bool,
+) -> io::Result<()> {
     let (mut stream, _peer) = listener.accept()?;
     let mut session = Session::new(machine);
+    session.set_jit(jit);
     loop {
         let Some(request) = read_packet(&mut stream, session.no_ack)? else {
             return Ok(());
@@ -671,7 +796,7 @@ mod tests {
     use vioarm_core::mem::flat::FlatMemory;
     use vioarm_core::mem::Bus as _;
 
-    use super::{checksum, gdb_signal, hex_u32, mem_range, serve, HaltCause};
+    use super::{checksum, gdb_signal, hex_u32, mem_range, serve, serve_jit, HaltCause};
 
     /// Send one request packet (with correct framing) and read the reply.
     fn exch(stream: &mut std::net::TcpStream, payload: &str) -> String {
@@ -794,6 +919,52 @@ mod tests {
         thread.join().unwrap();
         assert_eq!(machine.core.regs.pc, 0x102);
         assert_eq!(machine.core.regs.read(0), 1);
+    }
+
+    /// A JIT session (`serve_jit(.., true)`): single-steps run translated
+    /// blocks but report per-insn stops (with the user-visible PC tracking
+    /// the reported stop), and continues run quanta onto breakpoints
+    /// whose pages bypass translation.
+    #[test]
+    fn jit_session_steps_blocks_and_hits_breakpoints() {
+        if !loopback_available() {
+            eprintln!("skipping: loopback connect unavailable in this environment");
+            return;
+        }
+        let mut machine = test_machine();
+        write_half(&mut machine, 0x100, 0x2001); // movs r0, #1
+        write_half(&mut machine, 0x102, 0x2102); // movs r1, #2
+        write_half(&mut machine, 0x104, 0xE7FC); // b 0x100
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let thread = std::thread::spawn(move || {
+            let mut c = std::net::TcpStream::connect(addr).unwrap();
+            // Three retiring ops in one translated block: three stops.
+            assert_eq!(exch(&mut c, "s"), "S05");
+            assert_eq!(&exch(&mut c, "g")[15 * 8..15 * 8 + 8], "02010000"); // 0x102
+            assert_eq!(exch(&mut c, "s"), "S05");
+            assert_eq!(&exch(&mut c, "g")[15 * 8..15 * 8 + 8], "04010000"); // 0x104
+            assert_eq!(exch(&mut c, "s"), "S05");
+            let g = exch(&mut c, "g");
+            assert_eq!(&g[15 * 8..15 * 8 + 8], "00010000"); // back at 0x100
+            assert_eq!(&g[..8], "01000000"); // r0 == 1 went native
+            assert_eq!(&g[8..16], "02000000"); // r1 == 2
+                                               // Breakpoint at the loop head: continue runs quanta onto it
+                                               // through the bypassed (interpreted) page.
+            assert_eq!(exch(&mut c, "Z0,100,2"), "OK");
+            assert_eq!(exch(&mut c, "P0f=00000100"), "OK"); // pc = 0x100
+            assert_eq!(exch(&mut c, "c"), "S05");
+            assert_eq!(&exch(&mut c, "g")[15 * 8..15 * 8 + 8], "00010000");
+            assert_eq!(exch(&mut c, "z0,100,2"), "OK");
+            assert_eq!(exch(&mut c, "m100,2"), "0120"); // movs restored
+                                                        // With the marker withdrawn the page translates again:
+                                                        // stepping still reports per-insn stops.
+            assert_eq!(exch(&mut c, "s"), "S05");
+            assert_eq!(&exch(&mut c, "g")[15 * 8..15 * 8 + 8], "02010000");
+            assert_eq!(exch(&mut c, "D"), "OK");
+        });
+        serve_jit(&mut machine, &listener, true).unwrap();
+        thread.join().unwrap();
     }
 
     /// A semihosting `SYS_EXIT` under continue ends the session with a `W`

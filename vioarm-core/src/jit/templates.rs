@@ -509,7 +509,8 @@ pub(crate) fn assemble_single(
         start_page: pc >> super::tb::PAGE_SHIFT,
         page_count: 1,
         cycle_estimate: 0,
-        store_mask: 0,
+        store_mask: u64::from(super::builder::op_writes_memory(op)),
+        load_mask: u64::from(super::builder::op_reads_memory(op)),
         it_entry: 0,
     };
     emit_block(&body, unalign_trap, slots)
@@ -2779,6 +2780,7 @@ mod tests {
             page_count: 1,
             cycle_estimate: 1,
             store_mask: 0,
+            load_mask: 0,
             it_entry: 0x04,
         };
         let (statics, has_dynamic) = exit_shape(&body);
@@ -2846,6 +2848,7 @@ mod tests {
             page_count: 1,
             cycle_estimate: 1,
             store_mask: 0,
+            load_mask: 0,
             it_entry: 0,
         };
         assert_eq!(exit_itstate(&plain), 0);

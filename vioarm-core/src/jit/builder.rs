@@ -111,6 +111,10 @@ pub struct TbBody {
     /// without stores pay no per-op polling. At most [`MAX_TB_INSNS`] ops,
     /// so a `u64` always suffices.
     pub store_mask: u64,
+    /// Bit `i` set when op `i` performs a bus read (X1): under an armed
+    /// read watchpoint the block runs interpreted (native fast paths skip
+    /// hook registries); otherwise loads go native freely.
+    pub load_mask: u64,
     /// ITSTATE at block entry (P2-5, S4): nonzero for predicated-
     /// continuation blocks built under an active IT block. The runner
     /// enters native blocks only on an exact match (unifying the old
@@ -138,6 +142,7 @@ impl TbBody {
             // sizes the edge slots) — the builder never sets it by hand.
             branch_delta: 0,
             store_mask: self.store_mask,
+            load_mask: self.load_mask,
             it_entry: self.it_entry,
             // The runner stamps the real content hash at insert time.
             check: 0,
@@ -191,6 +196,7 @@ pub fn build_tb<B: Bus>(
     let mut cycles: u64 = 0;
     let mut prev_loaded: Option<u8> = None;
     let mut store_mask: u64 = 0;
+    let mut load_mask: u64 = 0;
     let mut it = itstate;
 
     let end = loop {
@@ -245,6 +251,9 @@ pub fn build_tb<B: Bus>(
             // `ops.len() < MAX_TB_INSNS <= 64` (checked at loop top).
             store_mask |= 1_u64 << ops.len();
         }
+        if op_reads_memory(&op) {
+            load_mask |= 1_u64 << ops.len();
+        }
         cur = cur.wrapping_add(len);
         ops.push(op);
         if is_it {
@@ -279,6 +288,7 @@ pub fn build_tb<B: Bus>(
         page_count,
         cycle_estimate: cycles,
         store_mask,
+        load_mask,
         it_entry: itstate,
     })
 }
@@ -316,7 +326,7 @@ pub(crate) fn fetch_op<B: Bus>(bus: &mut B, cur: u32, isa: Isa) -> Option<(TbOp,
 /// shared executor and affect no future decode or permission, so they need
 /// no revalidation. Exception entry stacking diverts the PC, which ends the
 /// block by construction; DMA/devices never tick mid-burst.
-fn op_writes_memory(op: &TbOp) -> bool {
+pub(crate) fn op_writes_memory(op: &TbOp) -> bool {
     match op {
         TbOp::V16(inst) => match inst {
             Inst16::LsReg { kind, .. } => {
@@ -364,6 +374,50 @@ fn op_writes_memory(op: &TbOp) -> bool {
 ///   feeding the 1c load-use interlock (only a 1c op reading the previous
 ///   single load's `rd < 13` stalls; multi-cycle ops absorb it).
 ///
+/// Whether the op performs a bus read (X1): loads (never stores) need
+/// the interpreted path under an armed read watchpoint, since native
+/// fast paths skip the hook registries. Table reads (`TBB`/`TBH`) count
+/// (guarded native reads); exclusives/acquire forms count too (they
+/// re-execute today, but the mask is about bus traffic, not the path).
+pub(crate) fn op_reads_memory(op: &TbOp) -> bool {
+    match op {
+        TbOp::V16(inst) => match inst {
+            Inst16::LsReg { kind, .. } => {
+                matches!(
+                    kind,
+                    LsReg::Ldr | LsReg::Ldrb | LsReg::Ldrh | LsReg::Ldrsb | LsReg::Ldrsh
+                )
+            }
+            Inst16::LsImm { kind, .. } => {
+                matches!(kind, LsImm::Ldr | LsImm::Ldrb | LsImm::Ldrh)
+            }
+            Inst16::LsSp { is_load, .. } => *is_load,
+            Inst16::LdrLiteral { .. } => true,
+            Inst16::Pop { .. } => true,
+            Inst16::LdmStm { is_load, .. } => *is_load,
+            _ => false,
+        },
+        TbOp::V32(inst) => match inst {
+            Inst32::Mem { access, .. } => {
+                matches!(
+                    access,
+                    MemOp::Ldr | MemOp::Ldrb | MemOp::Ldrh | MemOp::Ldrsb | MemOp::Ldrsh
+                )
+            }
+            Inst32::LdrdStrd { is_load, .. } => *is_load,
+            Inst32::LdmStm { is_load, .. } => *is_load,
+            Inst32::Ldrex { .. } => true,
+            Inst32::Lda { .. } => true,
+            Inst32::TblBranch { .. } => true,
+            Inst32::VfpLdSt { is_load, .. }
+            | Inst32::VfpLdStD { is_load, .. }
+            | Inst32::VfpLdStMult { is_load, .. }
+            | Inst32::VfpLdStMultD { is_load, .. } => *is_load,
+            _ => false,
+        },
+    }
+}
+
 /// The tables duplicate `base_cycles`' arms on purpose (that function is
 /// stateful over live registers); the `jit_cycles` battery pins every arm
 /// against single-step `cyccnt` so drift fails loudly.
@@ -856,6 +910,32 @@ mod tests {
         mem.poke_half(0x1000, 0x4800);
         let body = build_tb(&mut mem, 0x1000, false, Isa::Armv7M, 0).unwrap();
         assert_eq!(body.store_mask, 0);
+    }
+
+    #[test]
+    fn load_mask_marks_read_ops_only() {
+        // LDR (0x4800) reads: bit 0 set, no store bit. STR (0x600A)
+        // seals as a store: load bit clear.
+        let mut mem = VecMem::new(0x1000, 2);
+        mem.poke_half(0x1000, 0x4800);
+        let body = build_tb(&mut mem, 0x1000, false, Isa::Armv7M, 0).unwrap();
+        assert_eq!(body.load_mask, 0b1);
+        assert_eq!(body.to_meta().load_mask, 0b1);
+        let mut mem = VecMem::new(0x1000, 2);
+        mem.poke_half(0x1000, 0x600A);
+        let body = build_tb(&mut mem, 0x1000, false, Isa::Armv7M, 0).unwrap();
+        assert_eq!((body.store_mask, body.load_mask), (0b1, 0));
+        // POP {r0} (0xBC01) loads; PUSH {r0} (0xB401) does not.
+        let mut mem = mem_with(0x1000, &[0xBC01, B_SELF]);
+        let body = build_tb(&mut mem, 0x1000, false, Isa::Armv7M, 0).unwrap();
+        assert_eq!(body.load_mask & 0b1, 0b1);
+        let mut mem = mem_with(0x1000, &[0xB401, B_SELF]);
+        let body = build_tb(&mut mem, 0x1000, false, Isa::Armv7M, 0).unwrap();
+        assert_eq!(body.load_mask, 0);
+        // Pure ALU: both masks clear.
+        let mut mem = mem_with(0x1000, &[MOVS_R0_1, NOP]);
+        let body = build_tb(&mut mem, 0x1000, false, Isa::Armv7M, 0).unwrap();
+        assert_eq!((body.store_mask, body.load_mask), (0, 0));
     }
 
     #[test]

@@ -153,22 +153,22 @@ branches initially (S2), VMRS/VMSR, CPACR-gated traps (checked in callout).
 
 ## 6. Host integration surfaces (nothing silently degrades)
 
-- [ ] X1: hooks (`on_instruction` pre/post, watchpoints): any TB
+- [x] X1: hooks (`on_instruction` pre/post, watchpoints): any TB
   overlapping an armed range is bypassed (execute interpreted) — traces
   stay exact in JIT mode. Test: trace in JIT mode equals trace in accurate
   mode, byte for byte.
-- [ ] X2: GDB breakpoints: breakpoint pages bypass translation (same
+- [x] X2: GDB breakpoints: breakpoint pages bypass translation (same
   mechanism as X1 via M5 hooks); single-step in JIT mode steps translated
   blocks but reports per-insn stops (decode from TB metadata).
-- [ ] X3: semihosting/BKPT inside TBs are callouts (already S6; test a
+- [x] X3: semihosting/BKPT inside TBs are callouts (already S6; test a
   semihosting hello under JIT).
-- [ ] X4: coverage example works unchanged in JIT mode (falls back per X1).
-- [ ] X5: replay goldens gain the JIT mode marker; replay compares
+- [x] X4: coverage example works unchanged in JIT mode (falls back per X1).
+- [x] X5: replay goldens gain the JIT mode marker; replay compares
   memory/device state only under JIT (counters excluded per D7); record
   documents the mode it ran in.
-- [ ] X6: CLI `--jit` flag (default off; independent of `--fast K` —
+- [x] X6: CLI `--jit` flag (default off; independent of `--fast K` —
   document the interaction matrix: accurate / fast-coarse / JIT).
-- [ ] X7: fabric determinism: multi-machine runs with JIT members rerun
+- [x] X7: fabric determinism: multi-machine runs with JIT members rerun
   byte-identical (the fabric e2e extended with one JIT member).
 
 ## 7. Phases, gates, and effort
@@ -440,7 +440,22 @@ Goal: 10–30× on compute loops.
   `fuzz/corpus/fuzz_jit/` (all four shapes, all replay green); new
   `jit-fuzz` CI job builds the target, runs the corpus, and runs a
   bounded `--trials 150` smoke. Nightly extends via `--trials 20000`.
-- [ ] P3-3: host surfaces X1–X7 implemented + tested.
+- [x] P3-3: host surfaces X1–X7 implemented + tested.
+  Done 2026-09-08: X1 per-range hook bypass (overlap gate on TB extent,
+  load/store masks for watchpoints, link fence on hook add/remove,
+  no-chaining while armed; `tests/jit_hooks.rs` proves byte-for-byte
+  traces incl. `cycles`, partial bypass staying native, and mid-run
+  arming — which caught a real cross-block load-use tracing interaction,
+  fixed by construction order, gap stays documented). X2 GDB (`serve_jit`,
+  `set_jit`, `step_tb_block` per-insn PCs from TB metadata, pending-stop
+  queue with PC shadowing, breakpoint hook markers + withdrawal,
+  `--jit` on `gdb`; loopback session test). X3 semihost hello under JIT
+  (`tests/jit_semihost.rs`). X4 coverage under JIT
+  (`tests/jit_coverage.rs`). X5 replay JIT marker (`jit` golden line,
+  back-compat parse, state-only compare) + round-trip test. X6 CLI
+  `--jit` on `run`/`record` (+`gdb`), `--fast` conflict error,
+  `Machine::run_tb`, matrix in help. X7 `Fabric::step_mixed` +
+  byte-identical rerun test with a JIT radio member.
 - [ ] P3-4: per-platform baselines recorded (x86-64 Linux + mac ARM;
   Windows smoke): soak workloads = (a) board NOP soak 1M steps,
   (b) SHA-256 loop, (c) ALU torture loop. Gate numbers on x86-64.

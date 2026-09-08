@@ -22,8 +22,10 @@
 //!   on mismatch, so self-modifying code from ANY source can never execute
 //!   stale — source-agnostic by construction, no per-site hook audit (M5).
 //!   The M1 page-guard map proper ships with the emitter (P2-3); checksums
-//!   are its Phase-1 safety equivalent. Hook-armed ranges (X1) arrive with
-//!   P3-3 host surfaces.
+//!   are its Phase-1 safety equivalent. Hook-armed ranges bypass per-range
+//!   (X1): blocks overlapping armed pre/post ranges, or touching watched
+//!   bus traffic, run interpreted; hook add/remove clears chained edges;
+//!   hooked execution never chains (every block re-enters gated).
 //! - A sleeping core never enters a block (the stepper no-ops while
 //!   asleep); an op that sleeps (`WFI`/`WFE`) ends the block immediately.
 //! - After every op the runner compares the PC against the fallthrough
@@ -167,6 +169,10 @@ pub struct TbRunner {
     /// Last bus config generation seen (`None` until the first poll, or
     /// permanently when the bus is untracked — which polls as changed).
     last_seen: Option<u64>,
+    /// Last hook-registration generation seen (X1): any add/remove clears
+    /// chained edges (a hook armed after linking would otherwise be
+    /// bypassed by a stale linked traversal mid-chain).
+    last_hooks_gen: Option<u64>,
     /// Chained-edge slots by source block (P2-4, T6): stable boxes whose
     /// addresses are baked into emitted code. Cleared on full purges;
     /// source-ranged entries are dropped on partial invalidations (stale
@@ -196,6 +202,7 @@ impl TbRunner {
             verify_decodes: false,
             use_native: true,
             last_seen: None,
+            last_hooks_gen: None,
             links: std::collections::HashMap::new(),
             link_epoch: 0,
             chain_ops: super::quanta::DEFAULT_QUANTUM_OPS,
@@ -214,6 +221,7 @@ impl TbRunner {
             verify_decodes: true,
             use_native: true,
             last_seen: None,
+            last_hooks_gen: None,
             links: std::collections::HashMap::new(),
             link_epoch: 0,
             chain_ops: super::quanta::DEFAULT_QUANTUM_OPS,
@@ -280,17 +288,6 @@ impl TbRunner {
         // continuation blocks record their entry mask. Mismatches rebuild
         // below (or refuse, routing to the fallback stepper).
         let it_entry = core.itstate;
-        // Armed hooks run interpreted (P3-3 refines to per-range bypass):
-        // native blocks neither fire per-insn hooks nor check watchpoints,
-        // and fast paths skip hook registries — so any armed hook forces
-        // the accurate path, which fires. Peripheral-only hooks need no
-        // gate (fast paths never touch devices; side exits go interpreted).
-        if let Some(hooks) = core.mem_mut().hooks() {
-            if hooks.has_before() || hooks.has_after() || hooks.has_read() || hooks.has_write() {
-                self.stats.fallbacks += 1;
-                return Ok(None);
-            }
-        }
         let pc = core.regs.pc;
         let (isa, secure) = (core.isa, core.secure);
         if !core.fetch_allowed(pc) {
@@ -300,6 +297,10 @@ impl TbRunner {
         // Entry config poll (T7/M5): blocks translated under an older
         // fetch-affecting configuration are purged before lookup.
         self.poll_config(core.mem_mut().config_epoch());
+        // Entry hook poll (X1): hook add/remove clears chained edges so a
+        // hook armed after linking can never be bypassed mid-chain (the
+        // per-entry overlap gate below handles the rest).
+        self.poll_hooks(core);
         let key = TbKey {
             pc,
             secure,
@@ -347,12 +348,36 @@ impl TbRunner {
                 None => return Ok(None),
             },
         };
+        // X1 per-range hook bypass (P3-3): blocks overlapping armed
+        // pre/post-instruction ranges, or touching watched bus traffic,
+        // run interpreted so every event fires exactly like the stepper
+        // (native templates skip hook registries). Unhooked code —
+        // including ALU blocks beside hooked ones — stays native.
+        // Peripheral-only hooks need no gate (fast paths never touch
+        // devices; side exits go interpreted).
+        let hooked = if let Some(hooks) = core.mem_mut().hooks() {
+            if hooks.is_empty() {
+                false
+            } else {
+                let overlap = hooks
+                    .overlaps_insn(meta.key.pc, meta.key.pc.wrapping_add(meta.len_bytes))
+                    || (hooks.has_read() && meta.load_mask != 0)
+                    || (hooks.has_write() && meta.store_mask != 0);
+                if overlap {
+                    self.stats.fallbacks += 1;
+                    return Ok(None);
+                }
+                true
+            }
+        } else {
+            false
+        };
         if self.verify_decodes {
             self.verify_block(core, &key);
         }
         let outcome = match native {
             Some(native) => {
-                let outcome = self.exec_native(core, &meta, &native, cached)?;
+                let outcome = self.exec_native(core, &meta, &native, cached, hooked)?;
                 self.stats.native += u64::from(outcome.blocks);
                 outcome
             }
@@ -383,6 +408,7 @@ impl TbRunner {
         meta: &TbMeta,
         native: &NativeBlock,
         cached: bool,
+        hooked: bool,
     ) -> Result<BlockOutcome, HaltCause> {
         use super::native::{
             exit_pc, exit_reason, NativeCtx, EXIT_BRANCH, EXIT_FALL, EXIT_HALT, EXIT_MMIO,
@@ -412,7 +438,14 @@ impl TbRunner {
             sleeping: &mut core.sleeping,
             write_gen,
             budget_ops: self.chain_ops.saturating_sub(u64::from(meta.insns)) as i64,
-            budget_blocks: self.chain_blocks.saturating_sub(1) as i64,
+            // Hooked execution never chains (X1): chained targets bypass
+            // the entry gates, so with hooks armed each block re-enters
+            // through the driver (and its overlap check) instead.
+            budget_blocks: if hooked {
+                0
+            } else {
+                self.chain_blocks.saturating_sub(1) as i64
+            },
             link_epoch: self.link_epoch,
             cur_pc: meta.key.pc,
             ..Default::default()
@@ -1037,6 +1070,20 @@ impl TbRunner {
             self.cache.note_validated(key, g);
         }
         false
+    }
+
+    /// Poll the hook-registration generation; on change clear chained
+    /// edges and break the link epoch (stale linked traversals would
+    /// bypass newly armed hooks mid-chain). Cached blocks stay (hook
+    /// ranges don't alter code bytes — the entry overlap gate refuses
+    /// them while armed and reuses them after withdrawal).
+    fn poll_hooks<B: PeripheralBus>(&mut self, core: &mut Core<B>) {
+        let gen = core.mem_mut().hooks().map(|h| h.gen());
+        if self.last_hooks_gen != gen {
+            self.links.clear();
+            self.link_epoch = self.link_epoch.wrapping_add(1);
+            self.last_hooks_gen = gen;
+        }
     }
 
     /// Poll the bus config generation; on change purge blocks translated
