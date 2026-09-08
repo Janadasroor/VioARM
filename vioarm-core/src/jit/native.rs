@@ -198,7 +198,20 @@ pub struct NativeCtx {
     pub acc_cyccnt: u64,
     /// Chained blocks executed (beyond the entered block).
     pub acc_blocks: u64,
+    /// Flash-gated op count from chained blocks (P2-7): flash-region
+    /// chained entries add their `insns` here; the driver scales it by the
+    /// live-sampled flash wait states (`cyccnt += ws * acc_flash_ops`).
+    /// RAM-region entries skip the add (emit-time gate on the block PC —
+    /// same block-start approximation as the builder).
+    pub acc_flash_ops: u64,
 }
+
+/// Extra `cyccnt` a chained taken conditional edge contributes (P2-7):
+/// taken `B<cond>`/`CBZ` cost 3c against the 1c fall-assumed estimate.
+/// Taken-edge traversals add this to `acc_cyccnt`; unlinked taken exits
+/// get it from the driver's `branch_delta` instead — exactly one +2 per
+/// taken conditional either way.
+pub(crate) const BRANCH_TAKEN_EXTRA: u32 = 2;
 
 impl Default for NativeCtx {
     fn default() -> Self {
@@ -225,6 +238,7 @@ impl Default for NativeCtx {
             acc_cycles: 0,
             acc_cyccnt: 0,
             acc_blocks: 0,
+            acc_flash_ops: 0,
         }
     }
 }
@@ -420,12 +434,17 @@ pub(crate) fn emit_chain_entry(
     let acc_cyc = core::mem::offset_of!(NativeCtx, acc_cycles) as i32;
     let acc_cc = core::mem::offset_of!(NativeCtx, acc_cyccnt) as i32;
     let acc_blk = core::mem::offset_of!(NativeCtx, acc_blocks) as i32;
-    // Estimates are `1 + touches` per op (`<= 2 * MAX_TB_INSNS`): imm32
-    // always suffices (loud in debug if that ever changes).
+    let acc_flash = core::mem::offset_of!(NativeCtx, acc_flash_ops) as i32;
+    // Estimates are small (`<= ~40 * MAX_TB_INSNS`): imm32 always
+    // suffices (loud in debug if that ever changes).
     debug_assert!(estimate <= u64::from(u32::MAX));
     let (insns, est) = (insns as i32, estimate as i32);
     let c_cur = core::mem::offset_of!(NativeCtx, cur_pc) as i32;
     let pc = block_pc as i32;
+    // Flash-region blocks count their ops for driver-side wait-state
+    // scaling (`commit_step` gates per op on the same boundary; the block
+    // never spans it in practice — page-contained `<= 256` B).
+    let in_flash = block_pc < 0x2000_0000;
     let brk = ops.new_dynamic_label();
     dynasm!(ops
         ; .arch x64
@@ -440,6 +459,12 @@ pub(crate) fn emit_chain_entry(
         ; add QWORD [rax + acc_cc], est
         ; add QWORD [rax + acc_blk], 1
     );
+    if in_flash {
+        dynasm!(ops
+            ; .arch x64
+            ; add QWORD [rax + acc_flash], insns
+        );
+    }
     brk
 }
 
@@ -471,6 +496,7 @@ pub(crate) fn emit_static_edge(
     reason: u32,
     target: u32,
     slot: u64,
+    taken_extra: u32,
 ) {
     let unlinked = ops.new_dynamic_label();
     let slot = slot as i64;
@@ -479,6 +505,8 @@ pub(crate) fn emit_static_edge(
     let x_off = core::mem::offset_of!(LinkSlot, epoch) as i32;
     let c_epoch = core::mem::offset_of!(NativeCtx, link_epoch) as i32;
     let c_gen = core::mem::offset_of!(NativeCtx, write_gen) as i32;
+    let acc_cc = core::mem::offset_of!(NativeCtx, acc_cyccnt) as i32;
+    let taken_extra = taken_extra as i32;
     dynasm!(ops
         ; .arch x64
         ; mov rax, QWORD slot
@@ -493,6 +521,19 @@ pub(crate) fn emit_static_edge(
         ; mov rdi, [rdi]
         ; cmp rdi, [rax + g_off]
         ; jne =>unlinked
+    );
+    // Linked taken conditional: the source block's +2 (its estimate
+    // assumed fall-through). Zero for every other edge (emitted only when
+    // nonzero, so the common path is byte-identical to before).
+    if taken_extra != 0 {
+        dynasm!(ops
+            ; .arch x64
+            ; mov rdi, [rsp]
+            ; add QWORD [rdi + acc_cc], taken_extra
+        );
+    }
+    dynasm!(ops
+        ; .arch x64
         ; jmp rsi
         ; =>unlinked
     );
@@ -759,9 +800,11 @@ pub(crate) fn emit_chain_entry(
     let acc_cyc = core::mem::offset_of!(NativeCtx, acc_cycles) as u32;
     let acc_cc = core::mem::offset_of!(NativeCtx, acc_cyccnt) as u32;
     let acc_blk = core::mem::offset_of!(NativeCtx, acc_blocks) as u32;
+    let acc_flash = core::mem::offset_of!(NativeCtx, acc_flash_ops) as u32;
     let c_cur = core::mem::offset_of!(NativeCtx, cur_pc) as u32;
     debug_assert!(insns <= 64);
     debug_assert!(estimate <= 4095);
+    let in_flash = block_pc < 0x2000_0000;
     let (insns, est) = (insns, estimate as u32);
     let (p_lo, p_hi) = (block_pc & 0xFFFF, (block_pc >> 16) & 0xFFFF);
     let brk = ops.new_dynamic_label();
@@ -794,6 +837,14 @@ pub(crate) fn emit_chain_entry(
         ; add x10, x10, #1
         ; str x10, [x9, acc_blk]
     );
+    if in_flash {
+        dynasm!(ops
+            ; .arch aarch64
+            ; ldr x10, [x9, acc_flash]
+            ; add x10, x10, #insns
+            ; str x10, [x9, acc_flash]
+        );
+    }
     brk
 }
 
@@ -806,6 +857,7 @@ pub(crate) fn emit_static_edge(
     reason: u32,
     target: u32,
     slot: u64,
+    taken_extra: u32,
 ) {
     let unlinked = ops.new_dynamic_label();
     let e_off = core::mem::offset_of!(LinkSlot, entry) as u32;
@@ -813,6 +865,7 @@ pub(crate) fn emit_static_edge(
     let x_off = core::mem::offset_of!(LinkSlot, epoch) as u32;
     let c_epoch = core::mem::offset_of!(NativeCtx, link_epoch) as u32;
     let c_gen = core::mem::offset_of!(NativeCtx, write_gen) as u32;
+    let acc_cc = core::mem::offset_of!(NativeCtx, acc_cyccnt) as u32;
     emit_movabs_x9(ops, slot);
     dynasm!(ops
         ; .arch aarch64
@@ -829,6 +882,20 @@ pub(crate) fn emit_static_edge(
         ; ldr x11, [x9, g_off]
         ; cmp x10, x11
         ; b.ne =>unlinked
+    );
+    // Linked taken conditional: the source block's +2 (mirrors x64 —
+    // `taken_extra` is 0 or `BRANCH_TAKEN_EXTRA`, both add-immediates).
+    if taken_extra != 0 {
+        dynasm!(ops
+            ; .arch aarch64
+            ; ldr x10, [sp, #48]
+            ; ldr x11, [x10, acc_cc]
+            ; add x11, x11, taken_extra
+            ; str x11, [x10, acc_cc]
+        );
+    }
+    dynasm!(ops
+        ; .arch aarch64
         ; ldr x10, [x9, e_off]
         ; br x10
         ; =>unlinked

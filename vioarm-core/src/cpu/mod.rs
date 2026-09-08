@@ -951,7 +951,11 @@ impl<B: PeripheralBus> Core<B> {
         base + stall
     }
 
-    fn flash_ws(&mut self) -> u64 {
+    /// Sampled flash wait states (P2-7): the JIT driver reads this live
+    /// per native entry so ACR changes apply without purging translated
+    /// blocks (estimates only ever approximate — staleness is bounded by
+    /// one native call either way).
+    pub(crate) fn flash_ws(&mut self) -> u64 {
         let ws_f1 = self
             .mem
             .read_word(0x4002_2000)

@@ -381,7 +381,24 @@ Goal: 10–30× on compute loops.
   encoding gap on AArch64 (rev16+sxth), VMOV-S1 bit derivation). No new
   soak: S6's prize is coverage (prefixes stay native up to the faulting
   op), measured by the existing suites going native more often.
-- [ ] P2-7: per-TB cycle estimates (D7 accounting) + monotonicity tests.
+- [x] P2-7: per-TB cycle estimates (D7 accounting) + monotonicity tests.
+  Done 2026-09-08: the builder now emits TRM-faithful static costs
+  (fall-assumed bases incl. n+1 multi-word, 4c `BL`, 3c branch shapes,
+  MUL/DIV/VFP classes, intra-block load-use stalls, fetch-region and
+  16-bit-literal data latencies) with a `jit_cycles` battery pinning every
+  arm against single-step `cyccnt`. Conditional-taken costs ride a
+  `branch_delta` (+2): edge stubs add it on linked taken traversals, the
+  driver adds it when the `BRANCH` exit PC is the taken-first static
+  target (a cond fall edge also reports `BRANCH` — gating on the reason
+  alone overcounts falls, caught by `cbz-fall`). Flash wait states are
+  sampled live per native entry over flash-gated ops (`acc_flash_ops`;
+  no bus reads when nothing is flash) so ACR changes need no purge.
+  Documented D7 gaps: nonzero-`DIV` minimum, reg-relative data latency,
+  cross-block stalls, IT-suppressed overcount. E6: firmware `DWT_CYCCNT`
+  reads across quanta are non-decreasing and advance (the first attempt
+  caught a test-firmware bug — one-shot prefix plus spin never re-samples
+  — not a product bug). No soak movement (accounting-only; native
+  absolutes flat-to-better: 49.7→45.8 / 54.2→52.1 / 111.6→100.8 µs).
 - [ ] GATE G2: template fuzz (each template vs interpreter, randomized)
   green + soak ≥10× on x86-64, else stop (emitter approach wrong — fall
   back to custom emitter spike per D1 before more templates).

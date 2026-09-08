@@ -88,6 +88,14 @@ pub struct TbMeta {
     /// Approximate cycle cost of the block (D7 accounting; exactness is
     /// explicitly NOT guaranteed in JIT mode).
     pub cycle_estimate: u64,
+    /// Extra `cyccnt` for a taken conditional seal (P2-7): the estimate
+    /// assumes fall-through (1c), but a taken `B<cond>`/`CBZ` costs 3c.
+    /// The driver adds this on `BRANCH` exits and chained taken edges add
+    /// it at traversal, so every taken conditional contributes exactly one
+    /// +2 — whether it runs unchained, chained, or linked. Zero for every
+    /// other seal (unconditional/dynamic costs are baked). Stamped by the
+    /// runner from the exit shape (`statics.len() == 2`), never by hand.
+    pub branch_delta: u64,
     /// Content checksum (FNV-1a over the code bytes) taken when the block
     /// was inserted. The runner re-hashes on every cache hit and rebuilds
     /// on mismatch, so writes from ANY source — CPU stores, DMA/mailbox
@@ -458,6 +466,7 @@ mod tests {
             start_page: pc >> PAGE_SHIFT,
             page_count,
             cycle_estimate: 4,
+            branch_delta: 0,
             check: 0,
             write_gen: 0,
             store_mask: 0,

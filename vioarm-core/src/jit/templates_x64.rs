@@ -45,7 +45,7 @@ pub fn emit_entry_jump(ops: &mut A) -> dynasmrt::DynamicLabel {
 
 /// `FALL` edge to `end_pc` through `slot` (sequential chaining).
 pub fn emit_fall_edge(ops: &mut A, end_pc: u32, slot: u64) {
-    super::native::emit_static_edge(ops, super::native::EXIT_FALL, end_pc, slot);
+    super::native::emit_static_edge(ops, super::native::EXIT_FALL, end_pc, slot, 0);
 }
 
 fn regs_off() -> i32 {
@@ -358,7 +358,7 @@ fn emit16_term(
     use crate::cpu::decode16::Inst16 as I;
     match *inst {
         I::Branch { off } => {
-            emit_static_edge(ops, EXIT_BRANCH, b_target(pc, off), tape.take());
+            emit_static_edge(ops, EXIT_BRANCH, b_target(pc, off), tape.take(), 0);
             true
         }
         I::BranchCond { cond, off } => {
@@ -381,9 +381,15 @@ fn emit16_term(
             } else {
                 dynasm!(ops ; .arch x64 ; test eax, eax ; jnz =>fall);
             }
-            emit_static_edge(ops, EXIT_BRANCH, b_target(pc, off), tape.take());
+            emit_static_edge(
+                ops,
+                EXIT_BRANCH,
+                b_target(pc, off),
+                tape.take(),
+                super::native::BRANCH_TAKEN_EXTRA,
+            );
             dynasm!(ops ; .arch x64 ; =>fall);
-            emit_static_edge(ops, EXIT_BRANCH, pc.wrapping_add(2), tape.take());
+            emit_static_edge(ops, EXIT_BRANCH, pc.wrapping_add(2), tape.take(), 0);
             true
         }
         I::Bx { rm } => emit_bx(ops, rm, pc, false, tape),
@@ -412,11 +418,11 @@ fn emit32_term(
             let lr = pc.wrapping_add(4) | 1;
             dynasm!(ops ; .arch x64 ; mov eax, lr as i32);
             store_lr(ops);
-            emit_static_edge(ops, EXIT_BRANCH, b_target(pc, off), tape.take());
+            emit_static_edge(ops, EXIT_BRANCH, b_target(pc, off), tape.take(), 0);
             true
         }
         I::BranchWide { off } => {
-            emit_static_edge(ops, EXIT_BRANCH, b_target(pc, off), tape.take());
+            emit_static_edge(ops, EXIT_BRANCH, b_target(pc, off), tape.take(), 0);
             true
         }
         I::BranchCondWide { cond, off } => {
@@ -851,9 +857,15 @@ fn emit_cond_pair(
     cond_bit(ops, cond);
     let fall_lbl = ops.new_dynamic_label();
     dynasm!(ops ; .arch x64 ; jz =>fall_lbl);
-    emit_static_edge(ops, EXIT_BRANCH, taken, tape.take());
+    emit_static_edge(
+        ops,
+        EXIT_BRANCH,
+        taken,
+        tape.take(),
+        super::native::BRANCH_TAKEN_EXTRA,
+    );
     dynasm!(ops ; .arch x64 ; =>fall_lbl);
-    emit_static_edge(ops, EXIT_BRANCH, fall, tape.take());
+    emit_static_edge(ops, EXIT_BRANCH, fall, tape.take(), 0);
 }
 
 /// Condition select: evaluate `cond` (0-13) against the pinned NZCV

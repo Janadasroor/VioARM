@@ -31,7 +31,7 @@
 use crate::cpu::decode16::{decode16, decode16_v7m, Hint, Inst16, LsImm, LsReg};
 use crate::cpu::decode32::{
     decode32, decode32_v7em, decode32_v7m, decode32_v8m, decode32_v8m_mainline, is_thumb2,
-    is_thumb2_v7m, Inst32, MemOp,
+    is_thumb2_v7m, Inst32, MemOp, MulOp,
 };
 use crate::cpu::Isa;
 use crate::mem::bus::Bus;
@@ -95,7 +95,16 @@ pub struct TbBody {
     pub start_page: u32,
     /// Contiguous code pages spanned (`>= 1`).
     pub page_count: u32,
-    /// Approximate cycle cost (D7): 1 per op plus 1 per memory-touching op.
+    /// Approximate cycle cost (D7, P2-7): the TRM-faithful static sum —
+    /// per-op base costs (fall-assumed) + intra-block load-use stalls +
+    /// fetch-region and 16-bit-literal data latencies. Deliberately
+    /// excluded (documented D7 gaps, all timing-only, monotonicity-safe):
+    /// the +2 conditional-taken delta (committed separately via
+    /// [`TbMeta::branch_delta`]), flash wait states (sampled live by the
+    /// driver per native entry — init-time ACR changes need no purge),
+    /// reg-relative data-region latency, data-dependent `DIV` (2c minimum
+    /// baked), cross-block load-use stalls, and IT-suppressed ops (counted
+    /// — an overcount bounded by the block length).
     pub cycle_estimate: u64,
     /// Bit `i` set when op `i` performs a bus write (P1-6): the runner
     /// revalidates content + config only after write ops, so hot loops
@@ -125,6 +134,9 @@ impl TbBody {
             start_page: self.start_page,
             page_count: self.page_count,
             cycle_estimate: self.cycle_estimate,
+            // Stamped by the runner from the exit shape (same call that
+            // sizes the edge slots) — the builder never sets it by hand.
+            branch_delta: 0,
             store_mask: self.store_mask,
             it_entry: self.it_entry,
             // The runner stamps the real content hash at insert time.
@@ -177,6 +189,7 @@ pub fn build_tb<B: Bus>(
     let mut ops: Vec<TbOp> = Vec::new();
     let mut cur = pc;
     let mut cycles: u64 = 0;
+    let mut prev_loaded: Option<u8> = None;
     let mut store_mask: u64 = 0;
     let mut it = itstate;
 
@@ -219,7 +232,15 @@ pub fn build_tb<B: Bus>(
             TbOp::V16(inst) => seal16(&inst),
             TbOp::V32(inst) => seal32(&inst),
         };
-        cycles += 1 + u64::from(op_touches_memory(&op));
+        // TRM base + intra-block load-use stall (a 1c op reading the
+        // previous single load's destination) + static region latencies.
+        // Fall-assumed: conditional-taken costs arrive via
+        // `TbMeta::branch_delta`, flash wait states via the driver's live
+        // sample (both documented on `cycle_estimate` below).
+        let (base, loaded, reads) = op_timing(&op);
+        let stall = u64::from(base == 1 && prev_loaded.is_some_and(|rd| reads.contains(&Some(rd))));
+        prev_loaded = loaded;
+        cycles += base + stall + fetch_latency(cur) + literal_latency(&op, cur);
         if op_writes_memory(&op) {
             // `ops.len() < MAX_TB_INSNS <= 64` (checked at loop top).
             store_mask |= 1_u64 << ops.len();
@@ -331,31 +352,200 @@ fn op_writes_memory(op: &TbOp) -> bool {
     }
 }
 
-/// Whether the op performs a data-memory access (cycle-estimate surcharge).
-fn op_touches_memory(op: &TbOp) -> bool {
+/// Static per-op timing (P2-7): the fall-through-assumed TRM Table 11-2
+/// base cost of one op, mirroring `Core::base_cycles` minus its dynamic
+/// inputs (taken-ness, `DIV` dividend magnitude, live registers for the
+/// data-region latency). Returns `(base, loaded_rd, reads)`:
+/// - `base`: 1c data, 2c single LDR/STR, n+1 multi-word, 3c taken-branch
+///   shapes (fall-assumed here — the +2 taken delta lives in
+///   [`TbMeta::branch_delta`]), 4c `BL`, 3c `TBB`/VFP-arith, 1c VFP-moves.
+///   `DIV` takes the 2c minimum (data-dependent 2–12c, documented D7 gap).
+/// - `loaded_rd`/`reads`: the single-load destination and source registers
+///   feeding the 1c load-use interlock (only a 1c op reading the previous
+///   single load's `rd < 13` stalls; multi-cycle ops absorb it).
+///
+/// The tables duplicate `base_cycles`' arms on purpose (that function is
+/// stateful over live registers); the `jit_cycles` battery pins every arm
+/// against single-step `cyccnt` so drift fails loudly.
+fn op_timing(op: &TbOp) -> (u64, Option<u8>, [Option<u8>; 3]) {
     match op {
-        TbOp::V16(inst) => matches!(
-            inst,
-            Inst16::LsReg { .. }
+        TbOp::V16(inst) => {
+            let reads = match inst {
+                Inst16::ShiftImm { rm, .. } => [Some(*rm), None, None],
+                Inst16::ShiftReg { rn, rm, .. } => [Some(*rn), Some(*rm), None],
+                Inst16::AddReg { rn, rm, .. }
+                | Inst16::SubReg { rn, rm, .. }
+                | Inst16::SpecialCmp { rn, rm } => [Some(*rn), Some(*rm), None],
+                Inst16::SpecialAdd { rm, .. } => [Some(*rm), None, None],
+                Inst16::AddImm3 { rn, .. }
+                | Inst16::SubImm3 { rn, .. }
+                | Inst16::CmpImm { rn, .. }
+                | Inst16::CbzCbnz { rn, .. } => [Some(*rn), None, None],
+                Inst16::LsImm { rn, .. } => [Some(*rn), None, None],
+                Inst16::Alu { rd, rm, .. } => [Some(*rd), Some(*rm), None],
+                Inst16::SpecialMov { rm, .. } => [Some(*rm), None, None],
+                Inst16::LsReg { rn, rm, .. } => [Some(*rn), Some(*rm), None],
+                Inst16::Extend { rm, .. } | Inst16::Reverse { rm, .. } => [Some(*rm), None, None],
+                Inst16::LdmStm { rn, .. } => [Some(*rn), None, None],
+                _ => [None, None, None],
+            };
+            let loaded = match inst {
+                Inst16::LdrLiteral { rt, .. }
+                | Inst16::LsSp {
+                    rt, is_load: true, ..
+                } if *rt < 13 => Some(*rt),
+                Inst16::LsReg {
+                    rt,
+                    kind: LsReg::Ldr | LsReg::Ldrb | LsReg::Ldrh | LsReg::Ldrsb | LsReg::Ldrsh,
+                    ..
+                } if *rt < 13 => Some(*rt),
+                Inst16::LsImm {
+                    rt,
+                    kind: LsImm::Ldr | LsImm::Ldrb | LsImm::Ldrh,
+                    ..
+                } if *rt < 13 => Some(*rt),
+                _ => None,
+            };
+            let base = match inst {
+                Inst16::LdrLiteral { .. }
+                | Inst16::LsReg { .. }
                 | Inst16::LsImm { .. }
-                | Inst16::LsSp { .. }
-                | Inst16::LdrLiteral { .. }
-                | Inst16::Push { .. }
-                | Inst16::Pop { .. }
-                | Inst16::LdmStm { .. }
-        ),
-        TbOp::V32(inst) => matches!(
-            inst,
-            Inst32::Mem { .. }
+                | Inst16::LsSp { .. } => 2,
+                Inst16::Push { regs, include_lr } => {
+                    1 + u64::from(regs.count_ones()) + u64::from(*include_lr)
+                }
+                Inst16::Pop { regs, load_pc } => {
+                    let n = u64::from(regs.count_ones()) + u64::from(*load_pc);
+                    if *load_pc {
+                        3
+                    } else {
+                        1 + n
+                    }
+                }
+                Inst16::LdmStm { regs, .. } => 1 + u64::from(regs.count_ones()),
+                // Unconditional: always taken. Conditionals: fall-assumed
+                // (the taken +2 arrives via `branch_delta`).
+                Inst16::Branch { .. } => 3,
+                Inst16::BranchCond { .. } | Inst16::CbzCbnz { .. } => 1,
+                Inst16::Bx { .. }
+                | Inst16::Blx { .. }
+                | Inst16::BxNs { .. }
+                | Inst16::BlxNs { .. } => 3,
+                _ => 1,
+            };
+            (base, loaded, reads)
+        }
+        TbOp::V32(inst) => {
+            let reads = match inst {
+                Inst32::DpReg { rn, rm, .. } => [Some(*rn), Some(*rm), None],
+                Inst32::DpImm { rn, .. } | Inst32::Sat { rn, .. } | Inst32::Bitfield { rn, .. } => {
+                    [Some(*rn), None, None]
+                }
+                Inst32::Div { rn, rm, .. }
+                | Inst32::Qadd { rn, rm, .. }
+                | Inst32::Par { rn, rm, .. }
+                | Inst32::ExtendAdd { rn, rm, .. } => [Some(*rn), Some(*rm), None],
+                Inst32::Sel { rn, rm, .. } => [Some(*rn), Some(*rm), None],
+                Inst32::Mul { op, ra, rn, rm, .. } => [
+                    Some(*rn),
+                    Some(*rm),
+                    matches!(op, MulOp::Mla | MulOp::Mls).then_some(*ra),
+                ],
+                Inst32::Mem { rt, rn, rm, .. } => [Some(*rn), *rm, None].map(|r| {
+                    // A store's `rt` is also a source.
+                    r.or((*rt < 13
+                        && !matches!(
+                            inst,
+                            Inst32::Mem {
+                                access: MemOp::Ldr
+                                    | MemOp::Ldrb
+                                    | MemOp::Ldrh
+                                    | MemOp::Ldrsb
+                                    | MemOp::Ldrsh,
+                                ..
+                            }
+                        ))
+                    .then_some(*rt))
+                }),
+                Inst32::Strex { rt, rn, .. } | Inst32::Stl { rt, rn, .. } => {
+                    [Some(*rn), (*rt < 13).then_some(*rt), None]
+                }
+                Inst32::LdrdStrd { rn, .. } | Inst32::LdmStm { rn, .. } => [Some(*rn), None, None],
+                Inst32::TblBranch { rn, rm, .. } => [Some(*rn), Some(*rm), None],
+                Inst32::Unary { rm, .. } => [Some(*rm), None, None],
+                _ => [None, None, None],
+            };
+            let loaded = match inst {
+                Inst32::Mem { access, rt, .. }
+                    if matches!(
+                        access,
+                        MemOp::Ldr | MemOp::Ldrb | MemOp::Ldrh | MemOp::Ldrsb | MemOp::Ldrsh
+                    ) && *rt < 13 =>
+                {
+                    Some(*rt)
+                }
+                Inst32::Ldrex { rt, .. } | Inst32::Lda { rt, .. } if *rt < 13 => Some(*rt),
+                _ => None,
+            };
+            let base = match inst {
+                Inst32::Bl { .. } | Inst32::BlxImm { .. } => 4,
+                Inst32::BranchWide { .. } => 3,
+                Inst32::BranchCondWide { .. } => 1,
+                Inst32::Mem { .. }
                 | Inst32::LdrdStrd { .. }
-                | Inst32::LdmStm { .. }
+                | Inst32::Ldrex { .. }
+                | Inst32::Strex { .. }
                 | Inst32::Lda { .. }
-                | Inst32::Stl { .. }
-                | Inst32::VfpLdSt { .. }
-                | Inst32::VfpLdStD { .. }
-                | Inst32::VfpLdStMult { .. }
-                | Inst32::VfpLdStMultD { .. }
-        ),
+                | Inst32::Stl { .. } => 2,
+                Inst32::LdmStm { regs, .. } => 1 + u64::from(regs.count_ones()),
+                // Data-dependent 2–12c: the static minimum (D7 gap).
+                Inst32::Div { .. } => 2,
+                Inst32::Mul { op, .. } => match op {
+                    MulOp::Mul => 1,
+                    MulOp::Mla | MulOp::Mls => 2,
+                    _ => 3,
+                },
+                Inst32::TblBranch { .. } => 3,
+                Inst32::Vfp3 { .. } | Inst32::Vfp2 { .. } => 3,
+                Inst32::VfpCmp { .. }
+                | Inst32::VfpVrint { .. }
+                | Inst32::VfpCvt { .. }
+                | Inst32::VfpCvtInt { .. }
+                | Inst32::VfpMovImm { .. }
+                | Inst32::VfpMrsVmsr { .. } => 1,
+                Inst32::VfpLdSt { .. } | Inst32::VfpLdStD { .. } => 2,
+                Inst32::VfpLdStMult { n, .. } | Inst32::VfpLdStMultD { n, .. } => 1 + u64::from(*n),
+                _ => 1,
+            };
+            (base, loaded, reads)
+        }
+    }
+}
+
+/// Fetch-region latency mirror of `Core::cache_latency` (static part):
+/// AXI `+1c`, FMC SDRAM `+5c`, everywhere else `+0c`. Only the fetch
+/// address is static; reg-relative data latency stays dynamic (D7 gap —
+/// the interpreter adds it per op), except 16-bit literals (see below).
+fn fetch_latency(pc: u32) -> u64 {
+    if (0x2400_0000..0x2408_0000).contains(&pc) {
+        1
+    } else if (0xC000_0000..0xC800_0000).contains(&pc) {
+        5
+    } else {
+        0
+    }
+}
+
+/// Data-region latency for statically-addressed loads: 16-bit `LDR
+/// (literal)` targets `(pc & !3) + 4 + imm` exactly like the stepper
+/// computes it. 32-bit literal forms need live registers and stay dynamic
+/// (D7 gap — rare pools outside plain RAM).
+fn literal_latency(op: &TbOp, pc: u32) -> u64 {
+    match op {
+        TbOp::V16(Inst16::LdrLiteral { imm, .. }) => {
+            fetch_latency((pc & !3).wrapping_add(4).wrapping_add(*imm as u32))
+        }
+        _ => 0,
     }
 }
 
@@ -501,8 +691,8 @@ mod tests {
         assert_eq!(body.end_pc, 0x100C);
         assert_eq!(body.start_page, 1);
         assert_eq!(body.page_count, 1);
-        // 6 plain ops, no memory: 6 cycles.
-        assert_eq!(body.cycle_estimate, 6);
+        // 5 plain ops (1c) + `B .` (always taken, 3c): 8 cycles.
+        assert_eq!(body.cycle_estimate, 8);
     }
 
     #[test]
@@ -670,11 +860,12 @@ mod tests {
 
     #[test]
     fn body_converts_to_cache_meta() {
-        // LDR r0,[pc,#0] (0x4800) touches memory: 1 + 2 cycles.
+        // LDR r0,[pc,#0] (0x4800) is 2c, NOP is 1c (no load-use: it
+        // reads nothing), `B .` is taken 3c.
         let mut mem = mem_with(0x1000, &[0x4800, NOP, B_SELF]);
         let body = build_tb(&mut mem, 0x1000, true, Isa::Armv6M, 0).unwrap();
         assert_eq!(body.ops.len(), 3);
-        assert_eq!(body.cycle_estimate, 2 + 1 + 1);
+        assert_eq!(body.cycle_estimate, 2 + 1 + 3);
         let meta = body.to_meta();
         assert_eq!(meta.key.pc, 0x1000);
         assert!(meta.key.secure);
@@ -682,6 +873,38 @@ mod tests {
         assert_eq!(meta.key.mpu_epoch, MpuEpoch::initial());
         assert_eq!(meta.insns, 3);
         assert_eq!(meta.len_bytes, 6);
+    }
+
+    #[test]
+    fn trm_costs_multi_word_stall_and_cond() {
+        // `POP {r0, r1}` (0xBC03): 1 + 2 regs, no PC refill.
+        let mut mem = mem_with(0x1000, &[0xBC03, B_SELF]);
+        let body = build_tb(&mut mem, 0x1000, false, Isa::Armv7M, 0).unwrap();
+        assert_eq!(body.cycle_estimate, 3 + 3);
+        // `LDM r0!, {r1, r2}` (0xC806): 1 + 2 regs.
+        let mut mem = mem_with(0x1000, &[0xC806, B_SELF]);
+        let body = build_tb(&mut mem, 0x1000, false, Isa::Armv7M, 0).unwrap();
+        assert_eq!(body.cycle_estimate, 3 + 3);
+        // Load-use interlock: `LDR r0, [pc, #0]` feeds `ADDS r1, r0, r0`
+        // (0x1841) — the 1c consumer stalls exactly 1c.
+        let mut mem = mem_with(0x1000, &[0x4800, 0x1841, B_SELF]);
+        let body = build_tb(&mut mem, 0x1000, false, Isa::Armv7M, 0).unwrap();
+        assert_eq!(body.cycle_estimate, 2 + (1 + 1) + 3);
+        // No stall when the consumer reads another register: `ADDS r1,
+        // r1, r1` (0x1849) after the same load.
+        let mut mem = mem_with(0x1000, &[0x4800, 0x1849, B_SELF]);
+        let body = build_tb(&mut mem, 0x1000, false, Isa::Armv7M, 0).unwrap();
+        assert_eq!(body.cycle_estimate, 2 + 1 + 3);
+        // No stall after a multi-cycle op either: `LDR; LDR` absorbs it.
+        let mut mem = mem_with(0x1000, &[0x4800, 0x4901, B_SELF]);
+        let body = build_tb(&mut mem, 0x1000, false, Isa::Armv7M, 0).unwrap();
+        assert_eq!(body.cycle_estimate, 2 + 2 + 3);
+        // Conditional branch seals its block fall-assumed: `BNE` (0xD101)
+        // alone is 1c; the taken +2 arrives via `branch_delta` at runtime.
+        let mut mem = mem_with(0x1000, &[0xD101, NOP]);
+        let body = build_tb(&mut mem, 0x1000, false, Isa::Armv7M, 0).unwrap();
+        assert_eq!((body.ops.len(), body.end), (1, TbEnd::ControlFlow));
+        assert_eq!(body.cycle_estimate, 1);
     }
 
     #[test]

@@ -145,6 +145,8 @@ struct ExitBlock {
     native: NativeBlock,
     /// Its load-use tail value (for the tracker).
     last_load: Option<u8>,
+    /// Its conditional-taken delta (for `BRANCH`-exit accounting).
+    branch_delta: u64,
 }
 
 /// Interpreted-TB execution driver over a [`TbCache`].
@@ -363,8 +365,12 @@ impl TbRunner {
     /// exit, commit block-level accounting. Cycle accounting is per-block
     /// (D7): `cycles` counts retired ops exactly (`meta.insns` for the
     /// entered block plus the chained accumulators, which cover every
-    /// chained block including the last), `cyccnt` takes the block
-    /// estimates the same way. The load-use tracker, edge linking, and
+    /// chained block including the last); `cyccnt` takes the TRM-faithful
+    /// static estimates the same way, plus live-sampled flash wait states
+    /// over flash-gated ops (entered + `acc_flash_ops`), plus exactly one
+    /// conditional-taken +2 per taken `B<cond>`/`CBZ` (driver-side for the
+    /// exit-owning block's unchained `BRANCH` exit, edge-side for chained
+    /// taken traversals). The load-use tracker, edge linking, and
     /// side-exit prefix walks resolve the *exit-owning* block through
     /// `ctx.cur_pc` (P2-6: with chaining that is usually not the entered
     /// block — using the entered metadata there walks foreign bytes,
@@ -419,6 +425,16 @@ impl TbRunner {
         let (ch_ops, ch_blocks) = (ctx.acc_ops, ctx.acc_blocks);
         core.cycles += ctx.acc_cycles;
         core.cyccnt += ctx.acc_cyccnt;
+        // Flash wait states over chained flash-gated ops (P2-7): sampled
+        // live so ACR changes apply without purging blocks. Skipped (no
+        // bus reads at all) when neither the entered nor any chained
+        // block is flash-gated.
+        let flash_ops =
+            ctx.acc_flash_ops + u64::from(meta.insns) * u64::from(meta.key.pc < 0x2000_0000);
+        if flash_ops != 0 {
+            let ws = core.flash_ws();
+            core.cyccnt += ws * flash_ops;
+        }
         self.stats.chained += ch_blocks;
         self.stats.hits += ch_blocks;
         // Exit-owning block (P2-6): the entered one, unless the chain
@@ -447,6 +463,19 @@ impl TbRunner {
         let blocks = (1 + ch_blocks).min(u64::from(u32::MAX)) as u32;
         core.cycles += u64::from(meta.insns);
         core.cyccnt += meta.cycle_estimate;
+        // Unchained taken conditional: the estimate assumed fall-through
+        // (chained taken edges already added it at traversal — exactly one
+        // +2 per taken conditional either way). The reason alone cannot
+        // tell taken from fall — a conditional's *fall* edge also reports
+        // `BRANCH` — so gate on the exit PC matching the taken-first
+        // static target (a degenerate taken-to-fallthrough still costs the
+        // taken 3c under the stepper, so the equality is exact there too).
+        if reason == EXIT_BRANCH
+            && exit.native.static_exits().first() == Some(&npc)
+            && exit.branch_delta != 0
+        {
+            core.cyccnt += exit.branch_delta;
+        }
         core.set_load_tracker(exit.last_load);
         core.regs.pc = end_pc;
         // Link the traversed edge for next time (tracked buses only: the
@@ -479,6 +508,7 @@ impl TbRunner {
                 },
                 native: native.clone(),
                 last_load: native.last_load(),
+                branch_delta: meta.branch_delta,
                 pc: meta.key.pc,
             };
         }
@@ -497,6 +527,7 @@ impl TbRunner {
                     isa: tmeta.key.isa,
                 },
                 last_load: tnative.last_load(),
+                branch_delta: tmeta.branch_delta,
                 native: tnative,
                 pc: tmeta.key.pc,
             },
@@ -510,6 +541,7 @@ impl TbRunner {
                     },
                     native: native.clone(),
                     last_load: native.last_load(),
+                    branch_delta: meta.branch_delta,
                     pc: meta.key.pc,
                 }
             }
@@ -792,8 +824,13 @@ impl TbRunner {
         if self.use_native && (body.store_mask == 0 || tracked) && !limit_risk {
             // Fresh (or reset) edge slots for this block's exit shape;
             // stale links never survive a rebuild (the new bytes may
-            // branch elsewhere entirely).
+            // branch elsewhere entirely). The conditional-taken delta
+            // derives from the same shape (exactly the two-static
+            // `taken + fall` seals estimate fall-through) — zero drift by
+            // construction.
             let (statics, has_dynamic) = exit_shape(&body);
+            meta.branch_delta =
+                u64::from(statics.len() == 2) * u64::from(super::native::BRANCH_TAKEN_EXTRA);
             let key = LinkKey { pc, secure, isa };
             let slot_count = statics.len() + usize::from(has_dynamic);
             let entry = self
