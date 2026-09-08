@@ -415,9 +415,19 @@ Goal: 10–30× on compute loops.
 
 ### Phase 3 — hardening to acceptance (4–6 wk)
 
-- [ ] P3-1: FP callout verification matrix (D3): NaN payload / denormal /
+- [x] P3-1: FP callout verification matrix (D3): NaN payload / denormal /
   FTZ edge vectors through softfloat callouts vs interpreter — must match
   bitwise (they share the code; the test proves the plumbing).
+  Done 2026-09-08: `tests/jit_fp.rs` runs 8,280 bitwise comparisons
+  (VFP state incl. FPSCR control/cumulative bits, GP regs, touched RAM,
+  retired cycles) over 15 f32 edge values × FPSCR modes (plain/FTZ/DN/
+  both) across 26 ops (VADD/VSUB/VMUL/VDIV/VMLA/VMLS/VNMLA/VFMA,
+  VMOV/VABS/VNEG/VSQRT, VCMP/VCMPE, VRINTR/VRINTZ, int↔float converts
+  both directions, GP moves, VMRS/VMSR, VLDR/VSTR) — native side-exit
+  tails vs stepper, all green. Every vector's halves are decode-asserted
+  in-test (caught two vd-bit derivation slips before they could hide).
+  Boundaries kept: default rounding, single-precision, no fixed-point
+  converts.
 - [ ] P3-2: differential FUZZING in CI (new `fuzz/fuzz_jit.rs` target +
   nightly-fuzz corpus seeds + a short bounded run in the CI fuzz job):
   random Thumb programs, TB-vs-interpreter state compare after N steps.
