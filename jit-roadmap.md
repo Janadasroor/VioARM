@@ -474,6 +474,20 @@ Goal: 10–30× on compute loops.
   workloads vs accurate on x86-64 release + all suites green + fuzz
   corpus clean → JIT becomes selectable (still default-off until a
   release decision says otherwise).
+  STATUS 2026-09-08 (BLOCKED — not ticked): geomean sits at ~6.6× cold
+  (79.9 × 0.73 × 4.95) and ~17× sustained (79.9 × 1.1 × 56.6; torture
+  already clears 50× sustained at ~57×, board NOP at ~80×). The entire
+  gap is SHA-256 (0.73× cold, 1.1× sustained, CHAIN=0 measured warm):
+  volatile-RAM schedule traffic fences every chained edge, so blocks
+  run solo with full driver trips. Closing G3 needs, in order: (1)
+  split code/data write generations (link + validation fencing ignore
+  data-only stores; unlocks SHA chaining — the single biggest lever);
+  (2) hot-template surgery (per-op flag pin traffic dominates SHA and
+  torture: lazy flags / block-level allocation); (3) mac ARM +
+  Windows baselines. (1) is a multi-day design+verify task (TLB bit +
+  fast-path checks both archs + runner + suites + fuzz); (2) is weeks.
+  Recommendation: track (1) as its own phased project before any G3
+  attempt — no methodology change can bridge a 7× geomean gap.
 
 Effort rollup: P1 3–4 wk + P2 6–10 wk + P3 4–6 wk ≈ **13–20 agent-weeks**,
 gated (any gate may stop or re-scope the rest).
