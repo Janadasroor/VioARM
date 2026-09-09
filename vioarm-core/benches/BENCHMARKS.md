@@ -20,14 +20,30 @@ unless noted. Detail sections below hold the history.
 | call/ret RAM 4k | ~503 µs | ~61 µs | **~8.3** |
 | push/pop RAM 4k | ~500 µs | ~890 µs | **0.56** |
 | board NOP 1M | 2.6476 s | 33.132 ms | **79.9** |
-| SHA-256 loop RAM 4k | 838.42 µs | 1154.2 µs | **0.73** |
-| ALU torture RAM 4k | 416.82 µs | 84.259 µs | **4.95** |
+| SHA-256 loop RAM 4k | ~807 µs | ~255 µs | **~3.2** |
+| ALU torture RAM 4k | ~427 µs | ~91 µs | **~4.7** |
 | ALU loop sustained (warm, per op) | 135 ns | 3.0 ns | **~45** |
 
-Sub-unity soaks are store-fenced chaining gaps (one driver trip per
-block; see the push note and the P3-4 section), not missed bugs — the
-fix is split code/data write generations (G3 critical path). G3
-acceptance: geometric mean ≥50× over board NOP 1M, SHA-256, ALU
+Sub-unity soaks were store-fenced chaining gaps (one driver trip per
+block); SPLIT fixed the SHA case (re-measured 2026-09-09 on the same
+box: ~3.2× cold, was 0.73× pre-SPLIT — the table cells above are the
+fresh numbers). Push/pop (0.56×) is the remaining store-fenced gap.
+Cold-4k profile, SHA (36k cold iters, same box): per iteration ~153 µs
+dynasm encode (~1 µs/guest-op over ~154 ops in ~26 blocks), ~19 µs
+successor-group builds, ~6 µs entered builds, hash/fills negligible.
+Executable-memory pooling already holds (strace: single-digit
+mprotects per whole run), so an exec pool would not move cold — the
+cost is encode throughput plus ~8 µs fixed per miss (finalize + link
+roundtrip). Batching is load-bearing either way: entered-solo A/B runs
+~2× slower cold (489 vs 252 µs); doubling group caps gains ~10% cold
+(noise-grade) and nothing sustained — caps stay as-is.
+Per-template encode audit (P3-7, 200k-op SHA snapshot): single-word mem
+templates dominate bytes (~75%: LsImm/Mem/LsSp ~355 B/op — guard-heavy),
+multi-word ~12% (LDM/STM ~1468, LDRD/STRD ~1067 B/op), ALU lean
+(33–47 B/op). A single-guard fast-path prototype cut push-heavy
+execution 1.29× but grew encode bytes (LDRD +26%) — warm win, cold
+cost — so it was reverted; no cheap cold win exists.
+G3 acceptance: geometric mean ≥50× over board NOP 1M, SHA-256, ALU
 torture on x86-64 release.
 
 ## External reference: QEMU 10.2.1 (2026-09-09, same box)

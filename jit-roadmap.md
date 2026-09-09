@@ -495,7 +495,25 @@ Goal: 10–30× on compute loops.
   emitter approach now clears 50× with margin. Remaining before
   ticking: owner ruling (same question as G2), mac ARM + Windows
   baselines, and optionally cold-window work (exec pool) + further
-  hot-template surgery (flag traffic) for headroom.
+  hot-template surgery (flag traffic) for headroom. Cold-window
+  verdict 2026-09-09: exec pool does NOT apply (strace: executable
+  memory already pooled — cold is dynasm encode throughput ~1 µs/op
+  plus ~8 µs fixed per miss, profiled); batching is load-bearing cold
+  too (entered-solo A/B 2× slower), bigger groups gain noise-grade ~10%
+  cold and nothing sustained — caps stay, table refreshed (SHA cold
+  0.73×→~3.2× post-SPLIT).
+- [x] P3-7: template diet for cold-encode throughput — investigated
+  2026-09-09, DECLINED on evidence (no cheap win exists). Per-template
+  encode audit (200k-op snapshot, SHA cold): single-word mem templates
+  are ~75% of bytes (LsImm/Mem/LsSp ~355 B/op — the guard dominates),
+  multi-word ~12% (LDM/STM ~1468, LDRD/STRD ~1067 B/op), ALU lean
+  (33–47 B/op, fusion would be a compiler project — out of scope).
+  Prototype (single-guard fast path for PUSH/POP/LDM/LDRD, both arches,
+  all differentials green) cut push-heavy execution 1.29× but GREW
+  encode bytes (LDRD +26%: duplicating the ~100 B guard costs more than
+  the removed probes) — a warm win with a cold cost, i.e. the inverse
+  of this item's mandate. Reverted. Revisit only with an
+  execution-focused mandate and ARM-side execution proof.
 - [x] P3-6: TLB index-thrash (post-G3 perf gap, correctness unaffected).
   Found 2026-09-09 by the QEMU comparison: the 64-entry direct-mapped
   TLB (`tlb.rs`, index `vpn & 63`) aliases flash page 0 against RAM page
