@@ -171,9 +171,9 @@ fn merge_nz(ops: &mut A) {
 /// Plain ops only: terminators go through [`emit_terminator`] (they
 /// consume edge slots). `unalign_trap` is the emit-time CCR bit (P2-3:
 /// stable across the block by store-seal + config purge).
-pub fn emit_op(ops: &mut A, op: &TbOp, pc: u32, unalign_trap: bool) -> bool {
+pub fn emit_op(ops: &mut A, op: &TbOp, pc: u32, unalign_trap: bool, merge: bool) -> bool {
     match *op {
-        TbOp::V16(inst) => emit16(ops, &inst, pc, unalign_trap, false),
+        TbOp::V16(inst) => emit16(ops, &inst, pc, unalign_trap, false, merge),
         TbOp::V32(inst) => emit32(ops, &inst, pc, unalign_trap),
     }
 }
@@ -186,7 +186,14 @@ pub fn emit_op(ops: &mut A, op: &TbOp, pc: u32, unalign_trap: bool) -> bool {
 /// test forms, flagless ops, and 32-bit DP (S-bit honored in IT) merge as
 /// usual. Returns `false` for non-plain ops (archy double-gate: the
 /// templates-level `is_predicable` decides, this fails closed).
-pub fn emit_predicated(ops: &mut A, op: &TbOp, pc: u32, unalign_trap: bool, cond: u8) -> bool {
+pub fn emit_predicated(
+    ops: &mut A,
+    op: &TbOp,
+    pc: u32,
+    unalign_trap: bool,
+    cond: u8,
+    merge: bool,
+) -> bool {
     use super::templates::is_predicable;
     // Single gate (coverage + cond range): the templates-level simulation
     // only sends predicable ops, this fails closed on anything else
@@ -201,7 +208,7 @@ pub fn emit_predicated(ops: &mut A, op: &TbOp, pc: u32, unalign_trap: bool, cond
     let skip = ops.new_dynamic_label();
     dynasm!(ops ; .arch x64 ; jz =>skip);
     let ok = match *op {
-        TbOp::V16(inst) => emit16(ops, &inst, pc, unalign_trap, true),
+        TbOp::V16(inst) => emit16(ops, &inst, pc, unalign_trap, true, merge),
         // 32-bit predicated forms (S-bit honored in IT — no suppression).
         TbOp::V32(inst) => emit32(ops, &inst, pc, unalign_trap),
     };
@@ -262,6 +269,7 @@ fn emit16(
     pc: u32,
     unalign_trap: bool,
     pred: bool,
+    merge: bool,
 ) -> bool {
     use crate::cpu::decode16::Inst16 as I;
     match *inst {
@@ -278,19 +286,19 @@ fn emit16(
             }
             true
         }
-        I::AddReg { rd, rn, rm } => alu_rr(ops, rd, rn, rm, AluKind::Add, pred),
-        I::SubReg { rd, rn, rm } => alu_rr(ops, rd, rn, rm, AluKind::Sub, pred),
-        I::AddImm3 { rd, rn, imm } => alu_ri(ops, rd, rn, i32::from(imm), AluKind::Add, pred),
-        I::SubImm3 { rd, rn, imm } => alu_ri(ops, rd, rn, i32::from(imm), AluKind::Sub, pred),
-        I::AddImm8 { rd, imm } => alu_ri(ops, rd, rd, i32::from(imm), AluKind::Add, pred),
-        I::SubImm8 { rd, imm } => alu_ri(ops, rd, rd, i32::from(imm), AluKind::Sub, pred),
-        I::CmpImm { rn, imm } => cmp_ri(ops, rn, i32::from(imm)),
+        I::AddReg { rd, rn, rm } => alu_rr(ops, rd, rn, rm, AluKind::Add, pred, merge),
+        I::SubReg { rd, rn, rm } => alu_rr(ops, rd, rn, rm, AluKind::Sub, pred, merge),
+        I::AddImm3 { rd, rn, imm } => alu_ri(ops, rd, rn, i32::from(imm), AluKind::Add, pred, merge),
+        I::SubImm3 { rd, rn, imm } => alu_ri(ops, rd, rn, i32::from(imm), AluKind::Sub, pred, merge),
+        I::AddImm8 { rd, imm } => alu_ri(ops, rd, rd, i32::from(imm), AluKind::Add, pred, merge),
+        I::SubImm8 { rd, imm } => alu_ri(ops, rd, rd, i32::from(imm), AluKind::Sub, pred, merge),
+        I::CmpImm { rn, imm } => cmp_ri(ops, rn, i32::from(imm), merge),
         I::ShiftImm {
             rd,
             rm,
             kind,
             amount,
-        } => emit_shift_imm(ops, rd, rm, kind, amount, pred),
+        } => emit_shift_imm(ops, rd, rm, kind, amount, pred, merge),
         I::ShiftReg { rd, rn, rm, kind } => {
             if rd == 15 || rn == 15 || rm == 15 {
                 return false;
@@ -299,10 +307,14 @@ fn emit16(
             load(ops, rm, false);
             shift_reg_seq(ops, rd, kind, pred)
         }
-        I::Alu { rd, rm, op } => emit_alu(ops, rd, rm, op, pred),
+        I::Alu { rd, rm, op } => emit_alu(ops, rd, rm, op, pred, merge),
         I::SpecialCmp { rn, rm } => {
             if rn == 15 || rm == 15 {
                 return false;
+            }
+            // Pure flags (G3 flag traffic): vanish entirely when dead.
+            if !merge {
+                return true;
             }
             load(ops, rn, true);
             load(ops, rm, false);
@@ -1001,7 +1013,7 @@ enum AluKind {
 }
 
 /// `Rd = Rn +/- Rm` with full NZCV (`pred` skips the merge — S4).
-fn alu_rr(ops: &mut A, rd: u8, rn: u8, rm: u8, kind: AluKind, pred: bool) -> bool {
+fn alu_rr(ops: &mut A, rd: u8, rn: u8, rm: u8, kind: AluKind, pred: bool, merge: bool) -> bool {
     if rd == 15 || rn == 15 || rm == 15 {
         return false;
     }
@@ -1014,7 +1026,9 @@ fn alu_rr(ops: &mut A, rd: u8, rn: u8, rm: u8, kind: AluKind, pred: bool) -> boo
         AluKind::Sub => dynasm!(ops ; .arch x64 ; sub eax, ecx ; cmc),
     }
     store(ops, rd);
-    if !pred {
+    // G3 flag traffic: skip the extraction + merge when a later full
+    // producer covers the next observation (see `flag_merge_bits`).
+    if !pred && merge {
         dynasm!(ops ; .arch x64 ; seto dl ; lahf);
         merge_nzcv(ops);
     }
@@ -1022,7 +1036,15 @@ fn alu_rr(ops: &mut A, rd: u8, rn: u8, rm: u8, kind: AluKind, pred: bool) -> boo
 }
 
 /// `Rd = Rn +/- imm` with full NZCV (`pred` skips the merge — S4).
-fn alu_ri(ops: &mut A, rd: u8, rn: u8, imm: i32, kind: AluKind, pred: bool) -> bool {
+fn alu_ri(
+    ops: &mut A,
+    rd: u8,
+    rn: u8,
+    imm: i32,
+    kind: AluKind,
+    pred: bool,
+    merge: bool,
+) -> bool {
     if rd == 15 || rn == 15 {
         return false;
     }
@@ -1033,17 +1055,23 @@ fn alu_ri(ops: &mut A, rd: u8, rn: u8, imm: i32, kind: AluKind, pred: bool) -> b
         AluKind::Sub => dynasm!(ops ; .arch x64 ; sub eax, ecx ; cmc),
     }
     store(ops, rd);
-    if !pred {
+    // G3 flag traffic: skip the extraction + merge when a later full
+    // producer covers the next observation (see `flag_merge_bits`).
+    if !pred && merge {
         dynasm!(ops ; .arch x64 ; seto dl ; lahf);
         merge_nzcv(ops);
     }
     true
 }
 
-/// `CMP Rn, #imm`: compare and discard, full NZCV.
-fn cmp_ri(ops: &mut A, rn: u8, imm: i32) -> bool {
+/// `CMP Rn, #imm`: compare and discard, full NZCV. Pure flags: with
+/// `merge` false the whole op vanishes (no other effects).
+fn cmp_ri(ops: &mut A, rn: u8, imm: i32, merge: bool) -> bool {
     if rn == 15 {
         return false;
+    }
+    if !merge {
+        return true;
     }
     load(ops, rn, true);
     dynasm!(ops ; .arch x64 ; mov ecx, imm);
@@ -2661,7 +2689,14 @@ fn ror_reg_seq(ops: &mut A, rd: u8, pred: bool) -> bool {
 
 /// ALU-op dispatcher (16-bit `Alu` family; `set_flags` is always true in
 /// native blocks since `itstate == 0` throughout).
-fn emit_alu(ops: &mut A, rd: u8, rm: u8, op: crate::cpu::decode16::AluOp, pred: bool) -> bool {
+fn emit_alu(
+    ops: &mut A,
+    rd: u8,
+    rm: u8,
+    op: crate::cpu::decode16::AluOp,
+    pred: bool,
+    merge: bool,
+) -> bool {
     use crate::cpu::decode16::AluOp as O;
     if rd == 15 || rm == 15 {
         return false;
@@ -2693,7 +2728,9 @@ fn emit_alu(ops: &mut A, rd: u8, rm: u8, op: crate::cpu::decode16::AluOp, pred: 
             }
             store(ops, rd);
             dynasm!(ops ; .arch x64 ; seto dl ; lahf);
-            if !pred {
+            // G3 flag traffic (Adc/Sbc read carry via `bt` above — the
+            // read stays unconditional; only the merge gates).
+            if !pred && merge {
                 merge_nzcv(ops);
             }
             return true;
@@ -2758,12 +2795,18 @@ fn emit_alu(ops: &mut A, rd: u8, rm: u8, op: crate::cpu::decode16::AluOp, pred: 
             merge_nz(ops);
         }
         "cmp" => {
-            dynasm!(ops ; .arch x64 ; sub eax, ecx ; cmc ; seto dl ; lahf);
-            merge_nzcv(ops);
+            // Pure flags: vanish entirely when dead.
+            if merge {
+                dynasm!(ops ; .arch x64 ; sub eax, ecx ; cmc ; seto dl ; lahf);
+                merge_nzcv(ops);
+            }
         }
         "add-nostore" => {
-            dynasm!(ops ; .arch x64 ; add eax, ecx ; seto dl ; lahf);
-            merge_nzcv(ops);
+            // Pure flags: vanish entirely when dead.
+            if merge {
+                dynasm!(ops ; .arch x64 ; add eax, ecx ; seto dl ; lahf);
+                merge_nzcv(ops);
+            }
         }
         "mul" => {
             // 2-operand IMUL leaves SF/ZF undefined: re-test for N/Z.
@@ -2789,7 +2832,7 @@ fn emit_alu(ops: &mut A, rd: u8, rm: u8, op: crate::cpu::decode16::AluOp, pred: 
             dynasm!(ops ; .arch x64 ; neg eax ; cmc);
             store(ops, rd);
             dynasm!(ops ; .arch x64 ; seto dl ; lahf);
-            if !pred {
+            if !pred && merge {
                 merge_nzcv(ops);
             }
         }
@@ -2799,7 +2842,18 @@ fn emit_alu(ops: &mut A, rd: u8, rm: u8, op: crate::cpu::decode16::AluOp, pred: 
 }
 
 /// Shift-immediate kinds after the interpreter's `shift_imm` truth table.
-fn emit_shift_imm(ops: &mut A, rd: u8, rm: u8, kind: ShiftImm, amount: u8, pred: bool) -> bool {
+/// `merge` gates only the nonzero-amount full merge (G3 flag traffic);
+/// the zero-amount C-preserving merge always runs (preservation reads
+/// must see fresh C — same rule as `merge_nz` everywhere).
+fn emit_shift_imm(
+    ops: &mut A,
+    rd: u8,
+    rm: u8,
+    kind: ShiftImm,
+    amount: u8,
+    pred: bool,
+    merge: bool,
+) -> bool {
     if rd == 15 || rm == 15 {
         return false;
     }
@@ -2823,7 +2877,7 @@ fn emit_shift_imm(ops: &mut A, rd: u8, rm: u8, kind: ShiftImm, amount: u8, pred:
     // CF holds the last bit out (x86 shift semantics match ARM here for
     // 1..=31); V is always false for shifts.
     dynasm!(ops ; .arch x64 ; lahf ; xor edx, edx);
-    if !pred {
+    if !pred && merge {
         merge_nzcv(ops);
     }
     true

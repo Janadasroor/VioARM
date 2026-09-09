@@ -158,9 +158,9 @@ fn merge_nz(ops: &mut A) {
 
 /// Emit one plain op. Returns `false` when `op` has no template.
 /// Terminators go through [`emit_terminator`].
-pub fn emit_op(ops: &mut A, op: &TbOp, pc: u32, unalign_trap: bool) -> bool {
+pub fn emit_op(ops: &mut A, op: &TbOp, pc: u32, unalign_trap: bool, merge: bool) -> bool {
     match *op {
-        TbOp::V16(inst) => emit16(ops, &inst, pc, unalign_trap, false),
+        TbOp::V16(inst) => emit16(ops, &inst, pc, unalign_trap, false, merge),
         TbOp::V32(inst) => emit32(ops, &inst, pc, unalign_trap),
     }
 }
@@ -168,7 +168,14 @@ pub fn emit_op(ops: &mut A, op: &TbOp, pc: u32, unalign_trap: bool) -> bool {
 /// Emit one predicated op under IT condition `cond` (P2-5, S4, AArch64
 /// mirror): `cond_bit` + skip + plain emission with merge suppression.
 /// Same gate as x64 (memory ops must never predicate).
-pub fn emit_predicated(ops: &mut A, op: &TbOp, pc: u32, unalign_trap: bool, cond: u8) -> bool {
+pub fn emit_predicated(
+    ops: &mut A,
+    op: &TbOp,
+    pc: u32,
+    unalign_trap: bool,
+    cond: u8,
+    merge: bool,
+) -> bool {
     use super::templates::is_predicable;
     if cond > 13 || !is_predicable(op) {
         return false;
@@ -177,7 +184,7 @@ pub fn emit_predicated(ops: &mut A, op: &TbOp, pc: u32, unalign_trap: bool, cond
     let skip = ops.new_dynamic_label();
     dynasm!(ops ; .arch aarch64 ; b.eq =>skip);
     let ok = match *op {
-        TbOp::V16(inst) => emit16(ops, &inst, pc, unalign_trap, true),
+        TbOp::V16(inst) => emit16(ops, &inst, pc, unalign_trap, true, merge),
         TbOp::V32(inst) => emit32(ops, &inst, pc, unalign_trap),
     };
     dynasm!(ops ; .arch aarch64 ; =>skip);
@@ -229,6 +236,7 @@ fn emit16(
     pc: u32,
     unalign_trap: bool,
     pred: bool,
+    merge: bool,
 ) -> bool {
     use crate::cpu::decode16::Inst16 as I;
     match *inst {
@@ -247,15 +255,19 @@ fn emit16(
             }
             true
         }
-        I::AddReg { rd, rn, rm } => alu_rr(ops, rd, rn, rm, false, pred),
-        I::SubReg { rd, rn, rm } => alu_rr(ops, rd, rn, rm, true, pred),
-        I::AddImm3 { rd, rn, imm } => alu_ri(ops, rd, rn, u32::from(imm), false, pred),
-        I::SubImm3 { rd, rn, imm } => alu_ri(ops, rd, rn, u32::from(imm), true, pred),
-        I::AddImm8 { rd, imm } => alu_ri(ops, rd, rd, u32::from(imm), false, pred),
-        I::SubImm8 { rd, imm } => alu_ri(ops, rd, rd, u32::from(imm), true, pred),
+        I::AddReg { rd, rn, rm } => alu_rr(ops, rd, rn, rm, false, pred, merge),
+        I::SubReg { rd, rn, rm } => alu_rr(ops, rd, rn, rm, true, pred, merge),
+        I::AddImm3 { rd, rn, imm } => alu_ri(ops, rd, rn, u32::from(imm), false, pred, merge),
+        I::SubImm3 { rd, rn, imm } => alu_ri(ops, rd, rn, u32::from(imm), true, pred, merge),
+        I::AddImm8 { rd, imm } => alu_ri(ops, rd, rd, u32::from(imm), false, pred, merge),
+        I::SubImm8 { rd, imm } => alu_ri(ops, rd, rd, u32::from(imm), true, pred, merge),
         I::CmpImm { rn, imm } => {
             if rn == 15 {
                 return false;
+            }
+            // Pure flags (G3 flag traffic): vanish entirely when dead.
+            if !merge {
+                return true;
             }
             load(ops, rn, true);
             let imm = u32::from(imm);
@@ -269,7 +281,7 @@ fn emit16(
             rm,
             kind,
             amount,
-        } => emit_shift_imm(ops, rd, rm, kind, amount, pred),
+        } => emit_shift_imm(ops, rd, rm, kind, amount, pred, merge),
         I::ShiftReg { rd, rn, rm, kind } => {
             if rd == 15 || rn == 15 || rm == 15 {
                 return false;
@@ -278,10 +290,14 @@ fn emit16(
             load(ops, rm, false);
             shift_reg_seq(ops, rd, kind, pred)
         }
-        I::Alu { rd, rm, op } => emit_alu(ops, rd, rm, op, pred),
+        I::Alu { rd, rm, op } => emit_alu(ops, rd, rm, op, pred, merge),
         I::SpecialCmp { rn, rm } => {
             if rn == 15 || rm == 15 {
                 return false;
+            }
+            // Pure flags (G3 flag traffic): vanish entirely when dead.
+            if !merge {
+                return true;
             }
             load(ops, rn, true);
             load(ops, rm, false);
@@ -730,7 +746,7 @@ fn cond_bit(ops: &mut A, cond: u8) {
 
 /// `Wd = Wn +/- Wm` with full NZCV (`subs`/`adds` match the interpreter
 /// with no fixups: C is NOT-borrow natively).
-fn alu_rr(ops: &mut A, rd: u8, rn: u8, rm: u8, sub: bool, pred: bool) -> bool {
+fn alu_rr(ops: &mut A, rd: u8, rn: u8, rm: u8, sub: bool, pred: bool, merge: bool) -> bool {
     if rd == 15 || rn == 15 || rm == 15 {
         return false;
     }
@@ -742,7 +758,9 @@ fn alu_rr(ops: &mut A, rd: u8, rn: u8, rm: u8, sub: bool, pred: bool) -> bool {
         dynasm!(ops ; .arch aarch64 ; adds w0, w0, w1);
     }
     store(ops, rd);
-    if !pred {
+    // G3 flag traffic: skip the merge when a later full producer covers
+    // the next observation (see `flag_merge_bits`).
+    if !pred && merge {
         if !pred {
             merge_nzcv(ops);
         }
@@ -751,7 +769,7 @@ fn alu_rr(ops: &mut A, rd: u8, rn: u8, rm: u8, sub: bool, pred: bool) -> bool {
 }
 
 /// `Wd = Wn +/- imm` with full NZCV.
-fn alu_ri(ops: &mut A, rd: u8, rn: u8, imm: u32, sub: bool, pred: bool) -> bool {
+fn alu_ri(ops: &mut A, rd: u8, rn: u8, imm: u32, sub: bool, pred: bool, merge: bool) -> bool {
     if rd == 15 || rn == 15 {
         return false;
     }
@@ -762,7 +780,8 @@ fn alu_ri(ops: &mut A, rd: u8, rn: u8, imm: u32, sub: bool, pred: bool) -> bool 
         dynasm!(ops ; .arch aarch64 ; adds w0, w0, imm);
     }
     store(ops, rd);
-    if !pred {
+    // G3 flag traffic (see `alu_rr` above).
+    if !pred && merge {
         if !pred {
             merge_nzcv(ops);
         }
@@ -2615,7 +2634,14 @@ fn emit32(ops: &mut A, inst: &crate::cpu::decode32::Inst32, pc: u32, unalign_tra
 }
 /// ALU-op dispatcher (16-bit `Alu` family; `itstate == 0` throughout
 /// native blocks, so flags always update).
-fn emit_alu(ops: &mut A, rd: u8, rm: u8, op: crate::cpu::decode16::AluOp, pred: bool) -> bool {
+fn emit_alu(
+    ops: &mut A,
+    rd: u8,
+    rm: u8,
+    op: crate::cpu::decode16::AluOp,
+    pred: bool,
+    merge: bool,
+) -> bool {
     use crate::cpu::decode16::AluOp as O;
     if rd == 15 || rm == 15 {
         return false;
@@ -2658,7 +2684,9 @@ fn emit_alu(ops: &mut A, rd: u8, rm: u8, op: crate::cpu::decode16::AluOp, pred: 
                 _ => dynasm!(ops ; .arch aarch64 ; sbcs w0, w0, w1),
             }
             store(ops, rd);
-            if !pred {
+            // G3 flag traffic (carry-in reads `w23` above unconditionally;
+            // only the merge gates).
+            if !pred && merge {
                 merge_nzcv(ops);
             }
             return true;
@@ -2715,12 +2743,18 @@ fn emit_alu(ops: &mut A, rd: u8, rm: u8, op: crate::cpu::decode16::AluOp, pred: 
             merge_nz(ops);
         }
         O::Cmp => {
-            dynasm!(ops ; .arch aarch64 ; subs w9, w0, w1);
-            merge_nzcv(ops);
+            // Pure flags: vanish entirely when dead.
+            if merge {
+                dynasm!(ops ; .arch aarch64 ; subs w9, w0, w1);
+                merge_nzcv(ops);
+            }
         }
         O::Cmn => {
-            dynasm!(ops ; .arch aarch64 ; adds w9, w0, w1);
-            merge_nzcv(ops);
+            // Pure flags: vanish entirely when dead.
+            if merge {
+                dynasm!(ops ; .arch aarch64 ; adds w9, w0, w1);
+                merge_nzcv(ops);
+            }
         }
         O::Mul => {
             dynasm!(ops ; .arch aarch64 ; mul w0, w0, w1);
@@ -2743,7 +2777,7 @@ fn emit_alu(ops: &mut A, rd: u8, rm: u8, op: crate::cpu::decode16::AluOp, pred: 
             // place for the store (no x86-style fixup needed).
             dynasm!(ops ; .arch aarch64 ; neg w0, w1);
             store(ops, rd);
-            if !pred {
+            if !pred && merge {
                 merge_nzcv(ops);
             }
         }
@@ -2752,7 +2786,15 @@ fn emit_alu(ops: &mut A, rd: u8, rm: u8, op: crate::cpu::decode16::AluOp, pred: 
     true
 }
 
-fn emit_shift_imm(ops: &mut A, rd: u8, rm: u8, kind: ShiftImm, amount: u8, pred: bool) -> bool {
+fn emit_shift_imm(
+    ops: &mut A,
+    rd: u8,
+    rm: u8,
+    kind: ShiftImm,
+    amount: u8,
+    pred: bool,
+    merge: bool,
+) -> bool {
     if rd == 15 || rm == 15 {
         return false;
     }
@@ -2802,7 +2844,7 @@ fn emit_shift_imm(ops: &mut A, rd: u8, rm: u8, kind: ShiftImm, amount: u8, pred:
             );
         }
     }
-    if !pred {
+    if !pred && merge {
         carry_in_w1(ops);
     }
     true

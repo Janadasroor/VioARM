@@ -21,7 +21,7 @@ unless noted. Detail sections below hold the history.
 | push/pop RAM 4k | ~500 µs | ~890 µs | **0.56** |
 | board NOP 1M | 2.6476 s | 33.132 ms | **79.9** |
 | SHA-256 loop RAM 4k | ~807 µs | ~255 µs | **~3.2** |
-| ALU torture RAM 4k | ~427 µs | ~91 µs | **~4.7** |
+| ALU torture RAM 4k | ~427 µs | ~67 µs | **~6.4** |
 | ALU loop sustained (warm, per op) | 135 ns | 3.0 ns | **~45** |
 
 Sub-unity soaks were store-fenced chaining gaps (one driver trip per

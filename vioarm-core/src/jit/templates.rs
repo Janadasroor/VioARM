@@ -445,8 +445,7 @@ fn is_mem_load(access: crate::cpu::decode32::MemOp) -> bool {
 /// Static memory-access descriptor shared by template emission and the
 /// side-exit fill path (single source: `(byte size, is_write)`).
 /// `None` for non-memory or deferred (dual/multiple/exclusive) ops.
-pub(crate) fn mem_access(op: &TbOp) -> Option<(u32, bool)> {
-    match *op {
+pub(crate) fn mem_access(op: &TbOp) -> Option<(u32, bool)> {    match *op {
         TbOp::V16(inst) => {
             use crate::cpu::decode16::{LsImm, LsReg};
             match inst {
@@ -501,13 +500,102 @@ pub(crate) fn mem_access(op: &TbOp) -> Option<(u32, bool)> {
     }
 }
 
+/// Whether an op's template fully materializes NZCV into the pinned
+/// flags word (and is gated on the liveness bit — see [`flag_merge_bits`]).
+/// Exactly the 16-bit full-merge variants served by gated sites; every
+/// other variant is transparent to liveness (ungated templates merge —
+/// or never touch flags — exactly as before. Load-bearing: never mark a
+/// C/V-preserving or non-merging variant here — a skipped producer must
+/// always be covered by a later full merge).
+fn flag_producer(op: &TbOp) -> bool {
+    use crate::cpu::decode16::{AluOp, Inst16};
+    match *op {
+        TbOp::V16(inst) => match inst {
+            Inst16::AddReg { .. }
+            | Inst16::SubReg { .. }
+            | Inst16::AddImm3 { .. }
+            | Inst16::SubImm3 { .. }
+            | Inst16::AddImm8 { .. }
+            | Inst16::SubImm8 { .. }
+            | Inst16::CmpImm { .. }
+            | Inst16::SpecialCmp { .. } => true,
+            Inst16::ShiftImm { amount, .. } => amount != 0,
+            Inst16::Alu { op, .. } => {
+                matches!(op, AluOp::Adc | AluOp::Sbc | AluOp::Cmp | AluOp::Cmn | AluOp::Neg)
+            }
+            _ => false,
+        },
+        // 32-bit templates stay eager (ungated): transparent here, so
+        // 16-bit neighbors never skip across them (today's behavior).
+        TbOp::V32(_) => false,
+    }
+}
+
+/// Whether an op observes pinned state mid-block (memory guard miss,
+/// divide-by-zero, or flag read with a live merge behind it): the
+/// previous flag producer must have materialized, because the
+/// interpreter continues from the flushed pins. TB exits (chained,
+/// driver, GDB-end) always observe, so the backward pass starts pending.
+/// Branches/IT/MRS seal (last-op — pending already true), but marking
+/// them is free insurance against seal surprises.
+fn flag_observe(op: &TbOp) -> bool {
+    use crate::cpu::decode16::Inst16;
+    if mem_access(op).is_some() {
+        return true;
+    }
+    match *op {
+        TbOp::V16(inst) => match inst {
+            Inst16::Alu { op, .. } => {
+                use crate::cpu::decode16::AluOp;
+                matches!(op, AluOp::Adc | AluOp::Sbc)
+            }
+            Inst16::ShiftReg { .. } => true,
+            Inst16::BranchCond { .. } | Inst16::It { .. } => true,
+            _ => false,
+        },
+        // 32-bit blanket: every 32-bit op forces the previous merge
+        // (today's behavior on mixed patterns exactly — ADC/SBC/RSC and
+        // V-preserving logicals must never see a skipped predecessor).
+        // Pure-32-bit runs are bit-identical either way (eager templates).
+        TbOp::V32(_) => true,
+    }
+}
+
+/// Per-op NZCV-materialization liveness for one TB body: `true` means the
+/// op must merge (no later full producer covers the next observation).
+/// Skipped ops are always full-mergers with a later full-merger standing
+/// between them and every observation — C/V preservation in between
+/// (merge_nz, shifts) then flows from fresh state by induction.
+fn flag_merge_bits(ops: &[TbOp]) -> Vec<bool> {
+    let mut needs = vec![false; ops.len()];
+    let mut pending = true;
+    for (i, op) in ops.iter().enumerate().rev() {
+        if flag_observe(op) {
+            pending = true;
+        }
+        if flag_producer(op) {
+            needs[i] = pending;
+            pending = false;
+        }
+    }
+    needs
+}
+
 /// Emit one templated op at guest `pc` into an arch assembler. Returns
 /// `false` for untemplated ops (the block then stays interpreted).
-pub fn emit_op(ops: &mut arch::Assembler, op: &TbOp, pc: u32, unalign_trap: bool) -> bool {
+/// `merge` allows NZCV materialization (see [`flag_merge_bits`]); single
+/// ops always pass `true` so harness emission stays exactly eager.
+pub fn emit_op(
+    ops: &mut arch::Assembler,
+    op: &TbOp,
+    pc: u32,
+    unalign_trap: bool,
+    merge: bool,
+) -> bool {
     if !is_templated(op) {
         return false;
     }
-    arch::emit_op(ops, op, pc, unalign_trap)
+    arch::emit_op(ops, op, pc, unalign_trap, merge)
 }
 
 /// Assemble prologue + one template + edges for harness runs. The op is
@@ -664,6 +752,7 @@ fn emit_one(
     let mut it = body.it_entry;
     let mut edged = false;
     let n = body.ops.len();
+    let merges = flag_merge_bits(&body.ops);
     for (i, op) in body.ops.iter().enumerate() {
         if let TbOp::V16(Inst16::It { cond, mask }) = *op {
             // No-op template (the exit store materializes the set).
@@ -672,18 +761,18 @@ fn emit_one(
         } else if it != 0 {
             // Predicated body op (S4): the builder guarantees predicable
             // (arch double-gates via `emit_op` failing closed).
-            if !arch::emit_predicated(&mut *ops, op, pc, unalign_trap, it >> 4) {
+            if !arch::emit_predicated(&mut *ops, op, pc, unalign_trap, it >> 4, merges[i]) {
                 return Err(super::EmitError::Untemplated);
             }
             it = it_advance(it);
         } else if i + 1 == n {
-            if emit_op(&mut *ops, op, pc, unalign_trap) {
+            if emit_op(&mut *ops, op, pc, unalign_trap, merges[i]) {
                 arch::emit_fall_edge(&mut *ops, body.end_pc, tape.take());
             } else if !arch::emit_terminator(&mut *ops, op, pc, unalign_trap, &mut tape) {
                 return Err(super::EmitError::Untemplated);
             }
             edged = true;
-        } else if !emit_op(&mut *ops, op, pc, unalign_trap) {
+        } else if !emit_op(&mut *ops, op, pc, unalign_trap, merges[i]) {
             return Err(super::EmitError::Untemplated);
         }
         pc = pc.wrapping_add(op_len(op));
@@ -831,7 +920,7 @@ pub(crate) mod harness {
         use super::super::native::{emit_epilogue, emit_prologue, EXIT_FALL};
         let mut ops = super::arch::Assembler::new().unwrap();
         emit_prologue(&mut ops);
-        assert!(super::emit_op(&mut ops, op, 0x1000, false));
+        assert!(super::emit_op(&mut ops, op, 0x1000, false, true));
         emit_epilogue(&mut ops, EXIT_FALL, 0);
         let buf = ops.finalize().unwrap();
         buf.to_vec()
@@ -1092,6 +1181,29 @@ mod tests {
 
     fn pool(i: usize) -> u8 {
         POOL[i % POOL.len()]
+    }
+
+    /// Lazy-flag liveness pins the skip contract: covered producers skip,
+    /// last-before-observation merges, observations force. (Skips only
+    /// ever omit full merges with a later full merge standing between
+    /// them and every observation.)
+    #[test]
+    fn flag_merge_bits_shape() {
+        use crate::cpu::decode16::LsImm;
+        let adds = |rd: u8| TbOp::V16(Inst16::AddImm8 { rd, imm: 1 });
+        let bne = TbOp::V16(Inst16::BranchCond { cond: 1, off: -2 });
+        let ldr = TbOp::V16(Inst16::LsImm {
+            rt: 0,
+            rn: 1,
+            imm: 0,
+            kind: LsImm::Ldr,
+        });
+        // Run covered by the last: only it merges.
+        assert_eq!(flag_merge_bits(&[adds(0), adds(1), bne]), vec![false, true, false]);
+        // A memory observation forces the merge before it.
+        assert_eq!(flag_merge_bits(&[adds(0), ldr, bne]), vec![true, false, false]);
+        // Lone producer before an exit merges.
+        assert_eq!(flag_merge_bits(&[adds(0)]), vec![true]);
     }
 
     #[test]

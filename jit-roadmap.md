@@ -501,7 +501,15 @@ Goal: 10–30× on compute loops.
   plus ~8 µs fixed per miss, profiled); batching is load-bearing cold
   too (entered-solo A/B 2× slower), bigger groups gain noise-grade ~10%
   cold and nothing sustained — caps stay, table refreshed (SHA cold
-  0.73×→~3.2× post-SPLIT).
+  0.73×→~3.2× post-SPLIT). Flag-traffic verdict 2026-09-09 (SHIPPED):
+  lazy NZCV materialization — backward liveness over each TB (merge
+  only the last full producer before each observation; C/V
+  preservation flows from fresh state by induction) with merge-gating
+  in the 16-bit ALU templates (both arches). Torture cold 4.7×→~6.4×,
+  sustained ALU-1B 1.28×; SHA neutral (few merges — matches the merge
+  audit). Soundness: side exits flush exact state (materialize before
+  every memop/DIV), exits/GDB-ends always observe; differentials +
+  fault-after-skip + carry-chain tests green.
 - [x] P3-7: template diet for cold-encode throughput — investigated
   2026-09-09, DECLINED on evidence (no cheap win exists). Per-template
   encode audit (200k-op snapshot, SHA cold): single-word mem templates
