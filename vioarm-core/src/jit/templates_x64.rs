@@ -1057,6 +1057,9 @@ fn cmp_ri(ops: &mut A, rn: u8, imm: i32) -> bool {
 /// Clobbers `EAX`/`EDX`/`ESI`/`EDI`; preserves `R8D`–`R11D` and pins.
 /// `trap` bakes CCR.UNALIGN_TRP (x64 needs no alignment check otherwise:
 /// the host tolerates in-page unaligned accesses natively).
+/// A primary miss probes the victim slot (P3-6) before giving up: the
+/// fast path pays one extra `jmp` over the probe; colliding hot pages
+/// settle instead of side-exiting every access.
 fn mem_guard(ops: &mut A, size: u32, is_write: bool, trap: bool, side: dynasmrt::DynamicLabel) {
     if size > 1 {
         // Page-cross check (host pages need not be adjacent).
@@ -1080,6 +1083,11 @@ fn mem_guard(ops: &mut A, size: u32, is_write: bool, trap: bool, side: dynasmrt:
     let tlb = tlb_off();
     let priv_off = priv_off();
     let perm = if is_write { 2i8 } else { 1i8 };
+    let victim = ops.new_dynamic_label();
+    let done = ops.new_dynamic_label();
+    let vtag = super::tlb::TLB_VICTIM_OFF as i32;
+    let vperm = vtag + 4;
+    let vptr = vtag + 8;
     dynasm!(ops
         ; .arch x64
         ; mov r10d, ecx
@@ -1094,13 +1102,24 @@ fn mem_guard(ops: &mut A, size: u32, is_write: bool, trap: bool, side: dynasmrt:
         ; mov rdi, [rsp]
         ; or eax, [rdi + priv_off]
         ; cmp DWORD [rsi + rdx], eax
-        ; jne =>side
+        ; jne =>victim
         ; test BYTE [rsi + rdx + 4], perm
-        ; jz =>side
+        ; jz =>victim
         ; mov rdx, [rsi + rdx + 8]
         ; mov eax, r10d
         ; and eax, 0xFFF
         ; add rax, rdx
+        ; jmp =>done
+        ; =>victim
+        ; cmp DWORD [rsi + vtag], eax
+        ; jne =>side
+        ; test BYTE [rsi + vperm], perm
+        ; jz =>side
+        ; mov rdx, [rsi + vptr]
+        ; mov eax, r10d
+        ; and eax, 0xFFF
+        ; add rax, rdx
+        ; =>done
     );
 }
 

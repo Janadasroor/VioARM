@@ -951,6 +951,9 @@ fn ror_reg_seq(ops: &mut A, rd: u8, pred: bool) -> bool {
 /// AArch64 always checks alignment for multi-byte accesses (the host may
 /// fault on unaligned `ldr`/`str` regardless of the guest TRP bit — the
 /// values still match via the interpreter on side exits).
+/// A primary miss probes the victim slot (P3-6) before giving up: the
+/// fast path pays one extra `b` over the probe; colliding hot pages
+/// settle instead of side-exiting every access.
 fn mem_guard(ops: &mut A, size: u32, is_write: bool, side: dynasmrt::DynamicLabel) {
     // Cross-page check (size > 1 only).
     if size > 1 {
@@ -973,6 +976,9 @@ fn mem_guard(ops: &mut A, size: u32, is_write: bool, side: dynasmrt::DynamicLabe
     let tlb = tlb_off();
     let priv_off = priv_off();
     let perm: u32 = if is_write { 2 } else { 1 };
+    let victim = ops.new_dynamic_label();
+    let done = ops.new_dynamic_label();
+    let vslot = super::tlb::TLB_VICTIM_OFF;
     dynasm!(ops
         ; .arch aarch64
         ; mov w10, w1
@@ -987,15 +993,33 @@ fn mem_guard(ops: &mut A, size: u32, is_write: bool, side: dynasmrt::DynamicLabe
         ; orr w2, w2, w4
         ; ldr w4, [x9, x3]
         ; cmp w4, w2
-        ; b.ne =>side
+        ; b.ne =>victim
         ; add x3, x3, #4
         ; ldrb w4, [x9, x3]
         ; tst w4, perm
-        ; b.eq =>side
+        ; b.eq =>victim
         ; add x3, x3, #4
         ; ldr x5, [x9, x3]
         ; and w6, w1, #0xFFF
         ; add x0, x5, x6
+        ; b =>done
+        ; =>victim
+        ; lsr w2, w10, #12
+        ; lsl w2, w2, #1
+        ; ldr x10, [sp, #48]
+        ; ldr w4, [x10, priv_off]
+        ; orr w2, w2, w4
+        ; add x3, x9, vslot
+        ; ldr w4, [x3]
+        ; cmp w4, w2
+        ; b.ne =>side
+        ; ldrb w4, [x3, #4]
+        ; tst w4, perm
+        ; b.eq =>side
+        ; ldr x5, [x3, #8]
+        ; and w6, w1, #0xFFF
+        ; add x0, x5, x6
+        ; =>done
     );
 }
 

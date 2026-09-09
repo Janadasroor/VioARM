@@ -9,6 +9,14 @@
 //! entries deny by construction (`perms == 0` fails every check), so no
 //! sentinel value is required.
 //!
+//! A single victim slot (P3-6) holds the most-recently-evicted entry.
+//! Two hot pages sharing one index (e.g. flash page 0 and RAM page
+//! `0x20000`, both index 0) would otherwise evict each other on every
+//! access and side-exit every lap forever; with the victim both pages
+//! stay resident after the two cold fills (one primary, one victim).
+//! Three or more live pages on one index still rotate — documented,
+//! strictly better than before.
+//!
 //! Soundness notes:
 //! - The host pointer is only dereferenced after a tag + permission hit
 //!   in emitted code; mappings are stable (banks never reallocate;
@@ -25,6 +33,10 @@ use crate::mem::PeripheralBus;
 pub const TLB_SIZE: usize = 64;
 /// TLB index mask.
 pub const TLB_MASK: u32 = (TLB_SIZE as u32) - 1;
+/// Byte offset of the victim slot from the entries base, for emitted
+/// guards (they address it directly). Keep in sync with the `TlbEntry`
+/// layout (stride 16 — pinned by the assert below).
+pub const TLB_VICTIM_OFF: u32 = TLB_SIZE as u32 * 16;
 /// Permission bit: reads allowed.
 pub const TLB_READ: u32 = 0x1;
 /// Permission bit: writes allowed.
@@ -50,12 +62,21 @@ pub struct TlbEntry {
     pub ptr: u64,
 }
 
+/// Emitted guards stride entries by 16 (`shl 4`); the victim offset
+/// above assumes the same stride.
+const _: () = assert!(core::mem::size_of::<TlbEntry>() == 16);
+
 /// Direct-mapped guest-page translation cache, boxed by the runner for a
 /// stable address across calls.
 #[derive(Clone, Debug)]
 pub struct Tlb {
     /// Entries indexed by `vpn & TLB_MASK`.
     pub entries: [TlbEntry; TLB_SIZE],
+    /// Most-recently-evicted entry (P3-6): emitted guards probe it after
+    /// a primary miss, so two colliding hot pages both stay resident.
+    /// The code bit rides along on eviction (stale-set is safe: extra
+    /// generation bumps, never missed ones — same rationale as SPLIT).
+    pub victim: TlbEntry,
 }
 
 impl Tlb {
@@ -68,6 +89,11 @@ impl Tlb {
                 perms: 0,
                 ptr: 0,
             }; TLB_SIZE],
+            victim: TlbEntry {
+                tag: 0,
+                perms: 0,
+                ptr: 0,
+            },
         }
     }
 
@@ -168,6 +194,11 @@ pub fn fill_tlb<B: PeripheralBus>(
     if is_code {
         perms |= TLB_CODE;
     }
+    // The evicted entry becomes the victim (even when empty: a denying
+    // victim just misses, which is correct). No swap-back on victim hits
+    // — the asymmetric steady state is stable and keeps the fast path
+    // branch-free.
+    tlb.victim = tlb.entries[(vpn & TLB_MASK) as usize];
     tlb.entries[(vpn & TLB_MASK) as usize] = TlbEntry {
         tag: (vpn << 1) | u32::from(privileged),
         perms,
@@ -268,9 +299,37 @@ mod tests {
     }
 
     #[test]
+    fn fill_evicts_prior_entry_to_victim() {
+        // vpn 0x20000 and 0x20040 share index 0: the colliding pair.
+        let mut tlb = Tlb::new();
+        let mut mem = FlatMemory::with_layout(&[0x2000_0000], &[0x50000]);
+        assert!(fill_tlb(
+            &mut tlb, &mut mem, 0x2000_0080, 4, false, true, 0, true
+        ));
+        assert_eq!(tlb.entries[0].tag, (0x20000 << 1) | 1);
+        assert_eq!(tlb.entries[0].perms, TLB_READ | TLB_WRITE | TLB_CODE);
+        assert_eq!(tlb.victim.perms, 0);
+        assert!(fill_tlb(
+            &mut tlb, &mut mem, 0x2004_0080, 4, true, true, 0, false
+        ));
+        assert_eq!(tlb.entries[0].tag, (0x20040 << 1) | 1);
+        // The evicted entry (code bit included) now lives in the victim.
+        assert_eq!(tlb.victim.tag, (0x20000 << 1) | 1);
+        assert_eq!(tlb.victim.perms, TLB_READ | TLB_WRITE | TLB_CODE);
+        assert_ne!(tlb.victim.ptr, 0);
+        // Ping-pong is stable: re-filling the first page parks the second.
+        assert!(fill_tlb(
+            &mut tlb, &mut mem, 0x2000_0080, 4, false, true, 0, false
+        ));
+        assert_eq!(tlb.entries[0].tag, (0x20000 << 1) | 1);
+        assert_eq!(tlb.victim.tag, (0x20040 << 1) | 1);
+    }
+
+    #[test]
     fn zeroed_entries_deny() {
         let tlb = Tlb::new();
         assert_eq!(tlb.entries[0].perms, 0);
+        assert_eq!(tlb.victim.perms, 0);
     }
 
     #[test]
