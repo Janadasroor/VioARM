@@ -496,6 +496,21 @@ Goal: 10–30× on compute loops.
   ticking: owner ruling (same question as G2), mac ARM + Windows
   baselines, and optionally cold-window work (exec pool) + further
   hot-template surgery (flag traffic) for headroom.
+- [ ] P3-6: TLB index-thrash (post-G3 perf gap, correctness unaffected).
+  Found 2026-09-09 by the QEMU comparison: the 64-entry direct-mapped
+  TLB (`tlb.rs`, index `vpn & 63`) aliases flash page 0 against RAM page
+  `0x20000` at index 0, so a hot loop touching a flash literal pool plus
+  that RAM page side-exits every lap forever (fill evicts fill; the
+  driver re-runs the whole TB in the stepper, ~2× counted ops/lap).
+  Repro: 35-op ALU loop with one in-loop `LDR` literal + absolute RAM
+  counter — JIT 131 s vs 2.0 s for the SP-relative twin (65× cliff,
+  16M laps never finish in budget); padding the image does not help,
+  moving the counter to a non-colliding page does. Real firmware with
+  literals in flash-pg0 and data at `vpn & 63 == 0` eats this.
+  Mitigations (pick one): larger/2-way associative TLB, sub-page
+  entries with bounds (also fixes the `fill_tlb` partial-page refusal),
+  or a victim slot for the most-evicted index. Gate: repro at parity
+  with the SP-relative twin + full suite green.
 
 Effort rollup: P1 3–4 wk + P2 6–10 wk + P3 4–6 wk ≈ **13–20 agent-weeks**,
 gated (any gate may stop or re-scope the rest).

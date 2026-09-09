@@ -27,7 +27,7 @@ use std::collections::VecDeque;
 
 /// `BKPT` immediate that traps into semihosting when enabled.
 pub const SEMIHOST_BKPT: u8 = 0xAB;
-/// `SYS_WRITEC`: `r1` is the character itself.
+/// `SYS_WRITEC`: `r1` points at the character to write (ARM DUI 0476).
 pub const SYS_WRITEC: u32 = 0x03;
 /// `SYS_WRITE0`: `r1` points at a NUL-terminated string.
 pub const SYS_WRITE0: u32 = 0x04;
@@ -119,8 +119,16 @@ impl SemihostState {
     ) -> SemihostOutcome {
         match op {
             SYS_WRITEC => {
-                self.output.push(param as u8);
-                SemihostOutcome::Return(0)
+                // Spec pointer semantics (QEMU parity): `r1` addresses the
+                // character. A bad pointer fails the call (`-1`) with no
+                // output, like every other guest-memory access here.
+                match mem.read(param) {
+                    Ok(b) => {
+                        self.output.push(b);
+                        SemihostOutcome::Return(0)
+                    }
+                    Err(_) => SemihostOutcome::Return(u32::MAX),
+                }
             }
             SYS_WRITE0 => {
                 self.output.extend(read_cstring(mem, param));

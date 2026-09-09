@@ -64,17 +64,46 @@ fn snippet(op: u8, lit: u32) -> Vec<u8> {
 #[test]
 fn writec_spells_output() {
     let mut m = flat_machine();
+    // Spec pointer semantics: each char lives in RAM, `r1` carries its
+    // address. Layout: two `movs/ldr/bkpt` calls, halt, pad, literals.
+    // LDR at +2 reads `(pc+4)&~3 + 3*4` = +16; LDR at +8 reads +12 + 2*4.
+    let h = RAM + 0x100;
+    let i = RAM + 0x101;
+    m.core.mem().write(h, b'H').unwrap();
+    m.core.mem().write(i, b'i').unwrap();
     let mut code = Vec::new();
-    for &c in b"Hi" {
-        code.extend_from_slice(&movs(0, 0x03));
-        code.extend_from_slice(&movs(1, c));
-        code.extend_from_slice(&BKPT_AB);
-    }
+    code.extend_from_slice(&movs(0, 0x03));
+    code.extend_from_slice(&ldr_lit(1, 3));
+    code.extend_from_slice(&BKPT_AB);
+    code.extend_from_slice(&movs(0, 0x03));
+    code.extend_from_slice(&ldr_lit(1, 2));
+    code.extend_from_slice(&BKPT_AB);
     code.extend_from_slice(&BKPT_0);
+    code.extend_from_slice(&[0x00, 0xBF]); // pad so literals land at +16/+20
+    code.extend_from_slice(&h.to_le_bytes());
+    code.extend_from_slice(&i.to_le_bytes());
     let cause = run_until_halt(&mut m, &code);
     assert!(!matches!(cause, HaltCause::SemihostExit { .. }));
     assert_eq!(m.semihost_output(), b"Hi");
     assert_eq!(m.semihost_output(), b"");
+}
+
+#[test]
+fn writec_bad_pointer_fails_without_output() {
+    let mut m = flat_machine();
+    // `r1` past the 64 KiB flat layout: unmapped, so the call fails
+    // (`-1` in r0) with nothing emitted. Literal lands at +12 (pad at +10).
+    let mut prog = Vec::new();
+    prog.extend_from_slice(&movs(0, 0x03));
+    prog.extend_from_slice(&ldr_lit(1, 2));
+    prog.extend_from_slice(&BKPT_AB);
+    prog.extend_from_slice(&mov_reg(2, 0));
+    prog.extend_from_slice(&BKPT_0);
+    prog.extend_from_slice(&[0x00, 0xBF]); // pad so the literal lands at +12
+    prog.extend_from_slice(&(RAM + 0x10000).to_le_bytes());
+    run_until_halt(&mut m, &prog);
+    assert_eq!(m.semihost_output(), b"");
+    assert_eq!(m.core.regs.read(2), u32::MAX);
 }
 
 #[test]
@@ -131,12 +160,11 @@ fn exit_reports_code_and_halts() {
 fn disabled_trap_keeps_faulting() {
     let mem = FlatMemory::with_layout(&[RAM], &[0x10000]);
     let mut m = Machine::armv7m(mem);
-    let mut code = Vec::new();
-    code.extend_from_slice(&movs(0, 0x03));
-    code.extend_from_slice(&movs(1, b'X'));
-    code.extend_from_slice(&BKPT_AB);
-    code.extend_from_slice(&BKPT_0);
-    let cause = run_until_halt(&mut m, &code);
+    let ch = RAM + 0x100;
+    m.core.mem().write(ch, b'X').unwrap();
+    // Pointer-form WRITEC (matches `snippet` geometry); the trap is
+    // disabled so the `BKPT` faults before any output exists.
+    let cause = run_until_halt(&mut m, &snippet(0x03, ch));
     assert!(!matches!(cause, HaltCause::SemihostExit { .. }));
     assert_eq!(m.semihost_output(), b"");
 }

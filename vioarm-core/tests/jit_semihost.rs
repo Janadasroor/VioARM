@@ -19,6 +19,11 @@ fn movs(rd: u8, imm: u8) -> [u8; 2] {
     (0x2000u16 | (u16::from(rd) << 8) | u16::from(imm)).to_le_bytes()
 }
 
+/// `ldr Rd, [pc, #words*4]`; the literal sits `words` past the aligned PC.
+fn ldr_lit(rd: u8, words: u8) -> [u8; 2] {
+    (0x4800u16 | (u16::from(rd) << 8) | u16::from(words)).to_le_bytes()
+}
+
 fn flat_machine() -> Machine<FlatMemory> {
     let mem = FlatMemory::with_layout(&[RAM], &[0x10000]);
     let mut m = Machine::armv7m(mem);
@@ -34,35 +39,37 @@ fn load(m: &mut Machine<FlatMemory>, code: &[u8]) {
     m.core.xpsr.set(0x01000000);
 }
 
-/// Run to halt natively, then identically via the stepper; compare host
-/// output, halt cause, and architectural state.
-fn check(code: &[u8]) {
-    let mut mn = flat_machine();
-    load(&mut mn, code);
-    let mut runner = TbRunner::new();
-    let nerr = mn.run_tb(&mut runner, 200).unwrap_err();
-    let nout = mn.semihost_output();
-    let mut ms = flat_machine();
-    load(&mut ms, code);
-    let serr = ms.run(200).unwrap_err();
-    assert_eq!(nerr, serr, "halt cause");
-    assert_eq!(nout, ms.semihost_output(), "host output");
-    assert_eq!(mn.core.regs, ms.core.regs, "regs");
-    // The MOVS prefixes really went native first (then tailed out at
-    // each BKPT) — this is not a stealth all-interpreted run.
-    assert!(runner.stats().native > 0, "prefixes went native");
-}
-
 #[test]
 fn jit_writec_spells_output() {
+    // Pointer-form WRITEC (spec): chars staged in RAM, `r1` carries each
+    // address. Same two-call/pad/literals geometry as the stepper test.
     let mut code = Vec::new();
-    for &c in b"Hi" {
-        code.extend_from_slice(&movs(0, 0x03));
-        code.extend_from_slice(&movs(1, c));
-        code.extend_from_slice(&BKPT_AB);
-    }
+    code.extend_from_slice(&movs(0, 0x03));
+    code.extend_from_slice(&ldr_lit(1, 3));
+    code.extend_from_slice(&BKPT_AB);
+    code.extend_from_slice(&movs(0, 0x03));
+    code.extend_from_slice(&ldr_lit(1, 2));
+    code.extend_from_slice(&BKPT_AB);
     code.extend_from_slice(&BKPT_0);
-    check(&code);
+    code.extend_from_slice(&[0x00, 0xBF]); // pad so literals land at +16/+20
+    code.extend_from_slice(&(RAM + 0x100).to_le_bytes());
+    code.extend_from_slice(&(RAM + 0x101).to_le_bytes());
+    let mut mn = flat_machine();
+    mn.core.mem().write(RAM + 0x100, b'H').unwrap();
+    mn.core.mem().write(RAM + 0x101, b'i').unwrap();
+    load(&mut mn, &code);
+    let mut runner = TbRunner::new();
+    let nerr = mn.run_tb(&mut runner, 200).unwrap_err();
+    assert_eq!(mn.semihost_output(), b"Hi");
+    assert!(runner.stats().native > 0, "prefixes went native");
+    let mut ms = flat_machine();
+    ms.core.mem().write(RAM + 0x100, b'H').unwrap();
+    ms.core.mem().write(RAM + 0x101, b'i').unwrap();
+    load(&mut ms, &code);
+    let serr = ms.run(200).unwrap_err();
+    assert_eq!(nerr, serr, "halt cause");
+    assert_eq!(ms.semihost_output(), b"Hi");
+    assert_eq!(mn.core.regs, ms.core.regs, "regs");
 }
 
 #[test]
