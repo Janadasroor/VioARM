@@ -29,6 +29,13 @@ pub const TLB_MASK: u32 = (TLB_SIZE as u32) - 1;
 pub const TLB_READ: u32 = 0x1;
 /// Permission bit: writes allowed.
 pub const TLB_WRITE: u32 = 0x2;
+/// Code-page bit for split generations: set when a cached translation
+/// block covers the page. Native store fast paths advance the write
+/// generation only through code pages — data-only stores skip the bump,
+/// so links and validated entries survive them (store loops chain).
+/// Packed into `perms` (bit 2 is free): no layout/stride change, and the
+/// existing tag+permission gate (which masks 0x1/0x2) is unaffected.
+pub const TLB_CODE: u32 = 0x4;
 
 /// One cached page translation. `repr(C)`: emitted code addresses these
 /// fields directly (`tag` at +0, `perms` at +4, `ptr` at +8).
@@ -68,6 +75,21 @@ impl Tlb {
     pub fn clear(&mut self) {
         *self = Self::new();
     }
+
+    /// Mark the live entry for `vpn` as code-covered (split generations):
+    /// a translation block was just cached over the page. Only touches
+    /// the entry when its tag already names this `vpn` (either privilege
+    /// — the tag's low bit is the mode, stripped for the compare);
+    /// collided or empty entries are left alone (the next fill stamps the
+    /// bit fresh from the page index). Stale-set bits are safe (extra
+    /// bumps, never missed ones); stale-clear is impossible — inserts
+    /// always mark.
+    pub fn mark_code_page(&mut self, vpn: u32) {
+        let e = &mut self.entries[(vpn & TLB_MASK) as usize];
+        if e.tag >> 1 == vpn {
+            e.perms |= TLB_CODE;
+        }
+    }
 }
 
 impl Default for Tlb {
@@ -79,9 +101,11 @@ impl Default for Tlb {
 /// Fill the entry for `addr` (write side when `is_write`): full bus
 /// translation plus live MPU checks for BOTH directions (permissions are
 /// cached per direction, so one fill serves later reads and writes).
-/// Returns whether an entry was installed (`false`: unmapped, denied, or
-/// spanning — keep side-exiting and let the interpreter own the access,
-/// faults included).
+/// `is_code` stamps the code bit when a cached block already covers the
+/// page (the runner's page index); later inserts mark live entries, so
+/// both orders are covered. Returns whether an entry was installed
+/// (`false`: unmapped, denied, or spanning — keep side-exiting and let
+/// the interpreter own the access, faults included).
 pub fn fill_tlb<B: PeripheralBus>(
     tlb: &mut Tlb,
     bus: &mut B,
@@ -90,6 +114,7 @@ pub fn fill_tlb<B: PeripheralBus>(
     is_write: bool,
     privileged: bool,
     ipsr: u8,
+    is_code: bool,
 ) -> bool {
     use crate::mem::DataTranslate;
 
@@ -140,6 +165,9 @@ pub fn fill_tlb<B: PeripheralBus>(
     // address of the guest page start) — store it directly (an earlier
     // revision subtracted the offset twice, landing a page low; caught
     // by differential).
+    if is_code {
+        perms |= TLB_CODE;
+    }
     tlb.entries[(vpn & TLB_MASK) as usize] = TlbEntry {
         tag: (vpn << 1) | u32::from(privileged),
         perms,
@@ -162,7 +190,16 @@ mod tests {
     fn fill_installs_and_clear_drops() {
         let mut tlb = Tlb::new();
         let mut mem = bus();
-        assert!(fill_tlb(&mut tlb, &mut mem, 0x2000_0100, 4, false, true, 0));
+        assert!(fill_tlb(
+            &mut tlb,
+            &mut mem,
+            0x2000_0100,
+            4,
+            false,
+            true,
+            0,
+            false
+        ));
         let e = &tlb.entries[(0x2000_0100 >> 12) as usize & TLB_MASK as usize];
         assert_eq!(e.tag, (0x2000_0100 >> 12) << 1 | 1);
         assert_eq!(e.perms, TLB_READ | TLB_WRITE);
@@ -175,7 +212,8 @@ mod tests {
             4,
             false,
             false,
-            0
+            0,
+            false
         ));
         let e2 = &tlb.entries[(0x2000_0100 >> 12) as usize & TLB_MASK as usize];
         assert_eq!(e2.tag, (0x2000_0100 >> 12) << 1);
@@ -194,7 +232,8 @@ mod tests {
             4,
             false,
             true,
-            0
+            0,
+            false
         ));
         assert!(!fill_tlb(
             &mut tlb,
@@ -203,7 +242,8 @@ mod tests {
             4,
             false,
             true,
-            0
+            0,
+            false
         ));
         assert!(!fill_tlb(
             &mut tlb,
@@ -212,7 +252,8 @@ mod tests {
             0,
             false,
             true,
-            0
+            0,
+            false
         ));
         assert!(!fill_tlb(
             &mut tlb,
@@ -221,7 +262,8 @@ mod tests {
             8,
             false,
             true,
-            0
+            0,
+            false
         ));
     }
 
@@ -229,5 +271,58 @@ mod tests {
     fn zeroed_entries_deny() {
         let tlb = Tlb::new();
         assert_eq!(tlb.entries[0].perms, 0);
+    }
+
+    #[test]
+    fn code_bit_rides_fill_and_mark() {
+        let mut tlb = Tlb::new();
+        let mut mem = bus();
+        let vpn = 0x2000_0100 >> 12;
+        let idx = (vpn & TLB_MASK) as usize;
+        // Plain fill: no code bit; the permission gate still masks it out.
+        assert!(fill_tlb(
+            &mut tlb,
+            &mut mem,
+            0x2000_0100,
+            4,
+            false,
+            true,
+            0,
+            false
+        ));
+        assert_eq!(tlb.entries[idx].perms, TLB_READ | TLB_WRITE);
+        // Fill with coverage stamps the bit (perm checks unaffected).
+        assert!(fill_tlb(
+            &mut tlb,
+            &mut mem,
+            0x2000_0100,
+            4,
+            false,
+            true,
+            0,
+            true
+        ));
+        assert_eq!(tlb.entries[idx].perms, TLB_READ | TLB_WRITE | TLB_CODE);
+        // Marking sets it on a tag-matching live entry (either mode).
+        let mut tlb2 = Tlb::new();
+        assert!(fill_tlb(
+            &mut tlb2,
+            &mut mem,
+            0x2000_0100,
+            4,
+            false,
+            false,
+            0,
+            false
+        ));
+        tlb2.mark_code_page(vpn);
+        assert_eq!(
+            tlb2.entries[(vpn & TLB_MASK) as usize].perms,
+            TLB_READ | TLB_WRITE | TLB_CODE
+        );
+        // ...but never on a foreign or empty slot.
+        let mut tlb3 = Tlb::new();
+        tlb3.mark_code_page(vpn);
+        assert_eq!(tlb3.entries[(vpn & TLB_MASK) as usize].perms, 0);
     }
 }

@@ -470,24 +470,32 @@ Goal: 10–30× on compute loops.
   cannot reach 50× with SHA below unity).
 - [ ] P3-5: book section (JIT architecture, contract, when-NOT-to-use),
   CHANGELOG, `BENCHMARKS.md` JIT table.
+- [x] SPLIT: split code/data write generations (G3 critical path).
+  Done 2026-09-08: TLB code bit (packed in `perms`, no layout change)
+  stamped at fill from the page index + marked live on insert; native
+  store fast paths bump only through code pages (`bump_if_code`,
+  x64+AArch64); interp/device/DMA/host writes still bump always
+  (conservative). Data-only stores no longer fence links or validation:
+  push 0.56×→6.07×, call 8.3×, SHA chains 0→94% (sustained SHA
+  1.1×→38.6×). Gap-fill templates found by SHA measurement
+  (SP arithmetic, high-reg add/move, ROR-imm MOV, ADR fold) with
+  directed tests both hosts. Soundness: stale-set bits safe,
+  stale-clear impossible (insert marks; fill consults index);
+  multi-page multis check per word; cold-TLB fragmentation unchanged.
 - [ ] GATE G3 (acceptance): geometric mean ≥50× over the three soak
   workloads vs accurate on x86-64 release + all suites green + fuzz
   corpus clean → JIT becomes selectable (still default-off until a
   release decision says otherwise).
-  STATUS 2026-09-08 (BLOCKED — not ticked): geomean sits at ~6.6× cold
-  (79.9 × 0.73 × 4.95) and ~17× sustained (79.9 × 1.1 × 56.6; torture
-  already clears 50× sustained at ~57×, board NOP at ~80×). The entire
-  gap is SHA-256 (0.73× cold, 1.1× sustained, CHAIN=0 measured warm):
-  volatile-RAM schedule traffic fences every chained edge, so blocks
-  run solo with full driver trips. Closing G3 needs, in order: (1)
-  split code/data write generations (link + validation fencing ignore
-  data-only stores; unlocks SHA chaining — the single biggest lever);
-  (2) hot-template surgery (per-op flag pin traffic dominates SHA and
-  torture: lazy flags / block-level allocation); (3) mac ARM +
-  Windows baselines. (1) is a multi-day design+verify task (TLB bit +
-  fast-path checks both archs + runner + suites + fuzz); (2) is weeks.
-  Recommendation: track (1) as its own phased project before any G3
-  attempt — no methodology change can bridge a 7× geomean gap.
+  STATUS 2026-09-08 (SPLIT done — ruling pending, gate NOT ticked):
+  sustained geomean ≈ 56× (79.9 × 38.6 × 56.6)^(1/3): board NOP ~80×,
+  SHA-256 ~38.6× sustained (2.59× cold-4k — translation-bound),
+  torture ~56.6× sustained (4.95× cold-4k). Cold-4k geomean ≈ 10.1×
+  (79.9 × 2.59 × 4.95). Per the G2 precedent (sustained is the
+  gate-relevant metric; G3 acceptance itself runs long soaks), the
+  emitter approach now clears 50× with margin. Remaining before
+  ticking: owner ruling (same question as G2), mac ARM + Windows
+  baselines, and optionally cold-window work (exec pool) + further
+  hot-template surgery (flag traffic) for headroom.
 
 Effort rollup: P1 3–4 wk + P2 6–10 wk + P3 4–6 wk ≈ **13–20 agent-weeks**,
 gated (any gate may stop or re-scope the rest).

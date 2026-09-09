@@ -649,6 +649,7 @@ impl TbRunner {
             // Whole-core reads first (each borrow ends before `mem_mut`).
             let privileged = core.is_privileged();
             let ipsr = core.ipsr;
+            let is_code = self.cache.covers_page(fault_addr >> 12);
             fill_tlb(
                 &mut self.tlb,
                 core.mem_mut(),
@@ -657,6 +658,7 @@ impl TbRunner {
                 is_write,
                 privileged,
                 ipsr,
+                is_code,
             );
         }
         let fall = op_pc.wrapping_add(len);
@@ -982,6 +984,14 @@ impl TbRunner {
                         debug_assert_eq!(natives.len(), attempt);
                         for ((gmeta, _), native) in group.iter().take(attempt).zip(natives.iter()) {
                             self.cache.insert_native(*gmeta, native.clone());
+                            // Split generations: the footprint pages now
+                            // hold code — live TLB entries covering them
+                            // get the code bit, so later data-only stores
+                            // skip the generation bump while code patches
+                            // still fence (stale-set bits are safe).
+                            for page in gmeta.start_page..gmeta.end_page() {
+                                self.tlb.mark_code_page(page);
+                            }
                             self.stats.misses += 1;
                         }
                         for (key, slots) in holders {

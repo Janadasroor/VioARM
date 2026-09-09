@@ -310,6 +310,54 @@ fn emit16(
             merge_nzcv(ops);
             true
         }
+        // --- High-reg add/move + SP arithmetic (split-generation
+        // gap-fillers): plain ALU, never any flags.
+        I::SpecialAdd { rd, rm } => {
+            if rd == 15 || rm == 15 {
+                return false;
+            }
+            load(ops, rd, true);
+            load(ops, rm, false);
+            dynasm!(ops ; .arch x64 ; add eax, ecx);
+            store(ops, rd);
+            true
+        }
+        I::SpecialMov { rd, rm } => {
+            if rd == 15 || rm == 15 {
+                return false;
+            }
+            load(ops, rm, true);
+            store(ops, rd);
+            true
+        }
+        I::AddSpImm8 { imm } => {
+            load(ops, 13, true);
+            let imm = imm as i32;
+            dynasm!(ops ; .arch x64 ; add eax, imm);
+            store(ops, 13);
+            true
+        }
+        I::SubSpImm8 { imm } => {
+            load(ops, 13, true);
+            let imm = imm as i32;
+            dynasm!(ops ; .arch x64 ; sub eax, imm);
+            store(ops, 13);
+            true
+        }
+        I::AddrSp { rd, imm } => {
+            load(ops, 13, true);
+            let imm = imm as i32;
+            dynasm!(ops ; .arch x64 ; add eax, imm);
+            store(ops, rd);
+            true
+        }
+        I::AddrPc { rd, imm } => {
+            let v = pc.wrapping_add(4) & !3;
+            let v = v.wrapping_add(imm as u32) as i32;
+            dynasm!(ops ; .arch x64 ; mov eax, v);
+            store(ops, rd);
+            true
+        }
         // --- Loads/stores (P2-3 S1).
         I::LsReg { rt, rn, rm, kind } => emit_lsreg(ops, rt, rn, rm, kind, pc, unalign_trap),
         I::LsImm { rt, rn, imm, kind } => emit_lsimm(ops, rt, rn, imm, kind, pc, unalign_trap),
@@ -1087,6 +1135,11 @@ fn mem_site(
     let side = ops.new_dynamic_label();
     let end = ops.new_dynamic_label();
     mem_guard(ops, size, is_write, trap, side);
+    // Stores decide the generation bump here (per code page); loads
+    // never bump (a load invalidating links would be pure pessimism).
+    if is_write {
+        bump_if_code(ops);
+    }
     fast(ops);
     dynasm!(ops ; .arch x64 ; jmp =>end);
     dynasm!(ops ; .arch x64 ; =>side);
@@ -1126,28 +1179,45 @@ fn probe_word(ops: &mut A, is_write: bool, side: dynasmrt::DynamicLabel) {
 }
 
 /// Shared tail for multi-word emitters: `R8D` holds the post-transfer
-/// base cursor; stores bump the generation once per op (not per word).
-/// Binds `side` to the effect-free side exit.
-fn multi_tail(ops: &mut A, op_pc: u32, store: bool, side: dynasmrt::DynamicLabel) {
+/// base cursor. Generation bumps happen per word at their transfer
+/// guards (split generations — code pages only), so the tail just
+/// binds `side` to the effect-free side exit.
+fn multi_tail(ops: &mut A, op_pc: u32, side: dynasmrt::DynamicLabel) {
     let done = ops.new_dynamic_label();
-    if store {
-        bump_epoch(ops);
-    }
     dynasm!(ops ; .arch x64 ; jmp =>done);
     dynasm!(ops ; .arch x64 ; =>side);
     mem_side_exit(ops, op_pc);
     dynasm!(ops ; .arch x64 ; =>done);
 }
 
-/// Bump the bus write generation after a fast store (keeps the
-/// entry-gate invariant absolute: every bus write advances it).
-fn bump_epoch(ops: &mut A) {
+/// Advance the write generation after a fast store, but only through
+/// code pages (split generations): the guest address is still in `R10D`
+/// per the guard contract, so re-derive its TLB index and test the code
+/// bit. Data-only stores skip the bump — links and validated entries
+/// survive them (store loops chain) — while code patches still fence
+/// (the insert path marks live entries; fills stamp from the page
+/// index). Clobbers `EDX`/`RSI`/`RDI` (all guard-clobberable);
+/// preserves `RAX` (the host address stores use next), pins,
+/// `R8D`–`R11D`, and `R10D`.
+fn bump_if_code(ops: &mut A) {
+    let tlb = tlb_off();
     let epoch = epoch_off();
+    let code = super::tlb::TLB_CODE as i8;
+    let bump = ops.new_dynamic_label();
     dynasm!(ops
         ; .arch x64
+        ; mov edx, r10d
+        ; shr edx, 12
+        ; and edx, 63
+        ; shl edx, 4
         ; mov rsi, [rsp]
-        ; mov rsi, [rsi + epoch]
-        ; inc QWORD [rsi]
+        ; mov rsi, [rsi + tlb]
+        ; test BYTE [rsi + rdx + 4], code
+        ; jz =>bump
+        ; mov rdi, [rsp]
+        ; mov rdi, [rdi + epoch]
+        ; inc QWORD [rdi]
+        ; =>bump
     );
 }
 
@@ -1192,10 +1262,11 @@ fn emit_push(ops: &mut A, regs: u8, include_lr: bool, pc: u32) -> bool {
         load(ops, reg, true);
         dynasm!(ops ; .arch x64 ; mov r9d, eax);
         mem_guard(ops, 4, true, false, side);
+        bump_if_code(ops);
         dynasm!(ops ; .arch x64 ; mov [rax], r9d);
     }
     store_sp_r8(ops);
-    multi_tail(ops, pc, true, side);
+    multi_tail(ops, pc, side);
     true
 }
 
@@ -1234,7 +1305,7 @@ fn emit_pop(ops: &mut A, regs: u8, pc: u32) -> bool {
     }
     dynasm!(ops ; .arch x64 ; lea r8d, [r8 + 4 * n]);
     store_sp_r8(ops);
-    multi_tail(ops, pc, false, side);
+    multi_tail(ops, pc, side);
     true
 }
 
@@ -1354,6 +1425,7 @@ fn emit_ldmstm16(ops: &mut A, is_load: bool, rn: u8, regs: u8, pc: u32) -> bool 
             dynasm!(ops ; .arch x64 ; mov eax, [rax]);
             store(ops, r);
         } else {
+            bump_if_code(ops);
             dynasm!(ops ; .arch x64 ; mov [rax], r9d);
         }
     }
@@ -1364,7 +1436,7 @@ fn emit_ldmstm16(ops: &mut A, is_load: bool, rn: u8, regs: u8, pc: u32) -> bool 
         dynasm!(ops ; .arch x64 ; lea eax, [r8 + bytes]);
         store(ops, rn);
     }
-    multi_tail(ops, pc, !is_load && n > 0, side);
+    multi_tail(ops, pc, side);
     true
 }
 
@@ -1570,8 +1642,9 @@ fn emit_mem32(
 }
 
 /// Shared access writer: fast load/store at host `RAX`, optional
-/// writeback of `R8D` to `rn`, epoch bump for stores. `rt` names the
-/// transfer register (loads) or is unused (stores read `R9D`).
+/// writeback of `R8D` to `rn`. Stores read `R9D`; their generation
+/// bump already happened at the site guard (`mem_site`).
+/// `rt` names the transfer register (loads).
 fn emit_access(ops: &mut A, size: u32, is_write: bool, sext: bool, rt: u8, wb_rn: Option<u8>) {
     if is_write {
         match size {
@@ -1579,7 +1652,6 @@ fn emit_access(ops: &mut A, size: u32, is_write: bool, sext: bool, rt: u8, wb_rn
             2 => dynasm!(ops ; .arch x64 ; mov [rax], r9w),
             _ => dynasm!(ops ; .arch x64 ; mov [rax], r9d),
         }
-        bump_epoch(ops);
     } else {
         match (size, sext) {
             (1, false) => dynasm!(ops ; .arch x64 ; movzx eax, BYTE [rax]),
@@ -1669,6 +1741,7 @@ fn emit_ldmstm32(
             dynasm!(ops ; .arch x64 ; mov eax, [rax]);
             store(ops, r);
         } else {
+            bump_if_code(ops);
             dynasm!(ops ; .arch x64 ; mov [rax], r9d);
         }
     }
@@ -1683,7 +1756,7 @@ fn emit_ldmstm32(
         store(ops, rn);
     }
     if !has_pc {
-        multi_tail(ops, pc, !is_load, side);
+        multi_tail(ops, pc, side);
         return true;
     }
     // Pop-branch protocol (loads only — no generation bump): classify the
@@ -1781,6 +1854,7 @@ fn emit_ldrdstrd(
             dynasm!(ops ; .arch x64 ; mov eax, [rax]);
             store(ops, rt);
         } else {
+            bump_if_code(ops);
             dynasm!(ops ; .arch x64 ; mov [rax], r9d);
         }
     }
@@ -1788,7 +1862,7 @@ fn emit_ldrdstrd(
         dynasm!(ops ; .arch x64 ; mov eax, r11d);
         store(ops, rn);
     }
-    multi_tail(ops, pc, !is_load, side);
+    multi_tail(ops, pc, side);
     true
 }
 
@@ -2116,7 +2190,11 @@ fn emit_dpreg(
     amount: u8,
     set_flags: bool,
 ) -> bool {
-    if rn == 15 || rm == 15 {
+    // `MOV`/`MVN` never read `Rn` (the ROR-immediate shifted-move
+    // forms use `rn == 15` as a no-Rn marker): the stale-PC load is
+    // skipped entirely, not just tolerated.
+    use crate::cpu::decode32::DpOp as O;
+    if rm == 15 || (rn == 15 && !matches!(op, O::Mov | O::Mvn)) {
         return false;
     }
     if super::templates::dp_writes_rd(op) && rd == 15 {

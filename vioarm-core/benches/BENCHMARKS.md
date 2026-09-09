@@ -294,6 +294,26 @@ Windows smoke pending CI runs on those hosts):
   lean ALU soak per op; templates are fuzz-proven, so this is rate,
   not correctness.
 
+## Split code/data write generations (2026-09-08, x86-64)
+
+TLB code bit + conditional store bumps (data-only stores skip the
+generation): store loops chain.
+
+| Soak (cold-4k, same session A/B) | Before | After |
+|---|---|---|
+| push (`quanta_push_ram_4k`) | 0.56× | **6.07×** |
+| call (`quanta_call_ram_4k`) | 4.7× | **8.3×** |
+| ALU (`quanta_ram_4k`) | 8.2× | **10.3×** |
+| mem (`quanta_mem_ram_4k`) | 7.4× | 5.7× (speculative successor never runs hot here; bounded waste) |
+| SHA-256 (`quanta_sha_ram_4k`) | 0.73× | **2.59×** (cold; translation-bound) |
+
+Sustained (warm runner, 200k ops): SHA-256 **38.6×** (was 1.1×,
+94% chained), torture 56.6×, board NOP ~80× → sustained geomean
+≈ **56×**. Gap-filler templates found by SHA measurement (SP
+arithmetic, high-reg add/move, ROR-immediate MOV, ADR fold) with
+directed tests on both hosts; SHA image now fully templated except
+by-design `BlxImm`.
+
 ## Regression policy
 
 Wall-clock gating on shared CI runners is flake-prone, so CI runs the

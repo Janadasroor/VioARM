@@ -346,6 +346,13 @@ impl TbCache {
         dropped
     }
 
+    /// Whether any cached block's code footprint covers `page` (split
+    /// generations: TLB fills stamp the code bit from this).
+    #[must_use]
+    pub fn covers_page(&self, page: u32) -> bool {
+        self.pages.get(&page).is_some_and(|set| !set.is_empty())
+    }
+
     /// Drop every block whose code footprint covers `page` (M6). Returns the
     /// number of blocks dropped.
     pub fn invalidate_page(&mut self, page: u32) -> usize {

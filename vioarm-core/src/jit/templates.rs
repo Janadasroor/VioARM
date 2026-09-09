@@ -43,6 +43,17 @@ pub fn is_templated(op: &TbOp) -> bool {
             Inst16::SubImm8 { rd, .. } => rd != 15,
             Inst16::Alu { rd, rm, .. } => rd != 15 && rm != 15,
             Inst16::SpecialCmp { rn, rm } => rn != 15 && rm != 15,
+            // Split-generation gap-fillers: plain high-reg add/move and
+            // SP arithmetic (no flags, no PC involvement — `rd == 15`
+            // seals ControlFlow at the builder, `rm == 15` would read the
+            // stale guest PC).
+            Inst16::SpecialAdd { rd, rm } => rd != 15 && rm != 15,
+            Inst16::SpecialMov { rd, rm } => rd != 15 && rm != 15,
+            Inst16::AddSpImm8 { .. } | Inst16::SubSpImm8 { .. } | Inst16::AddrSp { .. } => true,
+            // `ADR`: `(pc + 4) & !3 + imm` is static per site (decoder
+            // bounds `rd` to r0–r7), so the emitter folds the constant —
+            // no PC read at runtime, never any flags.
+            Inst16::AddrPc { .. } => true,
             // P2-2 terminators: 16-bit static branches (targets resolve
             // without guest state; reg/pc forms stay interpreted).
             Inst16::Branch { .. } => true,
@@ -141,7 +152,19 @@ pub fn is_templated(op: &TbOp) -> bool {
                 rm,
                 amount,
                 ..
-            } => rn != 15 && rm != 15 && amount <= 31 && (!dp_writes_rd(op) || rd != 15),
+            } => {
+                // `MOV`/`MVN` never read `Rn` (exec ignores it), so the
+                // ROR-immediate shifted-move forms (`rn == 15` marker)
+                // template like the rest (gcc emits them for every Σ).
+                (rn != 15
+                    || matches!(
+                        op,
+                        crate::cpu::decode32::DpOp::Mov | crate::cpu::decode32::DpOp::Mvn
+                    ))
+                    && rm != 15
+                    && amount <= 31
+                    && (!dp_writes_rd(op) || rd != 15)
+            }
             crate::cpu::decode32::Inst32::DpImm { op, rd, rn, .. } => {
                 rn != 15 && (!dp_writes_rd(op) || rd != 15)
             }
@@ -973,6 +996,7 @@ pub(crate) mod harness {
         bus: &mut FlatMemory,
         tlb: &mut Tlb,
         gen: &mut u64,
+        is_code: bool,
     ) -> (
         (Registers, Xpsr, Vec<u8>),
         u64,
@@ -1019,7 +1043,7 @@ pub(crate) mod harness {
         let (st1, code1, fault) = run_once(bus, tlb, gen);
         assert_eq!(exit_reason(code1), EXIT_MMIO, "cold TLB must side-exit");
         if let Some((size, is_write)) = mem_access(op) {
-            fill_tlb(tlb, bus, fault, size, is_write, true, 0);
+            fill_tlb(tlb, bus, fault, size, is_write, true, 0, is_code);
         }
         let (st2, code2, _) = run_once(bus, tlb, gen);
         (st1, code1, fault, st2, code2)
@@ -1209,6 +1233,70 @@ mod tests {
     fn special_cmp_matches() {
         let op = TbOp::V16(Inst16::SpecialCmp { rn: 8, rm: 12 });
         check(&op, 256);
+    }
+
+    #[test]
+    fn special_add_mov_match() {
+        // Low lanes plus high/sp/lr lanes on both sides (never 15: the
+        // stale-PC forms stay interpreted).
+        for (k, (rd, rm)) in [
+            (0, 1),
+            (2, 8),
+            (8, 3),
+            (9, 12),
+            (4, 13),
+            (13, 5),
+            (6, 14),
+            (14, 7),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let add = TbOp::V16(Inst16::SpecialAdd { rd: *rd, rm: *rm });
+            check(&add, 64 + k as u32 * 8);
+            let mov = TbOp::V16(Inst16::SpecialMov { rd: *rd, rm: *rm });
+            check(&mov, 64 + k as u32 * 8);
+        }
+        // Stale-PC forms still bail.
+        assert!(!is_templated(&TbOp::V16(Inst16::SpecialAdd {
+            rd: 0,
+            rm: 15
+        })));
+        assert!(!is_templated(&TbOp::V16(Inst16::SpecialMov {
+            rd: 15,
+            rm: 0
+        })));
+    }
+
+    #[test]
+    fn sp_imm_match() {
+        use crate::jit::native::EXIT_FALL;
+        // SP arithmetic over aligned, unaligned, and wrapping values
+        // (exact wrapping like the interpreter; never any flags).
+        // `sp` is forced directly — the stock `check` lanes only cover
+        // `r0`–`r12`.
+        let ops = [
+            TbOp::V16(Inst16::AddSpImm8 { imm: 0x1FC }),
+            TbOp::V16(Inst16::SubSpImm8 { imm: 0x1FC }),
+            TbOp::V16(Inst16::AddrSp { rd: 2, imm: 0x3FC }),
+        ];
+        for op in &ops {
+            assert!(is_templated(op));
+            for sp in [0x2000_0000u32, 0x2000_0003, 0xFFFF_FFFC, 0x0000_0000] {
+                let mut rng = Rng::new();
+                for t in 0..32 {
+                    let mut regs = blank_regs();
+                    regs.r[2] = rng.next_u32();
+                    regs.sp = sp.wrapping_add(t);
+                    regs.msp = regs.sp;
+                    let xpsr = flags_nzcv(t % 2 == 0, t % 3 == 0, t % 5 == 0, t % 7 == 0);
+                    let ((nr, nx), code) = run_native(op, &regs, &xpsr, 0x1000, false);
+                    assert_eq!(exit_reason(code), EXIT_FALL);
+                    let (ir, ix) = run_interp(op, &regs, &xpsr);
+                    assert_eq!((nr, nx), (ir, ix), "sp={sp:#X} trial {t} for {op:?}");
+                }
+            }
+        }
     }
 
     #[test]
@@ -1464,13 +1552,13 @@ mod tests {
             kind: crate::cpu::decode16::LsImm::Str,
         });
         let (st1, c1, fault, _, c2) = run_mem(
-            &str_op, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen,
+            &str_op, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen, true,
         );
         assert_eq!(exit_reason(c1), EXIT_MMIO);
         assert_eq!(fault, MEM_RAM + 0x10C);
         assert_eq!((st1.0, st1.1), (regs, xpsr), "miss is effect-free");
         assert_eq!(exit_reason(c2), EXIT_FALL);
-        assert!(gen > 0, "fast store bumps the generation");
+        assert!(gen > 0, "fast store to a code page bumps the generation");
         let ldr_op = TbOp::V16(Inst16::LsImm {
             rt: 0,
             rn: 1,
@@ -1480,7 +1568,7 @@ mod tests {
         // Fresh TLB (the STR above warmed the shared one — same page).
         let mut tlb2 = Tlb::new();
         let (_, _, _, (nr2, _, _), c4) = run_mem(
-            &ldr_op, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb2, &mut gen,
+            &ldr_op, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb2, &mut gen, false,
         );
         assert_eq!(exit_reason(c4), EXIT_FALL);
         assert_eq!(nr2.r[0], 0xDEAD_BEEF, "stored word reads back");
@@ -1507,7 +1595,7 @@ mod tests {
             kind: crate::cpu::decode16::LsImm::Ldr,
         });
         let (st1, c1, fault, st2, c2) = run_mem(
-            &op, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen,
+            &op, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen, false,
         );
         assert_eq!(exit_reason(c1), EXIT_MMIO);
         assert_eq!(fault, 0x4000_0000);
@@ -1536,7 +1624,9 @@ mod tests {
         let xpsr = Xpsr::default();
         let (mut bus, mut tlb, mut gen) = mem_setup();
         seed(&mut bus);
-        let (_, c1, _, st2, c2) = run_mem(op, regs, &xpsr, pc, trap, &mut bus, &mut tlb, &mut gen);
+        let (_, c1, _, st2, c2) = run_mem(
+            op, regs, &xpsr, pc, trap, &mut bus, &mut tlb, &mut gen, false,
+        );
         assert_eq!(exit_reason(c1), EXIT_MMIO);
         assert_eq!(exit_reason(c2), EXIT_FALL, "{op:?} must go fast");
         let (mut bus2, _, _) = mem_setup();
@@ -1592,7 +1682,7 @@ mod tests {
             seed(&mut bus);
             let xpsr = Xpsr::default();
             let (_, _, _, (nr, _, _), _) = run_mem(
-                &op, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen,
+                &op, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen, false,
             );
             assert_eq!(nr.r[rt as usize], want, "{op:?}");
         }
@@ -1625,7 +1715,7 @@ mod tests {
         bus.write(MEM_RAM + 0x308, 0x80).unwrap();
         let xpsr = Xpsr::default();
         let (_, _, _, (nr, _, _), _) = run_mem(
-            &op, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen,
+            &op, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen, false,
         );
         assert_eq!(nr.r[0], 0xFFFF_FF80, "sign extends");
     }
@@ -1654,7 +1744,7 @@ mod tests {
         bus.write_word(MEM_RAM + 0x410, 0x1234_5678).unwrap();
         let xpsr = Xpsr::default();
         let (_, _, _, (nr, _, _), c2) = run_mem(
-            &ldr_op, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen,
+            &ldr_op, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen, false,
         );
         assert_eq!(exit_reason(c2), EXIT_FALL);
         assert_eq!(nr.r[1], 0x1234_5678);
@@ -1674,7 +1764,7 @@ mod tests {
         bus.write_word(base + 8, 0xCAFEBABE).unwrap();
         let xpsr = Xpsr::default();
         let (_, _, _, (nr, _, _), c2) = run_mem(
-            &lit_op, &regs, &xpsr, lit_pc, false, &mut bus, &mut tlb, &mut gen,
+            &lit_op, &regs, &xpsr, lit_pc, false, &mut bus, &mut tlb, &mut gen, false,
         );
         assert_eq!(exit_reason(c2), EXIT_FALL);
         assert_eq!(nr.r[0], 0xCAFEBABE);
@@ -1706,7 +1796,7 @@ mod tests {
         let (mut bus, mut tlb, mut gen) = mem_setup();
         let xpsr = Xpsr::default();
         let (_, _, _, (nr, _, _), _) = run_mem(
-            &post, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen,
+            &post, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen, false,
         );
         assert_eq!(nr.r[1], MEM_RAM + 0x504);
         // rt == rn aliasing load with writeback.
@@ -1763,7 +1853,7 @@ mod tests {
         });
         let (mut bus, mut tlb, mut gen) = mem_setup();
         let (_, c1, _, _, c2) = run_mem(
-            &op, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen,
+            &op, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen, false,
         );
         assert_eq!(exit_reason(c1), EXIT_MMIO);
         assert_eq!(exit_reason(c2), EXIT_MMIO, "page-crossing never goes fast");
@@ -1792,7 +1882,7 @@ mod tests {
         let (mut bus, mut tlb, mut gen) = mem_setup();
         let xpsr = Xpsr::default();
         let (_, c1, _, _, c2) = run_mem(
-            &op, &regs, &xpsr, 0x1000, true, &mut bus, &mut tlb, &mut gen,
+            &op, &regs, &xpsr, 0x1000, true, &mut bus, &mut tlb, &mut gen, false,
         );
         assert_eq!(exit_reason(c1), EXIT_MMIO);
         assert_eq!(exit_reason(c2), EXIT_MMIO, "trapped unaligned exits");
@@ -1800,7 +1890,7 @@ mod tests {
         {
             let (mut bus, mut tlb, mut gen) = mem_setup();
             let (_, c1, _, (nr, _, _), c2) = run_mem(
-                &op, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen,
+                &op, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen, false,
             );
             assert_eq!(exit_reason(c1), EXIT_MMIO);
             assert_eq!(exit_reason(c2), EXIT_FALL, "x64 performs in-page unaligned");
@@ -2172,7 +2262,7 @@ mod tests {
         seed(&mut bus);
         let xpsr = Xpsr::default();
         let (_, _, _, (nr, _, _), c2) = run_mem(
-            &pop, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen,
+            &pop, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen, false,
         );
         assert_eq!(exit_reason(c2), EXIT_FALL);
         assert_eq!(
@@ -2193,11 +2283,41 @@ mod tests {
         let (mut bus, mut tlb, mut gen) = mem_setup();
         let xpsr = Xpsr::default();
         let (_, c1, _, _, c2) = run_mem(
-            &push, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen,
+            &push, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen, true,
         );
         assert_eq!(exit_reason(c1), EXIT_MMIO);
         assert_eq!(exit_reason(c2), EXIT_FALL);
-        assert!(gen > 0, "fast multi-store bumps once per op");
+        assert!(gen > 0, "fast multi-store to a code page bumps");
+    }
+
+    #[test]
+    fn data_store_skips_bump() {
+        // Same store, data page: the write lands identically but the
+        // generation (and hence links/validated entries) survives —
+        // split generations keep store loops chained.
+        let mut regs = mem_regs();
+        regs.r[1] = MEM_RAM + 0x100;
+        regs.r[2] = 0xDEAD_BEEF;
+        let xpsr = Xpsr::default();
+        let (mut bus, mut tlb, mut gen) = mem_setup();
+        let str_op = TbOp::V16(Inst16::LsImm {
+            rt: 2,
+            rn: 1,
+            imm: 12,
+            kind: crate::cpu::decode16::LsImm::Str,
+        });
+        let (st1, c1, fault, st2, c2) = run_mem(
+            &str_op, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen, false,
+        );
+        assert_eq!(exit_reason(c1), EXIT_MMIO);
+        assert_eq!(fault, MEM_RAM + 0x10C);
+        assert_eq!((st1.0, st1.1), (regs, xpsr), "miss is effect-free");
+        assert_eq!(exit_reason(c2), EXIT_FALL);
+        assert_eq!(gen, 0, "data-only store skips the bump");
+        assert_eq!(st2.0.r[2], 0xDEAD_BEEF);
+        // RAM landed the word either way (outside the snap window: read
+        // the bus directly).
+        assert_eq!(bus.read_word(MEM_RAM + 0x10C).unwrap(), 0xDEAD_BEEF);
     }
 
     #[test]
@@ -2218,7 +2338,7 @@ mod tests {
         bus.write_word(MEM_SP - 4, 0x0800_1001).unwrap();
         let xpsr = Xpsr::default();
         let (_, c1, _, (nr, _, _), c2) = run_mem(
-            &op, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen,
+            &op, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen, false,
         );
         assert_eq!(exit_reason(c1), EXIT_MMIO, "cold TLB side-exits");
         assert_eq!(exit_reason(c2), EXIT_BRANCH);
@@ -2270,7 +2390,7 @@ mod tests {
         bus.write_word(MEM_RAM + 0x404, 0xCAFEBABE).unwrap();
         let xpsr = Xpsr::default();
         let (_, _, _, (nr, _, _), _) = run_mem(
-            &ldm, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen,
+            &ldm, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen, false,
         );
         assert_eq!(nr.r[0], 0xDEAD_BEEF, "loaded rn wins over writeback");
         assert_eq!(nr.r[1], 0xCAFEBABE);
@@ -2323,7 +2443,7 @@ mod tests {
         let (mut bus, mut tlb, mut gen) = mem_setup();
         let xpsr = Xpsr::default();
         let (_, _, _, (nr, _, _), c2) = run_mem(
-            &stmdb, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen,
+            &stmdb, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen, false,
         );
         assert_eq!(exit_reason(c2), EXIT_FALL);
         assert_eq!(nr.r[3], MEM_RAM + 0x600 - 8, "DB writeback steps down");
@@ -2367,7 +2487,7 @@ mod tests {
         bus.write_word(MEM_RAM + 0x704, 0x0800_2001).unwrap();
         let xpsr = Xpsr::default();
         let (_, c1, _, (nr, nx, _), c2) = run_mem(
-            &op, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen,
+            &op, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen, false,
         );
         assert_eq!(exit_reason(c1), EXIT_MMIO, "cold TLB side-exits");
         assert_eq!(exit_reason(c2), EXIT_BRANCH);
@@ -2412,7 +2532,7 @@ mod tests {
         let (mut bus, mut tlb, mut gen) = mem_setup();
         let xpsr = Xpsr::default();
         let (_, _, _, (nr, _, _), c2) = run_mem(
-            &strd, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen,
+            &strd, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen, false,
         );
         assert_eq!(exit_reason(c2), EXIT_FALL);
         assert_eq!(nr.r[1], MEM_RAM + 0x808);
@@ -2453,7 +2573,7 @@ mod tests {
         bus.write(MEM_RAM + 0x904, 0x10).unwrap();
         let xpsr = Xpsr::default();
         let (st1, c1, _, (nr, nx, _), c2) = run_mem(
-            &tbb, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen,
+            &tbb, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen, false,
         );
         assert_eq!(exit_reason(c1), EXIT_MMIO, "cold table side-exits");
         assert_eq!(exit_reason(c2), EXIT_BRANCH);
@@ -2472,7 +2592,7 @@ mod tests {
         let (mut bus, mut tlb, mut gen) = mem_setup();
         bus.write_word(MEM_RAM + 0x906, 0x0020).unwrap();
         let (_, _, _, (_, _, _), c2) = run_mem(
-            &tbh, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen,
+            &tbh, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen, false,
         );
         assert_eq!(exit_reason(c2), EXIT_BRANCH);
         // Interpreter parity on an identically seeded twin bus: same branch
@@ -2510,7 +2630,7 @@ mod tests {
         };
         let before = bytes_at(&mut bus);
         let (st1, c1, fault, st2, c2) = run_mem(
-            &op, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen,
+            &op, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen, false,
         );
         assert_eq!(exit_reason(c1), EXIT_MMIO);
         assert_eq!(fault, MEM_RAM + 0xFFC, "first probe misses cold");
@@ -2619,6 +2739,92 @@ mod tests {
                     });
                     check(&inst, 48);
                 }
+            }
+        }
+    }
+
+    /// ROR-immediate shifted moves (`rn == 15` marker — the Σ workhorse):
+    /// `rn` is never read, so the stale-PC forms template exactly.
+    #[test]
+    fn dpreg_mov_imm_match() {
+        use crate::cpu::decode32::DpOp as D;
+        use crate::cpu::decode32::Inst32 as I32c;
+        use crate::cpu::decode32::ShiftType as ST;
+        for (shift, amount) in [
+            (ST::Ror, 7u8),
+            (ST::Ror, 11),
+            (ST::Ror, 18),
+            (ST::Ror, 25),
+            (ST::Lsl, 0),
+            (ST::Lsr, 31),
+        ] {
+            for op in [D::Mov, D::Mvn] {
+                for set_flags in [true, false] {
+                    let inst = TbOp::V32(I32c::DpReg {
+                        op,
+                        rd: 6,
+                        rn: 15,
+                        rm: 2,
+                        shift,
+                        amount,
+                        set_flags,
+                    });
+                    check(&inst, 64);
+                    // Pinned-lane variant.
+                    let inst = TbOp::V32(I32c::DpReg {
+                        op,
+                        rd: 0,
+                        rn: 15,
+                        rm: 1,
+                        shift,
+                        amount,
+                        set_flags,
+                    });
+                    check(&inst, 64);
+                }
+            }
+        }
+        // Other ops still refuse the stale PC.
+        assert!(!is_templated(&TbOp::V32(I32c::DpReg {
+            op: D::Add,
+            rd: 0,
+            rn: 15,
+            rm: 1,
+            shift: ST::Lsl,
+            amount: 0,
+            set_flags: false,
+        })));
+    }
+
+    #[test]
+    fn addr_pc_folds_constant() {
+        use crate::jit::native::EXIT_FALL;
+        // `(pc + 4) & !3 + imm`, including pc-misaligned and wrapping
+        // shapes (the emitter folds the site constant — no PC read).
+        for (pc, imm) in [
+            (0x1000u32, 0usize),
+            (0x1002, 0x3FC),
+            (0x2000_0000, 0),
+            (0xFFFF_FFFC, 4),
+        ] {
+            let op = TbOp::V16(Inst16::AddrPc { rd: 4, imm });
+            assert!(is_templated(&op));
+            let mut rng = Rng::new();
+            for t in 0..16 {
+                let mut regs = blank_regs();
+                regs.r[4] = rng.next_u32();
+                let xpsr = flags_nzcv(false, false, false, false);
+                let ((nr, nx), code) = run_native(&op, &regs, &xpsr, pc, false);
+                assert_eq!(exit_reason(code), EXIT_FALL);
+                // No interp cross-check: the harness interprets at a
+                // fixed pc, meaningless for PC-relative forms. The
+                // folded constant + untouched flags are the contract.
+                assert_eq!(
+                    nr.r[4],
+                    (pc.wrapping_add(4) & !3).wrapping_add(imm as u32),
+                    "pc={pc:#X} imm={imm:#X} trial {t}"
+                );
+                assert_eq!(nx, xpsr, "ADR writes no flags");
             }
         }
     }
@@ -3061,7 +3267,7 @@ mod tests {
         });
         let (mut bus, mut tlb, mut gen) = mem_setup();
         let (st1, c1, _, st2, c2) = run_mem(
-            &op, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen,
+            &op, &regs, &xpsr, 0x1000, false, &mut bus, &mut tlb, &mut gen, false,
         );
         assert_eq!(exit_reason(c1), EXIT_MMIO);
         assert_eq!(exit_reason(c2), EXIT_MMIO, "alignment never goes fast");

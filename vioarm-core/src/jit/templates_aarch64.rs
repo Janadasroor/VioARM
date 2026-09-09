@@ -289,6 +289,58 @@ fn emit16(
             merge_nzcv(ops);
             true
         }
+        // --- High-reg add/move + SP arithmetic (split-generation
+        // gap-fillers mirroring x64): plain ALU, never any flags.
+        I::SpecialAdd { rd, rm } => {
+            if rd == 15 || rm == 15 {
+                return false;
+            }
+            load(ops, rd, true);
+            load(ops, rm, false);
+            dynasm!(ops ; .arch aarch64 ; add w0, w0, w1);
+            store(ops, rd);
+            true
+        }
+        I::SpecialMov { rd, rm } => {
+            if rd == 15 || rm == 15 {
+                return false;
+            }
+            load(ops, rm, true);
+            store(ops, rd);
+            true
+        }
+        I::AddSpImm8 { imm } => {
+            load(ops, 13, true);
+            let imm = imm as u32;
+            dynasm!(ops ; .arch aarch64 ; add w0, w0, imm);
+            store(ops, 13);
+            true
+        }
+        I::SubSpImm8 { imm } => {
+            load(ops, 13, true);
+            let imm = imm as u32;
+            dynasm!(ops ; .arch aarch64 ; sub w0, w0, imm);
+            store(ops, 13);
+            true
+        }
+        I::AddrSp { rd, imm } => {
+            load(ops, 13, true);
+            let imm = imm as u32;
+            dynasm!(ops ; .arch aarch64 ; add w0, w0, imm);
+            store(ops, rd);
+            true
+        }
+        I::AddrPc { rd, imm } => {
+            let v = pc.wrapping_add(4) & !3;
+            let v = v.wrapping_add(imm as u32);
+            let (lo, hi) = (v & 0xFFFF, (v >> 16) & 0xFFFF);
+            dynasm!(ops ; .arch aarch64 ; movz w0, lo);
+            if hi != 0 {
+                dynasm!(ops ; .arch aarch64 ; movk w0, hi, lsl #16);
+            }
+            store(ops, rd);
+            true
+        }
         // --- Loads/stores (P2-3 S1, mirroring x64).
         I::LsReg { rt, rn, rm, kind } => emit_lsreg(ops, rt, rn, rm, kind, pc, unalign_trap),
         I::LsImm { rt, rn, imm, kind } => emit_lsimm(ops, rt, rn, imm, kind, pc, unalign_trap),
@@ -973,6 +1025,11 @@ fn mem_site(ops: &mut A, size: u32, is_write: bool, op_pc: u32, fast: impl FnOnc
     let end = ops.new_dynamic_label();
     // AArch64 folds the trap decision into the guard (always strict).
     mem_guard(ops, size, is_write, side);
+    // Stores decide the generation bump here (per code page); loads
+    // never bump (a load invalidating links would be pure pessimism).
+    if is_write {
+        bump_if_code(ops);
+    }
     fast(ops);
     dynasm!(ops ; .arch aarch64 ; b =>end);
     dynasm!(ops ; .arch aarch64 ; =>side);
@@ -981,7 +1038,8 @@ fn mem_site(ops: &mut A, size: u32, is_write: bool, op_pc: u32, fast: impl FnOnc
 }
 
 /// Shared access writer: fast load/store at host `X0`, optional
-/// writeback of `W12` to `rn`, epoch bump for stores.
+/// writeback of `W12` to `rn`. Stores read `W11`; their generation
+/// bump already happened at the site guard (`mem_site`).
 fn emit_access(ops: &mut A, size: u32, is_write: bool, sext: bool, rt: u8, wb_rn: Option<u8>) {
     if is_write {
         match size {
@@ -989,7 +1047,6 @@ fn emit_access(ops: &mut A, size: u32, is_write: bool, sext: bool, rt: u8, wb_rn
             2 => dynasm!(ops ; .arch aarch64 ; strh w11, [x0]),
             _ => dynasm!(ops ; .arch aarch64 ; str w11, [x0]),
         }
-        bump_epoch(ops);
     } else {
         match (size, sext) {
             (1, false) => dynasm!(ops ; .arch aarch64 ; ldrb w0, [x0]),
@@ -1006,16 +1063,34 @@ fn emit_access(ops: &mut A, size: u32, is_write: bool, sext: bool, rt: u8, wb_rn
     }
 }
 
-/// Bump the bus write generation after a fast store.
-fn bump_epoch(ops: &mut A) {
+/// Advance the write generation after a fast store, but only through
+/// code pages (split generations — mirrors x64 `bump_if_code`): the
+/// guest address is still in `W1` per the guard contract, so re-derive
+/// its TLB index and test the code bit. Data-only stores skip the bump.
+/// Clobbers `X9`/`X10` (guard scratch); preserves pins, `W11`/`W12`,
+/// and `W1`.
+fn bump_if_code(ops: &mut A) {
+    let tlb = tlb_off();
     let epoch = epoch_off();
+    let code = super::tlb::TLB_CODE;
+    let bump = ops.new_dynamic_label();
     dynasm!(ops
         ; .arch aarch64
+        ; lsr w9, w1, #12
+        ; and x9, x9, #63
+        ; lsl x9, x9, #4
+        ; ldr x10, [sp, #48]
+        ; ldr x10, [x10, tlb]
+        ; add x9, x10, x9
+        ; ldrb w9, [x9, #4]
+        ; tst w9, code
+        ; b.eq =>bump
         ; ldr x9, [sp, #48]
         ; ldr x9, [x9, epoch]
         ; ldr x10, [x9]
         ; add x10, x10, #1
         ; str x10, [x9]
+        ; =>bump
     );
 }
 
@@ -1045,13 +1120,12 @@ enum WordSlot {
     LoadTarget,
 }
 
-/// Shared tail for multi-word emitters (single generation bump for
-/// stores; effect-free side exit). Mirrors x64 `multi_tail`.
-fn multi_tail(ops: &mut A, op_pc: u32, store: bool, side: dynasmrt::DynamicLabel) {
+/// Shared tail for multi-word emitters: generation bumps happen per
+/// word at their transfer guards (split generations — code pages
+/// only), so the tail just binds the effect-free side exit. Mirrors
+/// x64 `multi_tail`.
+fn multi_tail(ops: &mut A, op_pc: u32, side: dynasmrt::DynamicLabel) {
     let done = ops.new_dynamic_label();
-    if store {
-        bump_epoch(ops);
-    }
     dynasm!(ops ; .arch aarch64 ; b =>done);
     dynasm!(ops ; .arch aarch64 ; =>side);
     mem_side_exit(ops, op_pc);
@@ -1111,6 +1185,7 @@ fn emit_push(ops: &mut A, regs: u8, include_lr: bool, pc: u32) -> bool {
         load(ops, r, true);
         dynasm!(ops ; .arch aarch64 ; mov w12, w0);
         mem_guard(ops, 4, true, side);
+        bump_if_code(ops);
         dynasm!(ops ; .arch aarch64 ; str w12, [x0]);
     }
     if include_lr {
@@ -1119,10 +1194,11 @@ fn emit_push(ops: &mut A, regs: u8, include_lr: bool, pc: u32) -> bool {
         load(ops, 14, true);
         dynasm!(ops ; .arch aarch64 ; mov w12, w0);
         mem_guard(ops, 4, true, side);
+        bump_if_code(ops);
         dynasm!(ops ; .arch aarch64 ; str w12, [x0]);
     }
     store_sp_w11(ops);
-    multi_tail(ops, pc, true, side);
+    multi_tail(ops, pc, side);
     true
 }
 
@@ -1161,7 +1237,7 @@ fn emit_pop(ops: &mut A, regs: u8, pc: u32) -> bool {
     let bytes = 4 * n;
     dynasm!(ops ; .arch aarch64 ; add w11, w11, bytes);
     store_sp_w11(ops);
-    multi_tail(ops, pc, false, side);
+    multi_tail(ops, pc, side);
     true
 }
 
@@ -1274,6 +1350,7 @@ fn emit_ldmstm16(ops: &mut A, is_load: bool, rn: u8, regs: u8, pc: u32) -> bool 
             dynasm!(ops ; .arch aarch64 ; ldr w0, [x0]);
             store(ops, r);
         } else {
+            bump_if_code(ops);
             dynasm!(ops ; .arch aarch64 ; str w12, [x0]);
         }
     }
@@ -1283,7 +1360,7 @@ fn emit_ldmstm16(ops: &mut A, is_load: bool, rn: u8, regs: u8, pc: u32) -> bool 
         dynasm!(ops ; .arch aarch64 ; add w0, w11, bytes);
         store(ops, rn);
     }
-    multi_tail(ops, pc, !is_load && n > 0, side);
+    multi_tail(ops, pc, side);
     true
 }
 
@@ -1548,6 +1625,7 @@ fn emit_ldmstm32(
             dynasm!(ops ; .arch aarch64 ; ldr w0, [x0]);
             store(ops, r);
         } else {
+            bump_if_code(ops);
             dynasm!(ops ; .arch aarch64 ; str w12, [x0]);
         }
     }
@@ -1560,7 +1638,7 @@ fn emit_ldmstm32(
         store(ops, rn);
     }
     if !has_pc {
-        multi_tail(ops, pc, !is_load, side);
+        multi_tail(ops, pc, side);
         return true;
     }
     let tape = tape.take().expect("pc slot checked above");
@@ -1657,6 +1735,7 @@ fn emit_ldrdstrd(
             dynasm!(ops ; .arch aarch64 ; ldr w0, [x0]);
             store(ops, rt);
         } else {
+            bump_if_code(ops);
             dynasm!(ops ; .arch aarch64 ; str w12, [x0]);
         }
     }
@@ -1664,7 +1743,7 @@ fn emit_ldrdstrd(
         dynasm!(ops ; .arch aarch64 ; mov w0, w13);
         store(ops, rn);
     }
-    multi_tail(ops, pc, !is_load, side);
+    multi_tail(ops, pc, side);
     true
 }
 
@@ -2029,7 +2108,10 @@ fn emit_dpreg(
     amount: u8,
     set_flags: bool,
 ) -> bool {
-    if rn == 15 || rm == 15 {
+    // `MOV`/`MVN` never read `Rn` (mirrors x64 — the ROR-immediate
+    // shifted-move forms use `rn == 15` as a no-Rn marker).
+    use crate::cpu::decode32::DpOp as O;
+    if rm == 15 || (rn == 15 && !matches!(op, O::Mov | O::Mvn)) {
         return false;
     }
     if super::templates::dp_writes_rd(op) && rd == 15 {
