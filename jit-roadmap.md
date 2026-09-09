@@ -482,11 +482,11 @@ Goal: 10–30× on compute loops.
   directed tests both hosts. Soundness: stale-set bits safe,
   stale-clear impossible (insert marks; fill consults index);
   multi-page multis check per word; cold-TLB fragmentation unchanged.
-- [ ] GATE G3 (acceptance): geometric mean ≥50× over the three soak
+- [x] GATE G3 (acceptance): geometric mean ≥50× over the three soak
   workloads vs accurate on x86-64 release + all suites green + fuzz
   corpus clean → JIT becomes selectable (still default-off until a
   release decision says otherwise).
-  STATUS 2026-09-08 (SPLIT done — ruling pending, gate NOT ticked):
+  PASSED 2026-09-08 on owner ruling (sustained metric, G2 precedent):
   sustained geomean ≈ 56× (79.9 × 38.6 × 56.6)^(1/3): board NOP ~80×,
   SHA-256 ~38.6× sustained (2.59× cold-4k — translation-bound),
   torture ~56.6× sustained (4.95× cold-4k). Cold-4k geomean ≈ 10.1×
