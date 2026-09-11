@@ -1566,6 +1566,9 @@ fn parse_u32(s: &str) -> Result<u32, String> {
     u32::from_str_radix(digits, radix).map_err(|e| e.to_string())
 }
 
+/// `--board` help: the core follows the board family (WP-K1).
+const BOARD_HELP: &str = "Board to boot (core follows family: virtual/F0/C0/G0/L0 = M0, F1/F2/F3/F4/G4/L4 = M3/M4, F7/H7 = M7, U5/H5/WBA/L5 = M33; Thumb-2 .w needs an M3+ board)";
+
 #[derive(Parser, Debug)]
 #[command(author, version, about = format!("{} — cool CLI", "VioARM".bright_cyan().bold()), long_about = None, color = clap::ColorChoice::Auto)]
 struct Cli {
@@ -1578,7 +1581,7 @@ struct Cli {
     elf: Option<PathBuf>,
     #[arg(long)]
     hex: Option<PathBuf>,
-    #[arg(long, value_enum, default_value_t = Board::Virtual)]
+    #[arg(long, value_enum, default_value_t = Board::Virtual, help = BOARD_HELP)]
     board: Board,
     #[arg(long, default_value_t = 0, value_parser = parse_u32)]
     base: u32,
@@ -1601,7 +1604,7 @@ enum Commands {
     Run {
         /// Image path (.bin/.elf/.hex auto-detected)
         image: PathBuf,
-        #[arg(long, value_enum, default_value_t = Board::Virtual)]
+        #[arg(long, value_enum, default_value_t = Board::Virtual, help = BOARD_HELP)]
         board: Board,
         #[arg(long, default_value_t = 0, value_parser = parse_u32)]
         base: u32,
@@ -1624,7 +1627,7 @@ enum Commands {
     Record {
         /// Image path (.bin/.elf/.hex auto-detected)
         image: PathBuf,
-        #[arg(long, value_enum, default_value_t = Board::Virtual)]
+        #[arg(long, value_enum, default_value_t = Board::Virtual, help = BOARD_HELP)]
         board: Board,
         #[arg(long, default_value_t = 0, value_parser = parse_u32)]
         base: u32,
@@ -1655,7 +1658,7 @@ enum Commands {
         image: PathBuf,
         /// Golden file from `record`
         golden: PathBuf,
-        #[arg(long, value_enum, default_value_t = Board::Virtual)]
+        #[arg(long, value_enum, default_value_t = Board::Virtual, help = BOARD_HELP)]
         board: Board,
         #[arg(long, default_value_t = 0, value_parser = parse_u32)]
         base: u32,
@@ -1667,7 +1670,7 @@ enum Commands {
     /// Trace cycle-by-cycle
     Trace {
         image: PathBuf,
-        #[arg(long, value_enum, default_value_t = Board::Virtual)]
+        #[arg(long, value_enum, default_value_t = Board::Virtual, help = BOARD_HELP)]
         board: Board,
         #[arg(long, default_value_t = 0, value_parser = parse_u32)]
         base: u32,
@@ -1697,7 +1700,7 @@ enum Commands {
     /// Interactive debug REPL
     Debug {
         image: PathBuf,
-        #[arg(long, value_enum, default_value_t = Board::Virtual)]
+        #[arg(long, value_enum, default_value_t = Board::Virtual, help = BOARD_HELP)]
         board: Board,
         #[arg(long, default_value_t = 0, value_parser = parse_u32)]
         base: u32,
@@ -1711,7 +1714,7 @@ enum Commands {
         /// quanta continue, breakpoint pages bypass translation)
         #[arg(long)]
         jit: bool,
-        #[arg(long, value_enum, default_value_t = Board::Virtual)]
+        #[arg(long, value_enum, default_value_t = Board::Virtual, help = BOARD_HELP)]
         board: Board,
         #[arg(long, default_value_t = 0, value_parser = parse_u32)]
         base: u32,
@@ -1803,7 +1806,30 @@ fn print_info(img: &LoadedImage) {
 
 fn machine_for(board: Board, img: &LoadedImage) -> Machine<board::BoardMemory> {
     let mem = board.mem();
-    let mut m = Machine::new(mem);
+    // WP-K1: select the core by family. Every board previously ran on the
+    // ARMv6-M core, so Thumb-2-only encodings (e.g. `orr.w`) faulted even on
+    // M3/M4 firmware. `virtual` stays the explicit M0 home (see
+    // `board::cortex_m0`); F0/C0/G0/L0 are M0/M0+, F7/H7 are M7, U5/H5/WBA/L5
+    // are M33, everything else (F1/F2/F3/F4/G4/L4/L1/WB/WL/MP1) is M3/M4.
+    let name = board.name();
+    let mut m = if name == "virtual"
+        || name.starts_with("stm32f0")
+        || name.starts_with("stm32c0")
+        || name.starts_with("stm32g0")
+        || name.starts_with("stm32l0")
+    {
+        Machine::new(mem)
+    } else if name.starts_with("stm32f7") || name.starts_with("stm32h7") {
+        Machine::armv7em(mem)
+    } else if name.starts_with("stm32u5")
+        || name.starts_with("stm32h5")
+        || name.starts_with("stm32wba")
+        || name.starts_with("stm32l5")
+    {
+        Machine::armv8m_mainline(mem)
+    } else {
+        Machine::armv7m(mem)
+    };
     m.load_image(img);
     if let Err(cause) = m.reset() {
         eprintln!("{} reset failed: {cause}", "error:".red().bold());

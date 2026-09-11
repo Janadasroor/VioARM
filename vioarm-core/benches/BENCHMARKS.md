@@ -18,16 +18,19 @@ unless noted. Detail sections below hold the history.
 | mem-mix RAM 4k | ~377 µs | ~66 µs | **~5.7** |
 | mem-mix flash 4k | ~440 µs | ~68 µs | **~6.5** |
 | call/ret RAM 4k | ~503 µs | ~61 µs | **~8.3** |
-| push/pop RAM 4k | ~500 µs | ~890 µs | **0.56** |
+| push/pop RAM 4k | ~500 µs | ~82 µs | **~6.1** |
 | board NOP 1M | 2.6476 s | 33.132 ms | **79.9** |
 | SHA-256 loop RAM 4k | ~807 µs | ~255 µs | **~3.2** |
 | ALU torture RAM 4k | ~427 µs | ~67 µs | **~6.4** |
 | ALU loop sustained (warm, per op) | 135 ns | 3.0 ns | **~45** |
+| SHA-256 sustained (warm) | — | — | **~38.6** |
+| ALU torture sustained (warm) | — | — | **~56.6** |
 
 Sub-unity soaks were store-fenced chaining gaps (one driver trip per
-block); SPLIT fixed the SHA case (re-measured 2026-09-09 on the same
-box: ~3.2× cold, was 0.73× pre-SPLIT — the table cells above are the
-fresh numbers). Push/pop (0.56×) is the remaining store-fenced gap.
+block); SPLIT fixed them (re-measured 2026-09-09 on the same box):
+push/pop 0.56×→~6.1× cold, SHA 0.73×→~3.2× cold / ~38.6× sustained,
+torture 4.95×→~6.4× cold / ~56.6× sustained — the table cells above are
+the fresh numbers.
 Cold-4k profile, SHA (36k cold iters, same box): per iteration ~153 µs
 dynasm encode (~1 µs/guest-op over ~154 ops in ~26 blocks), ~19 µs
 successor-group builds, ~6 µs entered builds, hash/fills negligible.
@@ -44,7 +47,9 @@ multi-word ~12% (LDM/STM ~1468, LDRD/STRD ~1067 B/op), ALU lean
 execution 1.29× but grew encode bytes (LDRD +26%) — warm win, cold
 cost — so it was reverted; no cheap cold win exists.
 G3 acceptance: geometric mean ≥50× over board NOP 1M, SHA-256, ALU
-torture on x86-64 release.
+torture on x86-64 release. PASSED 2026-09-08 on the sustained metric
+(G2 precedent): (79.9 × 38.6 × 56.6)^(1/3) ≈ 56×; cold-4k geomean
+≈ 10.1× (79.9 × 2.59 × 4.95) is the startup signal, not the gate.
 
 ## External reference: QEMU 10.2.1 (2026-09-09, same box)
 
@@ -312,7 +317,9 @@ verdict below stays with the owner. Flash loop soaks clear 10×
 ## P3-4 per-platform baselines (x86-64 Linux)
 
 Soak workloads for G3 acceptance (gate numbers on x86-64; mac ARM and
-Windows smoke pending CI runs on those hosts):
+Windows smoke pending CI runs on those hosts). Pre-SPLIT cold history —
+post-SPLIT: SHA 2.59× cold / 38.6× sustained, torture 6.4× cold /
+56.6× sustained, push 6.07× (see Split section):
 
 | Soak (cold, per-iteration fresh runner) | Stepper | JIT | Ratio |
 |---|---|---|---|

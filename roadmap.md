@@ -330,10 +330,13 @@ Effort: 8ah.
 
 ### WP-B6 H7 platform decision (scope gate) — DONE 2026-08-25
 
-Decision: **descope to latch-only permanently**. `LTDC/DMA2D/BDMA/MDMA/SAI4/
-DFSDM/HRTIM` remain `NoBehavior` latch windows. Enterprise value is headless
-HIL; display/audio stacks require a written customer scenario to reopen.
-Progress claims no longer count H7 windows; see updated table and Non-goals.
+Decision: **descope data-paths permanently; handshake behavior shipped**.
+`LTDC/DMA2D/BDMA/MDMA/SAI4/DFSDM/HRTIM` are handshake-behavioral
+(`EN`→1-tick `ISR`+IRQ so HAL init/probing passes — `fmc.rs:271`, 6
+suites) with zero data-path (no layers/blend, no DMA payload, no FIFO).
+Enterprise value is headless HIL; display/audio data-paths require a
+written customer scenario to reopen. Progress counts the handshake, not
+the data-path; see updated table and Non-goals.
 Acceptance: decision recorded here + CHANGELOG; no code change beyond doc.
 Effort: 1ah.
 
@@ -873,6 +876,176 @@ Effort: 12ah spike.
 
 ---
 
+## M12 — Correctness tail + JIT docs close (target `v3.4`, ~2 agent-days)
+
+Deep-research 2026-09-11: the M4 `.w` probe is a harness/ISA-selection
+artifact (zero decoder defect), JIT G3 is functionally closed (SPLIT + lazy
+NZCV + victim shipped; sustained `~56x`, cold `~10.1x`), remaining work is
+docs + small harness hardening. No release/CI scope here (E1-E4, platform
+legs explicitly excluded from this extension).
+
+### WP-K1 `.w` harness / ISA selection (0 decoder lines)
+
+Goal: close the `orr.w r3,r3,#1` (`F043 0301`) probe without touching the
+decoder (proven correct: `decode32.rs:1716` `decode_dp_modified` → `Orr`,
+`cpu/mod.rs:4402` `exec_dp32` → `Advance(pc+4)`).
+
+Files: `vioarm-cli/src/main.rs:1804` (`machine_for` forces `Armv6M`),
+`vioarm-qemu/src/vioarm.rs:27-42` (`new_machine` `armv7m` vs `new_machine_v6m`),
+`vioarm-core/src/cpu/mod.rs:5201-5205` (`take_exception_target` even-vector
+`NonThumbTarget`), repro bins `/tmp/opencode/orrw*.bin`, `t32*.bin`.
+
+Root cause (locked): CLI-`virtual` runs `Armv6M`, so `decode32:969`
+rejects Thumb-2 DP → `usage_fault→HardFault`; binaries place code at
+`0x8/0xC` (NMI/HardFault vectors), so the fault vectors into itself:
+`orrw.bin` faults via even `@0xC=0x0000BE00` (0 insn, `pc=0x8`,
+`NonThumbTarget`); `orrw3.bin` (`B@0x8→0xC`) faults via odd
+`@0xC=0x0301F043` (stacks 8 words, `pc=0x0301F042`, then `FetchAbort`).
+`adds.w` (`F113 0301`) is the same class.
+
+Acceptance:
+- `.w` regression tests route through the `armv7m` machine (not CLI
+  `virtual`) with code relocated out of `0x8/0xC` and a valid `HardFault`
+  vector; `orr.w` + `adds.w` execute to `Advance(pc+4)` with exact regs.
+- CLI warns (or `--isa v7m` selects) when a Thumb-2-only encoding is run
+  on the `Armv6M` `virtual` board instead of faulting opaquely.
+- `t32`/`orrw3` vector-overlap shape covered as a harness-shape test
+  (code-in-vector faults to the programmed handler, byte-exact `sp/pc`).
+Effort: 4ah.
+
+### WP-K2 JIT G3 docs close (P3-5 tick, no code)
+
+Goal: reconcile the functionally-closed G3 paper trail.
+
+Files: `jit-roadmap.md:471` (`P3-5` unticked), `vioarm-core/benches/
+BENCHMARKS.md:21,30,315,344-357`, `CHANGELOG.md:12`, `vioarm-core/src/jit/
+tlb.rs:17-18`, `templates.rs:528-530`, `jit-roadmap.md:397-398,493-498`.
+
+Acceptance:
+- `BENCHMARKS.md:21` push row refreshed post-SPLIT (`0.56x` → `6.07x`
+  cold, sustained column added: SHA `38.6x`, torture `56.6x`, board NOP
+  `79.9x`); `:30` cold-profile note marks exec-pool N/A + solo-vs-group.
+- `P3-5` ticked; `CHANGELOG.md:12` reconciled (`GATE G3 PASSED sustained
+  ~56x` vs `G3 pending` — one line, sustained accepted / cold as startup
+  signal per `:493-498`).
+- Accepted gaps listed once (not fixed): 3+ pages/index rotate
+  (`tlb.rs:17-18`), sub-page entries future (`P3-6:540-541`), 32-bit eager
+  (`templates.rs:528-530`), D7 DIV/latency/IT-overcount
+  (`jit-roadmap.md:397-398`), `native.rs:27` NZCV mask.
+Effort: 2ah.
+
+### WP-K3 Stale-doc sweep
+
+Goal: `Known limitations` matches code (audit found 3 stale entries).
+
+Files: `roadmap.md:183-185,331-338,944,1028-1064,1123-1125`.
+
+Acceptance: PPRE done (not missing), USB host modeled (not latch-only),
+LTDC/DMA2D ticking-handshake (not `NoBehavior`), H7 `%` counts handshake
+as behavioral with data-path 0% stated once. Full suite green.
+Effort: 2ah.
+
+---
+
+## M13 — Peripheral depth to true 100% firmware-relevant (target `v3.5`, ~6 agent-days)
+
+### WP-L1 DMA errors + circular (biggest firmware-visible gap)
+
+Spec (RM0008 §13, RM0090 §11):
+- F1 `device/stm32/dma.rs:137-144,183-206,223-324`: latch `HTIF` at
+  `CNDTR/2`, `TEIF` on bus-error injection, `CIRC CCR:5` (reload
+  `CNDTR/CPAR/CMAR`, keep `EN`, re-latch `TCIF` per period).
+- F4 `device/stm32/dma_f4.rs:73-88,142-151,216-220,292-312`: latch
+  `HTIF/TEIF/FEIF/DMEIF` with `HTIE/TEIE/DMEIE` lines, `CIRC SxCR:8`,
+  `DBM/M1AR` toggle (`SM0AR` only today), `CHSEL 25:27` remap table;
+  promote `FTH` (`252:270`) from geometry (`chunk>=thresh`) to 4-word
+  FIFO fill/threshold with `DMDIS` + `FEIF` on overrun.
+- Keep `PL`-then-number arbitration, per-request pacing via
+  `with_requests` (optimistic M2M unchanged).
+Acceptance: ADC-circular double-buffer e2e (`HTIF`→half, `TCIF`→full,
+reruns); error-injection unit (`TEIF`/`FEIF` set + line); burst/FIFO unit
+(beat counting + threshold); existing `f2_clock_dma` green.
+Effort: 14ah.
+
+### WP-L2 DMAMUX request router (H743 — WP-B2 untouched)
+
+Spec (RM0433 §14): replace `fmc.rs:188-215` latch with
+`CCR_DMAREQ_ID`-indexed router among the Table request ids; route
+TIM/ADC/SPI/USART/SAI generated requests to the selected DMAMUX→DMA
+stream; `SYNC/TRIG/RGCR` latched no-op (documented); `CSR/CFR` overrun
+IRQ.
+Files: `fmc.rs:188-215`, `board.rs:6981-6986,6967-6968` (mount stays,
+behavior changes; F407 stream convention kept per `:6839-6841` note).
+Acceptance: H7 e2e — USART RX via DMAMUX-routed stream into RAM with a
+nontrivial `DMAREQ_ID` (not stream-number alias); CubeMX SAI mapping no
+longer stalls-or-optimistic.
+Effort: 6ah.
+
+### WP-L3 USB host-ISO OUT + periodic schedule
+
+Spec: `usb.rs:1207-1235` host ISO currently STALLs; device ISO IN already
+deferred (`1717:1722→1528:1531`); `694:699,1736:1776` `DBUF` stays
+latch-only per `roadmap.md:1059-1064` (single-buffer mailbox delivers the
+bytes — no change).
+- Defer host ISO IN/OUT completion to the SOF boundary like device IN
+  (one packet/frame, `DATA0/1` toggle, no `STALL|CHH`); keep split/hub
+  out (documented).
+- Exact periodic schedule stays 1-SOF granularity (documented; finer
+  microframe timing is a customer-scenario reopen).
+Acceptance: audio-class-shaped host ISO OUT e2e (periodic `XFRC`, no
+STALL); existing `usb_host_enumeration` + `usb_cdc_enumeration` green.
+Effort: 8ah.
+
+---
+
+## M14 — Verification gates to lock (target `v3.6`, ~4 agent-days)
+
+### WP-M1 C2 full fuzz (roadmap `362-372`)
+
+State: only `fuzz_jit` wired (`ci.yml:260-294`, `--trials 150`); `fuzz_rsp`
+is a `load_hex` stub (`fuzz_rsp.rs:5-6`); no elf/hex/decode/rsp/SVD jobs,
+corpus, or timed runs.
+- Wire `elf/hex/decode` bins to CI with seed corpora from e2e images;
+  fix `fuzz_rsp` to fuzz the real `vioarm-gdb` RSP byte stream; add the
+  SVD-parser target (`364-367`).
+- Replace bounded `150`-trial with timed `60s` local / `5min` nightly
+  (non-blocking → blocking after two clean weeks); document the
+  stdin-harness vs libFuzzer stance (`fuzz_jit.rs:9-11` wrapper note).
+Acceptance: each target runs clean `≥5min` with evidence; crash →
+issue + regression test policy executed once (or vacuous-clean record).
+Effort: 8ah.
+
+### WP-M2 C3 differential expansion (`+≥8` programs, `374-384`)
+
+Missing families (existing `exclusive:613`, `dsp_m4 QADD:1727-1862`,
+`ldrd writeback:1663-1706`, `mpu burst:4179-4221`, `vfp:2046/4305` are
+base, not the matrix):
+- LDM/STM writeback-overlap edges, QADD/QSUB saturation corners, VFP
+  denormal/rounding matrix (`grep denormal→0` today), exclusive
+  contention loop (today single success/fail), M33 IT-taken matrix
+  (M3/M4 keep suppressed-only per `1293-1304`, M33 oracle allows it per
+  `3099-3112`).
+- Probe-gated re-enable of `m33_baseline_secure_irq_returns_nonsecure:
+  3802` (locked VioARM-only `:3798-3800`): auto-differential when an
+  oracle delivers NS-targeted lines, VioARM-only lock otherwise.
+Acceptance: suite `76→84+` tests, green on both `10.2.1+8.2.2` oracles
+(or oracle-gated skip with note, never forced through the IT-taken QEMU
+limitation).
+Effort: 6ah.
+
+### WP-M3 Cross-sim + golden expansion
+
+- Renode beyond USART2-TX: add GPIO-toggle + timer-PWM-capture shapes to
+  `pytest/test_renode_xcheck.py` (same `RENODE_BIN`-gated skip pattern);
+  keep byte-identical drain-compare discipline.
+- `golden_traces.rs:11` `.take(5)` → all boards; `m3_cycle.rs:80-91`
+  `branch_taken_3c_and_bl_4c` stub filled (currently vacuous `ok`).
+Acceptance: Renode `2+` shapes green locally (CI skips without binary);
+goldens determinism double-run per board; `m3_cycle` all-CPI asserted.
+Effort: 6ah.
+
+---
+
 ### Milestone exit criteria (global DoD)
 
 A milestone is done when: every WP acceptance criterion met; full workspace
@@ -1059,9 +1232,12 @@ claimed (see Non-goals).
 - USB OTG FS: `DIEPCTLn.DBUF` (double buffering) latches but does not change
   the FIFO model — the single-buffer mailbox already delivers the bytes a
   CDC/BDC device moves, and ping-pong SW-side flow control has no observable
-  effect on the modeled transfers. Host-mode registers latch only; no host
-  channel scheduler is modeled (WP-B6-style descope until a customer
-  scenario demands it).
+  effect on the modeled transfers. Host mode is behavioral (`HPRT` port
+  machine, SOF scheduler, control/bulk/interrupt channels with
+  `ACK`/`NAK`/`STALL`, virtual CDC-ACM device, full enumeration e2e in
+  `tests/usb_host_enumeration.rs`); host isochronous channels STALL,
+  split/hub transactions are out, and periodic scheduling is 1-SOF
+  granularity (see M13-L3).
 - ADC: the analog watchdog monitors the *regular* group (the F1 has one
   watchdog shared by both groups; injected-only guarding is not modeled).
   H7 `ADC` differs (AWD1/2/3 + per-group enables) and stays at latch level.
@@ -1120,7 +1296,7 @@ All three former open questions are resolved by the plan above:
   WP-G2/G3; M4-D2's stretch rule stands).
 - ARM (A-profile) support as a product commitment (M10 is a gated research
   spike with an explicit no-go default; see WP-J1).
-- H743 dual-core (CM4 companion), display/audio behavioral stacks (LTDC/
-  DMA2D/SAI/DFSDM stay latch-only per WP-B6 unless a written customer
+- H743 dual-core (CM4 companion), display/audio data-paths (LTDC/
+  DMA2D/SAI/DFSDM stay handshake-only per WP-B6 unless a written customer
   scenario reopens them), gate-level or cycle-accurate silicon modeling,
   hypervisor/virtualization features.

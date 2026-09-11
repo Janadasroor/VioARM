@@ -468,8 +468,11 @@ Goal: 10–30× on compute loops.
   store-fenced chaining gap (CHAIN=0 measured) — split code/data write
   generations is now THE critical path to G3 (geomean over these three
   cannot reach 50× with SHA below unity).
-- [ ] P3-5: book section (JIT architecture, contract, when-NOT-to-use),
-  CHANGELOG, `BENCHMARKS.md` JIT table.
+- [x] P3-5: book section (JIT architecture, contract, when-NOT-to-use),
+  CHANGELOG, `BENCHMARKS.md` JIT table. Done 2026-09-11 (M12-K2):
+  `docs/src/jit.md` carries architecture + contract + D7, CHANGELOG
+  reconciled to GATE G3 PASSED, consolidated table refreshed post-SPLIT
+  (push 6.07×, sustained SHA 38.6× / torture 56.6× rows added).
 - [x] SPLIT: split code/data write generations (G3 critical path).
   Done 2026-09-08: TLB code bit (packed in `perms`, no layout change)
   stamped at fill from the page index + marked live on insert; native
