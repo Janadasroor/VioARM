@@ -110,7 +110,7 @@ struct Ch {
     ch: u32,
     ep: u32,
     dir_in: bool,
-    eptyp: u32, // 0 ctrl, 2 bulk, 3 intr
+    eptyp: u32, // 0 ctrl, 1 iso, 2 bulk, 3 intr
     mpsiz: u32,
 }
 
@@ -136,12 +136,13 @@ fn chena(u: &mut Usb, ch: u32) {
 /// success, or the halted outcome. Returns the HCINT word.
 fn run_ch(u: &mut Usb, c: &Ch) -> u32 {
     chena(u, c.ch);
+    let periodic = c.eptyp == 3 || c.eptyp == 1;
     assert_eq!(
         (rd(u, hcchar(c.ch)) >> 31) & 1,
-        u32::from(c.eptyp == 3),
+        u32::from(periodic),
         "CHENA drops on completion (held for periodic)"
     );
-    if c.eptyp == 3 {
+    if periodic {
         sof(u); // the periodic schedule runs it at the frame boundary
         assert_eq!((rd(u, hcchar(c.ch)) >> 31) & 1, 0, "CHENA drops");
     }
@@ -448,4 +449,67 @@ fn host_stall_and_halt_recovery() {
     assert_ne!(run_ch(&mut u, &bulk_in) & XFRC, 0, "resumed after clear");
     let (_, data) = take_in(&mut u);
     assert_eq!(&data, &[0x55]);
+}
+
+/// Isochronous host traffic, audio-class shaped: one full 48-byte playback
+/// frame per SOF, a short 20-byte frame (legal on ISO, an underrun on
+/// bulk), and a capture frame back — periodic `XFRC`, never `STALL`.
+#[test]
+fn host_isochronous_audio_frames() {
+    let mut u = usb_host();
+    control(
+        &mut u,
+        &[0x00, 0x09, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00],
+        None,
+    ); // SET_CONFIGURATION
+
+    // ---- ISO OUT: full 48-sample frame ----------------------------------
+    let iso_out = Ch {
+        ch: 3,
+        ep: 1,
+        dir_in: false,
+        eptyp: 1,
+        mpsiz: 64,
+    };
+    let frame: Vec<u8> = (0..48u8).collect();
+    stage_out(&mut u, &frame);
+    setup_ch(&mut u, &iso_out, frame.len() as u32);
+    let int = run_ch(&mut u, &iso_out);
+    assert_ne!(int & XFRC, 0, "iso OUT XFRC");
+    assert_eq!(int & (STALL | CHH), 0, "no STALL, no halt");
+    assert_eq!(
+        rd(&mut u, hctsiz(3)) & 0x7_FFFF,
+        0,
+        "HCTSIZ remainder drained"
+    );
+    assert_eq!(u.virtual_device_mut().map(|d| d.take_out(1)), Some(frame));
+
+    // ---- ISO OUT: short 20-byte frame (legal, not an underrun) ----------
+    let short: Vec<u8> = (0..20u8).collect();
+    stage_out(&mut u, &short);
+    setup_ch(&mut u, &iso_out, 48);
+    let int = run_ch(&mut u, &iso_out);
+    assert_ne!(int & XFRC, 0, "short ISO OUT XFRC");
+    assert_eq!(int & (STALL | CHH | NAK), 0, "clean completion");
+    assert_eq!(u.virtual_device_mut().map(|d| d.take_out(1)), Some(short));
+
+    // ---- ISO IN: staged capture frame arrives in the RX FIFO ------------
+    if let Some(d) = u.virtual_device_mut() {
+        d.push_in(1, &[0x11, 0x22, 0x33, 0x44]);
+    }
+    let iso_in = Ch {
+        ch: 3,
+        ep: 1,
+        dir_in: true,
+        eptyp: 1,
+        mpsiz: 64,
+    };
+    setup_ch(&mut u, &iso_in, 64);
+    let int = run_ch(&mut u, &iso_in);
+    assert_ne!(int & XFRC, 0, "iso IN XFRC");
+    assert_eq!(int & (STALL | CHH | NAK), 0, "clean completion");
+    let (st, data) = take_in(&mut u);
+    assert_eq!((st >> 17) & 0xF, 2, "host IN status");
+    assert_eq!(st & 0xF, 1, "endpoint 1");
+    assert_eq!(&data, &[0x11, 0x22, 0x33, 0x44]);
 }

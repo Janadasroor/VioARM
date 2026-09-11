@@ -1238,11 +1238,12 @@ claimed (see Non-goals).
   the FIFO model — the single-buffer mailbox already delivers the bytes a
   CDC/BDC device moves, and ping-pong SW-side flow control has no observable
   effect on the modeled transfers. Host mode is behavioral (`HPRT` port
-  machine, SOF scheduler, control/bulk/interrupt channels with
-  `ACK`/`NAK`/`STALL`, virtual CDC-ACM device, full enumeration e2e in
-  `tests/usb_host_enumeration.rs`); host isochronous channels STALL,
-  split/hub transactions are out, and periodic scheduling is 1-SOF
-  granularity (see M13-L3).
+  machine, SOF scheduler, control/bulk/interrupt/isochronous channels with
+  `ACK`/`NAK`/`STALL`, virtual CDC-ACM device, full enumeration +
+  audio-frame e2e in `tests/usb_host_enumeration.rs`); host isochronous
+  runs one packet per SOF with `DATA0`/`DATA1` alternation (short/empty
+  frames legal, never `NAK`), split/hub transactions are out, and periodic
+  scheduling is 1-SOF granularity.
 - ADC: the analog watchdog monitors the *regular* group (the F1 has one
   watchdog shared by both groups; injected-only guarding is not modeled).
   H7 `ADC` differs (AWD1/2/3 + per-group enables) and stays at latch level.

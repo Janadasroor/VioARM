@@ -127,6 +127,9 @@ const HC_EPTYP_SHIFT: u32 = 18;
 const HC_CHDIS: u32 = 1 << 30;
 const HC_CHENA: u32 = 1 << 31;
 const EPTYP_CTRL: u32 = 0;
+/// Isochronous host/device transfers: one packet per (micro)frame on the
+/// periodic schedule, no handshake, no retry.
+const EPTYP_ISO: u32 = 1;
 const EPTYP_BULK: u32 = 2;
 const EPTYP_INTR: u32 = 3;
 
@@ -1060,9 +1063,10 @@ impl UsbState {
     }
 
     /// `HCCHARn` write: `CHDIS` halts an armed channel, a rising `CHENA`
-    /// runs the programmed transfer. Interrupt-type transfers defer to the
-    /// next SOF (the periodic schedule); everything else completes
-    /// synchronously, exactly like the device-side `EPENA` path.
+    /// runs the programmed transfer. Periodic transfers (interrupt-type and
+    /// isochronous) defer to the next SOF (the periodic schedule, one packet
+    /// per frame); everything else completes synchronously, exactly like the
+    /// device-side `EPENA` path.
     fn write_hcchar(&mut self, h: &mut Win, ch: usize, l: u32, val: u8) {
         let reg = HCCHAR0 + u32::try_from(ch).unwrap_or(u32::MAX) * HC_STRIDE;
         let cur = h.get(reg);
@@ -1076,7 +1080,7 @@ impl UsbState {
             self.hcint[ch] |= HC_CHH;
         } else if attempted & HC_CHENA != 0 && cur & HC_CHENA == 0 {
             let eptyp = (attempted >> HC_EPTYP_SHIFT) & 0x3;
-            if eptyp != EPTYP_INTR {
+            if eptyp != EPTYP_INTR && eptyp != EPTYP_ISO {
                 self.execute_channel(h, ch);
             }
         }
@@ -1163,6 +1167,50 @@ impl UsbState {
                 HostXferData::Stall => (HostXfer::Stall, 0, 0),
             };
         }
+        if eptyp == EPTYP_ISO {
+            // Isochronous: one packet per SOF, no handshake, no retry. The
+            // channel runs on the periodic schedule (`host_sof`); short or
+            // empty frames are legal (variable audio samples, silence), so a
+            // short FIFO sends what it holds instead of erroring, and an
+            // empty IN stage completes as a zero-length packet rather than
+            // NAKing. `packets` stays 1 so the DATA0/DATA1 toggle advances
+            // every frame.
+            if dir_in {
+                let max = mpsiz.min(xfersiz.max(1));
+                let out = self
+                    .device
+                    .as_mut()
+                    .map_or(HostXferData::Stall, |dev| dev.ep_in(ep, max));
+                return match out {
+                    HostXferData::Data(chunk) => {
+                        let sent = chunk.len();
+                        if !chunk.is_empty() {
+                            let toggle = u32::from(self.ch_toggle[ch]);
+                            self.enqueue(
+                                u8::try_from(ep).unwrap_or(u8::MAX),
+                                PKTSTS_HOST_IN,
+                                toggle,
+                                &chunk,
+                            );
+                        }
+                        (HostXfer::Done, sent, 1)
+                    }
+                    HostXferData::Nak => (HostXfer::Done, 0, 1),
+                    HostXferData::Stall => (HostXfer::Stall, 0, 0),
+                };
+            }
+            let take = self.host_out.len().min(xfersiz);
+            let payload: Vec<u8> = self.host_out.drain(..take).collect();
+            let out = self
+                .device
+                .as_mut()
+                .map_or(HostXferData::Stall, |dev| dev.ep_out(ep, &payload));
+            return match out {
+                HostXferData::Data(_) => (HostXfer::Done, take, 1),
+                HostXferData::Nak => (HostXfer::Done, take, 1),
+                HostXferData::Stall => (HostXfer::Stall, 0, 0),
+            };
+        }
         if eptyp == EPTYP_BULK || eptyp == EPTYP_INTR {
             if dir_in {
                 let max = mpsiz.min(xfersiz.max(1));
@@ -1205,7 +1253,8 @@ impl UsbState {
                 HostXferData::Stall => (HostXfer::Stall, 0, 0),
             }
         } else {
-            // Isochronous host channels are not modeled: STALL honestly.
+            // Unreachable: `eptyp` is 2 bits and all four types arm above.
+            // STALL defensively rather than mis-transferring.
             (HostXfer::Stall, 0, 0)
         }
     }
@@ -1248,13 +1297,15 @@ impl UsbState {
     }
 
     /// The SOF scheduler: frame event, port-reset countdown, and the
-    /// deferred periodic (interrupt-type) channels.
+    /// deferred periodic channels (interrupt-type and isochronous, one
+    /// packet per frame each).
     fn host_sof(&mut self, h: &mut Win, nchan: usize) {
         self.events |= SOF;
         self.port_reset_tick(h);
         for ch in 0..nchan {
             let char_word = h.get(HCCHAR0 + u32::try_from(ch).unwrap_or(u32::MAX) * HC_STRIDE);
-            if char_word & HC_CHENA != 0 && (char_word >> HC_EPTYP_SHIFT) & 0x3 == EPTYP_INTR {
+            let eptyp = (char_word >> HC_EPTYP_SHIFT) & 0x3;
+            if char_word & HC_CHENA != 0 && (eptyp == EPTYP_INTR || eptyp == EPTYP_ISO) {
                 self.execute_channel(h, ch);
             }
         }
