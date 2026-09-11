@@ -1092,10 +1092,20 @@ math, oscillator startup delays as cycle counts, and seeded-jitter mode
 (deterministic PRNG: reruns stay byte-identical while exercising
 jitter-sensitive firmware).
 Files: `vioarm-core/src/device/stm32/rcc.rs`, `mem/system.rs` tick scaling.
-Acceptance: firmware configuring HSE=12 MHz + PLL2 reaches the computed
-`SYSCLK`/`PCLK`/baud within 1%; startup delay counted before `HSERDY`;
-seeded-jitter reruns byte-identical across seeds only when reseeded.
+Acceptance: host-set HSE=12 MHz + F4-PLL-from-HSE reaches exact
+`SYSCLK`/`PCLK` through register writes; H7 PLL2 P/Q/R exact while
+enabled (0 while off/locking); `HSERDY`/`PLLRDY` gate on 512/128-tick
+startup delays; seeded-jitter sequences deterministic, bounded, and
+restartable (ratios stay exact — jitter reports through Hz getters
+until N2 consumes absolute time). Peripheral baud timing stays
+unmodeled (USART TX completes into the mailbox), so no baud assertion.
 Effort: ~3 agent-days.
+- Status DONE 2026-09-11: `set_hse_hz`, PLL2/3 outputs, startup
+  countdowns (`needs_tick`, early-out when idle), `set_jitter` +
+  `apply_jitter`, 4 new tests (custom-HSE exact, PLL2 outputs,
+  HSE/PLL delays, jitter determinism); `pll_locks_instantly` reworked
+  to the delay. USART-baud timing explicitly deferred (instant-TX
+  model); `F0 PREDIV`, fractional `FRACN` (truncated) likewise.
 
 ### WP-N2 Timing-model hardening (trigger: WP-N4 bench brings numbers)
 
@@ -1348,10 +1358,16 @@ claimed (see Non-goals).
 - Timers: external trigger/slave modes beyond encoder/Hall/reset latch only.
   (Dead-time insertion into complementary OC pairs is modeled.)
 - Clocks: `SYSCLK`/`HCLK`/`PCLK` frequencies are computed from `SW` + PLL
-  math over fixed oscillators (`HSI` per family, `HSE` assumed 8 MHz except
-  25 MHz on H7, `CSI` 4 MHz); firmware needing another crystal rate, `PREDIV`
-  other than /1 (F0), or PLL2/3 outputs is outside the model. H7 `DIVM/DIVN/
-  DIVP` hold the factor directly (min 1). Downstream clock gating is
+  math over the oscillators (`HSI` per family, `HSE` host-settable via
+  `Rcc::set_hse_hz` defaulting to 8 MHz except 25 MHz on H7, `CSI` 4 MHz);
+  `HSE`/PLL report ready after modeled startup delays (512/128 device
+  ticks; `HSI`/`CSI` stay instant); `PREDIV` other than /1 (F0) stays out.
+  H7 PLL2/3 P/Q/R outputs compute while enabled (fractional truncated);
+  which peripheral kernel consumes them stays unmodeled. Reported
+  frequencies take deterministic jitter (`ClockState::set_jitter`) while
+  emulation ratios stay exact. H7 `DIVM/DIVN/DIVP` hold the factor
+  directly (min 1). Peripheral baud timing is NOT derived from these
+  rates (USART TX completes into the mailbox). Downstream clock gating is
   deliberately unenforced (WP-B6 pattern): every HAL enables clocks before
   touching a peripheral, and faulting unclocked accesses would churn the
   500-board suite for no firmware-visible gain; the `gated()` dispatch hook
