@@ -16,12 +16,17 @@
 //! mailbox shared with [`SystemMemory`], which drains it after every device
 //! tick. Completion is optimistic for memory-to-memory: the whole transfer
 //! lands in the cycle the engine sees the channel enabled. In both modes
-//! `CNDTR` counts down, `EN` self-clears at zero, and `TCIF` latches. Enabled
+//! `CNDTR` counts down and `TCIF` latches at zero; the half-transfer flag
+//! `HTIF` latches when `CNDTR` reaches half the programmed count, and a
+//! host-injected bus fault (`DmaF1::inject_error`) latches `TEIF` and
+//! disables the channel. `CIRC` (`CCR:5`) reloads `CNDTR`/`CPAR`/`CMAR` from
+//! the values latched when `EN` was set and keeps `EN`, so `TCIF` fires every
+//! period. Enabled
 //! channels arbitrate by `CCR.PL` (higher first, then lower channel number,
 //! `pl_priority_arbitrates_higher_first`). The controller raises one NVIC line
 //! per channel (`DMA1` lines 11..=17, `DMA2` lines 56..=60), so `pending()`
-//! reports a per-channel bitmask; the line is asserted when that channel's
-//! `TCIE` and `TCIF` are both set.
+//! reports a per-channel bitmask; a line is asserted when its enable and flag
+//! match (`TCIE`&`TCIF`, `HTIE`&`HTIF`, or `TEIE`&`TEIF`).
 
 use crate::device::svd::stm32f103;
 use crate::device::svd::{Behavior, Device, RegisterFile, Registers};
@@ -126,6 +131,9 @@ const CH_STRIDE: u32 = 0x14;
 
 const EN: u32 = 1 << 0;
 const TCIE: u32 = 1 << 1;
+const HTIE: u32 = 1 << 2;
+const TEIE: u32 = 1 << 3;
+const CIRC: u32 = 1 << 5;
 const PINC: u32 = 1 << 6;
 const MINC: u32 = 1 << 7;
 const PSIZE_SHIFT: u32 = 8;
@@ -143,6 +151,30 @@ const fn isr_tcif(ch: u32) -> u32 {
     1 << (4 * ch + 1)
 }
 
+/// ISR `HTIF` bit for channel `ch` (0-based).
+const fn isr_htif(ch: u32) -> u32 {
+    1 << (4 * ch + 2)
+}
+
+/// ISR `TEIF` bit for channel `ch` (0-based).
+const fn isr_teif(ch: u32) -> u32 {
+    1 << (4 * ch + 3)
+}
+
+/// Period state latched when a channel's `EN` is set: the programmed count
+/// (for the `HTIF` half-point and `CIRC` reload) and the address pair (for
+/// the `CIRC` reload after `PINC`/`MINC` advanced them). Shared with the F4
+/// stream engine, which latches the same shape plus `M1AR`.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Period {
+    /// Programmed transfer count.
+    pub(crate) ndt0: u16,
+    /// Programmed peripheral address.
+    pub(crate) cpar0: u32,
+    /// Programmed memory address.
+    pub(crate) cmar0: u32,
+}
+
 /// The transfer engine the SVD cannot express.
 #[derive(Debug)]
 struct DmaBehavior {
@@ -154,6 +186,13 @@ struct DmaBehavior {
     controller: u8,
     /// The number of DMA channels in the controller's register file.
     channels: u8,
+    /// Period state per channel (≤7), latched on `EN` set.
+    period: [Period; 7],
+    /// Host-injected bus faults per channel bit (`inject_error`); applied on
+    /// the next tick as `TEIF`+`GIF` with the channel disabled. Drain-time
+    /// bus errors cannot reach the device (the mailbox is one-way), so this
+    /// is the only `TEIF` source, and it is documented as such.
+    error: u8,
 }
 
 impl DmaBehavior {
@@ -168,6 +207,24 @@ impl DmaBehavior {
             requests,
             controller,
             channels,
+            period: [Period {
+                ndt0: 0,
+                cpar0: 0,
+                cmar0: 0,
+            }; 7],
+            error: 0,
+        }
+    }
+
+    /// Latch a channel's period state from the current registers.
+    fn latch_period(&mut self, view: &Registers<&mut [u32]>, ch: u32) {
+        let base = CH_STRIDE * ch;
+        if let Some(slot) = self.period.get_mut(ch as usize) {
+            *slot = Period {
+                ndt0: (view.get(CNDTR_CH + base) & NDT_MASK) as u16,
+                cpar0: view.get(CPAR_CH + base),
+                cmar0: view.get(CMAR_CH + base),
+            };
         }
     }
 }
@@ -214,6 +271,18 @@ impl Behavior for DmaBehavior {
                     view.merged(offset, val, shift)
                 }
             }
+            // `CCR` writes latch the period state on an `EN` 0→1 edge, so
+            // `HTIF` and `CIRC` measure against the programmed transfer even
+            // after `CNDTR`/`CPAR`/`CMAR` advance.
+            offset if offset >= CCR_CH && (offset - CCR_CH) % CH_STRIDE == 0 => {
+                let ch = (offset - CCR_CH) / CH_STRIDE;
+                let old = view.get(CCR_CH + ch * CH_STRIDE);
+                let word = view.merged(offset, val, shift);
+                if old & EN == 0 && word & EN != 0 {
+                    self.latch_period(view, ch);
+                }
+                word
+            }
             _ => view.merged(offset, val, shift),
         }
     }
@@ -221,7 +290,17 @@ impl Behavior for DmaBehavior {
     // `cpar`/`cmar` mirror the CPAR/CMAR register names.
     #[allow(clippy::similar_names)]
     fn tick(&mut self, view: &mut Registers<&mut [u32]>, _delta: u64) {
-        // Arbitration: higher `PL` first, then lower channel number.
+        // Host-injected bus faults land first: `TEIF`+`GIF` latch and the
+        // channel disables, matching silicon's error response.
+        for ch in 0..self.channels {
+            if self.error & (1 << ch) != 0 {
+                self.error &= !(1 << ch);
+                let chn = u32::from(ch);
+                let base = CH_STRIDE * chn;
+                view.set(ISR, view.get(ISR) | isr_gif(chn) | isr_teif(chn));
+                view.set(CCR_CH + base, view.get(CCR_CH + base) & !EN);
+            }
+        } // Arbitration: higher `PL` first, then lower channel number.
         let mut order: Vec<(u32, u8)> = (0..self.channels)
             .filter_map(|ch| {
                 let base = CH_STRIDE * u32::from(ch);
@@ -281,9 +360,19 @@ impl Behavior for DmaBehavior {
                     .unwrap_or_else(|e| e.into_inner())
                     .extend(units);
                 // Optimistic completion: the whole transfer lands this cycle.
-                view.set(CNDTR_CH + base, 0);
-                view.set(CCR_CH + base, ccr & !EN);
-                view.set(ISR, view.get(ISR) | isr_gif(chn) | isr_tcif(chn));
+                // `CIRC` reloads the programmed period and keeps `EN`.
+                if ccr & CIRC != 0 {
+                    if let Some(p) = self.period.get(chn as usize) {
+                        view.set(CNDTR_CH + base, u32::from(p.ndt0));
+                        view.set(CPAR_CH + base, p.cpar0);
+                        view.set(CMAR_CH + base, p.cmar0);
+                    }
+                    view.set(ISR, view.get(ISR) | isr_gif(chn) | isr_tcif(chn));
+                } else {
+                    view.set(CNDTR_CH + base, 0);
+                    view.set(CCR_CH + base, ccr & !EN);
+                    view.set(ISR, view.get(ISR) | isr_gif(chn) | isr_tcif(chn));
+                }
             } else {
                 // Peripheral request: one unit per request-line assertion.
                 // The request lines are keyed by the hardware channel number.
@@ -313,10 +402,29 @@ impl Behavior for DmaBehavior {
                 if minc {
                     view.set(CMAR_CH + base, cmar.wrapping_add(u32::from(step)));
                 }
+                // Half-transfer: `CNDTR` just reached half the programmed
+                // count (`ndt0 >= 2` so single-unit transfers only complete).
+                if self
+                    .period
+                    .get(chn as usize)
+                    .is_some_and(|p| p.ndt0 >= 2 && ndt - 1 == u32::from(p.ndt0) / 2)
+                {
+                    view.set(ISR, view.get(ISR) | isr_gif(chn) | isr_htif(chn));
+                }
                 if ndt <= 1 {
-                    view.set(CNDTR_CH + base, 0);
-                    view.set(CCR_CH + base, ccr & !EN);
-                    view.set(ISR, view.get(ISR) | isr_gif(chn) | isr_tcif(chn));
+                    // `CIRC` starts the next period instead of stopping.
+                    if ccr & CIRC != 0 {
+                        if let Some(p) = self.period.get(chn as usize) {
+                            view.set(CNDTR_CH + base, u32::from(p.ndt0));
+                            view.set(CPAR_CH + base, p.cpar0);
+                            view.set(CMAR_CH + base, p.cmar0);
+                        }
+                        view.set(ISR, view.get(ISR) | isr_gif(chn) | isr_tcif(chn));
+                    } else {
+                        view.set(CNDTR_CH + base, 0);
+                        view.set(CCR_CH + base, ccr & !EN);
+                        view.set(ISR, view.get(ISR) | isr_gif(chn) | isr_tcif(chn));
+                    }
                 } else {
                     view.set(CNDTR_CH + base, ndt - 1);
                 }
@@ -328,11 +436,22 @@ impl Behavior for DmaBehavior {
         let mut lines = 0;
         for ch in 0..self.channels {
             let base = CH_STRIDE * u32::from(ch);
-            if view.get(CCR_CH + base) & TCIE != 0 && view.get(ISR) & isr_tcif(u32::from(ch)) != 0 {
+            let ccr = view.get(CCR_CH + base);
+            let isr = view.get(ISR);
+            let chn = u32::from(ch);
+            if ccr & TCIE != 0 && isr & isr_tcif(chn) != 0
+                || ccr & HTIE != 0 && isr & isr_htif(chn) != 0
+                || ccr & TEIE != 0 && isr & isr_teif(chn) != 0
+            {
                 lines |= 1 << ch;
             }
         }
         lines
+    }
+
+    fn reset(&mut self) {
+        self.period = [Period::default(); 7];
+        self.error = 0;
     }
 
     fn lines(&self) -> u32 {
@@ -382,6 +501,16 @@ impl DmaF1 {
                 def,
                 DmaBehavior::new(mailbox, requests, controller, channels),
             ),
+        }
+    }
+
+    /// Inject a bus fault on hardware channel `ch` (0-based): the next tick
+    /// latches `TEIF`+`GIF` and disables the channel. Drain-time bus errors
+    /// cannot reach the device (the mailbox is one-way), so host injection
+    /// is the only `TEIF` source.
+    pub fn inject_error(&mut self, ch: u8) {
+        if ch < 7 {
+            self.inner.behavior_mut().error |= 1 << ch;
         }
     }
 }
@@ -739,5 +868,218 @@ mod tests {
             vec![(0x3000, 0x4000, 1), (0x1000, 0x2000, 1)]
         );
         assert_eq!(ch2, 1);
+    }
+
+    /// Program channel 1 for `ndt` peripheral-mode units with `ccr` flags and
+    /// assert one `from_periph` request per tick until it completes.
+    fn run_request_units(d: &mut DmaF1, req: &Arc<Mutex<DmaRequests>>, ndt: u32, ccr: u32) {
+        write_word(d, BASE + CPAR1, 0x1000);
+        write_word(d, BASE + CMAR1, 0x2000);
+        write_word(d, BASE + CNDTR1, ndt);
+        write_word(d, BASE + CCR1, ccr);
+        for _ in 0..ndt {
+            req.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .request(0, 1, false);
+            d.tick(1);
+        }
+    }
+
+    #[test]
+    fn half_transfer_latches_htif_at_half_count() {
+        let m = mailbox();
+        let req = requests();
+        let mut d = DmaF1::dma1(m, req.clone());
+        // 4 units, HTIE on: HTIF must latch when CNDTR reaches 2.
+        write_word(&mut d, BASE + CPAR1, 0x1000);
+        write_word(&mut d, BASE + CMAR1, 0x2000);
+        write_word(&mut d, BASE + CNDTR1, 4);
+        write_word(&mut d, BASE + CCR1, EN | MINC | 0x4); // HTIE on
+        for remaining in [3, 2] {
+            req.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .request(0, 1, false);
+            d.tick(1);
+            assert_eq!(read_word(&mut d, BASE + CNDTR1), remaining);
+        }
+        assert_eq!(
+            read_word(&mut d, BASE + ISR1) & 0x7,
+            0x5,
+            "GIF1|HTIF1 set, TCIF1 clear"
+        );
+        assert_eq!(d.pending(), 0x1, "HTIE raises line 0");
+    }
+
+    #[test]
+    fn single_unit_transfer_skips_htif() {
+        let m = mailbox();
+        let req = requests();
+        let mut d = DmaF1::dma1(m, req.clone());
+        run_request_units(&mut d, &req, 1, EN | 0x4); // HTIE on
+        assert_eq!(
+            read_word(&mut d, BASE + ISR1) & 0x7,
+            0x3,
+            "GIF1|TCIF1 set, no HTIF1 for a single unit"
+        );
+    }
+
+    #[test]
+    fn circular_mode_reloads_and_keeps_en() {
+        const CIRC_BIT: u32 = 1 << 5;
+        let m = mailbox();
+        let req = requests();
+        let mut d = DmaF1::dma1(m.clone(), req.clone());
+        write_word(&mut d, BASE + CPAR1, 0x1000);
+        write_word(&mut d, BASE + CMAR1, 0x2000);
+        write_word(&mut d, BASE + CNDTR1, 2);
+        write_word(&mut d, BASE + CCR1, EN | MINC | CIRC_BIT | 0x2); // TCIE on
+                                                                     // First period: two units, then reload instead of stopping.
+        for _ in 0..2 {
+            req.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .request(0, 1, false);
+            d.tick(1);
+        }
+        assert_eq!(read_word(&mut d, BASE + CNDTR1), 2, "CNDTR reloaded");
+        assert_ne!(
+            read_word(&mut d, BASE + CCR1) & EN,
+            0,
+            "EN stays set in circular mode"
+        );
+        assert_eq!(
+            read_word(&mut d, BASE + CMAR1),
+            0x2000,
+            "CMAR rewound to the latched base"
+        );
+        assert_eq!(read_word(&mut d, BASE + ISR1) & 0x3, 0x3, "GIF1|TCIF1 set");
+        assert_eq!(d.pending(), 0x1);
+        // Second period runs the same two units again.
+        for _ in 0..2 {
+            req.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .request(0, 1, false);
+            d.tick(1);
+        }
+        assert_eq!(
+            m.lock().unwrap_or_else(|e| e.into_inner()).len(),
+            4,
+            "two periods moved four units"
+        );
+        assert_eq!(read_word(&mut d, BASE + CNDTR1), 2, "reloaded again");
+    }
+    #[test]
+    fn injected_error_latches_teif_and_disables() {
+        let m = mailbox();
+        let req = requests();
+        let mut d = DmaF1::dma1(m, req.clone());
+        write_word(&mut d, BASE + CPAR1, 0x1000);
+        write_word(&mut d, BASE + CMAR1, 0x2000);
+        write_word(&mut d, BASE + CNDTR1, 4);
+        write_word(&mut d, BASE + CCR1, EN | MINC | 0x8); // TEIE on
+        d.inject_error(0);
+        d.tick(1);
+        assert_eq!(read_word(&mut d, BASE + ISR1) & 0xF, 0x9, "GIF1|TEIF1 set");
+        assert_eq!(read_word(&mut d, BASE + CCR1) & EN, 0, "EN cleared");
+        assert_eq!(d.pending(), 0x1, "TEIE raises line 0");
+        assert_eq!(read_word(&mut d, BASE + CNDTR1), 4, "count untouched");
+    }
+
+    /// End-to-end ADC sequence into RAM through circular DMA (the
+    /// WP-L1 acceptance shape): `ADC1` conversions raise one request each,
+    /// `DMA1` channel 1 moves halfwords with `CIRC`, `HTIF` fires at half,
+    /// `TCIF` fires at full with the addresses rewound, and the next period
+    /// re-fires both — two full periods, eight conversions.
+    #[test]
+    fn adc_circular_double_buffer_half_and_full() {
+        use crate::device::stm32::adc::Adc;
+        const ADC_CR2: u32 = 0x08;
+        const ADC_DR: u32 = 0x4C;
+        const ADON: u32 = 1 << 0;
+        const DMA_F1: u32 = 1 << 8; // CR2.DMA
+        const SWSTART: u32 = 1 << 22;
+        const CIRC_BIT: u32 = 1 << 5;
+
+        #[allow(clippy::cast_possible_truncation)]
+        fn awrite(adc: &mut Adc, addr: u32, val: u32) {
+            for (i, b) in val.to_le_bytes().iter().enumerate() {
+                adc.write(addr.wrapping_add(i as u32), *b).unwrap();
+            }
+        }
+        let m = mailbox();
+        let req = requests();
+        let mut adc = Adc::adc1().with_dma(req.clone(), 0, 1);
+        let abase = adc.ranges()[0].base;
+        let mut d = DmaF1::dma1(m.clone(), req.clone());
+        adc.drive_inputs(0x0AAA); // DMA1 ch1: ADC DR → RAM, halfwords, MINC, CIRC, TCIE + HTIE.
+        write_word(&mut d, BASE + CPAR1, abase + ADC_DR);
+        write_word(&mut d, BASE + CMAR1, 0x2000);
+        write_word(&mut d, BASE + CNDTR1, 4);
+        write_word(
+            &mut d,
+            BASE + CCR1,
+            EN | MINC | CIRC_BIT | 0x2 | 0x4 | (1 << 8) | (1 << 10),
+        );
+        awrite(&mut adc, abase + ADC_CR2, ADON);
+        for i in 0..8u32 {
+            awrite(&mut adc, abase + ADC_CR2, ADON | DMA_F1 | SWSTART);
+            adc.tick(14); // conversion completes, EOC + DMA request
+            let _ = adc.read(abase + ADC_DR); // reading DR clears EOC
+            d.tick(1); // one request → one halfword moved
+            match i {
+                1 => {
+                    assert_eq!(read_word(&mut d, BASE + CNDTR1), 2);
+                    assert_eq!(
+                        read_word(&mut d, BASE + ISR1) & 0xF,
+                        0x5,
+                        "GIF1|HTIF1 at half"
+                    );
+                    assert_eq!(d.pending(), 0x1, "HTIE raises line 0");
+                }
+                3 => {
+                    assert_eq!(
+                        read_word(&mut d, BASE + CNDTR1),
+                        4,
+                        "CNDTR reloaded for period 2"
+                    );
+                    assert_ne!(read_word(&mut d, BASE + CCR1) & EN, 0, "EN kept");
+                    assert_eq!(read_word(&mut d, BASE + CMAR1), 0x2000, "CMAR rewound");
+                    assert_eq!(
+                        read_word(&mut d, BASE + ISR1) & 0xF,
+                        0x7,
+                        "GIF1|TCIF1|HTIF1 at full"
+                    );
+                    write_word(&mut d, BASE + 0x04, 0x1); // IFCR CGIF1
+                    assert_eq!(read_word(&mut d, BASE + ISR1) & 0xF, 0x0);
+                }
+                5 => {
+                    assert_eq!(
+                        read_word(&mut d, BASE + ISR1) & 0xF,
+                        0x5,
+                        "HTIF1 re-fires in period 2"
+                    );
+                }
+                7 => {
+                    assert_eq!(
+                        read_word(&mut d, BASE + CNDTR1),
+                        4,
+                        "CNDTR reloaded for period 3"
+                    );
+                    assert_eq!(
+                        read_word(&mut d, BASE + ISR1) & 0x3,
+                        0x3,
+                        "GIF1|TCIF1 re-fire in period 2"
+                    );
+                }
+                _ => {}
+            }
+        }
+        let units = m.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert_eq!(units.len(), 8, "two periods moved eight halfwords");
+        assert_eq!(
+            units[0],
+            (abase + ADC_DR, 0x2000, 2),
+            "ADC DR → RAM base, halfword"
+        );
+        assert_eq!(units[4].1, 0x2000, "period 2 restarts at the buffer base");
     }
 }
