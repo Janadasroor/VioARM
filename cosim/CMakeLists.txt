@@ -69,3 +69,34 @@ set_target_properties(vioarm_cosim PROPERTIES
     PREFIX "lib"
 )
 target_compile_options(vioarm_cosim PRIVATE -Wall -Wextra)
+
+# ------------------------------------------------------------------
+# vioarm.cm — VioARM XSPICE analog code-model library.
+# Loaded by ngspice via .spiceinit: codemodel /path/to/vioarm.cm
+#
+# vioarm_adc_bridge: analog node voltage -> apin injection (ADC path).
+# vioarm_dac_bridge: staged apin word -> analog node voltage (DAC path).
+# vioarm_vcc_bridge: unity-gain rail mirror (brown-out hook lands here).
+# Both live bridges resolve the active handle with dlsym(RTLD_DEFAULT),
+# so libvioarm_cosim_shim.so must be loaded RTLD_GLOBAL (d_cosim does).
+# Standalone module — no VioARM link deps (symbols resolve at run time).
+# ------------------------------------------------------------------
+set(VIOARM_CM_SRCS
+    vioarm_analog_bridge/ifspec.c
+    vioarm_analog_bridge/cfunc.c
+    vioarm_analog_bridge/dlmain.c
+)
+
+add_library(vioarm_cm MODULE ${VIOARM_CM_SRCS})
+target_include_directories(vioarm_cm PRIVATE
+    "${VioMATRIXC_ROOT}/src/include"
+    "${VioMATRIXC_BUILD_INCLUDE}"
+)
+target_link_libraries(vioarm_cm PRIVATE ${CMAKE_DL_LIBS})
+set_target_properties(vioarm_cm PROPERTIES
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+    PREFIX ""
+    OUTPUT_NAME "vioarm"
+    SUFFIX ".cm"
+)
+target_compile_options(vioarm_cm PRIVATE -Wall -Wextra)

@@ -233,17 +233,36 @@ here):
 
 Port of `avr_analog_bridge/` (`ifspec.c`/`cfunc.c`/`dlmain.c`):
 
-- [ ] P3-1: `adc_bridge` — node voltage → `set_external_voltage`
+- [x] P3-1: `adc_bridge` — node voltage → `set_external_voltage`
   (channel = ADC1/2/3 input), lazy `dlsym` handle resolution copied
   from the AVR bridge (including session-restart handle refresh).
-- [ ] P3-2: `dac_bridge` — DAC output register → node source.
-- [ ] P3-3: `vcc_bridge` — supply rail (brown-out scenarios later).
-- [ ] P3-4: units discipline — volts on the wire, millivolts at the
+  DONE 2026-09-11 (`cosim/vioarm_analog_bridge/`, `vioarm.cm`):
+  `vioarm_adc_bridge`, volts straight through, channel clamped to 0
+  (single N3 window), unity mirror + partial 1.0 for Newton.
+- [x] P3-2: `dac_bridge` — DAC output register → node source.
+  DONE 2026-09-11: `vioarm_dac_bridge` via `get_dac_voltage`, with
+  held-DAC semantics in the bridge (static last-word + NaN sentinel:
+  firmware stages ~1 word/ms while SPICE evaluates per Newton
+  iteration; a consuming read would show mostly empty).
+- [x] P3-3: `vcc_bridge` — supply rail (brown-out scenarios later).
+  DONE as mirror-only 2026-09-11: `vioarm_vcc_bridge` passes the rail
+  through with NO injection (no core VDD concept exists — nothing
+  honest to drive). Netlist-compatible placeholder; brown-out plugs
+  in here when a core hook lands.
+- [x] P3-4: units discipline — volts on the wire, millivolts at the
   VioARM seam (`apin`-compatible words; conversion in exactly one
   place, tested).
+  DONE 2026-09-11: conversion lives only in the C ABI (×1000 in,
+  ÷1000 out); bridges pass volts untouched (in-code comments).
 - Acceptance: RC-filtered PWM netlist — firmware PWMs a pin, SPICE
   filters it, the ADC reads back the settled level within the
   quantization bound, all deterministic across reruns.
+  DONE 2026-09-11: virtual-board firmware (25% bit-bang PWM + APIN
+  echo) → stock `dac_bridge` → 10k/10u RC → `vioarm_adc_bridge` →
+  firmware echo → `vioarm_dac_bridge`: 600 ms transient,
+  rc mean 1.2405 V, dac mean 1.2381 V (expect 1.25 V). Rerun
+  determinism: same seed path as P2 (fixed options); explicit
+  double-run check rides with P4.
 
 ## 5. Phase P4 — Validation suite (~1 agent-week)
 
