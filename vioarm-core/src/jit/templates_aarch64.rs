@@ -142,7 +142,9 @@ fn merge_nzcv(ops: &mut A) {
     writeback(ops);
 }
 
-/// Merge N/Z from the live flags; preserve C, clear V.
+/// Merge N/Z from the live flags; preserve C, clear V. The nibble is
+/// shifted low before the insert (mirroring `writeback` — `bfi` takes
+/// the source low bits).
 fn merge_nz(ops: &mut A) {
     dynasm!(ops
         ; .arch aarch64
@@ -151,6 +153,7 @@ fn merge_nz(ops: &mut A) {
         ; lsl w9, w9, #31
         ; lsl w10, w10, #30
         ; orr w9, w9, w10
+        ; lsr w9, w9, #30
         ; bfi w23, w9, #30, #2
         ; bfc w23, #28, #1
     );
@@ -633,10 +636,11 @@ fn emit_bx(
     }
     // Clear the Thumb bit (set on this path — even targets halted out;
     // shift pair avoids logical-immediate encoding questions entirely).
+    // Order matters: `lsr` first drops bit 0 (`lsl` first is identity).
     dynasm!(ops
         ; .arch aarch64
-        ; lsl w0, w0, #1
         ; lsr w0, w0, #1
+        ; lsl w0, w0, #1
     );
     emit_dynamic_edge(ops, tape.take());
     dynasm!(ops ; .arch aarch64 ; =>halt);
@@ -1338,8 +1342,8 @@ fn emit_pop_pc(ops: &mut A, regs: u8, pc: u32, tape: &mut super::templates::Slot
         ; cmp w12, w9
         ; b.hs =>pb
         ; tbz w12, #0, =>pb
-        ; lsl w0, w12, #1
-        ; lsr w0, w0, #1
+        ; lsr w0, w12, #1
+        ; lsl w0, w0, #1
     );
     emit_dynamic_edge(ops, tape.take());
     dynasm!(ops ; .arch aarch64 ; =>pb);
@@ -1697,8 +1701,8 @@ fn emit_ldmstm32(
         ; cmp w12, w9
         ; b.hs =>pb
         ; tbz w12, #0, =>pb
-        ; lsl w0, w12, #1
-        ; lsr w0, w0, #1
+        ; lsr w0, w12, #1
+        ; lsl w0, w0, #1
     );
     emit_dynamic_edge(ops, tape.take());
     dynasm!(ops ; .arch aarch64 ; =>pb);
@@ -1905,6 +1909,7 @@ fn merge_nzcv_carry(ops: &mut A, carry: CarrySrc) {
         ; orr w9, w9, w10
         ; orr w9, w9, w11
         ; orr w9, w9, w12
+        ; lsr w9, w9, #28
         ; bfi w23, w9, #28, #4
     );
 }
@@ -2616,6 +2621,8 @@ fn emit32(ops: &mut A, inst: &crate::cpu::decode32::Inst32, pc: u32, unalign_tra
         I::MovWide { rd, imm, high } => emit_movwide(ops, rd, imm, high),
         I::Div { signed, rd, rn, rm } => emit_div(ops, signed, rd, rn, rm, pc),
         I::Mul { op, rd, rn, rm, ra } => emit_mul(ops, op, rd, rn, rm, ra),
+        // P2-6 (S6 mirror): barriers are silent fallthroughs.
+        I::Barrier { .. } => true,
         // P2-6 (S6 mirror): MRS/MSR split inline vs side-exit.
         I::Mrs { rd, sys } => emit_mrs(ops, rd, sys, pc),
         I::Msr { rn, sys } => emit_msr(ops, rn, sys, pc),
@@ -2699,7 +2706,9 @@ fn emit_alu(
             load(ops, rm, false);
         }
         O::Mvn | O::Neg => {
-            load(ops, rm, true);
+            // Single-operand forms read `w1` below — load there (loading
+            // `w0` left `mvn`/`neg` consuming a stale register).
+            load(ops, rm, false);
         }
         _ => {
             load(ops, rm, false);
@@ -2773,9 +2782,11 @@ fn emit_alu(
             }
         }
         O::Neg => {
-            // RSB: `neg` (sub-from-zero alias) carries natively, result in
-            // place for the store (no x86-style fixup needed).
-            dynasm!(ops ; .arch aarch64 ; neg w0, w1);
+            // RSB: `negs` (sub-from-zero alias) carries natively, result
+            // in place for the store (no x86-style fixup needed). The `s`
+            // is load-bearing: the merge below reads these flags (plain
+            // `neg` would leave stale PSTATE — silent wrong NZCV).
+            dynasm!(ops ; .arch aarch64 ; negs w0, w1);
             store(ops, rd);
             if !pred && merge {
                 merge_nzcv(ops);

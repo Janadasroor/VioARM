@@ -1148,7 +1148,13 @@ mod tests {
             ; movk x9, a1, lsl #16
             ; movk x9, a2, lsl #32
             ; movk x9, a3, lsl #48
+            // The prologue never spills `x30` (no template uses `bl`, so
+            // nothing clobbers it) — a callout must save/restore it
+            // itself, or the epilogue `ret` loops back in here and walks
+            // `sp` off the mapping. `[sp, #56]` is free in the frame.
+            ; str x30, [sp, #56]
             ; blr x9
+            ; ldr x30, [sp, #56]
         );
         emit_epilogue(&mut ops, EXIT_FALL, 0x2000);
         ops.finalize()
