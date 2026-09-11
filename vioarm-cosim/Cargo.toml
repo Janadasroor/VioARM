@@ -1,0 +1,51 @@
+[package]
+name = "vioarm-cosim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "C ABI embedding surface for VioARM (co-simulation shim host side)"
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+authors.workspace = true
+
+# Internal embedding surface: the C++ XSPICE shim links the `cdylib`
+# built from this crate's sources, exactly like VioAVR's shim links its
+# core. Nothing in this workspace depends on it, so it is never
+# published (`publish = false`, like `vioarm-svd`); see RELEASING.md.
+# The `rlib` target serves the in-tree integration tests.
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# Deliberately NOT `[lints] workspace = true`: the workspace table forbids
+# `unsafe_code` with no possible override, while a C ABI boundary is
+# inherently unsafe (raw-pointer dereference, `Box::from_raw`, `CStr`/`slice`
+# construction). This crate encapsulates exactly those blocks (each marked
+# and justified in the SAFETY CASE in `src/lib.rs`). Everything else mirrors
+# the workspace deny levels, and CI's `-D warnings` applies here too.
+[lints.rust]
+unsafe_code = "allow"
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = "allow"
+nursery = "allow"
+too_many_arguments = "allow"
+cognitive_complexity = "allow"
+too_many_lines = "allow"
+type_complexity = "allow"
+similar_names = "allow"
+doc_markdown = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+needless_pass_by_value = "allow"
+approx_constant = "allow"
+manual_range_contains = "allow"
+
+[dependencies]
+vioarm-core = { path = "../vioarm-core" }

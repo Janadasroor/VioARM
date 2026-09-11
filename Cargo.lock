@@ -703,6 +703,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "vioarm-cosim"
+version = "1.9.1"
+dependencies = [
+ "vioarm-core",
+]
+
+[[package]]
 name = "vioarm-gdb"
 version = "1.9.1"
 dependencies = [

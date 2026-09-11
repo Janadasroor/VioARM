@@ -1807,30 +1807,11 @@ fn print_info(img: &LoadedImage) {
 
 fn machine_for(board: Board, img: &LoadedImage) -> Machine<board::BoardMemory> {
     let mem = board.mem();
-    // WP-K1: select the core by family. Every board previously ran on the
-    // ARMv6-M core, so Thumb-2-only encodings (e.g. `orr.w`) faulted even on
-    // M3/M4 firmware. `virtual` stays the explicit M0 home (see
-    // `board::cortex_m0`); F0/C0/G0/L0 are M0/M0+, F7/H7 are M7, U5/H5/WBA/L5
-    // are M33, everything else (F1/F2/F3/F4/G4/L4/L1/WB/WL/MP1) is M3/M4.
+    // WP-K1: the core follows the board family; the dispatch lives in
+    // `Machine::for_mem` (shared with the co-simulation embedding path).
+    // `virtual` stays the explicit M0 home (see `board::cortex_m0`).
     let name = board.name();
-    let mut m = if name == "virtual"
-        || name.starts_with("stm32f0")
-        || name.starts_with("stm32c0")
-        || name.starts_with("stm32g0")
-        || name.starts_with("stm32l0")
-    {
-        Machine::new(mem)
-    } else if name.starts_with("stm32f7") || name.starts_with("stm32h7") {
-        Machine::armv7em(mem)
-    } else if name.starts_with("stm32u5")
-        || name.starts_with("stm32h5")
-        || name.starts_with("stm32wba")
-        || name.starts_with("stm32l5")
-    {
-        Machine::armv8m_mainline(mem)
-    } else {
-        Machine::armv7m(mem)
-    };
+    let mut m = Machine::for_mem(name, mem);
     m.load_image(img);
     if let Err(cause) = m.reset() {
         eprintln!("{} reset failed: {cause}", "error:".red().bold());

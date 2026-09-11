@@ -80,6 +80,57 @@ pub trait Peripheral: Send {
     /// same channel so a debugger can inject signals between steps. The no-op
     /// default lets devices without host inputs opt out.
     fn drive_inputs(&mut self, _value: u32) {}
+
+    /// Co-simulation: the mode of GPIO `pin` (see [`GpioPinMode`]).
+    /// The `None` default lets non-GPIO devices opt out.
+    fn gpio_mode(&self, _pin: u8) -> Option<GpioPinMode> {
+        None
+    }
+
+    /// Co-simulation: the externally-visible level of GPIO `pin`: the output
+    /// latch for driven pins, the host-driven level for inputs. The `None`
+    /// default lets non-GPIO devices opt out.
+    fn gpio_level(&self, _pin: u8) -> Option<bool> {
+        None
+    }
+}
+
+/// Co-simulation pin modes, shared by every GPIO flavor (generic, F1, F4).
+/// The discriminants are the C ABI mode codes (`VIOARM_MODE_*`); new modes
+/// append at the end so the wire stays backward compatible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum GpioPinMode {
+    /// Digital input, no pull.
+    InputFloating = 0,
+    /// Digital input with pull-up.
+    InputPullUp = 1,
+    /// Digital input with pull-down.
+    InputPullDown = 2,
+    /// Analog (ADC/DAC): never driven by the digital shim.
+    Analog = 3,
+    /// Push-pull output: the shim drives `{level, STRONG}`.
+    OutputPushPull = 4,
+    /// Open-drain output.
+    OutputOpenDrain = 5,
+    /// Alternate-function push-pull.
+    AlternatePushPull = 6,
+    /// Alternate-function open-drain.
+    AlternateOpenDrain = 7,
+}
+
+impl GpioPinMode {
+    /// Whether firmware (not the host) drives this pin on the net.
+    #[must_use]
+    pub const fn is_driven(self) -> bool {
+        matches!(
+            self,
+            Self::OutputPushPull
+                | Self::OutputOpenDrain
+                | Self::AlternatePushPull
+                | Self::AlternateOpenDrain
+        )
+    }
 }
 
 /// A device that raises one or more interrupt lines observed by the NVIC.

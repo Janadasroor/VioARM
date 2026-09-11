@@ -12,13 +12,17 @@
 
 use crate::device::svd::stm32f407;
 use crate::device::svd::{Behavior, Device, RegisterFile, Registers};
-use crate::device::{InterruptSource, Peripheral};
+use crate::device::{GpioPinMode, InterruptSource, Peripheral};
 use crate::error::BusError;
 use crate::mem::bus::Region;
 use core::ops::Deref;
 
 /// Register offsets within the port, per the SVD.
 const MODER: u32 = 0x00;
+/// Output type register: bit set means open-drain.
+const OTYPER: u32 = 0x04;
+/// Pull-up/pull-down register: 0 none, 1 up, 2 down per pin pair.
+const PUPDR: u32 = 0x0C;
 const IDR: u32 = 0x10;
 const ODR: u32 = 0x14;
 const BSRR: u32 = 0x18;
@@ -59,6 +63,11 @@ impl Gpio4Behavior {
             p += 1;
         }
         v
+    }
+
+    /// The host-driven input word, for co-simulation level queries.
+    fn input_level(&self) -> u32 {
+        self.input
     }
 }
 
@@ -166,6 +175,39 @@ impl Peripheral for GpioF4 {
 
     fn drive_inputs(&mut self, value: u32) {
         self.inner.drive_inputs(value);
+    }
+
+    fn gpio_mode(&self, pin: u8) -> Option<GpioPinMode> {
+        if pin >= 16 {
+            return None;
+        }
+        // `MODER`: 0 input, 1 output, 2 alternate, 3 analog.
+        let p = u32::from(pin);
+        let open_drain = (self.inner.word(OTYPER) >> p) & 1 != 0;
+        Some(match (self.inner.word(MODER) >> (2 * p)) & 3 {
+            0 => match (self.inner.word(PUPDR) >> (2 * p)) & 3 {
+                1 => GpioPinMode::InputPullUp,
+                2 => GpioPinMode::InputPullDown,
+                // No pull, plus reserved (honest: reads float).
+                _ => GpioPinMode::InputFloating,
+            },
+            1 if open_drain => GpioPinMode::OutputOpenDrain,
+            1 => GpioPinMode::OutputPushPull,
+            2 if open_drain => GpioPinMode::AlternateOpenDrain,
+            2 => GpioPinMode::AlternatePushPull,
+            _ => GpioPinMode::Analog,
+        })
+    }
+
+    fn gpio_level(&self, pin: u8) -> Option<bool> {
+        let mode = self.gpio_mode(pin)?;
+        let p = u32::from(pin);
+        let word = if mode.is_driven() {
+            self.inner.word(ODR)
+        } else {
+            self.inner.behavior().input_level()
+        };
+        Some((word >> p) & 1 != 0)
     }
 }
 

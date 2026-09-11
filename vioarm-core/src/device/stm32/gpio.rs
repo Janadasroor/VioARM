@@ -10,7 +10,7 @@
 
 use crate::device::svd::stm32f103;
 use crate::device::svd::{Behavior, Device, RegisterFile, Registers};
-use crate::device::{InterruptSource, Peripheral};
+use crate::device::{GpioPinMode, InterruptSource, Peripheral};
 use crate::error::BusError;
 use crate::mem::bus::Region;
 use core::ops::Deref;
@@ -60,6 +60,11 @@ impl GpioBehavior {
             p += 1;
         }
         v
+    }
+
+    /// The host-driven input word, for co-simulation level queries.
+    fn input_level(&self) -> u32 {
+        self.input
     }
 }
 
@@ -171,6 +176,44 @@ impl Peripheral for Gpio {
 
     fn drive_inputs(&mut self, value: u32) {
         self.inner.drive_inputs(value);
+    }
+
+    fn gpio_mode(&self, pin: u8) -> Option<GpioPinMode> {
+        if pin >= 16 {
+            return None;
+        }
+        // Nibble `MODE[1:0] | CNF[1:0]`; `MODE == 0` means input.
+        let p = u32::from(pin);
+        let reg = if p < 8 { CRL } else { CRH };
+        let nibble = (self.inner.word(reg) >> (4 * (p & 7))) & 0xF;
+        let (mode, cnf) = (nibble & 3, nibble >> 2);
+        if mode == 0 {
+            return Some(match cnf {
+                // Pull direction comes from the latched ODR bit.
+                2 if (self.inner.word(ODR) >> p) & 1 != 0 => GpioPinMode::InputPullUp,
+                2 => GpioPinMode::InputPullDown,
+                0 => GpioPinMode::Analog,
+                // Floating, plus reserved (honest: reads float).
+                _ => GpioPinMode::InputFloating,
+            });
+        }
+        Some(match cnf {
+            0 => GpioPinMode::OutputPushPull,
+            1 => GpioPinMode::OutputOpenDrain,
+            2 => GpioPinMode::AlternatePushPull,
+            _ => GpioPinMode::AlternateOpenDrain,
+        })
+    }
+
+    fn gpio_level(&self, pin: u8) -> Option<bool> {
+        let mode = self.gpio_mode(pin)?;
+        let p = u32::from(pin);
+        let word = if mode.is_driven() {
+            self.inner.word(ODR)
+        } else {
+            self.inner.behavior().input_level()
+        };
+        Some((word >> p) & 1 != 0)
     }
 }
 

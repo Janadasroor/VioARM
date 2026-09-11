@@ -7,7 +7,9 @@
 //! instruction (or takes an exception), then advances the bus by one cycle so
 //! timers count and freshly-asserted interrupt lines reach the NVIC.
 
+use crate::board::{self, BoardMemory};
 use crate::cpu::{Core, FpuCtx};
+use crate::device::GpioPinMode;
 use crate::error::HaltCause;
 use crate::hooks::HookEvent;
 use crate::loader::LoadedImage;
@@ -524,5 +526,178 @@ impl<M: PeripheralBus> Machine<M> {
         } else {
             false
         }
+    }
+}
+
+/// Building a [`Machine`] by board name (embedding / co-simulation path).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineForError {
+    /// No board in [`board::all_boards`] has this name.
+    UnknownBoard(String),
+    /// The board exists but `reset` failed after loading the image.
+    ResetFailed(String),
+}
+
+impl std::fmt::Display for MachineForError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownBoard(name) => write!(f, "unknown board '{name}'"),
+            Self::ResetFailed(cause) => write!(f, "reset failed: {cause}"),
+        }
+    }
+}
+
+impl Machine<BoardMemory> {
+    /// A machine over an already-built board memory, with the core selected
+    /// by family from `name` (an [`board::all_boards`] short name).
+    /// WP-K1: every board previously ran on the ARMv6-M core, so
+    /// Thumb-2-only encodings faulted even on M3/M4 firmware. `virtual`
+    /// stays the explicit M0 home; F0/C0/G0/L0 are M0/M0+, F7/H7 are M7,
+    /// U5/H5/WBA/L5 are M33, everything else (F1/F2/F3/F4/G4/L4/L1/WB/WL/MP1)
+    /// is M3/M4. The CLI's `machine_for` shares this; keep the two in sync.
+    #[must_use]
+    pub fn for_mem(name: &str, mem: BoardMemory) -> Self {
+        if name == "virtual"
+            || name.starts_with("stm32f0")
+            || name.starts_with("stm32c0")
+            || name.starts_with("stm32g0")
+            || name.starts_with("stm32l0")
+        {
+            Self::new(mem)
+        } else if name.starts_with("stm32f7") || name.starts_with("stm32h7") {
+            Self::armv7em(mem)
+        } else if name.starts_with("stm32u5")
+            || name.starts_with("stm32h5")
+            || name.starts_with("stm32wba")
+            || name.starts_with("stm32l5")
+        {
+            Self::armv8m_mainline(mem)
+        } else {
+            Self::armv7m(mem)
+        }
+    }
+
+    /// A machine for the named board with `img` loaded and reset.
+    /// Unlike the CLI (which exits the process on failure), failures come
+    /// back as [`MachineForError`] so embedding hosts can report them.
+    pub fn for_name(name: &str, img: &LoadedImage) -> Result<Self, MachineForError> {
+        let mut machine = Self::for_name_bare(name, img)?;
+        machine
+            .reset()
+            .map_err(|cause| MachineForError::ResetFailed(cause.to_string()))?;
+        Ok(machine)
+    }
+
+    /// A machine for the named board with `img` loaded but NOT reset: the
+    /// embedding path for hosts that must configure boot state (e.g. the
+    /// vector-table base for raw binaries) before the first reset.
+    pub fn for_name_bare(name: &str, img: &LoadedImage) -> Result<Self, MachineForError> {
+        // `virtual` is the generic M0 home, not one of the 500 CMSIS chips,
+        // so it is not in `all_boards` — accept it explicitly.
+        if name == "virtual" {
+            let mut machine = Self::for_mem(name, board::virtual_board());
+            machine.load_image(img);
+            return Ok(machine);
+        }
+        let (_, build) = board::all_boards()
+            .into_iter()
+            .find(|(entry, _)| *entry == name)
+            .ok_or_else(|| MachineForError::UnknownBoard(name.to_owned()))?;
+        let mut machine = Self::for_mem(name, build());
+        machine.load_image(img);
+        Ok(machine)
+    }
+
+    /// Set the reset vector-table base (see `Core::set_vector_base`).
+    /// Embedding hosts loading raw binaries outside address 0 need this
+    /// before `reset`; ELF/HEX images boot from the table their vectors
+    /// live in (address 0 aliases flash on the STM32 boards).
+    pub fn set_vector_base(&mut self, base: u32) {
+        self.core.set_vector_base(base);
+    }
+
+    /// The current CPU clock in Hz (see `SystemMemory::cpu_hz`): the rate
+    /// the co-simulation shim converts SPICE seconds into core cycles with.
+    /// Takes `&mut` only because the bus accessor does; nothing is mutated.
+    pub fn cpu_hz(&mut self) -> u32 {
+        self.core.mem().cpu_hz()
+    }
+
+    /// Co-simulation: find GPIO port `port` (0 = A) among the attached
+    /// devices: `gpioa`..`gpiok`, falling back to the virtual board's
+    /// single `gpio` for port 0. Returns the device index, if present.
+    fn gpio_index(devices: &[Box<dyn crate::device::InterruptSource>], port: u8) -> Option<usize> {
+        const LETTERS: [&str; 11] = [
+            "gpioa", "gpiob", "gpioc", "gpiod", "gpioe", "gpiof", "gpiog", "gpioh", "gpioi",
+            "gpioj", "gpiok",
+        ];
+        devices.iter().position(|device| {
+            let name = device.name();
+            (usize::from(port) < LETTERS.len() && name == LETTERS[usize::from(port)])
+                || (port == 0 && name == "gpio")
+        })
+    }
+
+    /// Co-simulation: the `(mode, level)` of `pin` on GPIO port `port`
+    /// (0 = A). `None` when the port is absent or the pin out of range.
+    pub fn gpio_pin(&mut self, port: u8, pin: u8) -> Option<(GpioPinMode, bool)> {
+        let devices = self.core.mem().devices_mut();
+        let index = Self::gpio_index(devices, port)?;
+        let mode = devices[index].gpio_mode(pin)?;
+        let level = devices[index].gpio_level(pin)?;
+        Some((mode, level))
+    }
+
+    /// Co-simulation: drive the whole host-input word of GPIO port `port`
+    /// (0 = A) — input pins follow it, driven pins ignore it. Returns
+    /// whether the port exists. Word (not byte) granularity is why this
+    /// exists alongside `drive_device`: the byte-stream channel would
+    /// deliver one `drive_inputs` call per byte.
+    pub fn gpio_drive(&mut self, port: u8, mask: u32) -> bool {
+        let devices = self.core.mem().devices_mut();
+        let Some(index) = Self::gpio_index(devices, port) else {
+            return false;
+        };
+        devices[index].drive_inputs(mask);
+        true
+    }
+
+    /// Co-simulation: inject `mv` millivolts into the `apin` window's
+    /// receiver (one little-endian word through the byte channel, exactly
+    /// as the fabric delivers it). Honors the window's `EN` bit — firmware
+    /// must enable the endpoint first, like enabling an ADC. Returns
+    /// whether an `apin` device is attached. Channel numbering is future
+    /// work (P2): the N3 seam is a single window.
+    pub fn apin_inject_mv(&mut self, mv: u32) -> bool {
+        let devices = self.core.mem().devices_mut();
+        let Some(device) = devices.iter_mut().find(|device| device.name() == "apin") else {
+            return false;
+        };
+        for byte in mv.to_le_bytes() {
+            device.drive_inputs(u32::from(byte));
+        }
+        true
+    }
+
+    /// Co-simulation: the most recently transmitted whole millivolt word
+    /// from the `apin` window, if firmware staged one (`TXMV` + `TXGO`).
+    /// Most-recent-word semantics: the shim polls once per quantum, so at
+    /// most one word is ever pending; older words are superseded, like a
+    /// DAC output register.
+    pub fn apin_drain_mv(&mut self) -> Option<u32> {
+        let devices = self.core.mem().devices_mut();
+        let device = devices.iter_mut().find(|device| device.name() == "apin")?;
+        let bytes = device.drain_output();
+        let words = bytes.len() / 4;
+        if words == 0 {
+            return None;
+        }
+        let start = (words - 1) * 4;
+        Some(u32::from_le_bytes([
+            bytes[start],
+            bytes[start + 1],
+            bytes[start + 2],
+            bytes[start + 3],
+        ]))
     }
 }

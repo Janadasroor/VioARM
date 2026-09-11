@@ -9,6 +9,8 @@
 ## Publish order (crates.io)
 
 `vioarm-svd` is `publish = false` (offline codegen tool, never shipped).
+`vioarm-cosim` is `publish = false` (C ABI surface for the co-simulation
+shim, linked from C++ sources — never a registry dependency).
 The rest publish inside-out, because each layer depends on the previous one
 from crates.io:
 
@@ -58,3 +60,12 @@ git push origin vX.Y.Z
 or with GPG (`git tag -s` with `user.signingkey` set to the key id).
 No signing key lives in CI or in this repo — signing is always a local,
 human step.
+
+## Co-simulation gate (VioMATRIXC)
+
+Linking against VioMATRIXC's `libngspice.so` (the P1+ co-sim path in
+`cosim-roadmap.md`) is blocked until the VioMATRIXC repo deletes the
+autogen-regressed `COPYING` (GPLv3 text, re-added by `b2478fe`'s
+`autogen.sh` run — not a license change, but it must go plus a gitignore
+rule) and the owner confirms the P0-1 verdict recorded there. No
+`-lspice` in any build file before that.

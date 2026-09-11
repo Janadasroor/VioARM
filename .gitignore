@@ -1,5 +1,6 @@
 /packs/
 /target/
+cosim/build/
 /.opencode/
 /docs/book/
 fuzz/target/

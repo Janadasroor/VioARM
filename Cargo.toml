@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["vioarm-core", "vioarm-cli", "vioarm-svd", "vioarm-gdb", "vioarm-qemu", "vioarm-jit-call"]
+members = ["vioarm-core", "vioarm-cli", "vioarm-svd", "vioarm-gdb", "vioarm-qemu", "vioarm-jit-call", "vioarm-cosim"]
 
 [workspace.package]
 version = "1.9.1"

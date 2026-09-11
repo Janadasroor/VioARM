@@ -324,6 +324,20 @@ impl<M: Bus> SystemMemory<M> {
         self.clock = Some(clock);
     }
 
+    /// The current CPU clock in Hz from the shared [`ClockState`]
+    /// (through any H7 `D1CPRE` divider, so this is the rate core cycles
+    /// actually run at — the rate the co-simulation shim converts SPICE
+    /// seconds into). Falls back to [`ClockState::default`] when no board
+    /// wired a clock; every board constructor calls [`Self::set_clock`],
+    /// so the fallback only serves hand-built buses.
+    #[must_use]
+    pub fn cpu_hz(&self) -> u32 {
+        self.clock
+            .as_ref()
+            .and_then(|clock| clock.lock().ok().map(|guard| guard.cpu_hz()))
+            .unwrap_or_else(|| ClockState::default().cpu_hz())
+    }
+
     /// The attached devices, in attach order.
     pub fn devices(&self) -> &[Box<dyn InterruptSource>] {
         &self.devices

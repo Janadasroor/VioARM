@@ -7,7 +7,7 @@
 //! channel. Pins with `DIR` cleared read the host-driven level, matching a
 //! tri-state input.
 
-use crate::device::{InterruptSource, Peripheral};
+use crate::device::{GpioPinMode, InterruptSource, Peripheral};
 use crate::error::BusError;
 use crate::mem::bus::Region;
 
@@ -104,6 +104,28 @@ impl Peripheral for Gpio {
 
     fn drive_inputs(&mut self, value: u32) {
         self.input = value;
+    }
+
+    fn gpio_mode(&self, pin: u8) -> Option<GpioPinMode> {
+        if pin >= 32 {
+            return None;
+        }
+        if (self.dir >> pin) & 1 == 0 {
+            return Some(GpioPinMode::InputFloating);
+        }
+        Some(GpioPinMode::OutputPushPull)
+    }
+
+    fn gpio_level(&self, pin: u8) -> Option<bool> {
+        if pin >= 32 {
+            return None;
+        }
+        let word = if (self.dir >> pin) & 1 == 0 {
+            self.input
+        } else {
+            self.out
+        };
+        Some((word >> pin) & 1 != 0)
     }
 }
 
