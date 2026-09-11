@@ -1,5 +1,11 @@
 # Releasing VioARM
 
+> **Private gate (2026-09-11): this repository stays private until the
+> work is fully complete. Until the gate lifts: no `cargo publish`
+> (dry-runs only), no release tags, no public mirrors. Steps 5–6 below
+> are blocked; everything above them must stay green so the release is a
+> formality when the gate lifts.**
+
 ## Publish order (crates.io)
 
 `vioarm-svd` is `publish = false` (offline codegen tool, never shipped).

@@ -240,6 +240,33 @@ jobs:
       - name: Build book
         run: mdbook build docs
 
+  examples:
+    name: Run the library examples (ubuntu-latest, stable)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ubuntu-examples-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      # E2: every example must build and exit 0 (they assert internally).
+      - name: Run examples
+        run: |
+          for ex in blink coverage eth_ptp timer_pwm usart_echo a_profile_spike; do
+            cargo run -q -p vioarm-core --example $ex || exit 1
+          done
+
   publish:
     name: Publish dry-run (vioarm-core)
     runs-on: ubuntu-latest

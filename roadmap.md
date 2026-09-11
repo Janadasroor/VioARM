@@ -441,6 +441,13 @@ Acceptance: repo tree free of SLA0044 files; provenance manifest complete;
 `xtask packs fetch` reproduces tables byte-identically (existing
 `committed_tables_regenerate_identically` proves it).
 Effort: 6ah.
+- Status DONE 2026-09-11 (tree side): `packs/` gitignored (only
+  `PROVENANCE.md` tracked, with per-pack version + sha256 + fetch docs),
+  generated tables in-tree, `cargo deny check` green on all four axes;
+  `git ls-files` shows no SLA0044 blobs in the tree. History decision
+  recorded per the private gate: blobs stay in the private-side history,
+  no rewrite while the gate holds; a fresh public history is cut only if
+  the repo ever goes public.
 
 ### WP-E2 Documentation
 
@@ -453,6 +460,15 @@ Effort: 6ah.
 Acceptance: book builds in CI; examples compile+run in e2e; missing-docs
 warning-clean.
 Effort: 12ah.
+- Status 2026-09-11 (partial): book builds (`mdbook build docs` green, CI
+  job exists); all 6 examples exit 0 locally with a CI `examples` job
+  added; `board.rs` fully documented (1493 missing-docs cleared with
+  derived family/length notes). Remainder: ~850 rustdoc items — decoder
+  enum variants (`decode32` ~232, `decode16` ~162, need hand-written ISA
+  semantics) and builder methods (`vioarm-qemu` `Asm` ~171) plus ~280
+  scattered stragglers. The global `#![warn(missing_docs)]` stays off
+  until that backlog is worked (enabling it now would flood every build);
+  `board.rs` is the ratchet's first closed file.
 
 ### WP-E3 Release engineering
 
@@ -464,6 +480,14 @@ Effort: 12ah.
   auto-extracted from CHANGELOG headings.
 Acceptance: dry-run green; a beta tag produces artifacts + SBOM.
 Effort: 6ah.
+- Status 2026-09-11 (gated): metadata consistent (workspace version,
+  descriptions, keywords, readme, repository); `vioarm-jit-call`
+  dry-run green; `vioarm-core` dry-run blocked only by a dirty tree;
+  `gdb`/`qemu`/`cli` dry-runs fail until core is really on crates.io
+  (expected per RELEASING.md, not a bug); `vioarm-svd` is
+  `publish = false` by design. SBOM (`sbom.json`, CycloneDX 1.4)
+  regenerates at release time. Blocked by the private gate: no publish,
+  no tags until it lifts (see RELEASING.md).
 
 ### WP-E4 Support & stability policy
 
@@ -477,6 +501,10 @@ Effort: 6ah.
   model drift between releases.
 Acceptance: policy section in book; platform jobs green; snapshots in tree.
 Effort: 6ah.
+- Status 2026-09-11: board list frozen at 506 (`all_boards()`; additions
+  only via the per-Dname process) with per-board fidelity in
+  `docs/src/boards.md`; golden boot snapshots cover every board (M14);
+  platform CI per WP7. Support policy lives in `RELEASE.md`.
 
 ---
 

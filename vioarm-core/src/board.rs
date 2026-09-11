@@ -1792,9 +1792,11 @@ pub fn stm32f072() -> BoardMemory {
 
 /// STM32F030 (F0, Cortex-M0) 32 KiB flash, 4 KiB RAM — minimal F0 subset (no DAC/COMP).
 pub const STM32_F030_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32F030 RAM length in bytes.
 pub const STM32_F030_RAM_LEN: u32 = 0x0000_1000;
 
 #[must_use]
+/// Construct the `stm32f030` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f030() -> BoardMemory {
     use crate::device::svd::stm32f030::Stm32f030;
     let backing = FlatMemory::with_layout(
@@ -1918,9 +1920,12 @@ pub fn stm32f030() -> BoardMemory {
 }
 
 // F031 and F042 are F0 variants with TIM2 and COMP/DAC differences — reuse F030 template with correct SVD
+/// STM32F031 flash length in bytes.
 pub const STM32_F031_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32F031 RAM length in bytes.
 pub const STM32_F031_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32f031` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f031() -> BoardMemory {
     use crate::device::svd::stm32f031::Stm32f031;
     let backing = FlatMemory::with_layout(
@@ -2042,9 +2047,12 @@ pub fn stm32f031() -> BoardMemory {
     mem
 }
 
+/// STM32F042 flash length in bytes.
 pub const STM32_F042_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32F042 RAM length in bytes.
 pub const STM32_F042_RAM_LEN: u32 = 0x0000_1800;
 #[must_use]
+/// Construct the `stm32f042` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f042() -> BoardMemory {
     use crate::device::svd::stm32f042::Stm32f042;
     let backing = FlatMemory::with_layout(
@@ -2149,9 +2157,12 @@ pub fn stm32f042() -> BoardMemory {
     mem
 }
 
+/// STM32F0X0 flash length in bytes.
 pub const STM32_F0X0_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32F0X0 RAM length in bytes.
 pub const STM32_F0X0_RAM_LEN: u32 = 0x0000_1000;
 #[must_use]
+/// Construct the `stm32f0x0` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f0x0() -> BoardMemory {
     use crate::device::svd::stm32f0x0::Stm32f0x0;
     let backing = FlatMemory::with_layout(
@@ -2221,9 +2232,12 @@ pub fn stm32f0x0() -> BoardMemory {
     mem
 }
 
+/// STM32F091 flash length in bytes.
 pub const STM32_F091_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F091 RAM length in bytes.
 pub const STM32_F091_RAM_LEN: u32 = 0x0000_8000;
 #[must_use]
+/// Construct the `stm32f091` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f091() -> BoardMemory {
     use crate::device::svd::stm32f091::Stm32f091;
     let backing = FlatMemory::with_layout(
@@ -2348,9 +2362,12 @@ pub fn stm32f091() -> BoardMemory {
     mem
 }
 
+/// STM32F0X1 flash length in bytes.
 pub const STM32_F0X1_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32F0X1 RAM length in bytes.
 pub const STM32_F0X1_RAM_LEN: u32 = 0x0000_1000;
 #[must_use]
+/// Construct the `stm32f0x1` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f0x1() -> BoardMemory {
     use crate::device::svd::stm32f0x1::Stm32f0x1;
     let backing = FlatMemory::with_layout(
@@ -2400,9 +2417,12 @@ pub fn stm32f0x1() -> BoardMemory {
     mem
 }
 
+/// STM32F0X2 flash length in bytes.
 pub const STM32_F0X2_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32F0X2 RAM length in bytes.
 pub const STM32_F0X2_RAM_LEN: u32 = 0x0000_1000;
 #[must_use]
+/// Construct the `stm32f0x2` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f0x2() -> BoardMemory {
     use crate::device::svd::stm32f0x2::Stm32f0x2;
     let backing = FlatMemory::with_layout(
@@ -2452,9 +2472,12 @@ pub fn stm32f0x2() -> BoardMemory {
     mem
 }
 
+/// STM32F0X8 flash length in bytes.
 pub const STM32_F0X8_FLASH_LEN: u32 = 0x0001_0000;
+/// STM32F0X8 RAM length in bytes.
 pub const STM32_F0X8_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32f0x8` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f0x8() -> BoardMemory {
     use crate::device::svd::stm32f0x8::Stm32f0x8;
     let backing = FlatMemory::with_layout(
@@ -2504,9 +2527,12 @@ pub fn stm32f0x8() -> BoardMemory {
     mem
 }
 
+/// STM32F0XX flash length in bytes.
 pub const STM32_F0XX_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32F0XX RAM length in bytes.
 pub const STM32_F0XX_RAM_LEN: u32 = 0x0000_1000;
 #[must_use]
+/// Construct the `stm32f0xx` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f0xx() -> BoardMemory {
     use crate::device::svd::stm32f0xx::Stm32f0;
     let backing = FlatMemory::with_layout(
@@ -2556,9 +2582,12 @@ pub fn stm32f0xx() -> BoardMemory {
     mem
 }
 
+/// STM32F100 flash length in bytes.
 pub const STM32_F100_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F100 RAM length in bytes.
 pub const STM32_F100_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32f100` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f100() -> BoardMemory {
     use crate::device::svd::stm32f100::Stm32f100;
     let backing = FlatMemory::with_layout(
@@ -2666,9 +2695,12 @@ pub fn stm32f100() -> BoardMemory {
     mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
     mem
 }
+/// STM32F101 flash length in bytes.
 pub const STM32_F101_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F101 RAM length in bytes.
 pub const STM32_F101_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32f101` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f101() -> BoardMemory {
     use crate::device::svd::stm32f101::Stm32f101;
     let backing = FlatMemory::with_layout(
@@ -2767,9 +2799,12 @@ pub fn stm32f101() -> BoardMemory {
     mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
     mem
 }
+/// STM32F102 flash length in bytes.
 pub const STM32_F102_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F102 RAM length in bytes.
 pub const STM32_F102_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32f102` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f102() -> BoardMemory {
     use crate::device::svd::stm32f102::Stm32f102;
     let backing = FlatMemory::with_layout(
@@ -2870,9 +2905,12 @@ pub fn stm32f102() -> BoardMemory {
     mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
     mem
 }
+/// STM32F105 flash length in bytes.
 pub const STM32_F105_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F105 RAM length in bytes.
 pub const STM32_F105_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f105` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f105() -> BoardMemory {
     use crate::device::svd::stm32f105::Stm32f105;
     let backing = FlatMemory::with_layout(
@@ -2981,33 +3019,48 @@ pub fn stm32f105() -> BoardMemory {
     mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
     mem
 }
+/// STM32F401 flash length in bytes.
 pub const STM32_F401_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32F401 RAM length in bytes.
 pub const STM32_F401_RAM_LEN: u32 = 0x0001_8000;
 #[must_use]
+/// Construct the `stm32f401` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f401() -> BoardMemory {
     f4_full_board(STM32_F401_FLASH_LEN, STM32_F401_RAM_LEN, 0)
 }
+/// STM32F411 flash length in bytes.
 pub const STM32_F411_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32F411 RAM length in bytes.
 pub const STM32_F411_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f411` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f411() -> BoardMemory {
     f4_full_board(STM32_F411_FLASH_LEN, STM32_F411_RAM_LEN, 0)
 }
+/// STM32F412 flash length in bytes.
 pub const STM32_F412_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F412 RAM length in bytes.
 pub const STM32_F412_RAM_LEN: u32 = 0x0004_0000;
 #[must_use]
+/// Construct the `stm32f412` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f412() -> BoardMemory {
     f4_full_board(STM32_F412_FLASH_LEN, STM32_F412_RAM_LEN, 0)
 }
+/// STM32F429 flash length in bytes.
 pub const STM32_F429_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32F429 RAM length in bytes.
 pub const STM32_F429_RAM_LEN: u32 = 0x0004_0000;
 #[must_use]
+/// Construct the `stm32f429` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f429() -> BoardMemory {
     f4_full_board(STM32_F429_FLASH_LEN, STM32_F429_RAM_LEN, STM32_F407_CCM_LEN)
 }
+/// STM32F746 flash length in bytes.
 pub const STM32_F746_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F746 RAM length in bytes.
 pub const STM32_F746_RAM_LEN: u32 = 0x0005_0000;
 #[must_use]
+/// Construct the `stm32f746` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f746() -> BoardMemory {
     // F7 high line (M7) on own tables.
     f4gen_full_board::<crate::device::svd::stm32f746::Stm32f746>(
@@ -3017,9 +3070,12 @@ pub fn stm32f746() -> BoardMemory {
         crate::device::svd::stm32f746::PERIPHERALS,
     )
 }
+/// STM32F756 flash length in bytes.
 pub const STM32_F756_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32F756 RAM length in bytes.
 pub const STM32_F756_RAM_LEN: u32 = 0x0005_0000;
 #[must_use]
+/// Construct the `stm32f756` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f756() -> BoardMemory {
     // F7 high line (M7) on own F746 tables.
     f4gen_full_board::<crate::device::svd::stm32f746::Stm32f746>(
@@ -3029,45 +3085,66 @@ pub fn stm32f756() -> BoardMemory {
         crate::device::svd::stm32f746::PERIPHERALS,
     )
 }
+/// STM32F405 flash length in bytes.
 pub const STM32_F405_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F405 RAM length in bytes.
 pub const STM32_F405_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f405` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f405() -> BoardMemory {
     stm32f407()
 }
+/// STM32F415 flash length in bytes.
 pub const STM32_F415_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F415 RAM length in bytes.
 pub const STM32_F415_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f415` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f415() -> BoardMemory {
     stm32f407()
 }
+/// STM32F437 flash length in bytes.
 pub const STM32_F437_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32F437 RAM length in bytes.
 pub const STM32_F437_RAM_LEN: u32 = 0x0004_0000;
 #[must_use]
+/// Construct the `stm32f437` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f437() -> BoardMemory {
     stm32f429()
 }
+/// STM32F439 flash length in bytes.
 pub const STM32_F439_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32F439 RAM length in bytes.
 pub const STM32_F439_RAM_LEN: u32 = 0x0004_0000;
 #[must_use]
+/// Construct the `stm32f439` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f439() -> BoardMemory {
     stm32f429()
 }
+/// STM32F469 flash length in bytes.
 pub const STM32_F469_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32F469 RAM length in bytes.
 pub const STM32_F469_RAM_LEN: u32 = 0x0006_0000;
 #[must_use]
+/// Construct the `stm32f469` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f469() -> BoardMemory {
     stm32f429()
 }
+/// STM32F446 flash length in bytes.
 pub const STM32_F446_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32F446 RAM length in bytes.
 pub const STM32_F446_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f446` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f446() -> BoardMemory {
     stm32f401()
 }
+/// STM32F722 flash length in bytes.
 pub const STM32_F722_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32F722 RAM length in bytes.
 pub const STM32_F722_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f722` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f722() -> BoardMemory {
     // F7 value line (M7) on own tables.
     f4gen_full_board::<crate::device::svd::stm32f722::Stm32f722>(
@@ -3077,15 +3154,21 @@ pub fn stm32f722() -> BoardMemory {
         crate::device::svd::stm32f722::PERIPHERALS,
     )
 }
+/// STM32H730 flash length in bytes.
 pub const STM32_H730_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32H730 RAM length in bytes.
 pub const STM32_H730_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32h730` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32h730() -> BoardMemory {
     stm32h750()
 }
+/// STM32F765 flash length in bytes.
 pub const STM32_F765_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32F765 RAM length in bytes.
 pub const STM32_F765_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32f765` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f765() -> BoardMemory {
     // F7 high line (M7) on own F746 tables; no dual-ADC common block.
     f4gen_full_board::<crate::device::svd::stm32f746::Stm32f746>(
@@ -3095,117 +3178,174 @@ pub fn stm32f765() -> BoardMemory {
         crate::device::svd::stm32f746::PERIPHERALS,
     )
 }
+/// STM32H7B0 flash length in bytes.
 pub const STM32_H7B0_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32H7B0 RAM length in bytes.
 pub const STM32_H7B0_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32h7b0` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32h7b0() -> BoardMemory {
     stm32h750()
 }
+/// STM32H753 flash length in bytes.
 pub const STM32_H753_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32H753 RAM length in bytes.
 pub const STM32_H753_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32h753` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32h753() -> BoardMemory {
     stm32h743()
 }
+/// STM32H745 flash length in bytes.
 pub const STM32_H745_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32H745 RAM length in bytes.
 pub const STM32_H745_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32h745` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32h745() -> BoardMemory {
     stm32h743()
 }
+/// STM32F413 flash length in bytes.
 pub const STM32_F413_FLASH_LEN: u32 = 0x0018_0000;
+/// STM32F413 RAM length in bytes.
 pub const STM32_F413_RAM_LEN: u32 = 0x0005_0000;
 #[must_use]
+/// Construct the `stm32f413` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f413() -> BoardMemory {
     stm32f412()
 }
+/// STM32F423 flash length in bytes.
 pub const STM32_F423_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F423 RAM length in bytes.
 pub const STM32_F423_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f423` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f423() -> BoardMemory {
     stm32f401()
 }
+/// STM32H723 flash length in bytes.
 pub const STM32_H723_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32H723 RAM length in bytes.
 pub const STM32_H723_RAM_LEN: u32 = 0x0006_0000;
 #[must_use]
+/// Construct the `stm32h723` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32h723() -> BoardMemory {
     stm32h743()
 }
+/// STM32F479 flash length in bytes.
 pub const STM32_F479_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32F479 RAM length in bytes.
 pub const STM32_F479_RAM_LEN: u32 = 0x0006_0000;
 #[must_use]
+/// Construct the `stm32f479` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f479() -> BoardMemory {
     stm32f429()
 }
+/// STM32G431 flash length in bytes.
 pub const STM32_G431_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32G431 RAM length in bytes.
 pub const STM32_G431_RAM_LEN: u32 = 0x0000_8000;
 #[must_use]
+/// Construct the `stm32g431` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g431() -> BoardMemory {
     stm32g474xx()
 }
+/// STM32L452 flash length in bytes.
 pub const STM32_L452_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32L452 RAM length in bytes.
 pub const STM32_L452_RAM_LEN: u32 = 0x0002_8000;
 #[must_use]
+/// Construct the `stm32l452` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32l452() -> BoardMemory {
     stm32l476()
 }
+/// STM32F302 flash length in bytes.
 pub const STM32_F302_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F302 RAM length in bytes.
 pub const STM32_F302_RAM_LEN: u32 = 0x0000_8000;
 #[must_use]
+/// Construct the `stm32f302` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f302() -> BoardMemory {
     stm32f303xe()
 }
+/// STM32F334 flash length in bytes.
 pub const STM32_F334_FLASH_LEN: u32 = 0x0001_0000;
+/// STM32F334 RAM length in bytes.
 pub const STM32_F334_RAM_LEN: u32 = 0x0000_3000;
 #[must_use]
+/// Construct the `stm32f334` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f334() -> BoardMemory {
     stm32f303xe()
 }
+/// STM32L432 flash length in bytes.
 pub const STM32_L432_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32L432 RAM length in bytes.
 pub const STM32_L432_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32l432` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32l432() -> BoardMemory {
     stm32l476()
 }
+/// STM32F373 flash length in bytes.
 pub const STM32_F373_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F373 RAM length in bytes.
 pub const STM32_F373_RAM_LEN: u32 = 0x0000_8000;
 #[must_use]
+/// Construct the `stm32f373` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f373() -> BoardMemory {
     stm32f303xe()
 }
+/// STM32L073 flash length in bytes.
 pub const STM32_L073_FLASH_LEN: u32 = 0x0003_0000;
+/// STM32L073 RAM length in bytes.
 pub const STM32_L073_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32l073` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32l073() -> BoardMemory {
     stm32l476()
 }
+/// STM32F358 flash length in bytes.
 pub const STM32_F358_FLASH_LEN: u32 = 0x0001_0000;
+/// STM32F358 RAM length in bytes.
 pub const STM32_F358_RAM_LEN: u32 = 0x0000_4000;
 #[must_use]
+/// Construct the `stm32f358` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f358() -> BoardMemory {
     stm32f303xe()
 }
+/// STM32L152 flash length in bytes.
 pub const STM32_L152_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32L152 RAM length in bytes.
 pub const STM32_L152_RAM_LEN: u32 = 0x0001_4000;
 #[must_use]
+/// Construct the `stm32l152` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32l152() -> BoardMemory {
     stm32l476()
 }
+/// STM32F070 flash length in bytes.
 pub const STM32_F070_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F070 RAM length in bytes.
 pub const STM32_F070_RAM_LEN: u32 = 0x0000_4000;
 #[must_use]
+/// Construct the `stm32f070` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f070() -> BoardMemory {
     stm32f072()
 }
+/// STM32L053 flash length in bytes.
 pub const STM32_L053_FLASH_LEN: u32 = 0x0001_0000;
+/// STM32L053 RAM length in bytes.
 pub const STM32_L053_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32l053` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32l053() -> BoardMemory {
     stm32l476()
 }
+/// STM32G070 flash length in bytes.
 pub const STM32_G070_FLASH_LEN: u32 = 0x0001_0000;
+/// STM32G070 RAM length in bytes.
 pub const STM32_G070_RAM_LEN: u32 = 0x0000_4000;
 #[must_use]
+/// Construct the `stm32g070` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g070() -> BoardMemory {
     // G070 (M0+) on G081 tables; AES absent there.
     g0_full_board::<crate::device::svd::stm32g081::Stm32g081>(
@@ -3215,27 +3355,39 @@ pub fn stm32g070() -> BoardMemory {
         crate::device::svd::stm32g081::PERIPHERALS,
     )
 }
+/// STM32F378 flash length in bytes.
 pub const STM32_F378_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32F378 RAM length in bytes.
 pub const STM32_F378_RAM_LEN: u32 = 0x0000_8000;
 #[must_use]
+/// Construct the `stm32f378` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f378() -> BoardMemory {
     stm32f303xe()
 }
+/// STM32F303 flash length in bytes.
 pub const STM32_F303_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F303 RAM length in bytes.
 pub const STM32_F303_RAM_LEN: u32 = 0x0000_8000;
 #[must_use]
+/// Construct the `stm32f303` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f303() -> BoardMemory {
     stm32f303xe()
 }
+/// STM32L412 flash length in bytes.
 pub const STM32_L412_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32L412 RAM length in bytes.
 pub const STM32_L412_RAM_LEN: u32 = 0x0002_8000;
 #[must_use]
+/// Construct the `stm32l412` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32l412() -> BoardMemory {
     stm32l476()
 }
+/// STM32G031 flash length in bytes.
 pub const STM32_G031_FLASH_LEN: u32 = 0x0001_0000;
+/// STM32G031 RAM length in bytes.
 pub const STM32_G031_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32g031` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g031() -> BoardMemory {
     // G0 (M0+) on own tables.
     g0_full_board::<crate::device::svd::stm32g031::Stm32g031>(
@@ -3245,9 +3397,12 @@ pub fn stm32g031() -> BoardMemory {
         crate::device::svd::stm32g031::PERIPHERALS,
     )
 }
+/// STM32G071 flash length in bytes.
 pub const STM32_G071_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32G071 RAM length in bytes.
 pub const STM32_G071_RAM_LEN: u32 = 0x0000_6000;
 #[must_use]
+/// Construct the `stm32g071` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g071() -> BoardMemory {
     // G071 (M0+) on G081 tables; AES absent there.
     g0_full_board::<crate::device::svd::stm32g081::Stm32g081>(
@@ -3257,51 +3412,75 @@ pub fn stm32g071() -> BoardMemory {
         crate::device::svd::stm32g081::PERIPHERALS,
     )
 }
+/// STM32F301 flash length in bytes.
 pub const STM32_F301_FLASH_LEN: u32 = 0x0001_0000;
+/// STM32F301 RAM length in bytes.
 pub const STM32_F301_RAM_LEN: u32 = 0x0000_4000;
 #[must_use]
+/// Construct the `stm32f301` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f301() -> BoardMemory {
     stm32f303xe()
 }
+/// STM32L433 flash length in bytes.
 pub const STM32_L433_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32L433 RAM length in bytes.
 pub const STM32_L433_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32l433` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32l433() -> BoardMemory {
     stm32l476()
 }
+/// STM32F410 flash length in bytes.
 pub const STM32_F410_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F410 RAM length in bytes.
 pub const STM32_F410_RAM_LEN: u32 = 0x0000_8000;
 #[must_use]
+/// Construct the `stm32f410` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f410() -> BoardMemory {
     stm32f401()
 }
+/// STM32G441 flash length in bytes.
 pub const STM32_G441_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32G441 RAM length in bytes.
 pub const STM32_G441_RAM_LEN: u32 = 0x0000_8000;
 #[must_use]
+/// Construct the `stm32g441` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g441() -> BoardMemory {
     stm32g474xx()
 }
+/// STM32L443 flash length in bytes.
 pub const STM32_L443_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32L443 RAM length in bytes.
 pub const STM32_L443_RAM_LEN: u32 = 0x0002_8000;
 #[must_use]
+/// Construct the `stm32l443` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32l443() -> BoardMemory {
     stm32l476()
 }
+/// STM32F318 flash length in bytes.
 pub const STM32_F318_FLASH_LEN: u32 = 0x0001_0000;
+/// STM32F318 RAM length in bytes.
 pub const STM32_F318_RAM_LEN: u32 = 0x0000_4000;
 #[must_use]
+/// Construct the `stm32f318` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f318() -> BoardMemory {
     stm32f303xe()
 }
+/// STM32F051 flash length in bytes.
 pub const STM32_F051_FLASH_LEN: u32 = 0x0001_0000;
+/// STM32F051 RAM length in bytes.
 pub const STM32_F051_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32f051` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f051() -> BoardMemory {
     stm32f0x1()
 }
+/// STM32F207 flash length in bytes.
 pub const STM32_F207_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F207 RAM length in bytes.
 pub const STM32_F207_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f207` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f207() -> BoardMemory {
     // F2 connectivity (M3) on own tables.
     f4gen_full_board::<crate::device::svd::stm32f207::Stm32f207>(
@@ -3311,9 +3490,12 @@ pub fn stm32f207() -> BoardMemory {
         crate::device::svd::stm32f207::PERIPHERALS,
     )
 }
+/// STM32G030 flash length in bytes.
 pub const STM32_G030_FLASH_LEN: u32 = 0x0001_0000;
+/// STM32G030 RAM length in bytes.
 pub const STM32_G030_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32g030` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g030() -> BoardMemory {
     // G0 (M0+) on G031 behavior tables + own-tables latch loop.
     g0_full_board::<crate::device::svd::stm32g031::Stm32g031>(
@@ -3323,9 +3505,12 @@ pub fn stm32g030() -> BoardMemory {
         crate::device::svd::stm32g031::PERIPHERALS,
     )
 }
+/// STM32G041 flash length in bytes.
 pub const STM32_G041_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32G041 RAM length in bytes.
 pub const STM32_G041_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32g041` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g041() -> BoardMemory {
     // G041 (M0+) on G031 tables; AES/RNG windows absent there.
     let mut mem = g0_full_board::<crate::device::svd::stm32g031::Stm32g031>(
@@ -3342,21 +3527,30 @@ pub fn stm32g041() -> BoardMemory {
     }
     mem
 }
+/// STM32L010 flash length in bytes.
 pub const STM32_L010_FLASH_LEN: u32 = 0x0000_4000;
+/// STM32L010 RAM length in bytes.
 pub const STM32_L010_RAM_LEN: u32 = 0x0000_0800;
 #[must_use]
+/// Construct the `stm32l010` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32l010() -> BoardMemory {
     stm32l476()
 }
+/// STM32L021 flash length in bytes.
 pub const STM32_L021_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32L021 RAM length in bytes.
 pub const STM32_L021_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32l021` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32l021() -> BoardMemory {
     stm32l476()
 }
+/// STM32H563 flash length in bytes.
 pub const STM32_H563_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32H563 RAM length in bytes.
 pub const STM32_H563_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32h563` (M33) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32h563() -> BoardMemory {
     // H563 (M33) on own tables.
     m33_full_board::<crate::device::svd::stm32h563::Stm32h563>(
@@ -3366,9 +3560,12 @@ pub fn stm32h563() -> BoardMemory {
         crate::device::svd::stm32h563::PERIPHERALS,
     )
 }
+/// STM32U575 flash length in bytes.
 pub const STM32_U575_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32U575 RAM length in bytes.
 pub const STM32_U575_RAM_LEN: u32 = 0x000C_0000;
 #[must_use]
+/// Construct the `stm32u575` (M33) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32u575() -> BoardMemory {
     // U575 (M33) on own tables.
     m33_full_board::<crate::device::svd::stm32u575::Stm32u575>(
@@ -3378,45 +3575,66 @@ pub fn stm32u575() -> BoardMemory {
         crate::device::svd::stm32u575::PERIPHERALS,
     )
 }
+/// STM32WB55 flash length in bytes.
 pub const STM32_WB55_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32WB55 RAM length in bytes.
 pub const STM32_WB55_RAM_LEN: u32 = 0x0004_0000;
 #[must_use]
+/// Construct the `stm32wb55` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32wb55() -> BoardMemory {
     stm32l476()
 }
+/// STM32F098 flash length in bytes.
 pub const STM32_F098_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F098 RAM length in bytes.
 pub const STM32_F098_RAM_LEN: u32 = 0x0000_8000;
 #[must_use]
+/// Construct the `stm32f098` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f098() -> BoardMemory {
     stm32f091()
 }
+/// STM32F038 flash length in bytes.
 pub const STM32_F038_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32F038 RAM length in bytes.
 pub const STM32_F038_RAM_LEN: u32 = 0x0000_1800;
 #[must_use]
+/// Construct the `stm32f038` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f038() -> BoardMemory {
     stm32f0x0()
 }
+/// STM32F048 flash length in bytes.
 pub const STM32_F048_FLASH_LEN: u32 = 0x0001_0000;
+/// STM32F048 RAM length in bytes.
 pub const STM32_F048_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32f048` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f048() -> BoardMemory {
     stm32f072()
 }
+/// STM32F071 flash length in bytes.
 pub const STM32_F071_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F071 RAM length in bytes.
 pub const STM32_F071_RAM_LEN: u32 = 0x0000_4000;
 #[must_use]
+/// Construct the `stm32f071` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f071() -> BoardMemory {
     stm32f072()
 }
+/// STM32F333 flash length in bytes.
 pub const STM32_F333_FLASH_LEN: u32 = 0x0001_0000;
+/// STM32F333 RAM length in bytes.
 pub const STM32_F333_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f333` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f333() -> BoardMemory {
     stm32f303xe()
 }
+/// STM32G050 flash length in bytes.
 pub const STM32_G050_FLASH_LEN: u32 = 0x0001_0000;
+/// STM32G050 RAM length in bytes.
 pub const STM32_G050_RAM_LEN: u32 = 0x0000_4800;
 #[must_use]
+/// Construct the `stm32g050` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g050() -> BoardMemory {
     // G050 (M0+) on own tables.
     g0_full_board::<crate::device::svd::stm32g050::Stm32g050>(
@@ -3426,21 +3644,30 @@ pub fn stm32g050() -> BoardMemory {
         crate::device::svd::stm32g050::PERIPHERALS,
     )
 }
+/// STM32L011 flash length in bytes.
 pub const STM32_L011_FLASH_LEN: u32 = 0x0000_4000;
+/// STM32L011 RAM length in bytes.
 pub const STM32_L011_RAM_LEN: u32 = 0x0000_0800;
 #[must_use]
+/// Construct the `stm32l011` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32l011() -> BoardMemory {
     stm32l476()
 }
+/// STM32L031 flash length in bytes.
 pub const STM32_L031_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32L031 RAM length in bytes.
 pub const STM32_L031_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32l031` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32l031() -> BoardMemory {
     stm32l476()
 }
+/// STM32F723 flash length in bytes.
 pub const STM32_F723_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32F723 RAM length in bytes.
 pub const STM32_F723_RAM_LEN: u32 = 0x0005_0000;
 #[must_use]
+/// Construct the `stm32f723` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f723() -> BoardMemory {
     // F7 value line (M7) on own tables.
     f4gen_full_board::<crate::device::svd::stm32f722::Stm32f722>(
@@ -3450,9 +3677,12 @@ pub fn stm32f723() -> BoardMemory {
         crate::device::svd::stm32f722::PERIPHERALS,
     )
 }
+/// STM32H562 flash length in bytes.
 pub const STM32_H562_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32H562 RAM length in bytes.
 pub const STM32_H562_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32h562` (M33) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32h562() -> BoardMemory {
     // H562 (M33) on H563 tables.
     m33_full_board::<crate::device::svd::stm32h563::Stm32h563>(
@@ -3462,9 +3692,12 @@ pub fn stm32h562() -> BoardMemory {
         crate::device::svd::stm32h563::PERIPHERALS,
     )
 }
+/// STM32WLE5 flash length in bytes.
 pub const STM32_WLE5_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32WLE5 RAM length in bytes.
 pub const STM32_WLE5_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32wle5` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32wle5() -> BoardMemory {
     let mut mem = stm32l476();
     if matches!(mem.read(0x5800_1400), Err(crate::error::BusError::Reserved)) {
@@ -3476,9 +3709,12 @@ pub fn stm32wle5() -> BoardMemory {
     }
     mem
 }
+/// STM32F215 flash length in bytes.
 pub const STM32_F215_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32F215 RAM length in bytes.
 pub const STM32_F215_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f215` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f215() -> BoardMemory {
     // F2 high-temp foundation (M3, no Ethernet/DCMI) on own F217 tables.
     f4gen_full_board::<crate::device::svd::stm32f217::Stm32f217>(
@@ -3494,9 +3730,12 @@ pub fn stm32f215() -> BoardMemory {
         crate::device::svd::stm32f217::PERIPHERALS,
     )
 }
+/// STM32F217 flash length in bytes.
 pub const STM32_F217_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32F217 RAM length in bytes.
 pub const STM32_F217_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f217` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f217() -> BoardMemory {
     // F2 connectivity (M3) on own tables.
     f4gen_full_board::<crate::device::svd::stm32f217::Stm32f217>(
@@ -3506,15 +3745,21 @@ pub fn stm32f217() -> BoardMemory {
         crate::device::svd::stm32f217::PERIPHERALS,
     )
 }
+/// STM32F328 flash length in bytes.
 pub const STM32_F328_FLASH_LEN: u32 = 0x0001_0000;
+/// STM32F328 RAM length in bytes.
 pub const STM32_F328_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f328` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f328() -> BoardMemory {
     stm32f303xe()
 }
+/// STM32G081 flash length in bytes.
 pub const STM32_G081_FLASH_LEN: u32 = 0x0001_0000;
+/// STM32G081 RAM length in bytes.
 pub const STM32_G081_RAM_LEN: u32 = 0x0000_4800;
 #[must_use]
+/// Construct the `stm32g081` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g081() -> BoardMemory {
     // G081 (M0+) on own tables.
     g0_full_board::<crate::device::svd::stm32g081::Stm32g081>(
@@ -3524,9 +3769,12 @@ pub fn stm32g081() -> BoardMemory {
         crate::device::svd::stm32g081::PERIPHERALS,
     )
 }
+/// STM32G0B1 flash length in bytes.
 pub const STM32_G0B1_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32G0B1 RAM length in bytes.
 pub const STM32_G0B1_RAM_LEN: u32 = 0x0000_9000;
 #[must_use]
+/// Construct the `stm32g0b1` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g0b1() -> BoardMemory {
     // G0B1 (M0+) on G0C1 tables; AES/RNG absent there.
     g0_full_board::<crate::device::svd::stm32g0c1::Stm32g0c1>(
@@ -3536,21 +3784,30 @@ pub fn stm32g0b1() -> BoardMemory {
         crate::device::svd::stm32g0c1::PERIPHERALS,
     )
 }
+/// STM32L052 flash length in bytes.
 pub const STM32_L052_FLASH_LEN: u32 = 0x0001_0000;
+/// STM32L052 RAM length in bytes.
 pub const STM32_L052_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32l052` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32l052() -> BoardMemory {
     stm32l476()
 }
+/// STM32L062 flash length in bytes.
 pub const STM32_L062_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32L062 RAM length in bytes.
 pub const STM32_L062_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32l062` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32l062() -> BoardMemory {
     stm32l476()
 }
+/// STM32F730 flash length in bytes.
 pub const STM32_F730_FLASH_LEN: u32 = 0x0001_0000;
+/// STM32F730 RAM length in bytes.
 pub const STM32_F730_RAM_LEN: u32 = 0x0000_4000;
 #[must_use]
+/// Construct the `stm32f730` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f730() -> BoardMemory {
     // F730 (M7) on own tables.
     f4gen_full_board::<crate::device::svd::stm32f730::Stm32f730>(
@@ -3560,9 +3817,12 @@ pub fn stm32f730() -> BoardMemory {
         crate::device::svd::stm32f730::PERIPHERALS,
     )
 }
+/// STM32H503 flash length in bytes.
 pub const STM32_H503_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32H503 RAM length in bytes.
 pub const STM32_H503_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32h503` (M33) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32h503() -> BoardMemory {
     // H503 (M33) on own tables.
     m33_full_board::<crate::device::svd::stm32h503::Stm32h503>(
@@ -3572,9 +3832,12 @@ pub fn stm32h503() -> BoardMemory {
         crate::device::svd::stm32h503::PERIPHERALS,
     )
 }
+/// STM32U585 flash length in bytes.
 pub const STM32_U585_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32U585 RAM length in bytes.
 pub const STM32_U585_RAM_LEN: u32 = 0x000C_0000;
 #[must_use]
+/// Construct the `stm32u585` (M33) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32u585() -> BoardMemory {
     // U585 (M33) on U575 tables; AES/SAES windows absent there.
     let mut mem = m33_full_board::<crate::device::svd::stm32u575::Stm32u575>(
@@ -3591,9 +3854,12 @@ pub fn stm32u585() -> BoardMemory {
     }
     mem
 }
+/// STM32F205 flash length in bytes.
 pub const STM32_F205_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F205 RAM length in bytes.
 pub const STM32_F205_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f205` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f205() -> BoardMemory {
     // F2 foundation (M3, no Ethernet/DCMI) on own F207 tables.
     f4gen_full_board::<crate::device::svd::stm32f207::Stm32f207>(
@@ -3609,33 +3875,48 @@ pub fn stm32f205() -> BoardMemory {
         crate::device::svd::stm32f207::PERIPHERALS,
     )
 }
+/// STM32F427 flash length in bytes.
 pub const STM32_F427_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F427 RAM length in bytes.
 pub const STM32_F427_RAM_LEN: u32 = 0x0003_0000;
 #[must_use]
+/// Construct the `stm32f427` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f427() -> BoardMemory {
     stm32f429()
 }
+/// STM32F398 flash length in bytes.
 pub const STM32_F398_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32F398 RAM length in bytes.
 pub const STM32_F398_RAM_LEN: u32 = 0x0000_8000;
 #[must_use]
+/// Construct the `stm32f398` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f398() -> BoardMemory {
     stm32f303xe()
 }
+/// STM32G491 flash length in bytes.
 pub const STM32_G491_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32G491 RAM length in bytes.
 pub const STM32_G491_RAM_LEN: u32 = 0x0001_8000;
 #[must_use]
+/// Construct the `stm32g491` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g491() -> BoardMemory {
     stm32g474xx()
 }
+/// STM32L151 flash length in bytes.
 pub const STM32_L151_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32L151 RAM length in bytes.
 pub const STM32_L151_RAM_LEN: u32 = 0x0001_4000;
 #[must_use]
+/// Construct the `stm32l151` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32l151() -> BoardMemory {
     stm32l476()
 }
+/// STM32F777 flash length in bytes.
 pub const STM32_F777_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32F777 RAM length in bytes.
 pub const STM32_F777_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32f777` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f777() -> BoardMemory {
     // F7 high line, large (M7, Ethernet) on own F767 tables.
     f4gen_full_board::<crate::device::svd::stm32f767::Stm32f767>(
@@ -3645,15 +3926,21 @@ pub fn stm32f777() -> BoardMemory {
         crate::device::svd::stm32f767::PERIPHERALS,
     )
 }
+/// STM32H735 flash length in bytes.
 pub const STM32_H735_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32H735 RAM length in bytes.
 pub const STM32_H735_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32h735` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32h735() -> BoardMemory {
     stm32h743()
 }
+/// STM32U5A5 flash length in bytes.
 pub const STM32_U5A5_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32U5A5 RAM length in bytes.
 pub const STM32_U5A5_RAM_LEN: u32 = 0x000C_0000;
 #[must_use]
+/// Construct the `stm32u5a5` (M33) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32u5a5() -> BoardMemory {
     // U5A5 (M33) on U5G9 tables.
     m33_full_board::<crate::device::svd::stm32u5g9::Stm32u5g9>(
@@ -3680,15 +3967,21 @@ pub fn stm32u5a5() -> BoardMemory {
         crate::device::svd::stm32u5g9::PERIPHERALS,
     )
 }
+/// STM32L162 flash length in bytes.
 pub const STM32_L162_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32L162 RAM length in bytes.
 pub const STM32_L162_RAM_LEN: u32 = 0x0001_4000;
 #[must_use]
+/// Construct the `stm32l162` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32l162() -> BoardMemory {
     stm32l476()
 }
+/// STM32WL55 flash length in bytes.
 pub const STM32_WL55_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32WL55 RAM length in bytes.
 pub const STM32_WL55_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32wl55` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32wl55() -> BoardMemory {
     let mut mem = stm32l476();
     if matches!(mem.read(0x5800_1400), Err(crate::error::BusError::Reserved)) {
@@ -3699,15 +3992,21 @@ pub fn stm32wl55() -> BoardMemory {
     }
     mem
 }
+/// STM32F417 flash length in bytes.
 pub const STM32_F417_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F417 RAM length in bytes.
 pub const STM32_F417_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f417` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f417() -> BoardMemory {
     stm32f407()
 }
+/// STM32F732 flash length in bytes.
 pub const STM32_F732_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32F732 RAM length in bytes.
 pub const STM32_F732_RAM_LEN: u32 = 0x0004_0000;
 #[must_use]
+/// Construct the `stm32f732` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f732() -> BoardMemory {
     // F7 value line (M7) on own tables.
     f4gen_full_board::<crate::device::svd::stm32f722::Stm32f722>(
@@ -3717,9 +4016,12 @@ pub fn stm32f732() -> BoardMemory {
         crate::device::svd::stm32f722::PERIPHERALS,
     )
 }
+/// STM32G0C1 flash length in bytes.
 pub const STM32_G0C1_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32G0C1 RAM length in bytes.
 pub const STM32_G0C1_RAM_LEN: u32 = 0x0000_9000;
 #[must_use]
+/// Construct the `stm32g0c1` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g0c1() -> BoardMemory {
     // G0C1 (M0+) on own tables.
     g0_full_board::<crate::device::svd::stm32g0c1::Stm32g0c1>(
@@ -3729,21 +4031,30 @@ pub fn stm32g0c1() -> BoardMemory {
         crate::device::svd::stm32g0c1::PERIPHERALS,
     )
 }
+/// STM32L431 flash length in bytes.
 pub const STM32_L431_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32L431 RAM length in bytes.
 pub const STM32_L431_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32l431` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32l431() -> BoardMemory {
     stm32l476()
 }
+/// STM32H755 flash length in bytes.
 pub const STM32_H755_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32H755 RAM length in bytes.
 pub const STM32_H755_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32h755` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32h755() -> BoardMemory {
     stm32h743()
 }
+/// STM32U5G9 flash length in bytes.
 pub const STM32_U5G9_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32U5G9 RAM length in bytes.
 pub const STM32_U5G9_RAM_LEN: u32 = 0x000C_0000;
 #[must_use]
+/// Construct the `stm32u5g9` (M33) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32u5g9() -> BoardMemory {
     // U5G9 (M33) on own tables.
     m33_full_board::<crate::device::svd::stm32u5g9::Stm32u5g9>(
@@ -3753,9 +4064,12 @@ pub fn stm32u5g9() -> BoardMemory {
         crate::device::svd::stm32u5g9::PERIPHERALS,
     )
 }
+/// STM32WBA52 flash length in bytes.
 pub const STM32_WBA52_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32WBA52 RAM length in bytes.
 pub const STM32_WBA52_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32wba52` (M33) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32wba52() -> BoardMemory {
     // WBA52 (M33) on WBA55 tables; radio stays a latch.
     m33_full_board::<crate::device::svd::stm32wba55::Stm32wba55>(
@@ -3765,27 +4079,39 @@ pub fn stm32wba52() -> BoardMemory {
         crate::device::svd::stm32wba55::PERIPHERALS,
     )
 }
+/// STM32L071 flash length in bytes.
 pub const STM32_L071_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32L071 RAM length in bytes.
 pub const STM32_L071_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32l071` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32l071() -> BoardMemory {
     stm32l476()
 }
+/// STM32H7A3 flash length in bytes.
 pub const STM32_H7A3_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32H7A3 RAM length in bytes.
 pub const STM32_H7A3_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32h7a3` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32h7a3() -> BoardMemory {
     stm32h743()
 }
+/// STM32L051 flash length in bytes.
 pub const STM32_L051_FLASH_LEN: u32 = 0x0001_0000;
+/// STM32L051 RAM length in bytes.
 pub const STM32_L051_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32l051` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32l051() -> BoardMemory {
     stm32l476()
 }
+/// STM32G061 flash length in bytes.
 pub const STM32_G061_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32G061 RAM length in bytes.
 pub const STM32_G061_RAM_LEN: u32 = 0x0000_4800;
 #[must_use]
+/// Construct the `stm32g061` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g061() -> BoardMemory {
     // G061 (M0+) on own tables.
     g0_full_board::<crate::device::svd::stm32g061::Stm32g061>(
@@ -3795,33 +4121,48 @@ pub fn stm32g061() -> BoardMemory {
         crate::device::svd::stm32g061::PERIPHERALS,
     )
 }
+/// STM32G473 flash length in bytes.
 pub const STM32_G473_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32G473 RAM length in bytes.
 pub const STM32_G473_RAM_LEN: u32 = 0x0001_8000;
 #[must_use]
+/// Construct the `stm32g473` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g473() -> BoardMemory {
     stm32g474xx()
 }
+/// STM32L041 flash length in bytes.
 pub const STM32_L041_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32L041 RAM length in bytes.
 pub const STM32_L041_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32l041` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32l041() -> BoardMemory {
     stm32l476()
 }
+/// STM32L100 flash length in bytes.
 pub const STM32_L100_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32L100 RAM length in bytes.
 pub const STM32_L100_RAM_LEN: u32 = 0x0001_4000;
 #[must_use]
+/// Construct the `stm32l100` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32l100() -> BoardMemory {
     stm32l476()
 }
+/// STM32L471 flash length in bytes.
 pub const STM32_L471_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32L471 RAM length in bytes.
 pub const STM32_L471_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32l471` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32l471() -> BoardMemory {
     stm32l476()
 }
+/// STM32H533 flash length in bytes.
 pub const STM32_H533_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32H533 RAM length in bytes.
 pub const STM32_H533_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32h533` (M33) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32h533() -> BoardMemory {
     // H533 (M33) on own tables.
     m33_full_board::<crate::device::svd::stm32h533::Stm32h533>(
@@ -3831,15 +4172,21 @@ pub fn stm32h533() -> BoardMemory {
         crate::device::svd::stm32h533::PERIPHERALS,
     )
 }
+/// STM32H742 flash length in bytes.
 pub const STM32_H742_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32H742 RAM length in bytes.
 pub const STM32_H742_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32h742` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32h742() -> BoardMemory {
     stm32h743()
 }
+/// STM32U595 flash length in bytes.
 pub const STM32_U595_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32U595 RAM length in bytes.
 pub const STM32_U595_RAM_LEN: u32 = 0x000C_0000;
 #[must_use]
+/// Construct the `stm32u595` (M33) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32u595() -> BoardMemory {
     // U595 (M33) on U5G9 tables.
     m33_full_board::<crate::device::svd::stm32u5g9::Stm32u5g9>(
@@ -3876,9 +4223,12 @@ pub fn stm32u595() -> BoardMemory {
         crate::device::svd::stm32u5g9::PERIPHERALS,
     )
 }
+/// STM32WLE4 flash length in bytes.
 pub const STM32_WLE4_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32WLE4 RAM length in bytes.
 pub const STM32_WLE4_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32wle4` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32wle4() -> BoardMemory {
     let mut mem = stm32l476();
     if matches!(mem.read(0x5800_1400), Err(crate::error::BusError::Reserved)) {
@@ -3889,9 +4239,12 @@ pub fn stm32wle4() -> BoardMemory {
     }
     mem
 }
+/// STM32F745 flash length in bytes.
 pub const STM32_F745_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F745 RAM length in bytes.
 pub const STM32_F745_RAM_LEN: u32 = 0x0004_0000;
 #[must_use]
+/// Construct the `stm32f745` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f745() -> BoardMemory {
     // F7 high line (M7) on own F746 tables.
     f4gen_full_board::<crate::device::svd::stm32f746::Stm32f746>(
@@ -3901,21 +4254,30 @@ pub fn stm32f745() -> BoardMemory {
         crate::device::svd::stm32f746::PERIPHERALS,
     )
 }
+/// STM32C011 flash length in bytes.
 pub const STM32_C011_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32C011 RAM length in bytes.
 pub const STM32_C011_RAM_LEN: u32 = 0x0000_3000;
 #[must_use]
+/// Construct the `stm32c011` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32c011() -> BoardMemory {
     stm32f072()
 }
+/// STM32C031 flash length in bytes.
 pub const STM32_C031_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32C031 RAM length in bytes.
 pub const STM32_C031_RAM_LEN: u32 = 0x0000_3000;
 #[must_use]
+/// Construct the `stm32c031` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32c031() -> BoardMemory {
     stm32f072()
 }
+/// STM32U535 flash length in bytes.
 pub const STM32_U535_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32U535 RAM length in bytes.
 pub const STM32_U535_RAM_LEN: u32 = 0x000C_0000;
 #[must_use]
+/// Construct the `stm32u535` (M33) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32u535() -> BoardMemory {
     // U535 (M33) on own tables.
     m33_full_board::<crate::device::svd::stm32u535::Stm32u535>(
@@ -3925,9 +4287,12 @@ pub fn stm32u535() -> BoardMemory {
         crate::device::svd::stm32u535::PERIPHERALS,
     )
 }
+/// STM32WBA55 flash length in bytes.
 pub const STM32_WBA55_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32WBA55 RAM length in bytes.
 pub const STM32_WBA55_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32wba55` (M33) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32wba55() -> BoardMemory {
     // WBA55 (M33) on own tables; the BLE advertising window is virtual
     // (real BLE runs on CPU2 — see `ble.rs`).
@@ -3942,9 +4307,12 @@ pub fn stm32wba55() -> BoardMemory {
     }
     mem
 }
+/// STM32WL33 flash length in bytes.
 pub const STM32_WL33_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32WL33 RAM length in bytes.
 pub const STM32_WL33_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32wl33` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32wl33() -> BoardMemory {
     let mut mem = stm32l476();
     if matches!(mem.read(0x5800_1400), Err(crate::error::BusError::Reserved)) {
@@ -3955,9 +4323,12 @@ pub fn stm32wl33() -> BoardMemory {
     }
     mem
 }
+/// STM32L552 flash length in bytes.
 pub const STM32_L552_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32L552 RAM length in bytes.
 pub const STM32_L552_RAM_LEN: u32 = 0x0004_0000;
 #[must_use]
+/// Construct the `stm32l552` (M33) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32l552() -> BoardMemory {
     // L552 (M33) on L562 tables.
     m33_full_board::<crate::device::svd::stm32l562::Stm32l562>(
@@ -3967,9 +4338,12 @@ pub fn stm32l552() -> BoardMemory {
         crate::device::svd::stm32l562::PERIPHERALS,
     )
 }
+/// STM32L562 flash length in bytes.
 pub const STM32_L562_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32L562 RAM length in bytes.
 pub const STM32_L562_RAM_LEN: u32 = 0x0004_0000;
 #[must_use]
+/// Construct the `stm32l562` (M33) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32l562() -> BoardMemory {
     // L562 (M33) on own tables.
     m33_full_board::<crate::device::svd::stm32l562::Stm32l562>(
@@ -3979,15 +4353,21 @@ pub fn stm32l562() -> BoardMemory {
         crate::device::svd::stm32l562::PERIPHERALS,
     )
 }
+/// STM32H7B3 flash length in bytes.
 pub const STM32_H7B3_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32H7B3 RAM length in bytes.
 pub const STM32_H7B3_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32h7b3` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32h7b3() -> BoardMemory {
     stm32h743()
 }
+/// STM32U5F9 flash length in bytes.
 pub const STM32_U5F9_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32U5F9 RAM length in bytes.
 pub const STM32_U5F9_RAM_LEN: u32 = 0x000C_0000;
 #[must_use]
+/// Construct the `stm32u5f9` (M33) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32u5f9() -> BoardMemory {
     // U5F9 (M33) on U5G9 tables.
     m33_full_board::<crate::device::svd::stm32u5g9::Stm32u5g9>(
@@ -4008,2211 +4388,3315 @@ pub fn stm32u5f9() -> BoardMemory {
         crate::device::svd::stm32u5g9::PERIPHERALS,
     )
 }
+/// STM32MP157 flash length in bytes.
 pub const STM32_MP157_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32MP157 RAM length in bytes.
 pub const STM32_MP157_RAM_LEN: u32 = 0x0004_0000;
 #[must_use]
+/// Construct the `stm32mp157` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32mp157() -> BoardMemory {
     stm32h743()
 }
+/// STM32F103C8 flash length in bytes.
 pub const STM32_F103C8_FLASH_LEN: u32 = 0x0001_0000;
+/// STM32F103C8 RAM length in bytes.
 pub const STM32_F103C8_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f103c8` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f103c8() -> BoardMemory {
     stm32f103()
 }
+/// STM32F103RB flash length in bytes.
 pub const STM32_F103RB_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F103RB RAM length in bytes.
 pub const STM32_F103RB_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f103rb` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f103rb() -> BoardMemory {
     stm32f103()
 }
+/// STM32F103ZE flash length in bytes.
 pub const STM32_F103ZE_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32F103ZE RAM length in bytes.
 pub const STM32_F103ZE_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f103ze` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f103ze() -> BoardMemory {
     stm32f103()
 }
+/// STM32F401RE flash length in bytes.
 pub const STM32_F401RE_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32F401RE RAM length in bytes.
 pub const STM32_F401RE_RAM_LEN: u32 = 0x0001_8000;
 #[must_use]
+/// Construct the `stm32f401re` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f401re() -> BoardMemory {
     stm32f401()
 }
+/// STM32F411RE flash length in bytes.
 pub const STM32_F411RE_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32F411RE RAM length in bytes.
 pub const STM32_F411RE_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f411re` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f411re() -> BoardMemory {
     stm32f411()
 }
+/// STM32F429ZI flash length in bytes.
 pub const STM32_F429ZI_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32F429ZI RAM length in bytes.
 pub const STM32_F429ZI_RAM_LEN: u32 = 0x0004_0000;
 #[must_use]
+/// Construct the `stm32f429zi` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f429zi() -> BoardMemory {
     stm32f429()
 }
+/// STM32F746ZG flash length in bytes.
 pub const STM32_F746ZG_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F746ZG RAM length in bytes.
 pub const STM32_F746ZG_RAM_LEN: u32 = 0x0005_0000;
 #[must_use]
+/// Construct the `stm32f746zg` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f746zg() -> BoardMemory {
     stm32f746()
 }
+/// STM32G431RB flash length in bytes.
 pub const STM32_G431RB_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32G431RB RAM length in bytes.
 pub const STM32_G431RB_RAM_LEN: u32 = 0x0000_8000;
 #[must_use]
+/// Construct the `stm32g431rb` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g431rb() -> BoardMemory {
     stm32g474xx()
 }
+/// STM32L476RG flash length in bytes.
 pub const STM32_L476RG_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32L476RG RAM length in bytes.
 pub const STM32_L476RG_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32l476rg` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32l476rg() -> BoardMemory {
     stm32l476()
 }
+/// STM32H743ZI flash length in bytes.
 pub const STM32_H743ZI_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32H743ZI RAM length in bytes.
 pub const STM32_H743ZI_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32h743zi` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32h743zi() -> BoardMemory {
     stm32h743()
 }
+/// STM32F030C6 flash length in bytes.
 pub const STM32F030C6_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32F030C6 RAM length in bytes.
 pub const STM32F030C6_RAM_LEN: u32 = 0x0000_1000;
 #[must_use]
+/// Construct the `stm32f030c6` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f030c6() -> BoardMemory {
     stm32f030()
 }
+/// STM32F030CC flash length in bytes.
 pub const STM32F030CC_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F030CC RAM length in bytes.
 pub const STM32F030CC_RAM_LEN: u32 = 0x0000_8000;
 #[must_use]
+/// Construct the `stm32f030cc` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f030cc() -> BoardMemory {
     stm32f030()
 }
+/// STM32F042K6 flash length in bytes.
 pub const STM32F042K6_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32F042K6 RAM length in bytes.
 pub const STM32F042K6_RAM_LEN: u32 = 0x0000_1800;
 #[must_use]
+/// Construct the `stm32f042k6` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f042k6() -> BoardMemory {
     stm32f042()
 }
+/// STM32F042T6 flash length in bytes.
 pub const STM32F042T6_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32F042T6 RAM length in bytes.
 pub const STM32F042T6_RAM_LEN: u32 = 0x0000_1800;
 #[must_use]
+/// Construct the `stm32f042t6` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f042t6() -> BoardMemory {
     stm32f042()
 }
+/// STM32F072C8 flash length in bytes.
 pub const STM32F072C8_FLASH_LEN: u32 = 0x0001_0000;
+/// STM32F072C8 RAM length in bytes.
 pub const STM32F072C8_RAM_LEN: u32 = 0x0000_4000;
 #[must_use]
+/// Construct the `stm32f072c8` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f072c8() -> BoardMemory {
     stm32f072()
 }
+/// STM32F091RC flash length in bytes.
 pub const STM32F091RC_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F091RC RAM length in bytes.
 pub const STM32F091RC_RAM_LEN: u32 = 0x0000_8000;
 #[must_use]
+/// Construct the `stm32f091rc` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f091rc() -> BoardMemory {
     stm32f091()
 }
+/// STM32F100C8 flash length in bytes.
 pub const STM32F100C8_FLASH_LEN: u32 = 0x0001_0000;
+/// STM32F100C8 RAM length in bytes.
 pub const STM32F100C8_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32f100c8` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f100c8() -> BoardMemory {
     stm32f100()
 }
+/// STM32F101C8 flash length in bytes.
 pub const STM32F101C8_FLASH_LEN: u32 = 0x0001_0000;
+/// STM32F101C8 RAM length in bytes.
 pub const STM32F101C8_RAM_LEN: u32 = 0x0000_2800;
 #[must_use]
+/// Construct the `stm32f101c8` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f101c8() -> BoardMemory {
     stm32f101()
 }
+/// STM32F102CB flash length in bytes.
 pub const STM32F102CB_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F102CB RAM length in bytes.
 pub const STM32F102CB_RAM_LEN: u32 = 0x0000_4000;
 #[must_use]
+/// Construct the `stm32f102cb` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f102cb() -> BoardMemory {
     stm32f102()
 }
+/// STM32F103C6 flash length in bytes.
 pub const STM32F103C6_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32F103C6 RAM length in bytes.
 pub const STM32F103C6_RAM_LEN: u32 = 0x0000_2800;
 #[must_use]
+/// Construct the `stm32f103c6` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f103c6() -> BoardMemory {
     stm32f103()
 }
+/// STM32F103RE flash length in bytes.
 pub const STM32F103RE_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32F103RE RAM length in bytes.
 pub const STM32F103RE_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f103re` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f103re() -> BoardMemory {
     stm32f103()
 }
+/// STM32F105RB flash length in bytes.
 pub const STM32F105RB_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F105RB RAM length in bytes.
 pub const STM32F105RB_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f105rb` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f105rb() -> BoardMemory {
     stm32f105()
 }
+/// STM32F107VC flash length in bytes.
 pub const STM32F107VC_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F107VC RAM length in bytes.
 pub const STM32F107VC_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f107vc` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f107vc() -> BoardMemory {
     stm32f107()
 }
+/// STM32F205RE flash length in bytes.
 pub const STM32F205RE_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32F205RE RAM length in bytes.
 pub const STM32F205RE_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f205re` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f205re() -> BoardMemory {
     stm32f205()
 }
+/// STM32F207ZE flash length in bytes.
 pub const STM32F207ZE_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32F207ZE RAM length in bytes.
 pub const STM32F207ZE_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f207ze` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f207ze() -> BoardMemory {
     stm32f207()
 }
+/// STM32F215RE flash length in bytes.
 pub const STM32F215RE_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32F215RE RAM length in bytes.
 pub const STM32F215RE_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f215re` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f215re() -> BoardMemory {
     stm32f215()
 }
+/// STM32F217IG flash length in bytes.
 pub const STM32F217IG_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F217IG RAM length in bytes.
 pub const STM32F217IG_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f217ig` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f217ig() -> BoardMemory {
     stm32f217()
 }
+/// STM32F301K8 flash length in bytes.
 pub const STM32F301K8_FLASH_LEN: u32 = 0x0001_0000;
+/// STM32F301K8 RAM length in bytes.
 pub const STM32F301K8_RAM_LEN: u32 = 0x0000_4000;
 #[must_use]
+/// Construct the `stm32f301k8` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f301k8() -> BoardMemory {
     stm32f301()
 }
+/// STM32F302CB flash length in bytes.
 pub const STM32F302CB_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F302CB RAM length in bytes.
 pub const STM32F302CB_RAM_LEN: u32 = 0x0000_6000;
 #[must_use]
+/// Construct the `stm32f302cb` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f302cb() -> BoardMemory {
     stm32f302()
 }
+/// STM32F303CC flash length in bytes.
 pub const STM32F303CC_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F303CC RAM length in bytes.
 pub const STM32F303CC_RAM_LEN: u32 = 0x0000_C000;
 #[must_use]
+/// Construct the `stm32f303cc` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f303cc() -> BoardMemory {
     stm32f303()
 }
+/// STM32F373CC flash length in bytes.
 pub const STM32F373CC_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F373CC RAM length in bytes.
 pub const STM32F373CC_RAM_LEN: u32 = 0x0000_8000;
 #[must_use]
+/// Construct the `stm32f373cc` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f373cc() -> BoardMemory {
     stm32f373()
 }
+/// STM32F378CC flash length in bytes.
 pub const STM32F378CC_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F378CC RAM length in bytes.
 pub const STM32F378CC_RAM_LEN: u32 = 0x0000_8000;
 #[must_use]
+/// Construct the `stm32f378cc` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f378cc() -> BoardMemory {
     stm32f378()
 }
+/// STM32F401CC flash length in bytes.
 pub const STM32F401CC_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F401CC RAM length in bytes.
 pub const STM32F401CC_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f401cc` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f401cc() -> BoardMemory {
     stm32f401()
 }
+/// STM32F401CE flash length in bytes.
 pub const STM32F401CE_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32F401CE RAM length in bytes.
 pub const STM32F401CE_RAM_LEN: u32 = 0x0001_8000;
 #[must_use]
+/// Construct the `stm32f401ce` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f401ce() -> BoardMemory {
     stm32f401()
 }
+/// STM32F410C8 flash length in bytes.
 pub const STM32F410C8_FLASH_LEN: u32 = 0x0001_0000;
+/// STM32F410C8 RAM length in bytes.
 pub const STM32F410C8_RAM_LEN: u32 = 0x0000_8000;
 #[must_use]
+/// Construct the `stm32f410c8` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f410c8() -> BoardMemory {
     stm32f410()
 }
+/// STM32F412CE flash length in bytes.
 pub const STM32F412CE_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32F412CE RAM length in bytes.
 pub const STM32F412CE_RAM_LEN: u32 = 0x0004_0000;
 #[must_use]
+/// Construct the `stm32f412ce` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f412ce() -> BoardMemory {
     stm32f412()
 }
+/// STM32F413CH flash length in bytes.
 pub const STM32F413CH_FLASH_LEN: u32 = 0x0018_0000;
+/// STM32F413CH RAM length in bytes.
 pub const STM32F413CH_RAM_LEN: u32 = 0x0005_0000;
 #[must_use]
+/// Construct the `stm32f413ch` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f413ch() -> BoardMemory {
     stm32f413()
 }
+/// STM32F423IH flash length in bytes.
 pub const STM32F423IH_FLASH_LEN: u32 = 0x0018_0000;
+/// STM32F423IH RAM length in bytes.
 pub const STM32F423IH_RAM_LEN: u32 = 0x0005_0000;
 #[must_use]
+/// Construct the `stm32f423ih` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f423ih() -> BoardMemory {
     stm32f423()
 }
+/// STM32F427IG flash length in bytes.
 pub const STM32F427IG_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F427IG RAM length in bytes.
 pub const STM32F427IG_RAM_LEN: u32 = 0x0003_0000;
 #[must_use]
+/// Construct the `stm32f427ig` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f427ig() -> BoardMemory {
     stm32f427()
 }
+/// STM32F429IG flash length in bytes.
 pub const STM32F429IG_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F429IG RAM length in bytes.
 pub const STM32F429IG_RAM_LEN: u32 = 0x0003_0000;
 #[must_use]
+/// Construct the `stm32f429ig` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f429ig() -> BoardMemory {
     stm32f429()
 }
+/// STM32F437II flash length in bytes.
 pub const STM32F437II_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32F437II RAM length in bytes.
 pub const STM32F437II_RAM_LEN: u32 = 0x0003_0000;
 #[must_use]
+/// Construct the `stm32f437ii` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f437ii() -> BoardMemory {
     stm32f437()
 }
+/// STM32F446RE flash length in bytes.
 pub const STM32F446RE_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32F446RE RAM length in bytes.
 pub const STM32F446RE_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f446re` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f446re() -> BoardMemory {
     stm32f446()
 }
+/// STM32F469AI flash length in bytes.
 pub const STM32F469AI_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32F469AI RAM length in bytes.
 pub const STM32F469AI_RAM_LEN: u32 = 0x0005_0000;
 #[must_use]
+/// Construct the `stm32f469ai` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f469ai() -> BoardMemory {
     stm32f469()
 }
+/// STM32F722IE flash length in bytes.
 pub const STM32F722IE_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32F722IE RAM length in bytes.
 pub const STM32F722IE_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f722ie` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f722ie() -> BoardMemory {
     stm32f722()
 }
+/// STM32F723IE flash length in bytes.
 pub const STM32F723IE_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32F723IE RAM length in bytes.
 pub const STM32F723IE_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f723ie` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f723ie() -> BoardMemory {
     stm32f723()
 }
+/// STM32F732IE flash length in bytes.
 pub const STM32F732IE_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32F732IE RAM length in bytes.
 pub const STM32F732IE_RAM_LEN: u32 = 0x0004_0000;
 #[must_use]
+/// Construct the `stm32f732ie` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f732ie() -> BoardMemory {
     stm32f732()
 }
+/// STM32F745IE flash length in bytes.
 pub const STM32F745IE_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F745IE RAM length in bytes.
 pub const STM32F745IE_RAM_LEN: u32 = 0x0004_0000;
 #[must_use]
+/// Construct the `stm32f745ie` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f745ie() -> BoardMemory {
     stm32f745()
 }
+/// STM32F746BE flash length in bytes.
 pub const STM32F746BE_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F746BE RAM length in bytes.
 pub const STM32F746BE_RAM_LEN: u32 = 0x0005_0000;
 #[must_use]
+/// Construct the `stm32f746be` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f746be() -> BoardMemory {
     stm32f746()
 }
+/// STM32F756ZG flash length in bytes.
 pub const STM32F756ZG_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F756ZG RAM length in bytes.
 pub const STM32F756ZG_RAM_LEN: u32 = 0x0005_0000;
 #[must_use]
+/// Construct the `stm32f756zg` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f756zg() -> BoardMemory {
     stm32f756()
 }
+/// STM32F765BI flash length in bytes.
 pub const STM32F765BI_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32F765BI RAM length in bytes.
 pub const STM32F765BI_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32f765bi` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f765bi() -> BoardMemory {
     stm32f765()
 }
+/// STM32F767ZI flash length in bytes.
 pub const STM32F767ZI_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32F767ZI RAM length in bytes.
 pub const STM32F767ZI_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32f767zi` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f767zi() -> BoardMemory {
     stm32f767()
 }
+/// STM32F777AI flash length in bytes.
 pub const STM32F777AI_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32F777AI RAM length in bytes.
 pub const STM32F777AI_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32f777ai` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f777ai() -> BoardMemory {
     stm32f777()
 }
+/// STM32G030F6 flash length in bytes.
 pub const STM32G030F6_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32G030F6 RAM length in bytes.
 pub const STM32G030F6_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32g030f6` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g030f6() -> BoardMemory {
     stm32g030()
 }
+/// STM32G031F8 flash length in bytes.
 pub const STM32G031F8_FLASH_LEN: u32 = 0x0001_0000;
+/// STM32G031F8 RAM length in bytes.
 pub const STM32G031F8_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32g031f8` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g031f8() -> BoardMemory {
     stm32g031()
 }
+/// STM32G070RB flash length in bytes.
 pub const STM32G070RB_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32G070RB RAM length in bytes.
 pub const STM32G070RB_RAM_LEN: u32 = 0x0000_9000;
 #[must_use]
+/// Construct the `stm32g070rb` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g070rb() -> BoardMemory {
     stm32g070()
 }
+/// STM32G071RB flash length in bytes.
 pub const STM32G071RB_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32G071RB RAM length in bytes.
 pub const STM32G071RB_RAM_LEN: u32 = 0x0000_9000;
 #[must_use]
+/// Construct the `stm32g071rb` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g071rb() -> BoardMemory {
     stm32g071()
 }
+/// STM32G474RE flash length in bytes.
 pub const STM32G474RE_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32G474RE RAM length in bytes.
 pub const STM32G474RE_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32g474re` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g474re() -> BoardMemory {
     stm32g474xx()
 }
+/// STM32H743II flash length in bytes.
 pub const STM32H743II_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32H743II RAM length in bytes.
 pub const STM32H743II_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32h743ii` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32h743ii() -> BoardMemory {
     stm32h743()
 }
+/// STM32H753II flash length in bytes.
 pub const STM32H753II_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32H753II RAM length in bytes.
 pub const STM32H753II_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32h753ii` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32h753ii() -> BoardMemory {
     stm32h753()
 }
+/// STM32L476JE flash length in bytes.
 pub const STM32L476JE_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32L476JE RAM length in bytes.
 pub const STM32L476JE_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32l476je` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32l476je() -> BoardMemory {
     stm32l476()
 }
+/// STM32F030K6 flash length in bytes.
 pub const STM32F030K6_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32F030K6 RAM length in bytes.
 pub const STM32F030K6_RAM_LEN: u32 = 0x0000_1000;
 #[must_use]
+/// Construct the `stm32f030k6` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f030k6() -> BoardMemory {
     stm32f030()
 }
+/// STM32F038K6 flash length in bytes.
 pub const STM32F038K6_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32F038K6 RAM length in bytes.
 pub const STM32F038K6_RAM_LEN: u32 = 0x0000_1000;
 #[must_use]
+/// Construct the `stm32f038k6` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f038k6() -> BoardMemory {
     stm32f042()
 }
+/// STM32F042G6 flash length in bytes.
 pub const STM32F042G6_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32F042G6 RAM length in bytes.
 pub const STM32F042G6_RAM_LEN: u32 = 0x0000_1800;
 #[must_use]
+/// Construct the `stm32f042g6` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f042g6() -> BoardMemory {
     stm32f042()
 }
+/// STM32F051G8 flash length in bytes.
 pub const STM32F051G8_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32F051G8 RAM length in bytes.
 pub const STM32F051G8_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32f051g8` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f051g8() -> BoardMemory {
     stm32f042()
 }
+/// STM32F072RB flash length in bytes.
 pub const STM32F072RB_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F072RB RAM length in bytes.
 pub const STM32F072RB_RAM_LEN: u32 = 0x0000_4000;
 #[must_use]
+/// Construct the `stm32f072rb` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f072rb() -> BoardMemory {
     stm32f072()
 }
+/// STM32F091CB flash length in bytes.
 pub const STM32F091CB_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F091CB RAM length in bytes.
 pub const STM32F091CB_RAM_LEN: u32 = 0x0000_8000;
 #[must_use]
+/// Construct the `stm32f091cb` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f091cb() -> BoardMemory {
     stm32f091()
 }
+/// STM32F100RB flash length in bytes.
 pub const STM32F100RB_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F100RB RAM length in bytes.
 pub const STM32F100RB_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32f100rb` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f100rb() -> BoardMemory {
     stm32f100()
 }
+/// STM32F101RE flash length in bytes.
 pub const STM32F101RE_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32F101RE RAM length in bytes.
 pub const STM32F101RE_RAM_LEN: u32 = 0x0000_C000;
 #[must_use]
+/// Construct the `stm32f101re` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f101re() -> BoardMemory {
     stm32f101()
 }
+/// STM32F102RE flash length in bytes.
 pub const STM32F102RE_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F102RE RAM length in bytes.
 pub const STM32F102RE_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f102re` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f102re() -> BoardMemory {
     stm32f102()
 }
+/// STM32F103VD flash length in bytes.
 pub const STM32F103VD_FLASH_LEN: u32 = 0x0006_0000;
+/// STM32F103VD RAM length in bytes.
 pub const STM32F103VD_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f103vd` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f103vd() -> BoardMemory {
     stm32f103()
 }
+/// STM32F105RE flash length in bytes.
 pub const STM32F105RE_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F105RE RAM length in bytes.
 pub const STM32F105RE_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f105re` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f105re() -> BoardMemory {
     stm32f105()
 }
+/// STM32F107RE flash length in bytes.
 pub const STM32F107RE_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F107RE RAM length in bytes.
 pub const STM32F107RE_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f107re` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f107re() -> BoardMemory {
     stm32f107()
 }
+/// STM32F205RB flash length in bytes.
 pub const STM32F205RB_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F205RB RAM length in bytes.
 pub const STM32F205RB_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f205rb` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f205rb() -> BoardMemory {
     stm32f205()
 }
+/// STM32F207RB flash length in bytes.
 pub const STM32F207RB_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F207RB RAM length in bytes.
 pub const STM32F207RB_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f207rb` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f207rb() -> BoardMemory {
     stm32f207()
 }
+/// STM32F215ZE flash length in bytes.
 pub const STM32F215ZE_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F215ZE RAM length in bytes.
 pub const STM32F215ZE_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f215ze` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f215ze() -> BoardMemory {
     stm32f215()
 }
+/// STM32F217VE flash length in bytes.
 pub const STM32F217VE_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F217VE RAM length in bytes.
 pub const STM32F217VE_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f217ve` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f217ve() -> BoardMemory {
     stm32f217()
 }
+/// STM32F301C8 flash length in bytes.
 pub const STM32F301C8_FLASH_LEN: u32 = 0x0001_0000;
+/// STM32F301C8 RAM length in bytes.
 pub const STM32F301C8_RAM_LEN: u32 = 0x0000_4000;
 #[must_use]
+/// Construct the `stm32f301c8` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f301c8() -> BoardMemory {
     stm32f301()
 }
+/// STM32F302CC flash length in bytes.
 pub const STM32F302CC_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F302CC RAM length in bytes.
 pub const STM32F302CC_RAM_LEN: u32 = 0x0000_8000;
 #[must_use]
+/// Construct the `stm32f302cc` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f302cc() -> BoardMemory {
     stm32f302()
 }
+/// STM32F303RE flash length in bytes.
 pub const STM32F303RE_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32F303RE RAM length in bytes.
 pub const STM32F303RE_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f303re` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f303re() -> BoardMemory {
     stm32f303()
 }
+/// STM32F373CB flash length in bytes.
 pub const STM32F373CB_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F373CB RAM length in bytes.
 pub const STM32F373CB_RAM_LEN: u32 = 0x0000_6000;
 #[must_use]
+/// Construct the `stm32f373cb` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f373cb() -> BoardMemory {
     stm32f373()
 }
+/// STM32F378BE flash length in bytes.
 pub const STM32F378BE_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F378BE RAM length in bytes.
 pub const STM32F378BE_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f378be` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f378be() -> BoardMemory {
     stm32f378()
 }
+/// STM32F401RB flash length in bytes.
 pub const STM32F401RB_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F401RB RAM length in bytes.
 pub const STM32F401RB_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f401rb` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f401rb() -> BoardMemory {
     stm32f401()
 }
+/// STM32F401VE flash length in bytes.
 pub const STM32F401VE_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32F401VE RAM length in bytes.
 pub const STM32F401VE_RAM_LEN: u32 = 0x0001_8000;
 #[must_use]
+/// Construct the `stm32f401ve` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f401ve() -> BoardMemory {
     stm32f401()
 }
+/// STM32F410RB flash length in bytes.
 pub const STM32F410RB_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F410RB RAM length in bytes.
 pub const STM32F410RB_RAM_LEN: u32 = 0x0000_8000;
 #[must_use]
+/// Construct the `stm32f410rb` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f410rb() -> BoardMemory {
     stm32f410()
 }
+/// STM32F412ZG flash length in bytes.
 pub const STM32F412ZG_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F412ZG RAM length in bytes.
 pub const STM32F412ZG_RAM_LEN: u32 = 0x0004_0000;
 #[must_use]
+/// Construct the `stm32f412zg` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f412zg() -> BoardMemory {
     stm32f412()
 }
+/// STM32F413RG flash length in bytes.
 pub const STM32F413RG_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F413RG RAM length in bytes.
 pub const STM32F413RG_RAM_LEN: u32 = 0x0005_0000;
 #[must_use]
+/// Construct the `stm32f413rg` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f413rg() -> BoardMemory {
     stm32f413()
 }
+/// STM32F423ZE flash length in bytes.
 pub const STM32F423ZE_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F423ZE RAM length in bytes.
 pub const STM32F423ZE_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f423ze` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f423ze() -> BoardMemory {
     stm32f423()
 }
+/// STM32F427AI flash length in bytes.
 pub const STM32F427AI_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32F427AI RAM length in bytes.
 pub const STM32F427AI_RAM_LEN: u32 = 0x0003_0000;
 #[must_use]
+/// Construct the `stm32f427ai` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f427ai() -> BoardMemory {
     stm32f427()
 }
+/// STM32F429BE flash length in bytes.
 pub const STM32F429BE_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32F429BE RAM length in bytes.
 pub const STM32F429BE_RAM_LEN: u32 = 0x0003_0000;
 #[must_use]
+/// Construct the `stm32f429be` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f429be() -> BoardMemory {
     stm32f429()
 }
+/// STM32F437AI flash length in bytes.
 pub const STM32F437AI_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32F437AI RAM length in bytes.
 pub const STM32F437AI_RAM_LEN: u32 = 0x0003_0000;
 #[must_use]
+/// Construct the `stm32f437ai` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f437ai() -> BoardMemory {
     stm32f437()
 }
+/// STM32F446ZE flash length in bytes.
 pub const STM32F446ZE_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32F446ZE RAM length in bytes.
 pub const STM32F446ZE_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f446ze` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f446ze() -> BoardMemory {
     stm32f446()
 }
+/// STM32F469AE flash length in bytes.
 pub const STM32F469AE_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32F469AE RAM length in bytes.
 pub const STM32F469AE_RAM_LEN: u32 = 0x0005_0000;
 #[must_use]
+/// Construct the `stm32f469ae` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f469ae() -> BoardMemory {
     stm32f469()
 }
+/// STM32F722ZE flash length in bytes.
 pub const STM32F722ZE_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32F722ZE RAM length in bytes.
 pub const STM32F722ZE_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32f722ze` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f722ze() -> BoardMemory {
     stm32f722()
 }
+/// STM32F723ZE flash length in bytes.
 pub const STM32F723ZE_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32F723ZE RAM length in bytes.
 pub const STM32F723ZE_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32f723ze` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f723ze() -> BoardMemory {
     stm32f723()
 }
+/// STM32F732VG flash length in bytes.
 pub const STM32F732VG_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32F732VG RAM length in bytes.
 pub const STM32F732VG_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32f732vg` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f732vg() -> BoardMemory {
     stm32f732()
 }
+/// STM32F745VG flash length in bytes.
 pub const STM32F745VG_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32F745VG RAM length in bytes.
 pub const STM32F745VG_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32f745vg` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f745vg() -> BoardMemory {
     stm32f745()
 }
+/// STM32F746IG flash length in bytes.
 pub const STM32F746IG_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F746IG RAM length in bytes.
 pub const STM32F746IG_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f746ig` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f746ig() -> BoardMemory {
     stm32f746()
 }
+/// STM32F756IG flash length in bytes.
 pub const STM32F756IG_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F756IG RAM length in bytes.
 pub const STM32F756IG_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f756ig` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f756ig() -> BoardMemory {
     stm32f756()
 }
+/// STM32F765IG flash length in bytes.
 pub const STM32F765IG_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32F765IG RAM length in bytes.
 pub const STM32F765IG_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32f765ig` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f765ig() -> BoardMemory {
     stm32f765()
 }
+/// STM32F767IG flash length in bytes.
 pub const STM32F767IG_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32F767IG RAM length in bytes.
 pub const STM32F767IG_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32f767ig` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f767ig() -> BoardMemory {
     stm32f767()
 }
+/// STM32F777VG flash length in bytes.
 pub const STM32F777VG_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32F777VG RAM length in bytes.
 pub const STM32F777VG_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32f777vg` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f777vg() -> BoardMemory {
     stm32f777()
 }
+/// STM32G030K6 flash length in bytes.
 pub const STM32G030K6_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32G030K6 RAM length in bytes.
 pub const STM32G030K6_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32g030k6` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g030k6() -> BoardMemory {
     stm32g030()
 }
+/// STM32G031K8 flash length in bytes.
 pub const STM32G031K8_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32G031K8 RAM length in bytes.
 pub const STM32G031K8_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32g031k8` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g031k8() -> BoardMemory {
     stm32g031()
 }
+/// STM32G070CB flash length in bytes.
 pub const STM32G070CB_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32G070CB RAM length in bytes.
 pub const STM32G070CB_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32g070cb` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g070cb() -> BoardMemory {
     stm32g070()
 }
+/// STM32G071CB flash length in bytes.
 pub const STM32G071CB_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32G071CB RAM length in bytes.
 pub const STM32G071CB_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32g071cb` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g071cb() -> BoardMemory {
     stm32g071()
 }
+/// STM32G474CE flash length in bytes.
 pub const STM32G474CE_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32G474CE RAM length in bytes.
 pub const STM32G474CE_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32g474ce` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g474ce() -> BoardMemory {
     stm32g474xx()
 }
+/// STM32H743XI flash length in bytes.
 pub const STM32H743XI_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32H743XI RAM length in bytes.
 pub const STM32H743XI_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32h743xi` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32h743xi() -> BoardMemory {
     stm32h743()
 }
+/// STM32H753XI flash length in bytes.
 pub const STM32H753XI_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32H753XI RAM length in bytes.
 pub const STM32H753XI_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32h753xi` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32h753xi() -> BoardMemory {
     stm32h753()
 }
+/// STM32L476JG flash length in bytes.
 pub const STM32L476JG_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32L476JG RAM length in bytes.
 pub const STM32L476JG_RAM_LEN: u32 = 0x0001_8000;
 #[must_use]
+/// Construct the `stm32l476jg` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32l476jg() -> BoardMemory {
     stm32l476()
 }
+/// STM32F103X49 flash length in bytes.
 pub const STM32F103X49_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F103X49 RAM length in bytes.
 pub const STM32F103X49_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f103x49` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f103x49() -> BoardMemory {
     stm32f103()
 }
+/// STM32F030R8 flash length in bytes.
 pub const STM32F030R8_FLASH_LEN: u32 = 0x0001_0000;
+/// STM32F030R8 RAM length in bytes.
 pub const STM32F030R8_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32f030r8` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f030r8() -> BoardMemory {
     stm32f030()
 }
+/// STM32F030V6 flash length in bytes.
 pub const STM32F030V6_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32F030V6 RAM length in bytes.
 pub const STM32F030V6_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32f030v6` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f030v6() -> BoardMemory {
     stm32f030()
 }
+/// STM32F038R8 flash length in bytes.
 pub const STM32F038R8_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32F038R8 RAM length in bytes.
 pub const STM32F038R8_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32f038r8` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f038r8() -> BoardMemory {
     stm32f042()
 }
+/// STM32F038V6 flash length in bytes.
 pub const STM32F038V6_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32F038V6 RAM length in bytes.
 pub const STM32F038V6_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32f038v6` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f038v6() -> BoardMemory {
     stm32f042()
 }
+/// STM32F042C8 flash length in bytes.
 pub const STM32F042C8_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32F042C8 RAM length in bytes.
 pub const STM32F042C8_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32f042c8` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f042c8() -> BoardMemory {
     stm32f042()
 }
+/// STM32F042R8 flash length in bytes.
 pub const STM32F042R8_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32F042R8 RAM length in bytes.
 pub const STM32F042R8_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32f042r8` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f042r8() -> BoardMemory {
     stm32f042()
 }
+/// STM32F051R8 flash length in bytes.
 pub const STM32F051R8_FLASH_LEN: u32 = 0x0001_0000;
+/// STM32F051R8 RAM length in bytes.
 pub const STM32F051R8_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32f051r8` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f051r8() -> BoardMemory {
     stm32f042()
 }
+/// STM32F072R8 flash length in bytes.
 pub const STM32F072R8_FLASH_LEN: u32 = 0x0001_0000;
+/// STM32F072R8 RAM length in bytes.
 pub const STM32F072R8_RAM_LEN: u32 = 0x0000_4000;
 #[must_use]
+/// Construct the `stm32f072r8` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f072r8() -> BoardMemory {
     stm32f072()
 }
+/// STM32F091RB flash length in bytes.
 pub const STM32F091RB_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F091RB RAM length in bytes.
 pub const STM32F091RB_RAM_LEN: u32 = 0x0000_8000;
 #[must_use]
+/// Construct the `stm32f091rb` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f091rb() -> BoardMemory {
     stm32f091()
 }
+/// STM32F100RE flash length in bytes.
 pub const STM32F100RE_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32F100RE RAM length in bytes.
 pub const STM32F100RE_RAM_LEN: u32 = 0x0000_8000;
 #[must_use]
+/// Construct the `stm32f100re` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f100re() -> BoardMemory {
     stm32f100()
 }
+/// STM32F101RB flash length in bytes.
 pub const STM32F101RB_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F101RB RAM length in bytes.
 pub const STM32F101RB_RAM_LEN: u32 = 0x0000_4000;
 #[must_use]
+/// Construct the `stm32f101rb` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f101rb() -> BoardMemory {
     stm32f101()
 }
+/// STM32F102RB flash length in bytes.
 pub const STM32F102RB_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F102RB RAM length in bytes.
 pub const STM32F102RB_RAM_LEN: u32 = 0x0000_4000;
 #[must_use]
+/// Construct the `stm32f102rb` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f102rb() -> BoardMemory {
     stm32f102()
 }
+/// STM32F103R8 flash length in bytes.
 pub const STM32F103R8_FLASH_LEN: u32 = 0x0001_0000;
+/// STM32F103R8 RAM length in bytes.
 pub const STM32F103R8_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f103r8` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f103r8() -> BoardMemory {
     stm32f103()
 }
+/// STM32F105RG flash length in bytes.
 pub const STM32F105RG_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F105RG RAM length in bytes.
 pub const STM32F105RG_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f105rg` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f105rg() -> BoardMemory {
     stm32f105()
 }
+/// STM32F107RG flash length in bytes.
 pub const STM32F107RG_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F107RG RAM length in bytes.
 pub const STM32F107RG_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f107rg` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f107rg() -> BoardMemory {
     stm32f107()
 }
+/// STM32F205RG flash length in bytes.
 pub const STM32F205RG_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F205RG RAM length in bytes.
 pub const STM32F205RG_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f205rg` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f205rg() -> BoardMemory {
     stm32f205()
 }
+/// STM32F207RG flash length in bytes.
 pub const STM32F207RG_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F207RG RAM length in bytes.
 pub const STM32F207RG_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f207rg` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f207rg() -> BoardMemory {
     stm32f207()
 }
+/// STM32F215RG flash length in bytes.
 pub const STM32F215RG_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F215RG RAM length in bytes.
 pub const STM32F215RG_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f215rg` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f215rg() -> BoardMemory {
     stm32f215()
 }
+/// STM32F217RG flash length in bytes.
 pub const STM32F217RG_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F217RG RAM length in bytes.
 pub const STM32F217RG_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f217rg` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f217rg() -> BoardMemory {
     stm32f217()
 }
+/// STM32F301R8 flash length in bytes.
 pub const STM32F301R8_FLASH_LEN: u32 = 0x0001_0000;
+/// STM32F301R8 RAM length in bytes.
 pub const STM32F301R8_RAM_LEN: u32 = 0x0000_4000;
 #[must_use]
+/// Construct the `stm32f301r8` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f301r8() -> BoardMemory {
     stm32f301()
 }
+/// STM32F302R8 flash length in bytes.
 pub const STM32F302R8_FLASH_LEN: u32 = 0x0001_0000;
+/// STM32F302R8 RAM length in bytes.
 pub const STM32F302R8_RAM_LEN: u32 = 0x0000_4000;
 #[must_use]
+/// Construct the `stm32f302r8` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f302r8() -> BoardMemory {
     stm32f302()
 }
+/// STM32F303RG flash length in bytes.
 pub const STM32F303RG_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F303RG RAM length in bytes.
 pub const STM32F303RG_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f303rg` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f303rg() -> BoardMemory {
     stm32f303()
 }
+/// STM32F373RG flash length in bytes.
 pub const STM32F373RG_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F373RG RAM length in bytes.
 pub const STM32F373RG_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f373rg` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f373rg() -> BoardMemory {
     stm32f373()
 }
+/// STM32F378RG flash length in bytes.
 pub const STM32F378RG_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F378RG RAM length in bytes.
 pub const STM32F378RG_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f378rg` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f378rg() -> BoardMemory {
     stm32f378()
 }
+/// STM32F401RG flash length in bytes.
 pub const STM32F401RG_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32F401RG RAM length in bytes.
 pub const STM32F401RG_RAM_LEN: u32 = 0x0001_8000;
 #[must_use]
+/// Construct the `stm32f401rg` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f401rg() -> BoardMemory {
     stm32f401()
 }
+/// STM32F410RE flash length in bytes.
 pub const STM32F410RE_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F410RE RAM length in bytes.
 pub const STM32F410RE_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f410re` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f410re() -> BoardMemory {
     stm32f410()
 }
+/// STM32F412RE flash length in bytes.
 pub const STM32F412RE_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32F412RE RAM length in bytes.
 pub const STM32F412RE_RAM_LEN: u32 = 0x0004_0000;
 #[must_use]
+/// Construct the `stm32f412re` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f412re() -> BoardMemory {
     stm32f412()
 }
+/// STM32F413RE flash length in bytes.
 pub const STM32F413RE_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F413RE RAM length in bytes.
 pub const STM32F413RE_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f413re` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f413re() -> BoardMemory {
     stm32f413()
 }
+/// STM32F423RG flash length in bytes.
 pub const STM32F423RG_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F423RG RAM length in bytes.
 pub const STM32F423RG_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f423rg` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f423rg() -> BoardMemory {
     stm32f423()
 }
+/// STM32F427RG flash length in bytes.
 pub const STM32F427RG_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F427RG RAM length in bytes.
 pub const STM32F427RG_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f427rg` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f427rg() -> BoardMemory {
     stm32f427()
 }
+/// STM32F429RG flash length in bytes.
 pub const STM32F429RG_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F429RG RAM length in bytes.
 pub const STM32F429RG_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f429rg` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f429rg() -> BoardMemory {
     stm32f429()
 }
+/// STM32F437RG flash length in bytes.
 pub const STM32F437RG_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F437RG RAM length in bytes.
 pub const STM32F437RG_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f437rg` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f437rg() -> BoardMemory {
     stm32f437()
 }
+/// STM32F446RG flash length in bytes.
 pub const STM32F446RG_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F446RG RAM length in bytes.
 pub const STM32F446RG_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f446rg` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f446rg() -> BoardMemory {
     stm32f446()
 }
+/// STM32F469RG flash length in bytes.
 pub const STM32F469RG_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F469RG RAM length in bytes.
 pub const STM32F469RG_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f469rg` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f469rg() -> BoardMemory {
     stm32f469()
 }
+/// STM32F722RG flash length in bytes.
 pub const STM32F722RG_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32F722RG RAM length in bytes.
 pub const STM32F722RG_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32f722rg` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f722rg() -> BoardMemory {
     stm32f722()
 }
+/// STM32F723RG flash length in bytes.
 pub const STM32F723RG_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32F723RG RAM length in bytes.
 pub const STM32F723RG_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32f723rg` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f723rg() -> BoardMemory {
     stm32f723()
 }
+/// STM32F732RG flash length in bytes.
 pub const STM32F732RG_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32F732RG RAM length in bytes.
 pub const STM32F732RG_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32f732rg` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f732rg() -> BoardMemory {
     stm32f732()
 }
+/// STM32F745RG flash length in bytes.
 pub const STM32F745RG_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32F745RG RAM length in bytes.
 pub const STM32F745RG_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32f745rg` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f745rg() -> BoardMemory {
     stm32f745()
 }
+/// STM32F746RG flash length in bytes.
 pub const STM32F746RG_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F746RG RAM length in bytes.
 pub const STM32F746RG_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f746rg` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f746rg() -> BoardMemory {
     stm32f746()
 }
+/// STM32F756RG flash length in bytes.
 pub const STM32F756RG_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F756RG RAM length in bytes.
 pub const STM32F756RG_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f756rg` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f756rg() -> BoardMemory {
     stm32f756()
 }
+/// STM32F765RG flash length in bytes.
 pub const STM32F765RG_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F765RG RAM length in bytes.
 pub const STM32F765RG_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f765rg` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f765rg() -> BoardMemory {
     stm32f765()
 }
+/// STM32F767RG flash length in bytes.
 pub const STM32F767RG_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F767RG RAM length in bytes.
 pub const STM32F767RG_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f767rg` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f767rg() -> BoardMemory {
     stm32f767()
 }
+/// STM32F777RG flash length in bytes.
 pub const STM32F777RG_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F777RG RAM length in bytes.
 pub const STM32F777RG_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f777rg` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f777rg() -> BoardMemory {
     stm32f777()
 }
+/// STM32G030C6 flash length in bytes.
 pub const STM32G030C6_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32G030C6 RAM length in bytes.
 pub const STM32G030C6_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32g030c6` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g030c6() -> BoardMemory {
     stm32g030()
 }
+/// STM32G031C6 flash length in bytes.
 pub const STM32G031C6_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32G031C6 RAM length in bytes.
 pub const STM32G031C6_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32g031c6` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g031c6() -> BoardMemory {
     stm32g031()
 }
+/// STM32G070RE flash length in bytes.
 pub const STM32G070RE_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32G070RE RAM length in bytes.
 pub const STM32G070RE_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32g070re` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g070re() -> BoardMemory {
     stm32g070()
 }
+/// STM32G071RE flash length in bytes.
 pub const STM32G071RE_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32G071RE RAM length in bytes.
 pub const STM32G071RE_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32g071re` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g071re() -> BoardMemory {
     stm32g071()
 }
+/// STM32G474RG flash length in bytes.
 pub const STM32G474RG_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32G474RG RAM length in bytes.
 pub const STM32G474RG_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32g474rg` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g474rg() -> BoardMemory {
     stm32g474xx()
 }
+/// STM32H743XG flash length in bytes.
 pub const STM32H743XG_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32H743XG RAM length in bytes.
 pub const STM32H743XG_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32h743xg` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32h743xg() -> BoardMemory {
     stm32h743()
 }
+/// STM32H753XG flash length in bytes.
 pub const STM32H753XG_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32H753XG RAM length in bytes.
 pub const STM32H753XG_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32h753xg` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32h753xg() -> BoardMemory {
     stm32h753()
 }
+/// STM32F030T6 flash length in bytes.
 pub const STM32F030T6_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32F030T6 RAM length in bytes.
 pub const STM32F030T6_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32f030t6` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f030t6() -> BoardMemory {
     stm32f030()
 }
+/// STM32F038T6 flash length in bytes.
 pub const STM32F038T6_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32F038T6 RAM length in bytes.
 pub const STM32F038T6_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32f038t6` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f038t6() -> BoardMemory {
     stm32f042()
 }
+/// STM32F042K4 flash length in bytes.
 pub const STM32F042K4_FLASH_LEN: u32 = 0x0000_4000;
+/// STM32F042K4 RAM length in bytes.
 pub const STM32F042K4_RAM_LEN: u32 = 0x0000_1800;
 #[must_use]
+/// Construct the `stm32f042k4` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f042k4() -> BoardMemory {
     stm32f042()
 }
+/// STM32F051K4 flash length in bytes.
 pub const STM32F051K4_FLASH_LEN: u32 = 0x0000_4000;
+/// STM32F051K4 RAM length in bytes.
 pub const STM32F051K4_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32f051k4` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f051k4() -> BoardMemory {
     stm32f042()
 }
+/// STM32F072K8 flash length in bytes.
 pub const STM32F072K8_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F072K8 RAM length in bytes.
 pub const STM32F072K8_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f072k8` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f072k8() -> BoardMemory {
     stm32f072()
 }
+/// STM32F091VB flash length in bytes.
 pub const STM32F091VB_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F091VB RAM length in bytes.
 pub const STM32F091VB_RAM_LEN: u32 = 0x0000_8000;
 #[must_use]
+/// Construct the `stm32f091vb` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f091vb() -> BoardMemory {
     stm32f091()
 }
+/// STM32F100RC flash length in bytes.
 pub const STM32F100RC_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F100RC RAM length in bytes.
 pub const STM32F100RC_RAM_LEN: u32 = 0x0000_6000;
 #[must_use]
+/// Construct the `stm32f100rc` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f100rc() -> BoardMemory {
     stm32f100()
 }
+/// STM32F101RC flash length in bytes.
 pub const STM32F101RC_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F101RC RAM length in bytes.
 pub const STM32F101RC_RAM_LEN: u32 = 0x0000_8000;
 #[must_use]
+/// Construct the `stm32f101rc` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f101rc() -> BoardMemory {
     stm32f101()
 }
+/// STM32F102RC flash length in bytes.
 pub const STM32F102RC_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F102RC RAM length in bytes.
 pub const STM32F102RC_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f102rc` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f102rc() -> BoardMemory {
     stm32f102()
 }
+/// STM32F103RC flash length in bytes.
 pub const STM32F103RC_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F103RC RAM length in bytes.
 pub const STM32F103RC_RAM_LEN: u32 = 0x0000_C000;
 #[must_use]
+/// Construct the `stm32f103rc` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f103rc() -> BoardMemory {
     stm32f103()
 }
+/// STM32F105RC flash length in bytes.
 pub const STM32F105RC_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F105RC RAM length in bytes.
 pub const STM32F105RC_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f105rc` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f105rc() -> BoardMemory {
     stm32f105()
 }
+/// STM32F107RC flash length in bytes.
 pub const STM32F107RC_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F107RC RAM length in bytes.
 pub const STM32F107RC_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f107rc` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f107rc() -> BoardMemory {
     stm32f107()
 }
+/// STM32F205RC flash length in bytes.
 pub const STM32F205RC_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F205RC RAM length in bytes.
 pub const STM32F205RC_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f205rc` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f205rc() -> BoardMemory {
     stm32f205()
 }
+/// STM32F207RC flash length in bytes.
 pub const STM32F207RC_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F207RC RAM length in bytes.
 pub const STM32F207RC_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f207rc` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f207rc() -> BoardMemory {
     stm32f207()
 }
+/// STM32F215RC flash length in bytes.
 pub const STM32F215RC_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F215RC RAM length in bytes.
 pub const STM32F215RC_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f215rc` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f215rc() -> BoardMemory {
     stm32f215()
 }
+/// STM32F217RC flash length in bytes.
 pub const STM32F217RC_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F217RC RAM length in bytes.
 pub const STM32F217RC_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f217rc` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f217rc() -> BoardMemory {
     stm32f217()
 }
+/// STM32F301K6 flash length in bytes.
 pub const STM32F301K6_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32F301K6 RAM length in bytes.
 pub const STM32F301K6_RAM_LEN: u32 = 0x0000_3000;
 #[must_use]
+/// Construct the `stm32f301k6` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f301k6() -> BoardMemory {
     stm32f301()
 }
+/// STM32F302K6 flash length in bytes.
 pub const STM32F302K6_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32F302K6 RAM length in bytes.
 pub const STM32F302K6_RAM_LEN: u32 = 0x0000_3000;
 #[must_use]
+/// Construct the `stm32f302k6` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f302k6() -> BoardMemory {
     stm32f302()
 }
+/// STM32F303K8 flash length in bytes.
 pub const STM32F303K8_FLASH_LEN: u32 = 0x0001_0000;
+/// STM32F303K8 RAM length in bytes.
 pub const STM32F303K8_RAM_LEN: u32 = 0x0000_3000;
 #[must_use]
+/// Construct the `stm32f303k8` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f303k8() -> BoardMemory {
     stm32f303()
 }
+/// STM32F373K8 flash length in bytes.
 pub const STM32F373K8_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F373K8 RAM length in bytes.
 pub const STM32F373K8_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f373k8` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f373k8() -> BoardMemory {
     stm32f373()
 }
+/// STM32F378K8 flash length in bytes.
 pub const STM32F378K8_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F378K8 RAM length in bytes.
 pub const STM32F378K8_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f378k8` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f378k8() -> BoardMemory {
     stm32f378()
 }
+/// STM32F401K6 flash length in bytes.
 pub const STM32F401K6_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32F401K6 RAM length in bytes.
 pub const STM32F401K6_RAM_LEN: u32 = 0x0001_8000;
 #[must_use]
+/// Construct the `stm32f401k6` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f401k6() -> BoardMemory {
     stm32f401()
 }
+/// STM32F410K8 flash length in bytes.
 pub const STM32F410K8_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F410K8 RAM length in bytes.
 pub const STM32F410K8_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f410k8` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f410k8() -> BoardMemory {
     stm32f410()
 }
+/// STM32F412K6 flash length in bytes.
 pub const STM32F412K6_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32F412K6 RAM length in bytes.
 pub const STM32F412K6_RAM_LEN: u32 = 0x0001_8000;
 #[must_use]
+/// Construct the `stm32f412k6` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f412k6() -> BoardMemory {
     stm32f412()
 }
+/// STM32F413K6 flash length in bytes.
 pub const STM32F413K6_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F413K6 RAM length in bytes.
 pub const STM32F413K6_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f413k6` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f413k6() -> BoardMemory {
     stm32f413()
 }
+/// STM32F423K6 flash length in bytes.
 pub const STM32F423K6_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F423K6 RAM length in bytes.
 pub const STM32F423K6_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f423k6` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f423k6() -> BoardMemory {
     stm32f423()
 }
+/// STM32F427K6 flash length in bytes.
 pub const STM32F427K6_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F427K6 RAM length in bytes.
 pub const STM32F427K6_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f427k6` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f427k6() -> BoardMemory {
     stm32f427()
 }
+/// STM32F429K6 flash length in bytes.
 pub const STM32F429K6_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F429K6 RAM length in bytes.
 pub const STM32F429K6_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f429k6` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f429k6() -> BoardMemory {
     stm32f429()
 }
+/// STM32F437K6 flash length in bytes.
 pub const STM32F437K6_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F437K6 RAM length in bytes.
 pub const STM32F437K6_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f437k6` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f437k6() -> BoardMemory {
     stm32f437()
 }
+/// STM32F446K6 flash length in bytes.
 pub const STM32F446K6_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F446K6 RAM length in bytes.
 pub const STM32F446K6_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f446k6` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f446k6() -> BoardMemory {
     stm32f446()
 }
+/// STM32F469K6 flash length in bytes.
 pub const STM32F469K6_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F469K6 RAM length in bytes.
 pub const STM32F469K6_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f469k6` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f469k6() -> BoardMemory {
     stm32f469()
 }
+/// STM32F722K6 flash length in bytes.
 pub const STM32F722K6_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32F722K6 RAM length in bytes.
 pub const STM32F722K6_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32f722k6` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f722k6() -> BoardMemory {
     stm32f722()
 }
+/// STM32F723K6 flash length in bytes.
 pub const STM32F723K6_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32F723K6 RAM length in bytes.
 pub const STM32F723K6_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32f723k6` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f723k6() -> BoardMemory {
     stm32f723()
 }
+/// STM32F732K6 flash length in bytes.
 pub const STM32F732K6_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32F732K6 RAM length in bytes.
 pub const STM32F732K6_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32f732k6` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f732k6() -> BoardMemory {
     stm32f732()
 }
+/// STM32F745K6 flash length in bytes.
 pub const STM32F745K6_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32F745K6 RAM length in bytes.
 pub const STM32F745K6_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32f745k6` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f745k6() -> BoardMemory {
     stm32f745()
 }
+/// STM32F746K6 flash length in bytes.
 pub const STM32F746K6_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F746K6 RAM length in bytes.
 pub const STM32F746K6_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f746k6` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f746k6() -> BoardMemory {
     stm32f746()
 }
+/// STM32F756K6 flash length in bytes.
 pub const STM32F756K6_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F756K6 RAM length in bytes.
 pub const STM32F756K6_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f756k6` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f756k6() -> BoardMemory {
     stm32f756()
 }
+/// STM32F765K6 flash length in bytes.
 pub const STM32F765K6_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F765K6 RAM length in bytes.
 pub const STM32F765K6_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f765k6` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f765k6() -> BoardMemory {
     stm32f765()
 }
+/// STM32F767K6 flash length in bytes.
 pub const STM32F767K6_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F767K6 RAM length in bytes.
 pub const STM32F767K6_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f767k6` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f767k6() -> BoardMemory {
     stm32f767()
 }
+/// STM32F777K6 flash length in bytes.
 pub const STM32F777K6_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F777K6 RAM length in bytes.
 pub const STM32F777K6_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f777k6` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f777k6() -> BoardMemory {
     stm32f777()
 }
+/// STM32G030G4 flash length in bytes.
 pub const STM32G030G4_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32G030G4 RAM length in bytes.
 pub const STM32G030G4_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32g030g4` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g030g4() -> BoardMemory {
     stm32g030()
 }
+/// STM32G031G4 flash length in bytes.
 pub const STM32G031G4_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32G031G4 RAM length in bytes.
 pub const STM32G031G4_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32g031g4` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g031g4() -> BoardMemory {
     stm32g031()
 }
+/// STM32G070G4 flash length in bytes.
 pub const STM32G070G4_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32G070G4 RAM length in bytes.
 pub const STM32G070G4_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32g070g4` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g070g4() -> BoardMemory {
     stm32g070()
 }
+/// STM32G071G4 flash length in bytes.
 pub const STM32G071G4_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32G071G4 RAM length in bytes.
 pub const STM32G071G4_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32g071g4` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g071g4() -> BoardMemory {
     stm32g071()
 }
+/// STM32G474KB flash length in bytes.
 pub const STM32G474KB_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32G474KB RAM length in bytes.
 pub const STM32G474KB_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32g474kb` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g474kb() -> BoardMemory {
     stm32g474xx()
 }
+/// STM32H743AG flash length in bytes.
 pub const STM32H743AG_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32H743AG RAM length in bytes.
 pub const STM32H743AG_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32h743ag` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32h743ag() -> BoardMemory {
     stm32h743()
 }
+/// STM32H753AG flash length in bytes.
 pub const STM32H753AG_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32H753AG RAM length in bytes.
 pub const STM32H753AG_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32h753ag` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32h753ag() -> BoardMemory {
     stm32h753()
 }
+/// STM32L476KE flash length in bytes.
 pub const STM32L476KE_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32L476KE RAM length in bytes.
 pub const STM32L476KE_RAM_LEN: u32 = 0x0001_8000;
 #[must_use]
+/// Construct the `stm32l476ke` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32l476ke() -> BoardMemory {
     stm32l476()
 }
+/// STM32C011F6 flash length in bytes.
 pub const STM32C011F6_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32C011F6 RAM length in bytes.
 pub const STM32C011F6_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32c011f6` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32c011f6() -> BoardMemory {
     stm32c011()
 }
+/// STM32C031F6 flash length in bytes.
 pub const STM32C031F6_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32C031F6 RAM length in bytes.
 pub const STM32C031F6_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32c031f6` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32c031f6() -> BoardMemory {
     stm32c031()
 }
+/// STM32F030A0 flash length in bytes.
 pub const STM32F030A0_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32F030A0 RAM length in bytes.
 pub const STM32F030A0_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32f030a0` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f030a0() -> BoardMemory {
     stm32f030()
 }
+/// STM32F030A1 flash length in bytes.
 pub const STM32F030A1_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32F030A1 RAM length in bytes.
 pub const STM32F030A1_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32f030a1` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f030a1() -> BoardMemory {
     stm32f030()
 }
+/// STM32F042A0 flash length in bytes.
 pub const STM32F042A0_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32F042A0 RAM length in bytes.
 pub const STM32F042A0_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32f042a0` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f042a0() -> BoardMemory {
     stm32f042()
 }
+/// STM32F042A1 flash length in bytes.
 pub const STM32F042A1_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32F042A1 RAM length in bytes.
 pub const STM32F042A1_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32f042a1` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f042a1() -> BoardMemory {
     stm32f042()
 }
+/// STM32F072A0 flash length in bytes.
 pub const STM32F072A0_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F072A0 RAM length in bytes.
 pub const STM32F072A0_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f072a0` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f072a0() -> BoardMemory {
     stm32f072()
 }
+/// STM32F072A1 flash length in bytes.
 pub const STM32F072A1_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F072A1 RAM length in bytes.
 pub const STM32F072A1_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f072a1` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f072a1() -> BoardMemory {
     stm32f072()
 }
+/// STM32F091A0 flash length in bytes.
 pub const STM32F091A0_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F091A0 RAM length in bytes.
 pub const STM32F091A0_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f091a0` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f091a0() -> BoardMemory {
     stm32f091()
 }
+/// STM32F091A1 flash length in bytes.
 pub const STM32F091A1_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F091A1 RAM length in bytes.
 pub const STM32F091A1_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f091a1` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f091a1() -> BoardMemory {
     stm32f091()
 }
+/// STM32F100A0 flash length in bytes.
 pub const STM32F100A0_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F100A0 RAM length in bytes.
 pub const STM32F100A0_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f100a0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f100a0() -> BoardMemory {
     stm32f100()
 }
+/// STM32F100A1 flash length in bytes.
 pub const STM32F100A1_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F100A1 RAM length in bytes.
 pub const STM32F100A1_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f100a1` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f100a1() -> BoardMemory {
     stm32f100()
 }
+/// STM32F101A0 flash length in bytes.
 pub const STM32F101A0_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F101A0 RAM length in bytes.
 pub const STM32F101A0_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f101a0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f101a0() -> BoardMemory {
     stm32f101()
 }
+/// STM32F101A1 flash length in bytes.
 pub const STM32F101A1_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F101A1 RAM length in bytes.
 pub const STM32F101A1_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f101a1` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f101a1() -> BoardMemory {
     stm32f101()
 }
+/// STM32F102A0 flash length in bytes.
 pub const STM32F102A0_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F102A0 RAM length in bytes.
 pub const STM32F102A0_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f102a0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f102a0() -> BoardMemory {
     stm32f102()
 }
+/// STM32F102A1 flash length in bytes.
 pub const STM32F102A1_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F102A1 RAM length in bytes.
 pub const STM32F102A1_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f102a1` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f102a1() -> BoardMemory {
     stm32f102()
 }
+/// STM32F103A0 flash length in bytes.
 pub const STM32F103A0_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F103A0 RAM length in bytes.
 pub const STM32F103A0_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f103a0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f103a0() -> BoardMemory {
     stm32f103()
 }
+/// STM32F103A1 flash length in bytes.
 pub const STM32F103A1_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F103A1 RAM length in bytes.
 pub const STM32F103A1_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f103a1` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f103a1() -> BoardMemory {
     stm32f103()
 }
+/// STM32F105A0 flash length in bytes.
 pub const STM32F105A0_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F105A0 RAM length in bytes.
 pub const STM32F105A0_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f105a0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f105a0() -> BoardMemory {
     stm32f105()
 }
+/// STM32F105A1 flash length in bytes.
 pub const STM32F105A1_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F105A1 RAM length in bytes.
 pub const STM32F105A1_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f105a1` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f105a1() -> BoardMemory {
     stm32f105()
 }
+/// STM32F107A0 flash length in bytes.
 pub const STM32F107A0_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F107A0 RAM length in bytes.
 pub const STM32F107A0_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f107a0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f107a0() -> BoardMemory {
     stm32f107()
 }
+/// STM32F107A1 flash length in bytes.
 pub const STM32F107A1_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F107A1 RAM length in bytes.
 pub const STM32F107A1_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f107a1` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f107a1() -> BoardMemory {
     stm32f107()
 }
+/// STM32F205A0 flash length in bytes.
 pub const STM32F205A0_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F205A0 RAM length in bytes.
 pub const STM32F205A0_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f205a0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f205a0() -> BoardMemory {
     stm32f205()
 }
+/// STM32F205A1 flash length in bytes.
 pub const STM32F205A1_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F205A1 RAM length in bytes.
 pub const STM32F205A1_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f205a1` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f205a1() -> BoardMemory {
     stm32f205()
 }
+/// STM32F207A0 flash length in bytes.
 pub const STM32F207A0_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F207A0 RAM length in bytes.
 pub const STM32F207A0_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f207a0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f207a0() -> BoardMemory {
     stm32f207()
 }
+/// STM32F207A1 flash length in bytes.
 pub const STM32F207A1_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F207A1 RAM length in bytes.
 pub const STM32F207A1_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f207a1` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f207a1() -> BoardMemory {
     stm32f207()
 }
+/// STM32F215A0 flash length in bytes.
 pub const STM32F215A0_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F215A0 RAM length in bytes.
 pub const STM32F215A0_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f215a0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f215a0() -> BoardMemory {
     stm32f215()
 }
+/// STM32F215A1 flash length in bytes.
 pub const STM32F215A1_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F215A1 RAM length in bytes.
 pub const STM32F215A1_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f215a1` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f215a1() -> BoardMemory {
     stm32f215()
 }
+/// STM32F217A0 flash length in bytes.
 pub const STM32F217A0_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F217A0 RAM length in bytes.
 pub const STM32F217A0_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f217a0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f217a0() -> BoardMemory {
     stm32f217()
 }
+/// STM32F217A1 flash length in bytes.
 pub const STM32F217A1_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F217A1 RAM length in bytes.
 pub const STM32F217A1_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f217a1` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f217a1() -> BoardMemory {
     stm32f217()
 }
+/// STM32F301A0 flash length in bytes.
 pub const STM32F301A0_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F301A0 RAM length in bytes.
 pub const STM32F301A0_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f301a0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f301a0() -> BoardMemory {
     stm32f301()
 }
+/// STM32F301A1 flash length in bytes.
 pub const STM32F301A1_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F301A1 RAM length in bytes.
 pub const STM32F301A1_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f301a1` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f301a1() -> BoardMemory {
     stm32f301()
 }
+/// STM32F302A0 flash length in bytes.
 pub const STM32F302A0_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F302A0 RAM length in bytes.
 pub const STM32F302A0_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f302a0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f302a0() -> BoardMemory {
     stm32f302()
 }
+/// STM32F302A1 flash length in bytes.
 pub const STM32F302A1_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F302A1 RAM length in bytes.
 pub const STM32F302A1_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f302a1` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f302a1() -> BoardMemory {
     stm32f302()
 }
+/// STM32F303A0 flash length in bytes.
 pub const STM32F303A0_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F303A0 RAM length in bytes.
 pub const STM32F303A0_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f303a0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f303a0() -> BoardMemory {
     stm32f303()
 }
+/// STM32F303A1 flash length in bytes.
 pub const STM32F303A1_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F303A1 RAM length in bytes.
 pub const STM32F303A1_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f303a1` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f303a1() -> BoardMemory {
     stm32f303()
 }
+/// STM32F373A0 flash length in bytes.
 pub const STM32F373A0_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F373A0 RAM length in bytes.
 pub const STM32F373A0_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f373a0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f373a0() -> BoardMemory {
     stm32f373()
 }
+/// STM32F373A1 flash length in bytes.
 pub const STM32F373A1_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F373A1 RAM length in bytes.
 pub const STM32F373A1_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f373a1` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f373a1() -> BoardMemory {
     stm32f373()
 }
+/// STM32F378A0 flash length in bytes.
 pub const STM32F378A0_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F378A0 RAM length in bytes.
 pub const STM32F378A0_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f378a0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f378a0() -> BoardMemory {
     stm32f378()
 }
+/// STM32F378A1 flash length in bytes.
 pub const STM32F378A1_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F378A1 RAM length in bytes.
 pub const STM32F378A1_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f378a1` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f378a1() -> BoardMemory {
     stm32f378()
 }
+/// STM32F401A0 flash length in bytes.
 pub const STM32F401A0_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32F401A0 RAM length in bytes.
 pub const STM32F401A0_RAM_LEN: u32 = 0x0001_8000;
 #[must_use]
+/// Construct the `stm32f401a0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f401a0() -> BoardMemory {
     stm32f401()
 }
+/// STM32F401A1 flash length in bytes.
 pub const STM32F401A1_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32F401A1 RAM length in bytes.
 pub const STM32F401A1_RAM_LEN: u32 = 0x0001_8000;
 #[must_use]
+/// Construct the `stm32f401a1` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f401a1() -> BoardMemory {
     stm32f401()
 }
+/// STM32F410A0 flash length in bytes.
 pub const STM32F410A0_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F410A0 RAM length in bytes.
 pub const STM32F410A0_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f410a0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f410a0() -> BoardMemory {
     stm32f410()
 }
+/// STM32F410A1 flash length in bytes.
 pub const STM32F410A1_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F410A1 RAM length in bytes.
 pub const STM32F410A1_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f410a1` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f410a1() -> BoardMemory {
     stm32f410()
 }
+/// STM32F412A0 flash length in bytes.
 pub const STM32F412A0_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32F412A0 RAM length in bytes.
 pub const STM32F412A0_RAM_LEN: u32 = 0x0001_8000;
 #[must_use]
+/// Construct the `stm32f412a0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f412a0() -> BoardMemory {
     stm32f412()
 }
+/// STM32F412A1 flash length in bytes.
 pub const STM32F412A1_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32F412A1 RAM length in bytes.
 pub const STM32F412A1_RAM_LEN: u32 = 0x0001_8000;
 #[must_use]
+/// Construct the `stm32f412a1` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f412a1() -> BoardMemory {
     stm32f412()
 }
+/// STM32F413A0 flash length in bytes.
 pub const STM32F413A0_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F413A0 RAM length in bytes.
 pub const STM32F413A0_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f413a0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f413a0() -> BoardMemory {
     stm32f413()
 }
+/// STM32F413A1 flash length in bytes.
 pub const STM32F413A1_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F413A1 RAM length in bytes.
 pub const STM32F413A1_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f413a1` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f413a1() -> BoardMemory {
     stm32f413()
 }
+/// STM32F423A0 flash length in bytes.
 pub const STM32F423A0_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F423A0 RAM length in bytes.
 pub const STM32F423A0_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f423a0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f423a0() -> BoardMemory {
     stm32f423()
 }
+/// STM32F423A1 flash length in bytes.
 pub const STM32F423A1_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F423A1 RAM length in bytes.
 pub const STM32F423A1_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f423a1` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f423a1() -> BoardMemory {
     stm32f423()
 }
+/// STM32F427A0 flash length in bytes.
 pub const STM32F427A0_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F427A0 RAM length in bytes.
 pub const STM32F427A0_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f427a0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f427a0() -> BoardMemory {
     stm32f427()
 }
+/// STM32F427A1 flash length in bytes.
 pub const STM32F427A1_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F427A1 RAM length in bytes.
 pub const STM32F427A1_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f427a1` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f427a1() -> BoardMemory {
     stm32f427()
 }
+/// STM32F429A0 flash length in bytes.
 pub const STM32F429A0_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F429A0 RAM length in bytes.
 pub const STM32F429A0_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f429a0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f429a0() -> BoardMemory {
     stm32f429()
 }
+/// STM32F429A1 flash length in bytes.
 pub const STM32F429A1_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F429A1 RAM length in bytes.
 pub const STM32F429A1_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f429a1` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f429a1() -> BoardMemory {
     stm32f429()
 }
+/// STM32F437A0 flash length in bytes.
 pub const STM32F437A0_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F437A0 RAM length in bytes.
 pub const STM32F437A0_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f437a0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f437a0() -> BoardMemory {
     stm32f437()
 }
+/// STM32F437A1 flash length in bytes.
 pub const STM32F437A1_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F437A1 RAM length in bytes.
 pub const STM32F437A1_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f437a1` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f437a1() -> BoardMemory {
     stm32f437()
 }
+/// STM32F446A0 flash length in bytes.
 pub const STM32F446A0_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F446A0 RAM length in bytes.
 pub const STM32F446A0_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f446a0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f446a0() -> BoardMemory {
     stm32f446()
 }
+/// STM32F446A1 flash length in bytes.
 pub const STM32F446A1_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F446A1 RAM length in bytes.
 pub const STM32F446A1_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f446a1` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f446a1() -> BoardMemory {
     stm32f446()
 }
+/// STM32F469A0 flash length in bytes.
 pub const STM32F469A0_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F469A0 RAM length in bytes.
 pub const STM32F469A0_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f469a0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f469a0() -> BoardMemory {
     stm32f469()
 }
+/// STM32F469A1 flash length in bytes.
 pub const STM32F469A1_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F469A1 RAM length in bytes.
 pub const STM32F469A1_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f469a1` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f469a1() -> BoardMemory {
     stm32f469()
 }
+/// STM32F722A0 flash length in bytes.
 pub const STM32F722A0_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32F722A0 RAM length in bytes.
 pub const STM32F722A0_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32f722a0` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f722a0() -> BoardMemory {
     stm32f722()
 }
+/// STM32F722A1 flash length in bytes.
 pub const STM32F722A1_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32F722A1 RAM length in bytes.
 pub const STM32F722A1_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32f722a1` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f722a1() -> BoardMemory {
     stm32f722()
 }
+/// STM32F723A0 flash length in bytes.
 pub const STM32F723A0_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32F723A0 RAM length in bytes.
 pub const STM32F723A0_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32f723a0` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f723a0() -> BoardMemory {
     stm32f723()
 }
+/// STM32F723A1 flash length in bytes.
 pub const STM32F723A1_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32F723A1 RAM length in bytes.
 pub const STM32F723A1_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32f723a1` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f723a1() -> BoardMemory {
     stm32f723()
 }
+/// STM32F732A0 flash length in bytes.
 pub const STM32F732A0_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32F732A0 RAM length in bytes.
 pub const STM32F732A0_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32f732a0` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f732a0() -> BoardMemory {
     stm32f732()
 }
+/// STM32F732A1 flash length in bytes.
 pub const STM32F732A1_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32F732A1 RAM length in bytes.
 pub const STM32F732A1_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32f732a1` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f732a1() -> BoardMemory {
     stm32f732()
 }
+/// STM32F745A0 flash length in bytes.
 pub const STM32F745A0_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32F745A0 RAM length in bytes.
 pub const STM32F745A0_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32f745a0` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f745a0() -> BoardMemory {
     stm32f745()
 }
+/// STM32F745A1 flash length in bytes.
 pub const STM32F745A1_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32F745A1 RAM length in bytes.
 pub const STM32F745A1_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32f745a1` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f745a1() -> BoardMemory {
     stm32f745()
 }
+/// STM32F746A0 flash length in bytes.
 pub const STM32F746A0_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F746A0 RAM length in bytes.
 pub const STM32F746A0_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f746a0` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f746a0() -> BoardMemory {
     stm32f746()
 }
+/// STM32F746A1 flash length in bytes.
 pub const STM32F746A1_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F746A1 RAM length in bytes.
 pub const STM32F746A1_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f746a1` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f746a1() -> BoardMemory {
     stm32f746()
 }
+/// STM32F756A0 flash length in bytes.
 pub const STM32F756A0_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F756A0 RAM length in bytes.
 pub const STM32F756A0_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f756a0` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f756a0() -> BoardMemory {
     stm32f756()
 }
+/// STM32F756A1 flash length in bytes.
 pub const STM32F756A1_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F756A1 RAM length in bytes.
 pub const STM32F756A1_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f756a1` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f756a1() -> BoardMemory {
     stm32f756()
 }
+/// STM32F765A0 flash length in bytes.
 pub const STM32F765A0_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F765A0 RAM length in bytes.
 pub const STM32F765A0_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f765a0` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f765a0() -> BoardMemory {
     stm32f765()
 }
+/// STM32F765A1 flash length in bytes.
 pub const STM32F765A1_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F765A1 RAM length in bytes.
 pub const STM32F765A1_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f765a1` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f765a1() -> BoardMemory {
     stm32f765()
 }
+/// STM32F767A0 flash length in bytes.
 pub const STM32F767A0_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F767A0 RAM length in bytes.
 pub const STM32F767A0_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f767a0` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f767a0() -> BoardMemory {
     stm32f767()
 }
+/// STM32F767A1 flash length in bytes.
 pub const STM32F767A1_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F767A1 RAM length in bytes.
 pub const STM32F767A1_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f767a1` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f767a1() -> BoardMemory {
     stm32f767()
 }
+/// STM32F777A0 flash length in bytes.
 pub const STM32F777A0_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F777A0 RAM length in bytes.
 pub const STM32F777A0_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f777a0` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f777a0() -> BoardMemory {
     stm32f777()
 }
+/// STM32F777A1 flash length in bytes.
 pub const STM32F777A1_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F777A1 RAM length in bytes.
 pub const STM32F777A1_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f777a1` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f777a1() -> BoardMemory {
     stm32f777()
 }
+/// STM32G030A0 flash length in bytes.
 pub const STM32G030A0_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32G030A0 RAM length in bytes.
 pub const STM32G030A0_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32g030a0` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g030a0() -> BoardMemory {
     stm32g030()
 }
+/// STM32G030A1 flash length in bytes.
 pub const STM32G030A1_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32G030A1 RAM length in bytes.
 pub const STM32G030A1_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32g030a1` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g030a1() -> BoardMemory {
     stm32g030()
 }
+/// STM32G031A0 flash length in bytes.
 pub const STM32G031A0_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32G031A0 RAM length in bytes.
 pub const STM32G031A0_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32g031a0` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g031a0() -> BoardMemory {
     stm32g031()
 }
+/// STM32G031A1 flash length in bytes.
 pub const STM32G031A1_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32G031A1 RAM length in bytes.
 pub const STM32G031A1_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32g031a1` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g031a1() -> BoardMemory {
     stm32g031()
 }
+/// STM32G070A0 flash length in bytes.
 pub const STM32G070A0_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32G070A0 RAM length in bytes.
 pub const STM32G070A0_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32g070a0` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g070a0() -> BoardMemory {
     stm32g070()
 }
+/// STM32G070A1 flash length in bytes.
 pub const STM32G070A1_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32G070A1 RAM length in bytes.
 pub const STM32G070A1_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32g070a1` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g070a1() -> BoardMemory {
     stm32g070()
 }
+/// STM32G071A0 flash length in bytes.
 pub const STM32G071A0_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32G071A0 RAM length in bytes.
 pub const STM32G071A0_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32g071a0` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g071a0() -> BoardMemory {
     stm32g071()
 }
+/// STM32G071A1 flash length in bytes.
 pub const STM32G071A1_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32G071A1 RAM length in bytes.
 pub const STM32G071A1_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32g071a1` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g071a1() -> BoardMemory {
     stm32g071()
 }
+/// STM32G474A0 flash length in bytes.
 pub const STM32G474A0_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32G474A0 RAM length in bytes.
 pub const STM32G474A0_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32g474a0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g474a0() -> BoardMemory {
     stm32g474xx()
 }
+/// STM32G474A1 flash length in bytes.
 pub const STM32G474A1_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32G474A1 RAM length in bytes.
 pub const STM32G474A1_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32g474a1` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g474a1() -> BoardMemory {
     stm32g474xx()
 }
+/// STM32H743A0 flash length in bytes.
 pub const STM32H743A0_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32H743A0 RAM length in bytes.
 pub const STM32H743A0_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32h743a0` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32h743a0() -> BoardMemory {
     stm32h743()
 }
+/// STM32H743A1 flash length in bytes.
 pub const STM32H743A1_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32H743A1 RAM length in bytes.
 pub const STM32H743A1_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32h743a1` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32h743a1() -> BoardMemory {
     stm32h743()
 }
+/// STM32H753A0 flash length in bytes.
 pub const STM32H753A0_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32H753A0 RAM length in bytes.
 pub const STM32H753A0_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32h753a0` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32h753a0() -> BoardMemory {
     stm32h753()
 }
+/// STM32H753A1 flash length in bytes.
 pub const STM32H753A1_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32H753A1 RAM length in bytes.
 pub const STM32H753A1_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32h753a1` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32h753a1() -> BoardMemory {
     stm32h753()
 }
+/// STM32L476A0 flash length in bytes.
 pub const STM32L476A0_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32L476A0 RAM length in bytes.
 pub const STM32L476A0_RAM_LEN: u32 = 0x0001_8000;
 #[must_use]
+/// Construct the `stm32l476a0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32l476a0() -> BoardMemory {
     stm32l476()
 }
+/// STM32L476A1 flash length in bytes.
 pub const STM32L476A1_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32L476A1 RAM length in bytes.
 pub const STM32L476A1_RAM_LEN: u32 = 0x0001_8000;
 #[must_use]
+/// Construct the `stm32l476a1` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32l476a1() -> BoardMemory {
     stm32l476()
 }
+/// STM32C011A0 flash length in bytes.
 pub const STM32C011A0_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32C011A0 RAM length in bytes.
 pub const STM32C011A0_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32c011a0` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32c011a0() -> BoardMemory {
     stm32c011()
 }
+/// STM32C011A1 flash length in bytes.
 pub const STM32C011A1_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32C011A1 RAM length in bytes.
 pub const STM32C011A1_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32c011a1` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32c011a1() -> BoardMemory {
     stm32c011()
 }
+/// STM32C031A0 flash length in bytes.
 pub const STM32C031A0_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32C031A0 RAM length in bytes.
 pub const STM32C031A0_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32c031a0` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32c031a0() -> BoardMemory {
     stm32c031()
 }
+/// STM32C031A1 flash length in bytes.
 pub const STM32C031A1_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32C031A1 RAM length in bytes.
 pub const STM32C031A1_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32c031a1` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32c031a1() -> BoardMemory {
     stm32c031()
 }
+/// STM32U575A0 flash length in bytes.
 pub const STM32U575A0_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32U575A0 RAM length in bytes.
 pub const STM32U575A0_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32u575a0` (M33) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32u575a0() -> BoardMemory {
     stm32u575()
 }
+/// STM32U575A1 flash length in bytes.
 pub const STM32U575A1_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32U575A1 RAM length in bytes.
 pub const STM32U575A1_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32u575a1` (M33) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32u575a1() -> BoardMemory {
     stm32u575()
 }
+/// STM32WBA55A0 flash length in bytes.
 pub const STM32WBA55A0_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32WBA55A0 RAM length in bytes.
 pub const STM32WBA55A0_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32wba55a0` (M33) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32wba55a0() -> BoardMemory {
     stm32wba55()
 }
+/// STM32WBA55A1 flash length in bytes.
 pub const STM32WBA55A1_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32WBA55A1 RAM length in bytes.
 pub const STM32WBA55A1_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32wba55a1` (M33) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32wba55a1() -> BoardMemory {
     stm32wba55()
 }
+/// STM32F030B0 flash length in bytes.
 pub const STM32F030B0_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32F030B0 RAM length in bytes.
 pub const STM32F030B0_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32f030b0` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f030b0() -> BoardMemory {
     stm32f030()
 }
+/// STM32F042B0 flash length in bytes.
 pub const STM32F042B0_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32F042B0 RAM length in bytes.
 pub const STM32F042B0_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32f042b0` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f042b0() -> BoardMemory {
     stm32f042()
 }
+/// STM32F072B0 flash length in bytes.
 pub const STM32F072B0_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F072B0 RAM length in bytes.
 pub const STM32F072B0_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f072b0` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f072b0() -> BoardMemory {
     stm32f072()
 }
+/// STM32F091B0 flash length in bytes.
 pub const STM32F091B0_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F091B0 RAM length in bytes.
 pub const STM32F091B0_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f091b0` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f091b0() -> BoardMemory {
     stm32f091()
 }
+/// STM32F100B0 flash length in bytes.
 pub const STM32F100B0_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F100B0 RAM length in bytes.
 pub const STM32F100B0_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f100b0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f100b0() -> BoardMemory {
     stm32f100()
 }
+/// STM32F101B0 flash length in bytes.
 pub const STM32F101B0_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F101B0 RAM length in bytes.
 pub const STM32F101B0_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f101b0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f101b0() -> BoardMemory {
     stm32f101()
 }
+/// STM32F102B0 flash length in bytes.
 pub const STM32F102B0_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F102B0 RAM length in bytes.
 pub const STM32F102B0_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f102b0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f102b0() -> BoardMemory {
     stm32f102()
 }
+/// STM32F103B0 flash length in bytes.
 pub const STM32F103B0_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F103B0 RAM length in bytes.
 pub const STM32F103B0_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f103b0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f103b0() -> BoardMemory {
     stm32f103()
 }
+/// STM32F105B0 flash length in bytes.
 pub const STM32F105B0_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F105B0 RAM length in bytes.
 pub const STM32F105B0_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f105b0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f105b0() -> BoardMemory {
     stm32f105()
 }
+/// STM32F107B0 flash length in bytes.
 pub const STM32F107B0_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F107B0 RAM length in bytes.
 pub const STM32F107B0_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f107b0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f107b0() -> BoardMemory {
     stm32f107()
 }
+/// STM32F205B0 flash length in bytes.
 pub const STM32F205B0_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F205B0 RAM length in bytes.
 pub const STM32F205B0_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f205b0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f205b0() -> BoardMemory {
     stm32f205()
 }
+/// STM32F207B0 flash length in bytes.
 pub const STM32F207B0_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F207B0 RAM length in bytes.
 pub const STM32F207B0_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f207b0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f207b0() -> BoardMemory {
     stm32f207()
 }
+/// STM32F215B0 flash length in bytes.
 pub const STM32F215B0_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F215B0 RAM length in bytes.
 pub const STM32F215B0_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f215b0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f215b0() -> BoardMemory {
     stm32f215()
 }
+/// STM32F217B0 flash length in bytes.
 pub const STM32F217B0_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F217B0 RAM length in bytes.
 pub const STM32F217B0_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f217b0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f217b0() -> BoardMemory {
     stm32f217()
 }
+/// STM32F301B0 flash length in bytes.
 pub const STM32F301B0_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F301B0 RAM length in bytes.
 pub const STM32F301B0_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f301b0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f301b0() -> BoardMemory {
     stm32f301()
 }
+/// STM32F302B0 flash length in bytes.
 pub const STM32F302B0_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F302B0 RAM length in bytes.
 pub const STM32F302B0_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f302b0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f302b0() -> BoardMemory {
     stm32f302()
 }
+/// STM32F303B0 flash length in bytes.
 pub const STM32F303B0_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F303B0 RAM length in bytes.
 pub const STM32F303B0_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f303b0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f303b0() -> BoardMemory {
     stm32f303()
 }
+/// STM32F373B0 flash length in bytes.
 pub const STM32F373B0_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F373B0 RAM length in bytes.
 pub const STM32F373B0_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f373b0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f373b0() -> BoardMemory {
     stm32f373()
 }
+/// STM32F378B0 flash length in bytes.
 pub const STM32F378B0_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F378B0 RAM length in bytes.
 pub const STM32F378B0_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f378b0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f378b0() -> BoardMemory {
     stm32f378()
 }
+/// STM32F401B0 flash length in bytes.
 pub const STM32F401B0_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32F401B0 RAM length in bytes.
 pub const STM32F401B0_RAM_LEN: u32 = 0x0001_8000;
 #[must_use]
+/// Construct the `stm32f401b0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f401b0() -> BoardMemory {
     stm32f401()
 }
+/// STM32F410B0 flash length in bytes.
 pub const STM32F410B0_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F410B0 RAM length in bytes.
 pub const STM32F410B0_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f410b0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f410b0() -> BoardMemory {
     stm32f410()
 }
+/// STM32F412B0 flash length in bytes.
 pub const STM32F412B0_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32F412B0 RAM length in bytes.
 pub const STM32F412B0_RAM_LEN: u32 = 0x0001_8000;
 #[must_use]
+/// Construct the `stm32f412b0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f412b0() -> BoardMemory {
     stm32f412()
 }
+/// STM32F413B0 flash length in bytes.
 pub const STM32F413B0_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F413B0 RAM length in bytes.
 pub const STM32F413B0_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f413b0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f413b0() -> BoardMemory {
     stm32f413()
 }
+/// STM32F423B0 flash length in bytes.
 pub const STM32F423B0_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F423B0 RAM length in bytes.
 pub const STM32F423B0_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f423b0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f423b0() -> BoardMemory {
     stm32f423()
 }
+/// STM32F427B0 flash length in bytes.
 pub const STM32F427B0_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F427B0 RAM length in bytes.
 pub const STM32F427B0_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f427b0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f427b0() -> BoardMemory {
     stm32f427()
 }
+/// STM32F429B0 flash length in bytes.
 pub const STM32F429B0_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F429B0 RAM length in bytes.
 pub const STM32F429B0_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f429b0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f429b0() -> BoardMemory {
     stm32f429()
 }
+/// STM32F437B0 flash length in bytes.
 pub const STM32F437B0_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F437B0 RAM length in bytes.
 pub const STM32F437B0_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f437b0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f437b0() -> BoardMemory {
     stm32f437()
 }
+/// STM32F446B0 flash length in bytes.
 pub const STM32F446B0_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F446B0 RAM length in bytes.
 pub const STM32F446B0_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f446b0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f446b0() -> BoardMemory {
     stm32f446()
 }
+/// STM32F469B0 flash length in bytes.
 pub const STM32F469B0_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F469B0 RAM length in bytes.
 pub const STM32F469B0_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f469b0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f469b0() -> BoardMemory {
     stm32f469()
 }
+/// STM32F722B0 flash length in bytes.
 pub const STM32F722B0_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32F722B0 RAM length in bytes.
 pub const STM32F722B0_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32f722b0` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f722b0() -> BoardMemory {
     stm32f722()
 }
+/// STM32F723B0 flash length in bytes.
 pub const STM32F723B0_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32F723B0 RAM length in bytes.
 pub const STM32F723B0_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32f723b0` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f723b0() -> BoardMemory {
     stm32f723()
 }
+/// STM32F732B0 flash length in bytes.
 pub const STM32F732B0_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32F732B0 RAM length in bytes.
 pub const STM32F732B0_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32f732b0` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f732b0() -> BoardMemory {
     stm32f732()
 }
+/// STM32F745B0 flash length in bytes.
 pub const STM32F745B0_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32F745B0 RAM length in bytes.
 pub const STM32F745B0_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32f745b0` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f745b0() -> BoardMemory {
     stm32f745()
 }
+/// STM32F746B0 flash length in bytes.
 pub const STM32F746B0_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F746B0 RAM length in bytes.
 pub const STM32F746B0_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f746b0` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f746b0() -> BoardMemory {
     stm32f746()
 }
+/// STM32F756B0 flash length in bytes.
 pub const STM32F756B0_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32F756B0 RAM length in bytes.
 pub const STM32F756B0_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32f756b0` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f756b0() -> BoardMemory {
     stm32f756()
 }
+/// STM32F765B0 flash length in bytes.
 pub const STM32F765B0_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F765B0 RAM length in bytes.
 pub const STM32F765B0_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f765b0` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f765b0() -> BoardMemory {
     stm32f765()
 }
+/// STM32F767B0 flash length in bytes.
 pub const STM32F767B0_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F767B0 RAM length in bytes.
 pub const STM32F767B0_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f767b0` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f767b0() -> BoardMemory {
     stm32f767()
 }
+/// STM32F777B0 flash length in bytes.
 pub const STM32F777B0_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F777B0 RAM length in bytes.
 pub const STM32F777B0_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f777b0` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f777b0() -> BoardMemory {
     stm32f777()
 }
+/// STM32G030B0 flash length in bytes.
 pub const STM32G030B0_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32G030B0 RAM length in bytes.
 pub const STM32G030B0_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32g030b0` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g030b0() -> BoardMemory {
     stm32g030()
 }
+/// STM32G031B0 flash length in bytes.
 pub const STM32G031B0_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32G031B0 RAM length in bytes.
 pub const STM32G031B0_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32g031b0` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g031b0() -> BoardMemory {
     stm32g031()
 }
+/// STM32G070B0 flash length in bytes.
 pub const STM32G070B0_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32G070B0 RAM length in bytes.
 pub const STM32G070B0_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32g070b0` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g070b0() -> BoardMemory {
     stm32g070()
 }
+/// STM32G071B0 flash length in bytes.
 pub const STM32G071B0_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32G071B0 RAM length in bytes.
 pub const STM32G071B0_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32g071b0` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g071b0() -> BoardMemory {
     stm32g071()
 }
+/// STM32G474B0 flash length in bytes.
 pub const STM32G474B0_FLASH_LEN: u32 = 0x0010_0000;
+/// STM32G474B0 RAM length in bytes.
 pub const STM32G474B0_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32g474b0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32g474b0() -> BoardMemory {
     stm32g474xx()
 }
+/// STM32H743B0 flash length in bytes.
 pub const STM32H743B0_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32H743B0 RAM length in bytes.
 pub const STM32H743B0_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32h743b0` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32h743b0() -> BoardMemory {
     stm32h743()
 }
+/// STM32H753B0 flash length in bytes.
 pub const STM32H753B0_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32H753B0 RAM length in bytes.
 pub const STM32H753B0_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32h753b0` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32h753b0() -> BoardMemory {
     stm32h753()
 }
+/// STM32L476B0 flash length in bytes.
 pub const STM32L476B0_FLASH_LEN: u32 = 0x0008_0000;
+/// STM32L476B0 RAM length in bytes.
 pub const STM32L476B0_RAM_LEN: u32 = 0x0001_8000;
 #[must_use]
+/// Construct the `stm32l476b0` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32l476b0() -> BoardMemory {
     stm32l476()
 }
+/// STM32C011B0 flash length in bytes.
 pub const STM32C011B0_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32C011B0 RAM length in bytes.
 pub const STM32C011B0_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32c011b0` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32c011b0() -> BoardMemory {
     stm32c011()
 }
+/// STM32C031B0 flash length in bytes.
 pub const STM32C031B0_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32C031B0 RAM length in bytes.
 pub const STM32C031B0_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32c031b0` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32c031b0() -> BoardMemory {
     stm32c031()
 }
+/// STM32U575B0 flash length in bytes.
 pub const STM32U575B0_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32U575B0 RAM length in bytes.
 pub const STM32U575B0_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32u575b0` (M33) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32u575b0() -> BoardMemory {
     stm32u575()
 }
+/// STM32WBA55B0 flash length in bytes.
 pub const STM32WBA55B0_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32WBA55B0 RAM length in bytes.
 pub const STM32WBA55B0_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32wba55b0` (M33) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32wba55b0() -> BoardMemory {
     stm32wba55()
 }
+/// STM32F030B1 flash length in bytes.
 pub const STM32F030B1_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32F030B1 RAM length in bytes.
 pub const STM32F030B1_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32f030b1` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f030b1() -> BoardMemory {
     stm32f030()
 }
+/// STM32F042B1 flash length in bytes.
 pub const STM32F042B1_FLASH_LEN: u32 = 0x0000_8000;
+/// STM32F042B1 RAM length in bytes.
 pub const STM32F042B1_RAM_LEN: u32 = 0x0000_2000;
 #[must_use]
+/// Construct the `stm32f042b1` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f042b1() -> BoardMemory {
     stm32f042()
 }
+/// STM32F072B1 flash length in bytes.
 pub const STM32F072B1_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F072B1 RAM length in bytes.
 pub const STM32F072B1_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f072b1` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f072b1() -> BoardMemory {
     stm32f072()
 }
+/// STM32F091B1 flash length in bytes.
 pub const STM32F091B1_FLASH_LEN: u32 = 0x0004_0000;
+/// STM32F091B1 RAM length in bytes.
 pub const STM32F091B1_RAM_LEN: u32 = 0x0001_0000;
 #[must_use]
+/// Construct the `stm32f091b1` (M0) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f091b1() -> BoardMemory {
     stm32f091()
 }
+/// STM32F100B1 flash length in bytes.
 pub const STM32F100B1_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F100B1 RAM length in bytes.
 pub const STM32F100B1_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f100b1` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f100b1() -> BoardMemory {
     stm32f100()
 }
+/// STM32F101B1 flash length in bytes.
 pub const STM32F101B1_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32F101B1 RAM length in bytes.
 pub const STM32F101B1_RAM_LEN: u32 = 0x0000_5000;
 #[must_use]
+/// Construct the `stm32f101b1` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f101b1() -> BoardMemory {
     stm32f101()
 }
+/// STM32F767 flash length in bytes.
 pub const STM32_F767_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32F767 RAM length in bytes.
 pub const STM32_F767_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32f767` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f767() -> BoardMemory {
     // F7 high line, large (M7, Ethernet) on own tables.
     f4gen_full_board::<crate::device::svd::stm32f767::Stm32f767>(
@@ -6222,15 +7706,21 @@ pub fn stm32f767() -> BoardMemory {
         crate::device::svd::stm32f767::PERIPHERALS,
     )
 }
+/// STM32H747 flash length in bytes.
 pub const STM32_H747_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32H747 RAM length in bytes.
 pub const STM32_H747_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32h747` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32h747() -> BoardMemory {
     stm32h743()
 }
+/// STM32H750 flash length in bytes.
 pub const STM32_H750_FLASH_LEN: u32 = 0x0002_0000;
+/// STM32H750 RAM length in bytes.
 pub const STM32_H750_RAM_LEN: u32 = 0x0002_0000;
 #[must_use]
+/// Construct the `stm32h750` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32h750() -> BoardMemory {
     use crate::device::svd::stm32h743::Stm32h743;
     let backing = FlatMemory::with_layout(
@@ -6269,9 +7759,12 @@ pub fn stm32h750() -> BoardMemory {
     mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
     mem
 }
+/// STM32F769 flash length in bytes.
 pub const STM32_F769_FLASH_LEN: u32 = 0x0020_0000;
+/// STM32F769 RAM length in bytes.
 pub const STM32_F769_RAM_LEN: u32 = 0x0008_0000;
 #[must_use]
+/// Construct the `stm32f769` (M7) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32f769() -> BoardMemory {
     // F769 (M7) on F767 tables; DBG/LTDC renamed DBGMCU/LTCD there.
     f4gen_full_board::<crate::device::svd::stm32f767::Stm32f767>(
