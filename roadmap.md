@@ -1075,6 +1075,75 @@ Effort: 6ah.
 
 ---
 
+## M15 — Physical fidelity (tracked next, NOT committed)
+
+Closes the four LTspice-parity gaps (see discussion 2026-09-11): the
+simulator is complete for firmware logic but answers neither
+cycle-exact timing nor anything electrical, and its authority rests on
+simulator-vs-simulator agreement rather than bench measurement. Ordered
+by dependency; each WP states its trigger. No effort is spent here
+until the trigger fires.
+
+### WP-N1 Parametric clocks (trigger: any HAL failure on crystal/PLL setup)
+
+Goal: finish the clock tree in `rcc.rs` — custom crystal rates (replace
+the fixed 8/25 MHz assumptions with programmed values), PLL2/3 output
+math, oscillator startup delays as cycle counts, and seeded-jitter mode
+(deterministic PRNG: reruns stay byte-identical while exercising
+jitter-sensitive firmware).
+Files: `vioarm-core/src/device/stm32/rcc.rs`, `mem/system.rs` tick scaling.
+Acceptance: firmware configuring HSE=12 MHz + PLL2 reaches the computed
+`SYSCLK`/`PCLK`/baud within 1%; startup delay counted before `HSERDY`;
+seeded-jitter reruns byte-identical across seeds only when reseeded.
+Effort: ~3 agent-days.
+
+### WP-N2 Timing-model hardening (trigger: WP-N4 bench brings numbers)
+
+Goal: pipeline/bus/cache-exact core timing — 3-stage pipeline effects
+per TRM Table 11-2 extension, flash ART prefetch hits, TCM waits, bus-
+matrix arbitration, DMA burst occupancy — inside the deterministic
+single-threaded model (no threads, ever; traces stay byte-identical).
+Explicitly NOT gate-level modeling (stays a non-goal).
+Files: `vioarm-core/src/cpu/mod.rs` (`cyccnt` paths), `mem/system.rs`
+wait-state accounting, `device/stm32/dma*.rs` occupancy.
+Acceptance: CoreMark/DWT loop deltas vs hardware capture within ±1%
+(see N4); full suite green with counters re-baselined.
+Effort: ~3 agent-weeks. Builds without N4 proof are forbidden (a
+fancier unvalidated model is not progress).
+
+### WP-N3 Analog co-sim hooks (trigger: a pin-level analog scenario)
+
+Goal: do NOT build a SPICE solver (out of architecture, permanently).
+Instead, couple an external analog engine through the fabric:
+pin-level voltage/current exchange points on GPIO/ADC/DAC/COMP,
+deterministic lockstep quanta (same discipline as `link_spi`), each
+side solving its own domain.
+Files: `vioarm-core/src/fabric.rs` (analog lane type), device pin
+models (present digital value + analog stub state).
+Acceptance: two-engine ping-pong e2e (e.g., DAC-driven comparator
+flips an EXTI line through the analog side and back); determinism
+rerun byte-identical at the digital boundary.
+Effort: ~2 agent-weeks plus the external engine (e.g., ngspice).
+
+### WP-N4 Hardware-anchored validation (trigger: bench access + owner go)
+
+Goal: the only WP that confers measurement authority, and the only one
+that cannot run in this environment. Needs physical STM32F4/F7/H7
+boards, a debug probe, and a logic analyzer/scope.
+Process per peripheral: capture DWT `CYCCNT` traces + GPIO waveforms on
+silicon; diff against simulation; drive residuals down; record the
+residual as the documented error bound (the LTspice-style datasheet
+row: "TIM2 PWM edge ±N core cycles vs capture").
+Files: new `bench/` capture corpus (NOT committed binary blobs —
+provenance + scripts only), residual table in `BENCHMARKS.md`.
+Acceptance: per-domain residual rows for CPU loops, USART baud, TIM
+PWM, ADC sequence timing; any residual above its bound reopens the
+modeling WP with a reproducer.
+Effort: equipment + ~3–6 weeks of bench time. This WP gates N2's
+acceptance and any real-time deadline claim, full stop.
+
+---
+
 ### Milestone exit criteria (global DoD)
 
 A milestone is done when: every WP acceptance criterion met; full workspace
