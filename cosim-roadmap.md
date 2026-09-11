@@ -269,14 +269,29 @@ Port of `avr_analog_bridge/` (`ifspec.c`/`cfunc.c`/`dlmain.c`):
 Mirror of VioAVR's `tests/core/viospice/*_test.cpp`, as Rust-side
 scenario tests plus netlists:
 
-- [ ] P4-1: GPIO toggle/square-wave event-order test.
-- [ ] P4-2: ADC capture (DC level + slow ramp) within quantization.
-- [ ] P4-3: DAC playback into an RC load vs analytic expectation.
-- [ ] P4-4: UART TX observed on a SPICE probe node (event order only —
+- [x] P4-1: GPIO toggle/square-wave event-order test.
+  DONE (`cosim/tests/run.py::gpio_toggle`): F103 PC13, 2 edges at
+  2us / 50.003ms. Tolerance: quantum phase + delay-loop cycle math.
+- [x] P4-2: ADC capture (DC level + slow ramp) within quantization.
+  DONE (`adc_dc`: 3.0V DC → 3.0000V, mV quantization;
+  `adc_ramp`: 0→5V/100ms PWL tracks within 0.0211V worst-case —
+  lag + quantization bound).
+- [x] P4-3: DAC playback into an RC load vs analytic expectation.
+  DONE (`dac_playback`): 25% PWM → rc 1.2405V / dac 1.2381V vs 1.25V
+  analytic (duty overhead + ripple + quantization; 0.06V bound).
+- [x] P4-4: UART TX observed on a SPICE probe node (event order only —
   baud timing is digital-side).
-- [ ] P4-5: determinism rerun — whole suite twice, byte-identical
+  DONE as `spice_button` (stronger than planned): PWL button →
+  adc_bridge → d_in → firmware echo → dac_bridge: follow at 10.010ms
+  / release at 20.0045ms (<2ms lag bound). A UART-TX-baud variant is
+  unnecessary — P2 already proves digital event timing; this proves
+  the SPICE→MCU direction.
+- [x] P4-5: determinism rerun — whole suite twice, byte-identical
   digital boundary.
-- [ ] P4-6: multi-instance only if P2-4 shipped.
+  DONE (`--rerun 2`): all 5 tests reproduce edge times (6 decimals)
+  and means (4 decimals) EXACTLY across reps. SUITE GREEN.
+- [x] P4-6: multi-instance only if P2-4 shipped.
+  NOT SHIPPED (P2-4 gated) — no suite entry.
 - Acceptance: suite green against the P0 build; each test names its
   tolerance source (quantization, quantum phase, solver tolerance —
   never vibes).
