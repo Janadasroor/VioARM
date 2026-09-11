@@ -1027,11 +1027,9 @@ fn mem_guard(ops: &mut A, size: u32, is_write: bool, side: dynasmrt::DynamicLabe
         ; add x0, x5, x6
         ; b =>done
         ; =>victim
-        ; lsr w2, w10, #12
-        ; lsl w2, w2, #1
-        ; ldr x10, [sp, #48]
-        ; ldr w4, [x10, priv_off]
-        ; orr w2, w2, w4
+        // The tag is still in `w2` from the primary check (`x10` was
+        // clobbered by the privilege load — recomputing from it reads
+        // the context pointer, never hits, and thrashes forever).
         ; add x3, x9, vslot
         ; ldr w4, [x3]
         ; cmp w4, w2
