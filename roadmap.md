@@ -1141,6 +1141,14 @@ Effort: ~2 agent-weeks plus the external engine (e.g., ngspice).
   loopback + determinism e2e (`tests/analog_pair.rs`). No physics,
   no external engine: that half still waits for a pin-level analog
   scenario.
+- Status 2026-09-12 (full path proven, `cosim-roadmap.md` P0–P5):
+  VioMATRIXC coupled through SPICE-master XSPICE codemodels —
+  `vioarm-cosim` C ABI crate (create/step/pins/analog, SAFETY CASE),
+  `cosim/` digital shim (64-pin, 1µs quanta) + `vioarm.cm` analog
+  bridges (adc/dac, vcc mirror-only), `cosim/tests/run.py` suite
+  (gpio_toggle, adc_dc/ramp, dac_playback, spice_button — rerun
+  byte-identical). Book page `docs/src/cosim.md`. The N4 relationship
+  stands: co-sim proves coupling, only bench proves models.
 
 ### WP-N4 Hardware-anchored validation (trigger: bench access + owner go)
 

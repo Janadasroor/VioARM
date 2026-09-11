@@ -7,3 +7,4 @@
 [Host I/O](./host-io.md)
 [Architecture](./arch.md)
 [Translated-block engine](./jit.md)
+[Co-simulation](./cosim.md)

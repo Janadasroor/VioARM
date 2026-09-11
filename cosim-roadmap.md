@@ -298,16 +298,21 @@ scenario tests plus netlists:
 
 ## 6. Phase P5 — Docs + acceptance (~2 agent-days)
 
-- [ ] P5-1: book page (`docs/src/cosim.md`): architecture, netlist
+- [x] P5-1: book page (`docs/src/cosim.md`): architecture, netlist
   authoring (vicompat defaults), determinism contract, tolerance
   catalog, troubleshooting (convergence failures are SPICE-side:
   GMIN stepping, tighter tolerances — never papered over digitally).
-- [ ] P5-2: CHANGELOG entry + roadmap M15-N3 status flip (seam →
+  DONE 2026-09-12 (mdbook builds clean).
+- [x] P5-2: CHANGELOG entry + roadmap M15-N3 status flip (seam →
   full path).
-- [ ] P5-3: acceptance — P0 verdict green, P1 crate published-gated
+  DONE 2026-09-12.
+- [x] P5-3: acceptance — P0 verdict green, P1 crate published-gated
   (NOT published: private gate holds; dry-run only), P2–P4 suites
   green, rerun determinism proven, N4 relationship stated (co-sim
   proves coupling, bench proves models — see M15-N4).
+  DONE 2026-09-12: `vioarm-cosim` is `publish = false` (no registry
+  surface by construction); 12 Rust integration tests + 5 scenario
+  tests ×2 reps green; N4 relationship in roadmap/CHANGELOG/book.
 
 ## 7. Non-goals (restated so scope cannot creep)
 
