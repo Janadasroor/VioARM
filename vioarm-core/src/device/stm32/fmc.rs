@@ -185,9 +185,47 @@ impl InterruptSource for Qspi {
     }
 }
 
+/// Request routing shared between a `DMAMUX1` and its DMA controllers.
+///
+/// DMAMUX1 channels 0..=7 feed DMA1 streams 0..=7 and channels 8..=15 feed
+/// DMA2 streams 0..=7. Each channel's `CCR.DMAREQ_ID` selects the request
+/// input; `0` (reset) keeps the board convention (stream-numbered request
+/// bits), nonzero remaps the stream to that input's bit. Sync/trigger
+/// fields (`SE`/`SPOL`/`NBREQ`/`SYNC_ID`), event generation (`EGE`), and
+/// the request-generator block (`RGxCR`/`RGSR`/`RGCFR`) are latched no-ops:
+/// the registers round-trip, nothing routes through them.
+#[derive(Debug, Default)]
+pub struct DmamuxRoutes {
+    /// `DMAREQ_ID` per DMAMUX1 channel (7-bit values).
+    pub ccr_id: [u8; 16],
+    /// Host-injected sync-overrun flags, materialized into `CSR` on read.
+    /// Genuine overruns need sync counting, which is unmodeled, so this
+    /// host hook is the only `SOF` source.
+    pub overrun: u16,
+}
+
+impl DmamuxRoutes {
+    /// Empty routing: every channel at reset (`0` = board convention).
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+/// `DMAMUX_CCRx` stride: 16 channels at `0x00..0x40`.
+const DMAMUX_CCR_STRIDE: u32 = 0x04;
+/// `DMAMUX_CSR` holds the `SOFx` sync-overrun flags (bit per channel).
+const DMAMUX_CSR: u32 = 0x80;
+/// `DMAMUX_CFR` write-1-to-clears `CSR`.
+const DMAMUX_CFR: u32 = 0x84;
+/// `DMAMUX_CCRx.SOIE`: sync-overrun interrupt enable (bit 8).
+const DMAMUX_SOIE: u32 = 1 << 8;
+
 #[derive(Debug, Default)]
 struct DmamuxBehavior {
-    req_id: [u8; 16],
+    /// Shared routing when this multiplexer drives DMA streams (`DMAMUX1`
+    /// on routed boards); `None` stays a pure latch (`DMAMUX2`/BDMA).
+    routes: Option<Arc<Mutex<DmamuxRoutes>>>,
 }
 
 impl Behavior for DmamuxBehavior {
@@ -199,18 +237,54 @@ impl Behavior for DmamuxBehavior {
         shift: u32,
     ) -> u32 {
         let word = view.merged(offset, val, shift);
-        // CCR register at 0x00 + 4*ch: DMAREQ_ID is bits 0:6
-        let ch = (offset / 4) as usize;
-        if ch < 16 {
-            self.req_id[ch] = (word & 0x7F) as u8;
+        if offset < DMAMUX_CSR && offset % DMAMUX_CCR_STRIDE == 0 {
+            // `CCRx`: latch `DMAREQ_ID` into the shared routing.
+            let ch = (offset / DMAMUX_CCR_STRIDE) as usize;
+            if let Some(routes) = self.routes.as_ref() {
+                if let Ok(mut routes) = routes.lock() {
+                    if let Some(slot) = routes.ccr_id.get_mut(ch) {
+                        *slot = (word & 0x7F) as u8;
+                    }
+                }
+            }
+        } else if offset == DMAMUX_CFR {
+            // `CFR` write-1-to-clears `CSR`.
+            view.set(DMAMUX_CSR, view.get(DMAMUX_CSR) & !word);
         }
         word
     }
 
     fn on_read(&mut self, view: &mut Registers<&mut [u32]>, offset: u32, value: u32) -> u32 {
-        let _ = view;
-        let _ = offset;
+        if offset == DMAMUX_CSR {
+            // Materialize host-injected overruns into `CSR` on read.
+            if let Some(routes) = self.routes.as_ref() {
+                if let Ok(mut routes) = routes.lock() {
+                    let overrun = std::mem::take(&mut routes.overrun);
+                    if overrun != 0 {
+                        let merged = value | u32::from(overrun);
+                        view.set(DMAMUX_CSR, merged);
+                        return merged;
+                    }
+                }
+            }
+        }
         value
+    }
+
+    fn pending(&self, view: &Registers<&[u32]>) -> u32 {
+        // One shared overrun line: any `CSR.SOFx` with its `CCRx.SOIE`.
+        let mut csr = view.get(DMAMUX_CSR);
+        if let Some(routes) = self.routes.as_ref() {
+            if let Ok(routes) = routes.lock() {
+                csr |= u32::from(routes.overrun);
+            }
+        }
+        for ch in 0..16u32 {
+            if csr & (1 << ch) != 0 && view.get(ch * DMAMUX_CCR_STRIDE) & DMAMUX_SOIE != 0 {
+                return 1;
+            }
+        }
+        0
     }
 }
 
@@ -233,6 +307,30 @@ impl Dmamux {
         let def = D::peripheral("DMAMUX2").expect("generated tables contain DMAMUX2");
         Self {
             inner: RegisterFile::new(def, DmamuxBehavior::default()),
+        }
+    }
+
+    /// Share request routing with the DMA controllers: streams transfer only
+    /// when their DMAMUX channel selects the asserted input (`0` keeps the
+    /// board convention). Boards pass the same table to their `DmaF4`
+    /// controllers via `DmaF4::with_dmamux`.
+    #[must_use]
+    pub fn with_routes(mut self, routes: Arc<Mutex<DmamuxRoutes>>) -> Self {
+        self.inner.behavior_mut().routes = Some(routes);
+        self
+    }
+
+    /// Inject a sync-overrun on DMAMUX channel `ch` (0-based): the next
+    /// `CSR` read latches `SOFx`, raising the shared overrun line when that
+    /// channel's `SOIE` is set. Genuine overruns need sync counting, which
+    /// is unmodeled, so this host hook is the only `SOF` source.
+    pub fn inject_overrun(&mut self, ch: u8) {
+        if ch < 16 {
+            if let Some(routes) = self.inner.behavior_mut().routes.as_ref() {
+                if let Ok(mut routes) = routes.lock() {
+                    routes.overrun |= 1 << ch;
+                }
+            }
         }
     }
 }
@@ -1253,7 +1351,7 @@ impl InterruptSource for Hrtim {
 
 #[cfg(test)]
 mod tests {
-    use super::{Bdma, Dma2d, Dmamux, Hrtim, Ltdc, Mdma, Sai4};
+    use super::{Bdma, Dma2d, Dmamux, DmamuxRoutes, Hrtim, Ltdc, Mdma, Sai4};
     use crate::device::svd::stm32h743::Stm32h743;
     use crate::device::{InterruptSource, Peripheral};
 
@@ -1272,7 +1370,10 @@ mod tests {
 
     #[test]
     fn dmamux_routes_dma_req_id() {
-        let mut d = Dmamux::new_for::<Stm32h743>();
+        use super::DmamuxRoutes;
+        use std::sync::{Arc, Mutex};
+        let routes = Arc::new(Mutex::new(DmamuxRoutes::new()));
+        let mut d = Dmamux::new_for::<Stm32h743>().with_routes(routes.clone());
         let base = d.ranges()[0].base;
         // CCR0 DMAREQ_ID = 0x12
         write_word(&mut d, base, 0x12);
@@ -1280,9 +1381,99 @@ mod tests {
         // CCR1
         write_word(&mut d, base + 4, 0x34);
         assert_eq!(read_word(&mut d, base + 4) & 0x7F, 0x34);
-        // Check internal routing table via behavior
-        assert_eq!(d.inner.behavior().req_id[0], 0x12);
-        assert_eq!(d.inner.behavior().req_id[1], 0x34);
+        // Check the shared routing table.
+        let routes = routes.lock().unwrap();
+        assert_eq!(routes.ccr_id[0], 0x12);
+        assert_eq!(routes.ccr_id[1], 0x34);
+    }
+
+    #[test]
+    fn dmamux_cfr_clears_csr_and_overrun_lines() {
+        use super::DmamuxRoutes;
+        use std::sync::{Arc, Mutex};
+        let routes = Arc::new(Mutex::new(DmamuxRoutes::new()));
+        let mut d = Dmamux::new_for::<Stm32h743>().with_routes(routes.clone());
+        let base = d.ranges()[0].base;
+        // CCR2 SOIE on (bit 8); inject a sync-overrun on channel 2.
+        write_word(&mut d, base + 8, 0x100);
+        assert_eq!(d.pending(), 0, "no flag, no line");
+        d.inject_overrun(2);
+        // The flag materializes on read; the line follows SOIE.
+        assert_eq!(read_word(&mut d, base + 0x80) & (1 << 2), 1 << 2, "SOF2");
+        assert_eq!(d.pending(), 1, "SOIE raises the shared line");
+        // CFR write-1-to-clear drops the flag and the line.
+        write_word(&mut d, base + 0x84, 1 << 2);
+        assert_eq!(read_word(&mut d, base + 0x80) & (1 << 2), 0, "SOF2 cleared");
+        assert_eq!(d.pending(), 0);
+    }
+
+    #[test]
+    fn dmamux_without_routes_stays_a_latch() {
+        // DMAMUX2 / unrouted instances keep pure latch behavior.
+        let mut d = Dmamux::dmamux2_for::<Stm32h743>();
+        let base = d.ranges()[0].base;
+        write_word(&mut d, base, 0x12);
+        assert_eq!(read_word(&mut d, base) & 0x7F, 0x12);
+        assert_eq!(d.pending(), 0);
+    }
+
+    /// WP-L2 acceptance: `USART2` RX bytes reach RAM through a
+    /// DMAMUX-routed `DMA1` stream. The USART asserts its board-convention
+    /// input (RX = 2); with `CCR2.DMAREQ_ID` set to a wrong input the
+    /// stream stalls (gating proved — legacy routing would have moved it),
+    /// and with the matching ID both bytes land and `TCIF` latches.
+    #[test]
+    fn usart_rx_reaches_ram_through_dmamux() {
+        use crate::device::stm32::dma::{DmaRequests, DmaUnit};
+        use crate::device::stm32::dma_f4::DmaF4;
+        use crate::device::stm32::usart::Usart;
+        use std::sync::{Arc, Mutex};
+
+        let reqs = Arc::new(Mutex::new(DmaRequests::new()));
+        let routes = Arc::new(Mutex::new(DmamuxRoutes::new()));
+        let mailbox: Arc<Mutex<Vec<DmaUnit>>> = Arc::new(Mutex::new(Vec::new()));
+        let mut u = Usart::usart2_for::<Stm32h743>().with_dma_routed(reqs.clone(), 0, 3, 2);
+        let mut mux = Dmamux::new_for::<Stm32h743>().with_routes(routes.clone());
+        let mut d = DmaF4::dma1_for::<Stm32h743>(mailbox.clone())
+            .with_requests(reqs.clone(), 0)
+            .with_dmamux(routes.clone(), 0);
+        let mbase = mux.ranges()[0].base;
+        let dbase = d.ranges()[0].base;
+        let ubase = u.ranges()[0].base;
+        // DMA1 stream-2 block: CR 0x40, NDTR 0x44, PAR 0x48, M0AR 0x4C.
+        let (cr2, ndtr2, par2, m0ar2) = (
+            dbase + 0x10 + 2 * 0x18,
+            dbase + 0x14 + 2 * 0x18,
+            dbase + 0x18 + 2 * 0x18,
+            dbase + 0x1C + 2 * 0x18,
+        );
+        // Stream 2: USART DR → RAM, 2 bytes, MINC.
+        // (H7 USART RDR sits at +0x24; the address is recorded, not read.)
+        write_word(&mut d, par2, ubase + 0x24); // PAR2
+        write_word(&mut d, m0ar2, 0x2000_1000); // M0AR2
+        write_word(&mut d, ndtr2, 2); // NDTR2
+        write_word(&mut d, cr2, 0x1 | (1 << 10)); // EN|MINC
+                                                  // Wrong input selected: the stream stalls despite RX traffic.
+        write_word(&mut mux, mbase + 0x08, 7); // CCR2.DMAREQ_ID = 7
+        u.drive_inputs(u32::from(b'A'));
+        u.tick(1);
+        d.tick(1);
+        assert_eq!(read_word(&mut d, ndtr2), 2, "gated stream stalls");
+        assert!(mailbox.lock().unwrap().is_empty());
+        // Matching input: both bytes flow into RAM.
+        write_word(&mut mux, mbase + 0x08, 2); // CCR2.DMAREQ_ID = 2
+        for byte in b"AB" {
+            u.drive_inputs(u32::from(*byte));
+            u.tick(1);
+            d.tick(1);
+        }
+        let units = mailbox.lock().unwrap().clone();
+        assert_eq!(units.len(), 2, "two RX bytes moved");
+        assert_eq!(units[0].1, 0x2000_1000);
+        assert_eq!(units[1].1, 0x2000_1001);
+        assert_eq!(read_word(&mut d, ndtr2), 0);
+        // Stream 2 TCIF lives at LISR base 16 + 5.
+        assert_eq!(read_word(&mut d, dbase) & (1 << 21), 1 << 21, "TCIF2");
     }
 
     #[test]

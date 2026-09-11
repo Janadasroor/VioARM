@@ -29,7 +29,7 @@ use crate::device::stm32::exti::Exti;
 use crate::device::stm32::fdcan::{Fdcan, FdcanCut, FdcanMailbox, FdcanRam, FdcanStub};
 use crate::device::stm32::flash::{FlashF1, FlashF4, FlashGate};
 use crate::device::stm32::fmc::{
-    Bdma, Dfsdm, Dma2d, Dmamux, Fmc, Hrtim, Ltdc, Mdma, Qspi, QspiGate, Sai4,
+    Bdma, Dfsdm, Dma2d, Dmamux, DmamuxRoutes, Fmc, Hrtim, Ltdc, Mdma, Qspi, QspiGate, Sai4,
 };
 use crate::device::stm32::gpio::Gpio as StmGpio;
 use crate::device::stm32::gpio_f4::GpioF4;
@@ -6837,8 +6837,9 @@ pub fn stm32h743() -> BoardMemory {
         }
     }
     // DMA request routing follows the F407 board convention (streams as
-    // channels); the H7 DMAMUX is not modeled, so request IDs are the
-    // stream numbers. Each tuple is (controller, tx stream, rx stream).
+    // channels); programming a DMAMUX1 channel's `DMAREQ_ID` remaps that
+    // stream to the selected input. Each tuple is (controller, tx stream,
+    // rx stream).
     for (ctor, route) in [
         (
             Usart::for_device::<Stm32h743> as fn() -> Usart,
@@ -6965,21 +6966,30 @@ pub fn stm32h743() -> BoardMemory {
         ));
     }
     // DMA - H7 uses stream DMA like F4 plus DMAMUX; use DmaF4 with Vec mailbox.
-    // The DMAMUX itself stays a latch: sources use the F407 stream convention.
+    // DMAMUX1 channels 0..=7 feed DMA1 streams and 8..=15 feed DMA2 streams:
+    // a nonzero `DMAREQ_ID` remaps the stream to that input, zero (reset)
+    // keeps the F407 stream-numbered convention (DMAMUX2/BDMA stays a latch).
     let dma = Arc::new(Mutex::new(Vec::new()));
     mem.set_dma_mailbox(dma.clone());
+    let dmamux_routes = Arc::new(Mutex::new(DmamuxRoutes::new()));
     if <Stm32h743 as crate::device::svd::Device>::peripheral("DMA1").is_some() {
         mem.attach(Box::new(
-            DmaF4::dma1_for::<Stm32h743>(dma.clone()).with_requests(dma_requests.clone(), 0),
+            DmaF4::dma1_for::<Stm32h743>(dma.clone())
+                .with_requests(dma_requests.clone(), 0)
+                .with_dmamux(dmamux_routes.clone(), 0),
         ));
     }
     if <Stm32h743 as crate::device::svd::Device>::peripheral("DMA2").is_some() {
         mem.attach(Box::new(
-            DmaF4::dma2_for::<Stm32h743>(dma).with_requests(dma_requests.clone(), 1),
+            DmaF4::dma2_for::<Stm32h743>(dma)
+                .with_requests(dma_requests.clone(), 1)
+                .with_dmamux(dmamux_routes.clone(), 1),
         ));
     }
     if <Stm32h743 as crate::device::svd::Device>::peripheral("DMAMUX1").is_some() {
-        mem.attach(Box::new(Dmamux::new_for::<Stm32h743>()));
+        mem.attach(Box::new(
+            Dmamux::new_for::<Stm32h743>().with_routes(dmamux_routes.clone()),
+        ));
     }
     if <Stm32h743 as crate::device::svd::Device>::peripheral("DMAMUX2").is_some() {
         mem.attach(Box::new(Dmamux::dmamux2_for::<Stm32h743>()));

@@ -1200,16 +1200,21 @@ claimed (see Non-goals).
   alias share the gated store.
 - The F1/F4 DMA controllers arbitrate by `PL` (higher `PL` first, then
   channel/stream number, `pl_priority_arbitrates_higher_first`) and transfer
-  any `DIR` optimistically in the enable cycle (`00` peripheral→memory
-  `PAR`→`M0AR`, `01` memory→peripheral `M0AR`→`PAR`, `10` memory-to-memory)
-  with `PSIZE`/`MSIZE` widths and `PINC`/`MINC` stepping
-  (  `peripheral_request_dirs_complete_optimistically` for F4). A wired F4
-  stream paces one burst per asserted request (`with_requests`; board
-  convention routes USART1/2/3, UART4/5, USART6, TIM1/2/4, ADC, SPI1/2/3 —
-  `CHSEL` remap and H7 `DMAMUX` not modeled); unwired streams and
-  memory-to-memory stay optimistic, as do `TEIF`/`FEIF`/`HTIF` (latch-only)
-  and `CIRC`. DMA burst/FIFO geometry itself is modeled (`MBURST`/`PBURST`/
-  `FTH`), error interrupts are not.
+  any `DIR` with `PSIZE`/`MSIZE` widths and `PINC`/`MINC` stepping. A wired
+  F4 stream paces one burst per asserted request (`with_requests`; board
+  convention routes USART1/2/3, UART4/5, USART6, TIM1/2/4, ADC, SPI1/2/3).
+  Error and half-transfer interrupts are modeled (`HTIF` at half the latched
+  count, `TEIF`/`FEIF` via host injection, `DMEIF` for burst-while-direct on
+  F4) with per-flag enable gating; `CIRC` reloads the latched period and
+  keeps `EN` (F4 `DBM` alternates `M0AR`/`M1AR` via `CT`); F4 `CHSEL` remaps a
+  stream to a channel bit when nonzero; H7 `DMAMUX1` remaps a stream to a
+  request input when its `DMAREQ_ID` is nonzero (`CHSEL`/`DMAREQ_ID` zero
+  keeps the stream-numbered board convention); the F4 FIFO accumulates to
+  `FTH` with end-of-transfer flush (M2M stays direct). Unwired streams and
+  memory-to-memory stay optimistic. Drain-time bus errors cannot reach
+  either device (mailbox is one-way), so host injection is the documented
+  `TEIF`/`FEIF` source; sync/trigger fields and the request-generator block
+  are latched no-ops.
 - The F1 DMA controllers transfer memory-to-memory (optimistically, in the
   cycle the channel is enabled) or one unit per peripheral-request assertion;
   request sources are the USART/UART family everywhere (USART1 ch4/ch5,

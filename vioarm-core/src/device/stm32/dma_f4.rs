@@ -37,6 +37,7 @@
 //! the board convention for firmware that leaves `CHSEL` at reset.)
 
 use crate::device::stm32::dma::{DmaRequests, DmaUnit, Period};
+use crate::device::stm32::fmc::DmamuxRoutes;
 use crate::device::svd::{Behavior, Device, RegisterFile, Registers};
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
@@ -183,6 +184,10 @@ struct DmaF4Behavior {
     /// wants one transfer step. `None` (boards that wire no sources) keeps
     /// the legacy optimistic whole-transfer behavior.
     requests: Option<(Arc<Mutex<DmaRequests>>, u8)>,
+    /// DMAMUX routing shared with the board's `DMAMUX1`: a nonzero
+    /// `DMAREQ_ID` on the stream's multiplexer channel remaps which request
+    /// bit the stream listens on. `None` keeps stream-numbered routing.
+    dmamux: Option<(Arc<Mutex<DmamuxRoutes>>, u8)>,
     /// Period state per stream, latched on `EN` set (plus `M1AR` for `DBM`).
     period: [Period; 8],
     /// Second-buffer bases per stream (`SM1AR` at `EN` set) for `DBM`.
@@ -205,6 +210,7 @@ impl DmaF4Behavior {
         Self {
             mailbox,
             requests: None,
+            dmamux: None,
             period: [Period::default(); 8],
             m1ar0: [0; 8],
             fifo_lvl: [0; 8],
@@ -234,21 +240,41 @@ impl DmaF4Behavior {
         }
     }
 
+    /// The request bit stream `s` listens on after DMAMUX remapping: a
+    /// nonzero `DMAREQ_ID` on this controller's multiplexer channel wins
+    /// over the `CHSEL`/stream selection.
+    fn listen_bit(&self, cr_word: u32, s: u8) -> u8 {
+        let mut sel = Self::request_sel(cr_word, s);
+        if let (Some((_, controller)), Some((routes, mux_ctl))) = (&self.requests, &self.dmamux) {
+            if controller == mux_ctl {
+                let idx = usize::from(*mux_ctl) * 8 + usize::from(s);
+                if let Ok(routes) = routes.lock() {
+                    if let Some(&id) = routes.ccr_id.get(idx) {
+                        if id != 0 {
+                            sel = id;
+                        }
+                    }
+                }
+            }
+        }
+        sel
+    }
+
     /// Whether stream `s` may transfer this tick: always, unless request
-    /// lines are wired, in which case its selected bit must be asserted.
+    /// lines are wired, in which case its listened bit must be asserted.
     fn requested(&self, cr_word: u32, s: u8) -> bool {
         let Some((reqs, controller)) = &self.requests else {
             return true;
         };
         reqs.lock()
             .unwrap_or_else(|e| e.into_inner())
-            .asserted(*controller, Self::request_sel(cr_word, s))
+            .asserted(*controller, self.listen_bit(cr_word, s))
     }
 
-    /// Consume one request assertion on stream `s`'s selected bit.
+    /// Consume one request assertion on stream `s`'s listened bit.
     fn consume(&self, cr_word: u32, s: u8) {
         if let Some((reqs, controller)) = &self.requests {
-            let sel = Self::request_sel(cr_word, s);
+            let sel = self.listen_bit(cr_word, s);
             let mut reqs = reqs.lock().unwrap_or_else(|e| e.into_inner());
             reqs.release(*controller, sel, true);
             reqs.release(*controller, sel, false);
@@ -640,6 +666,17 @@ impl DmaF4 {
     #[must_use]
     pub fn with_requests(mut self, requests: Arc<Mutex<DmaRequests>>, controller: u8) -> Self {
         self.inner.behavior_mut().requests = Some((requests, controller));
+        self
+    }
+
+    /// Share DMAMUX routing: a nonzero `DMAREQ_ID` on this controller's
+    /// multiplexer channel remaps which request bit each stream listens on
+    /// (see `DmamuxRoutes`). Boards pass the same table to their `DMAMUX1`
+    /// via `Dmamux::with_routes`. `controller` must match the one given to
+    /// `with_requests`.
+    #[must_use]
+    pub fn with_dmamux(mut self, routes: Arc<Mutex<DmamuxRoutes>>, controller: u8) -> Self {
+        self.inner.behavior_mut().dmamux = Some((routes, controller));
         self
     }
 
@@ -1215,5 +1252,48 @@ mod tests {
             8,
             "residue flushes at NDTR exhaustion"
         );
+    }
+
+    /// DMAMUX remapping: stream 6 with `DMAREQ_ID=3` transfers on channel 3
+    /// and stalls on its own stream number; with `DMAREQ_ID=0` the board
+    /// convention (stream-numbered bits) applies.
+    #[test]
+    fn dmamux_remaps_the_listened_request_bit() {
+        use crate::device::stm32::dma::DmaRequests;
+        use crate::device::stm32::fmc::DmamuxRoutes;
+        let m = mailbox();
+        let reqs = Arc::new(Mutex::new(DmaRequests::new()));
+        let routes = Arc::new(Mutex::new(DmamuxRoutes::new()));
+        let mut d = DmaF4::dma1_for::<Stm32f407>(m.clone())
+            .with_requests(reqs.clone(), 0)
+            .with_dmamux(routes.clone(), 0);
+        // Stream 6, peripheral→memory, 2 units, DMAMUX channel 6 → ID 3.
+        write_word(&mut d, D1 + s_par(6), 0x4000_0400);
+        write_word(&mut d, D1 + s_m0ar(6), 0x2000_1000);
+        write_word(&mut d, D1 + s_ndtr(6), 2);
+        write_word(&mut d, D1 + s_cr(6), EN | (1 << 10)); // MINC
+        routes.lock().unwrap().ccr_id[6] = 3;
+        // A request on the stream's own number stalls under remap.
+        reqs.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .request(0, 6, false);
+        d.tick(1);
+        assert_eq!(read_word(&mut d, D1 + s_ndtr(6)), 2, "remapped stall");
+        assert!(m.lock().unwrap_or_else(|e| e.into_inner()).is_empty());
+        // A request on channel 3 transfers and is consumed.
+        reqs.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .request(0, 3, false);
+        d.tick(1);
+        assert_eq!(read_word(&mut d, D1 + s_ndtr(6)), 1);
+        assert_eq!(m.lock().unwrap_or_else(|e| e.into_inner()).len(), 1);
+        assert!(!reqs.lock().unwrap().asserted(0, 3));
+        // Clearing the ID back to 0 restores the board convention.
+        routes.lock().unwrap().ccr_id[6] = 0;
+        reqs.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .request(0, 6, false);
+        d.tick(1);
+        assert_eq!(read_word(&mut d, D1 + s_ndtr(6)), 0, "legacy routing");
     }
 }
