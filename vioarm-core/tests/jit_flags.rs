@@ -99,9 +99,7 @@ fn fault_after_skipped_producers() {
     // must match the stepper exactly.
     // Layout: MOVS/MOVS/LDR r5/ADDS/SUBS/LDR fault/BKPT/pad/pool.
     // 0x682B = LDR r3, [r5, #0] (r5 = unmapped 0x50000000).
-    let mut h: Vec<u16> = vec![
-        0x2000, 0x2101, 0, 0x1842, 0x1A01, 0x682B, 0xBE00, 0xBF00,
-    ];
+    let mut h: Vec<u16> = vec![0x2000, 0x2101, 0, 0x1842, 0x1A01, 0x682B, 0xBE00, 0xBF00];
     let at = |i: usize| RAM + i as u32 * 2;
     h[2] = u16::from_le_bytes(ldr_lit(5, at(2), at(8)));
     let mut code = Vec::new();

@@ -445,7 +445,8 @@ fn is_mem_load(access: crate::cpu::decode32::MemOp) -> bool {
 /// Static memory-access descriptor shared by template emission and the
 /// side-exit fill path (single source: `(byte size, is_write)`).
 /// `None` for non-memory or deferred (dual/multiple/exclusive) ops.
-pub(crate) fn mem_access(op: &TbOp) -> Option<(u32, bool)> {    match *op {
+pub(crate) fn mem_access(op: &TbOp) -> Option<(u32, bool)> {
+    match *op {
         TbOp::V16(inst) => {
             use crate::cpu::decode16::{LsImm, LsReg};
             match inst {
@@ -521,7 +522,10 @@ fn flag_producer(op: &TbOp) -> bool {
             | Inst16::SpecialCmp { .. } => true,
             Inst16::ShiftImm { amount, .. } => amount != 0,
             Inst16::Alu { op, .. } => {
-                matches!(op, AluOp::Adc | AluOp::Sbc | AluOp::Cmp | AluOp::Cmn | AluOp::Neg)
+                matches!(
+                    op,
+                    AluOp::Adc | AluOp::Sbc | AluOp::Cmp | AluOp::Cmn | AluOp::Neg
+                )
             }
             _ => false,
         },
@@ -1199,9 +1203,15 @@ mod tests {
             kind: LsImm::Ldr,
         });
         // Run covered by the last: only it merges.
-        assert_eq!(flag_merge_bits(&[adds(0), adds(1), bne]), vec![false, true, false]);
+        assert_eq!(
+            flag_merge_bits(&[adds(0), adds(1), bne]),
+            vec![false, true, false]
+        );
         // A memory observation forces the merge before it.
-        assert_eq!(flag_merge_bits(&[adds(0), ldr, bne]), vec![true, false, false]);
+        assert_eq!(
+            flag_merge_bits(&[adds(0), ldr, bne]),
+            vec![true, false, false]
+        );
         // Lone producer before an exit merges.
         assert_eq!(flag_merge_bits(&[adds(0)]), vec![true]);
     }

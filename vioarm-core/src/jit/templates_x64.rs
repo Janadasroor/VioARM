@@ -288,8 +288,12 @@ fn emit16(
         }
         I::AddReg { rd, rn, rm } => alu_rr(ops, rd, rn, rm, AluKind::Add, pred, merge),
         I::SubReg { rd, rn, rm } => alu_rr(ops, rd, rn, rm, AluKind::Sub, pred, merge),
-        I::AddImm3 { rd, rn, imm } => alu_ri(ops, rd, rn, i32::from(imm), AluKind::Add, pred, merge),
-        I::SubImm3 { rd, rn, imm } => alu_ri(ops, rd, rn, i32::from(imm), AluKind::Sub, pred, merge),
+        I::AddImm3 { rd, rn, imm } => {
+            alu_ri(ops, rd, rn, i32::from(imm), AluKind::Add, pred, merge)
+        }
+        I::SubImm3 { rd, rn, imm } => {
+            alu_ri(ops, rd, rn, i32::from(imm), AluKind::Sub, pred, merge)
+        }
         I::AddImm8 { rd, imm } => alu_ri(ops, rd, rd, i32::from(imm), AluKind::Add, pred, merge),
         I::SubImm8 { rd, imm } => alu_ri(ops, rd, rd, i32::from(imm), AluKind::Sub, pred, merge),
         I::CmpImm { rn, imm } => cmp_ri(ops, rn, i32::from(imm), merge),
@@ -1036,15 +1040,7 @@ fn alu_rr(ops: &mut A, rd: u8, rn: u8, rm: u8, kind: AluKind, pred: bool, merge:
 }
 
 /// `Rd = Rn +/- imm` with full NZCV (`pred` skips the merge — S4).
-fn alu_ri(
-    ops: &mut A,
-    rd: u8,
-    rn: u8,
-    imm: i32,
-    kind: AluKind,
-    pred: bool,
-    merge: bool,
-) -> bool {
+fn alu_ri(ops: &mut A, rd: u8, rn: u8, imm: i32, kind: AluKind, pred: bool, merge: bool) -> bool {
     if rd == 15 || rn == 15 {
         return false;
     }

@@ -304,13 +304,27 @@ mod tests {
         let mut tlb = Tlb::new();
         let mut mem = FlatMemory::with_layout(&[0x2000_0000], &[0x50000]);
         assert!(fill_tlb(
-            &mut tlb, &mut mem, 0x2000_0080, 4, false, true, 0, true
+            &mut tlb,
+            &mut mem,
+            0x2000_0080,
+            4,
+            false,
+            true,
+            0,
+            true
         ));
         assert_eq!(tlb.entries[0].tag, (0x20000 << 1) | 1);
         assert_eq!(tlb.entries[0].perms, TLB_READ | TLB_WRITE | TLB_CODE);
         assert_eq!(tlb.victim.perms, 0);
         assert!(fill_tlb(
-            &mut tlb, &mut mem, 0x2004_0080, 4, true, true, 0, false
+            &mut tlb,
+            &mut mem,
+            0x2004_0080,
+            4,
+            true,
+            true,
+            0,
+            false
         ));
         assert_eq!(tlb.entries[0].tag, (0x20040 << 1) | 1);
         // The evicted entry (code bit included) now lives in the victim.
@@ -319,7 +333,14 @@ mod tests {
         assert_ne!(tlb.victim.ptr, 0);
         // Ping-pong is stable: re-filling the first page parks the second.
         assert!(fill_tlb(
-            &mut tlb, &mut mem, 0x2000_0080, 4, false, true, 0, false
+            &mut tlb,
+            &mut mem,
+            0x2000_0080,
+            4,
+            false,
+            true,
+            0,
+            false
         ));
         assert_eq!(tlb.entries[0].tag, (0x20000 << 1) | 1);
         assert_eq!(tlb.victim.tag, (0x20040 << 1) | 1);
