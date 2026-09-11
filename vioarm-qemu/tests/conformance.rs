@@ -3217,7 +3217,7 @@ fn m33_baseline_splim() {
 
 /// The ARMv8-M `TT` family reads the security state of an address without
 /// performing an access. On the mps2-an505 the ARMSSE IDAU attributes by
-/// address bit [31:28] (even regions Non-secure, odd Secure) with the system
+/// address bit `31:28` (even regions Non-secure, odd Secure) with the system
 /// aliases exempt, and with the SAU disabled every non-exempt address reads
 /// Secure. VioARM runs the same TrustZone model, so `TT`/`TTTT`/`TTA`/`TTAT`
 /// over representative addresses must diff identically against the M33.
@@ -4531,7 +4531,7 @@ fn ldm_stm_decrement_before() {
 
 /// Saturating `QADD`/`QSUB` corners: exact extremes saturate with `Q` set,
 /// while an exact non-saturating follow-up leaves the sticky `Q` latched.
-/// The snapshot compares `Q` via xPSR[27] on every instruction.
+/// The snapshot compares `Q` via `xPSR[27]` on every instruction.
 #[test]
 fn qadd_qsub_saturation_corners() {
     let Some(mt) = qemu_m4() else { return };

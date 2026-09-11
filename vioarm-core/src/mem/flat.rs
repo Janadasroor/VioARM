@@ -9,6 +9,7 @@ use crate::mem::bus::{Bus, DataTranslate, MpuAccess, PeripheralBus, Region};
 /// A single owned bank of bytes.
 #[derive(Debug)]
 pub struct Bank {
+    /// Covered region.
     pub region: Region,
     bytes: Vec<u8>,
 }
@@ -28,6 +29,7 @@ pub struct FlatMemory {
 }
 
 impl FlatMemory {
+    /// Flat memory over explicit banks.
     #[must_use]
     pub const fn of_banks(banks: Vec<Bank>) -> Self {
         Self {

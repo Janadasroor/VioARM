@@ -14,52 +14,74 @@ use quick_xml::XmlVersion;
 /// The access vocabulary used by the supported SVD files.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Access {
+    /// Readable and writable.
     ReadWrite,
+    /// Readable only.
     ReadOnly,
+    /// Writable only.
     WriteOnly,
 }
 
 /// A register bit field.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Field {
+    /// Field name.
     pub name: String,
+    /// Bit offset within the register.
     pub offset: u32,
+    /// Bit width.
     pub width: u32,
+    /// Access vocabulary.
     pub access: Access,
 }
 
 /// A single register.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Register {
+    /// Register name.
     pub name: String,
+    /// Byte offset within the peripheral.
     pub offset: u32,
+    /// Register size in bits.
     pub size: u32,
+    /// Access vocabulary.
     pub access: Access,
+    /// Reset value.
     pub reset: u32,
+    /// Bit fields.
     pub fields: Vec<Field>,
 }
 
 /// An interrupt line the peripheral can raise.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Irq {
+    /// Interrupt name.
     pub name: String,
+    /// Interrupt number.
     pub number: u8,
 }
 
 /// A fully-resolved peripheral: `derivedFrom` aliases are already copied in.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Peripheral {
+    /// Peripheral name.
     pub name: String,
+    /// Base address.
     pub base: u32,
+    /// Window size in bytes.
     pub window: u32,
+    /// Interrupt lines.
     pub irqs: Vec<Irq>,
+    /// Registers.
     pub registers: Vec<Register>,
 }
 
 /// The parsed, derived-from-resolved device model.
 #[derive(Debug)]
 pub struct Model {
+    /// Device name.
     pub device: String,
+    /// Peripherals.
     pub peripherals: Vec<Peripheral>,
 }
 

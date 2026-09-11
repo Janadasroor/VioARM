@@ -2,7 +2,7 @@
 //! SVD-generated register tables.
 //!
 //! Register layout and resets come from the SVD; the table cannot express the
-//! counting core, so [`TimerBehavior`] runs it: `CR1.CEN` gates the counter,
+//! counting core, so `TimerBehavior` runs it: `CR1.CEN` gates the counter,
 //! the prescaler `PSC` divides the clock by `PSC + 1`, and `CNT` wraps past
 //! `ARR` into an update event that sets `SR.UIF` and — with `DIER.UIE` set —
 //! raises a level-triggered IRQ. `EGR.UG` forces an update from software.
@@ -151,8 +151,8 @@ impl TimerBehavior {
     }
 
     /// The RM0008 §17.4.18 dead-time generator decode, in `tDTS` units:
-    /// `DTG[7:5]=0xx` → `DTG·t`, `10x` → `(64+DTG[5:0])·2t`,
-    /// `110` → `(32+DTG[4:0])·8t`, `111` → `(32+DTG[4:0])·16t`.
+    /// `DTG[7:5]=0xx` → `DTG·t`, `10x` → `(64+`DTG[5:0]`)·2t`,
+    /// `110` → `(32+`DTG[4:0]`)·8t`, `111` → `(32+`DTG[4:0]`)·16t`.
     fn decode_dtg(dtg: u8) -> u32 {
         match dtg >> 5 {
             0b000..=0b011 => u32::from(dtg),

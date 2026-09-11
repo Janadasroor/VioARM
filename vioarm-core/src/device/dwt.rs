@@ -8,6 +8,7 @@ use crate::mem::bus::Region;
 
 const BASE: u32 = 0xE000_1000;
 
+/// Data Watchpoint and Trace unit.
 #[derive(Debug)]
 pub struct Dwt {
     ranges: [Region; 1],
@@ -22,6 +23,7 @@ impl Default for Dwt {
 }
 
 impl Dwt {
+    /// A new `Dwt`.
     #[must_use]
     pub const fn new() -> Self {
         Self {

@@ -460,15 +460,16 @@ Effort: 6ah.
 Acceptance: book builds in CI; examples compile+run in e2e; missing-docs
 warning-clean.
 Effort: 12ah.
-- Status 2026-09-11 (partial): book builds (`mdbook build docs` green, CI
+- Status DONE 2026-09-11: book builds (`mdbook build docs` green, CI
   job exists); all 6 examples exit 0 locally with a CI `examples` job
-  added; `board.rs` fully documented (1493 missing-docs cleared with
-  derived family/length notes). Remainder: ~850 rustdoc items — decoder
-  enum variants (`decode32` ~232, `decode16` ~162, need hand-written ISA
-  semantics) and builder methods (`vioarm-qemu` `Asm` ~171) plus ~280
-  scattered stragglers. The global `#![warn(missing_docs)]` stays off
-  until that backlog is worked (enabling it now would flood every build);
-  `board.rs` is the ratchet's first closed file.
+  added; `board.rs` fully documented (1493 items); decoder ISA semantics
+  documented (variants + fields, `decode32`/`decode16`); the `vioarm-qemu`
+  assembler renders mnemonics; `#![warn(missing_docs)]` on every crate
+  (`deny` on `vioarm-jit-call`, as before) with zero warnings — the
+  ratchet holds from day one. Two pre-existing nested-backtick doc bugs
+  found and fixed along the way (SMUL/SMLA lines, `SCB->SHP`,
+  `MODE/CNF`); one stale intra-doc link fixed (`HaltCause::InvalidVector`
+  no longer exists — it is `NonThumbTarget`).
 
 ### WP-E3 Release engineering
 

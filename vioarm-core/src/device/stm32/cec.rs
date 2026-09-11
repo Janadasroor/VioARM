@@ -66,11 +66,13 @@ impl Behavior for CecBehavior {
     }
 }
 
+/// Consumer Electronics Control.
 #[derive(Debug)]
 pub struct Cec {
     inner: RegisterFile<CecBehavior>,
 }
 impl Cec {
+    /// A new `Cec` on another chip's device tables.
     #[must_use]
     pub fn new_for<D: Device>() -> Self {
         let def = D::peripheral("CEC").expect("CEC");

@@ -21,7 +21,9 @@ use vioarm_core::machine::Machine;
 use vioarm_core::mem::flat::FlatMemory;
 use vioarm_core::mem::system::SystemMemory;
 
+/// Flash window size for conformance machines.
 pub const FLASH_LEN: u32 = 0x0020_0000;
+/// SRAM window size for conformance machines.
 pub const SRAM_LEN: u32 = 0x0020_0000;
 
 /// Build an ARMv7-M machine over a bare memory and load `bin` at address 0.
@@ -94,7 +96,7 @@ pub fn new_machine_v8m_mainline(bin: &[u8]) -> Machine<SystemMemory<FlatMemory>>
 
 /// Snapshot the machine's architectural state. `pc` is stored Thumb-masked by
 /// the core, exactly as QEMU reports `R15`. `xpsr` carries the modeled xPSR
-/// bits plus the CPU's live `ITSTATE` folded in at bits [26:25]/[15:10], the
+/// bits plus the CPU's live `ITSTATE` folded in at bits `26:25`/`15:10`, the
 /// same positions QEMU's `XPSR=` dump uses, so IT-block execution is diffed.
 #[must_use]
 pub fn snapshot(m: &Machine<SystemMemory<FlatMemory>>) -> CpuState {

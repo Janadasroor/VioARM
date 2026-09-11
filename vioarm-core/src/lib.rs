@@ -5,6 +5,7 @@
 //! that no state can be silently undefined.
 
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 pub mod board;
 pub mod cpu;

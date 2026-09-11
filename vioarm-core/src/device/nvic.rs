@@ -48,6 +48,7 @@ pub struct Nvic {
 }
 
 impl Nvic {
+    /// A new `Nvic`.
     #[must_use]
     pub const fn new() -> Self {
         Self {

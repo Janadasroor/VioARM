@@ -8,7 +8,7 @@
 //! honoring `DIR` (`00` peripheral-to-memory `SxPAR`→`SxM0AR`, `01`
 //! memory-to-peripheral `SxM0AR`→`SxPAR`, `10` memory-to-memory `SxPAR`→
 //! `SxM0AR`), `PINC`/`MINC` stepping and the `PSIZE`/`MSIZE` widths, queuing
-//! the units into a mailbox [`SystemMemory`] drains after every device tick.
+//! the units into a mailbox [`crate::mem::system::SystemMemory`] drains after every device tick.
 //! `NDTR` counts down and `TCIF` latches at zero; the half-transfer flag
 //! `HTIF` latches when `NDTR` reaches half the programmed count, and a
 //! host-injected bus fault (`DmaF4::inject_error`) latches `TEIF` and

@@ -27,7 +27,7 @@ const KR: u32 = 0x00;
 const PR: u32 = 0x04;
 const RLR: u32 = 0x08;
 
-/// IWDG key values (`KR.KEY[15:0]`).
+/// IWDG key values (`KR.`KEY[15:0]``).
 const KEY_ACCESS: u32 = 0x5555;
 const KEY_RELOAD: u32 = 0xAAAA;
 const KEY_START: u32 = 0xCCCC;

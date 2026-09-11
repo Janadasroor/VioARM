@@ -2,7 +2,7 @@
 //! register tables.
 //!
 //! The register layout is pure SVD; the transfer engine is not, so
-//! [`DmaBehavior`] runs it. A channel enabled with `MEM2MEM` set copies
+//! `DmaBehavior` runs it. A channel enabled with `MEM2MEM` set copies
 //! `CNDTR` units from `CPAR` to `CMAR` (the reference manual's
 //! memory-to-memory direction, `DIR = 0`), honoring `PINC`/`MINC` stepping and
 //! the `PSIZE`/`MSIZE` unit widths. A peripheral-request channel (`MEM2MEM`
@@ -13,7 +13,7 @@
 //! with the request source (the USART), keyed by `controller * 8 + channel`.
 //!
 //! The controller has no view of the memory bus, so each unit is queued into a
-//! mailbox shared with [`SystemMemory`], which drains it after every device
+//! mailbox shared with [`crate::mem::system::SystemMemory`], which drains it after every device
 //! tick. Completion is optimistic for memory-to-memory: the whole transfer
 //! lands in the cycle the engine sees the channel enabled. In both modes
 //! `CNDTR` counts down and `TCIF` latches at zero; the half-transfer flag

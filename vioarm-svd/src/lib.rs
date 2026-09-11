@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 //! `vioarm-svd` as a library: the CMSIS-SVD parser (`svd`) and the
 //! register-table emitter (`emit`) behind the `vioarm-svd` binary.
 //!

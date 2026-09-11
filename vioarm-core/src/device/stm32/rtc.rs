@@ -51,7 +51,7 @@ const NG_ISR_RSF: u32 = 1 << 5;
 const NG_ISR_INITF: u32 = 1 << 6;
 const NG_ISR_INIT: u32 = 1 << 7;
 const NG_ISR_ALRAF: u32 = 1 << 8;
-/// `CR.ALRAIE` lives in ISR bits [15:8] on new-gen.
+/// `CR.ALRAIE` lives in ISR bits `15:8` on new-gen.
 const NG_CR_ALRAIE: u32 = 1 << 12;
 
 const CRL_SECF: u32 = 1 << 0;
@@ -200,7 +200,7 @@ impl RtcBehavior {
         }
     }
 
-    /// The running seconds count latched into `TR.SU[5:0]`/`ST[2:0]`.
+    /// The running seconds count latched into `TR.`SU[5:0]``/`ST[2:0]`.
     fn ng_seconds(view: &Registers<&mut [u32]>) -> u32 {
         let tr = view.get(NG_TR);
         ((tr >> 4) & 0x7) * 10 + (tr & 0xF)
@@ -377,11 +377,13 @@ impl Behavior for RtcBehavior {
     }
 }
 
+/// Real-time clock.
 #[derive(Debug)]
 pub struct Rtc {
     inner: RegisterFile<RtcBehavior>,
 }
 impl Rtc {
+    /// A new `Rtc` on another chip's device tables.
     #[must_use]
     pub fn new_for<D: Device>() -> Self {
         let def = D::peripheral("RTC").expect("generated tables contain RTC");

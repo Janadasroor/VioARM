@@ -306,11 +306,13 @@ impl Behavior for SdioBehavior {
     }
 }
 
+/// Secure digital I/O host.
 #[derive(Debug)]
 pub struct Sdio {
     inner: RegisterFile<SdioBehavior>,
 }
 impl Sdio {
+    /// A new `Sdio` on another chip's device tables.
     #[must_use]
     pub fn new_for<D: Device>() -> Self {
         let def = D::peripheral("SDIO")
@@ -321,6 +323,7 @@ impl Sdio {
             inner: RegisterFile::new(def, SdioBehavior::default()),
         }
     }
+    /// A new `SDMMC2` on another chip's device tables.
     #[must_use]
     pub fn new_for_sdmmc2<D: Device>() -> Self {
         let def = D::peripheral("SDMMC2").expect("generated tables contain SDMMC2");

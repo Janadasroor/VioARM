@@ -62,11 +62,13 @@ impl Behavior for CrsBehavior {
     }
 }
 
+/// Clock Recovery System.
 #[derive(Debug)]
 pub struct Crs {
     inner: RegisterFile<CrsBehavior>,
 }
 impl Crs {
+    /// A new `Crs` on another chip's device tables.
     #[must_use]
     pub fn new_for<D: Device>() -> Self {
         let def = D::peripheral("CRS")

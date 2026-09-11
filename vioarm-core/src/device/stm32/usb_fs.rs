@@ -55,11 +55,13 @@ impl Behavior for UsbFsBehavior {
     fn reset(&mut self) {}
 }
 
+/// USB full-speed device.
 #[derive(Debug)]
 pub struct UsbFs {
     inner: RegisterFile<UsbFsBehavior>,
 }
 impl UsbFs {
+    /// A new `UsbFs` on another chip's device tables.
     #[must_use]
     pub fn new_for<D: Device>() -> Self {
         let def = D::peripheral("USB")

@@ -10,12 +10,14 @@ use crate::error::BusError;
 use crate::mem::bus::Region;
 use std::sync::{Arc, Mutex};
 
+/// Flexible Memory Controller.
 #[derive(Debug)]
 pub struct Fmc {
     inner: RegisterFile<NoBehavior>,
 }
 
 impl Fmc {
+    /// A new `Fmc` on another chip's device tables.
     #[must_use]
     pub fn new_for<D: Device>() -> Self {
         let def = D::peripheral("FMC").expect("generated tables contain FMC");
@@ -71,6 +73,7 @@ pub struct QspiGate {
 }
 
 impl QspiGate {
+    /// A new `QspiGate`.
     #[must_use]
     pub const fn new(region: Region) -> Self {
         Self {
@@ -78,6 +81,7 @@ impl QspiGate {
             enabled: false,
         }
     }
+    /// Reset to gated (window reads zero until `CR.EN`).
     pub fn reset(&mut self) {
         self.enabled = false;
     }
@@ -120,16 +124,19 @@ impl Behavior for QspiBehavior {
     }
 }
 
+/// Quad-SPI controller.
 #[derive(Debug)]
 pub struct Qspi {
     inner: RegisterFile<QspiBehavior>,
 }
 
 impl Qspi {
+    /// A new `Qspi` on another chip's device tables.
     #[must_use]
     pub fn new_for<D: Device>() -> Self {
         Self::new_for_with_gate::<D>(None)
     }
+    /// A new window with an optional gate.
     #[must_use]
     pub fn new_for_with_gate<D: Device>(gate: Option<Arc<Mutex<QspiGate>>>) -> Self {
         // H7 names it QUADSPI, F7 QSPI, H7 also OCTOSPI1/2 - try all
@@ -142,10 +149,12 @@ impl Qspi {
         }
     }
 
+    /// A new `OCTOSPI2` on another chip's device tables.
     #[must_use]
     pub fn octospi2_for<D: Device>() -> Self {
         Self::octospi2_for_with_gate::<D>(None)
     }
+    /// A new `OCTOSPI2` with an optional gate.
     #[must_use]
     pub fn octospi2_for_with_gate<D: Device>(gate: Option<Arc<Mutex<QspiGate>>>) -> Self {
         let def = D::peripheral("OCTOSPI2").expect("generated tables contain OCTOSPI2");
@@ -288,11 +297,13 @@ impl Behavior for DmamuxBehavior {
     }
 }
 
+/// DMAMUX request router.
 pub struct Dmamux {
     inner: RegisterFile<DmamuxBehavior>,
 }
 
 impl Dmamux {
+    /// A new `Dmamux` on another chip's device tables.
     #[must_use]
     pub fn new_for<D: Device>() -> Self {
         let def = D::peripheral("DMAMUX1")
@@ -302,6 +313,7 @@ impl Dmamux {
             inner: RegisterFile::new(def, DmamuxBehavior::default()),
         }
     }
+    /// A new DMAMUX2 (BDMA side).
     #[must_use]
     pub fn dmamux2_for<D: Device>() -> Self {
         let def = D::peripheral("DMAMUX2").expect("generated tables contain DMAMUX2");
@@ -454,12 +466,14 @@ impl Behavior for LtdcBehavior {
     }
 }
 
+/// Display controller (handshake model).
 #[derive(Debug)]
 pub struct Ltdc {
     inner: RegisterFile<LtdcBehavior>,
 }
 
 impl Ltdc {
+    /// A new `Ltdc` on another chip's device tables.
     #[must_use]
     pub fn new_for<D: Device>() -> Self {
         let def = D::peripheral("LTDC").expect("generated tables contain LTDC");
@@ -591,12 +605,14 @@ impl Behavior for Dma2dBehavior {
     }
 }
 
+/// Chrom-ART graphics accelerator (handshake model).
 #[derive(Debug)]
 pub struct Dma2d {
     inner: RegisterFile<Dma2dBehavior>,
 }
 
 impl Dma2d {
+    /// A new `Dma2d` on another chip's device tables.
     #[must_use]
     pub fn new_for<D: Device>() -> Self {
         let def = D::peripheral("DMA2D").expect("generated tables contain DMA2D");
@@ -738,12 +754,14 @@ impl Behavior for BdmaBehavior {
     }
 }
 
+/// Basic DMA (handshake model).
 #[derive(Debug)]
 pub struct Bdma {
     inner: RegisterFile<BdmaBehavior>,
 }
 
 impl Bdma {
+    /// A new `Bdma` on another chip's device tables.
     #[must_use]
     pub fn new_for<D: Device>() -> Self {
         let def = D::peripheral("BDMA").expect("generated tables contain BDMA");
@@ -900,12 +918,14 @@ impl Behavior for MdmaBehavior {
     }
 }
 
+/// Master DMA (handshake model).
 #[derive(Debug)]
 pub struct Mdma {
     inner: RegisterFile<MdmaBehavior>,
 }
 
 impl Mdma {
+    /// A new `Mdma` on another chip's device tables.
     #[must_use]
     pub fn new_for<D: Device>() -> Self {
         let def = D::peripheral("MDMA").expect("generated tables contain MDMA");
@@ -1014,12 +1034,14 @@ impl Behavior for Sai4Behavior {
     }
 }
 
+/// Serial audio interface (handshake model).
 #[derive(Debug)]
 pub struct Sai4 {
     inner: RegisterFile<Sai4Behavior>,
 }
 
 impl Sai4 {
+    /// A new `Sai4` on another chip's device tables.
     #[must_use]
     pub fn new_for<D: Device>() -> Self {
         let def = D::peripheral("SAI4").expect("generated tables contain SAI4");
@@ -1027,6 +1049,7 @@ impl Sai4 {
             inner: RegisterFile::new(def, Sai4Behavior::default()),
         }
     }
+    /// A new peripheral window by SVD name.
     #[must_use]
     pub fn new_for_name<D: Device>(name: &str) -> Self {
         let def = D::peripheral(name).expect("generated tables contain SAI");
@@ -1135,12 +1158,14 @@ impl Behavior for DfsdmBehavior {
     }
 }
 
+/// Digital filter for sigma-delta modulators (handshake model).
 #[derive(Debug)]
 pub struct Dfsdm {
     inner: RegisterFile<DfsdmBehavior>,
 }
 
 impl Dfsdm {
+    /// A new `Dfsdm` on another chip's device tables.
     #[must_use]
     pub fn new_for<D: Device>() -> Self {
         let def = D::peripheral("DFSDM").expect("generated tables contain DFSDM");
@@ -1259,12 +1284,14 @@ impl Behavior for HrtimBehavior {
     }
 }
 
+/// High-resolution timer (handshake model).
 #[derive(Debug)]
 pub struct Hrtim {
     inner: RegisterFile<HrtimBehavior>,
 }
 
 impl Hrtim {
+    /// The HRTIM master timer.
     #[must_use]
     pub fn master_for<D: Device>() -> Self {
         let def = D::peripheral("HRTIM_Master").expect("generated tables contain HRTIM_Master");
@@ -1272,6 +1299,7 @@ impl Hrtim {
             inner: RegisterFile::new(def, HrtimBehavior::default()),
         }
     }
+    /// HRTIM timer A.
     #[must_use]
     pub fn tima_for<D: Device>() -> Self {
         let def = D::peripheral("HRTIM_TIMA").expect("generated tables contain HRTIM_TIMA");
@@ -1279,6 +1307,7 @@ impl Hrtim {
             inner: RegisterFile::new(def, HrtimBehavior::default()),
         }
     }
+    /// HRTIM timer B.
     #[must_use]
     pub fn timb_for<D: Device>() -> Self {
         let def = D::peripheral("HRTIM_TIMB").expect("generated tables contain HRTIM_TIMB");
@@ -1286,6 +1315,7 @@ impl Hrtim {
             inner: RegisterFile::new(def, HrtimBehavior::default()),
         }
     }
+    /// HRTIM timer C.
     #[must_use]
     pub fn timc_for<D: Device>() -> Self {
         let def = D::peripheral("HRTIM_TIMC").expect("generated tables contain HRTIM_TIMC");
@@ -1293,6 +1323,7 @@ impl Hrtim {
             inner: RegisterFile::new(def, HrtimBehavior::default()),
         }
     }
+    /// HRTIM timer D.
     #[must_use]
     pub fn timd_for<D: Device>() -> Self {
         let def = D::peripheral("HRTIM_TIMD").expect("generated tables contain HRTIM_TIMD");
@@ -1300,6 +1331,7 @@ impl Hrtim {
             inner: RegisterFile::new(def, HrtimBehavior::default()),
         }
     }
+    /// HRTIM timer E.
     #[must_use]
     pub fn time_for<D: Device>() -> Self {
         let def = D::peripheral("HRTIM_TIME").expect("generated tables contain HRTIM_TIME");
@@ -1307,6 +1339,7 @@ impl Hrtim {
             inner: RegisterFile::new(def, HrtimBehavior::default()),
         }
     }
+    /// HRTIM common registers.
     #[must_use]
     pub fn common_for<D: Device>() -> Self {
         let def = D::peripheral("HRTIM_Common").expect("generated tables contain HRTIM_Common");

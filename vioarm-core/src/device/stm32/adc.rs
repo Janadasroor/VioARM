@@ -2,10 +2,10 @@
 //! driven by the SVD-generated register tables.
 //!
 //! Register layout and resets come from the SVD; the table cannot express the
-//! sampling core, so [`AdcBehavior`] runs it: `CR2.ADON` powers the converter
+//! sampling core, so `AdcBehavior` runs it: `CR2.ADON` powers the converter
 //! on, a software start (`CR2.SWSTART`, or — on the F1 — a second `ADON`
 //! write) begins a conversion of the first channel in the `SQR` sequence, and
-//! after a fixed [`CONVERSION_CYCLES`] the sample lands in `DR` with
+//! after a fixed `CONVERSION_CYCLES` the sample lands in `DR` with
 //! `SR.EOC`/`SR.STRT` set. `CR1.SCAN` walks the whole sequence and `CR2.CONT`
 //! re-arms continuously; `CR1.EOCIE` (and the F4's `OVR`/`OVRIE` pair) raises
 //! the ADC interrupt line. Reading `DR` clears `EOC`. The analog level of
@@ -69,7 +69,7 @@ const AWDEN: u32 = 1 << 23;
 const AWDSGL: u32 = 1 << 9;
 /// `CR1.AWDIE` (bit 6): the watchdog interrupt enable.
 const AWDIE: u32 = 1 << 6;
-/// `CR1.AWDCH[4:0]`: the watched channel when `AWDSGL` is set.
+/// `CR1.`AWDCH[4:0]``: the watched channel when `AWDSGL` is set.
 const AWDCH_MASK: u32 = 0x1F;
 
 /// `CR2` bits.
@@ -135,9 +135,13 @@ pub struct AdcCommonState {
     pub dual: u32,
     /// `CCR.DMA` (F4 bits 14..15) / `CCR.DAMDF` (H7).
     pub ccr_dma: u32,
+    /// First dual-mode result.
     pub data1: u16,
+    /// Second dual-mode result.
     pub data2: u16,
+    /// First result ready.
     pub eoc1: bool,
+    /// Second result ready.
     pub eoc2: bool,
     /// Master fired SWSTART while `dual != 0`; slave should start next tick.
     pub dual_pending: bool,
@@ -596,6 +600,7 @@ impl Adc {
         };
         Self::for_device::<D>(per, "adc")
     }
+    /// A new `ADC4` on another chip's device tables.
     #[must_use]
     pub fn adc4_for<D: Device>() -> Self {
         Self::for_device::<D>("ADC4", "adc4")
@@ -735,6 +740,7 @@ impl AdcCommon {
     pub fn c_adc_for<D: Device>(state: Arc<Mutex<AdcCommonState>>) -> Self {
         Self::for_device::<D>("C_ADC", "c_adc", state)
     }
+    /// The F103 `C_ADC` shared by its ADCs.
     #[must_use]
     pub fn c_adc(state: Arc<Mutex<AdcCommonState>>) -> Self {
         Self::c_adc_for::<stm32f103::Stm32f103>(state)
@@ -754,10 +760,12 @@ impl AdcCommon {
         };
         Self::for_device::<D>(name, "adc12_common", state)
     }
+    /// A new `ADC3_Common` on another chip's device tables.
     #[must_use]
     pub fn adc3_common_for<D: Device>(state: Arc<Mutex<AdcCommonState>>) -> Self {
         Self::for_device::<D>("ADC3_Common", "adc3_common", state)
     }
+    /// A new `ADC1_2_Common` on another chip's device tables.
     #[must_use]
     pub fn adc1_2_common_for<D: Device>(state: Arc<Mutex<AdcCommonState>>) -> Self {
         Self::for_device::<D>("ADC1_2", "adc1_2_common", state)

@@ -756,6 +756,7 @@ impl Peripheral for FdcanRam {
 
 impl InterruptSource for FdcanRam {}
 
+/// Full CAN (Bosch M_CAN).
 #[derive(Debug)]
 pub struct Fdcan {
     inner: RegisterFile<FdcanBehavior>,

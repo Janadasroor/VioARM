@@ -71,11 +71,13 @@ impl Behavior for DcmiBehavior {
     }
 }
 
+/// Digital camera interface.
 #[derive(Debug)]
 pub struct Dcmi {
     inner: RegisterFile<DcmiBehavior>,
 }
 impl Dcmi {
+    /// A new `Dcmi` on another chip's device tables.
     #[must_use]
     pub fn new_for<D: Device>() -> Self {
         let def = D::peripheral("DCMI").expect("DCMI");

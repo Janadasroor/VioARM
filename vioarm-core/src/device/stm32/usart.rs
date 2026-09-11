@@ -9,7 +9,7 @@
 //! receive, cleared by reading `DR`, and — together with `CR1.RXNEIE` and
 //! `CR1.UE` — drives a level-triggered IRQ that keeps asserting until the
 //! handler drains the data register, exactly as on silicon. The two things a
-//! table cannot express live in [`UsartBehavior`]: the `TXE`/`TC` status
+//! table cannot express live in `UsartBehavior`: the `TXE`/`TC` status
 //! synthesis and the read-to-clear `RXNE` side effect.
 //!
 //! With a [`DmaRequests`] mailbox wired in, the USART also feeds the DMA
@@ -410,6 +410,7 @@ impl Usart {
         Self::for_device_with::<D>("USART6", "usart6", None, None)
     }
 
+    /// A new `LPUART1` on another chip's device tables.
     #[must_use]
     pub fn lpuart1_for<D: Device>() -> Self {
         Self::for_device_with::<D>("LPUART1", "lpuart1", None, None)

@@ -21,17 +21,36 @@ use std::collections::BTreeSet;
 pub enum HookEvent {
     /// An instruction retired at `pc` (`cycles` = `DWT CYCCNT` then).
     /// Pre-hooks see the pc about to retire; post-hooks the pc retired.
-    Instruction { pc: u32, cycles: u64 },
+    Instruction {
+        /// Retired (or retiring) program counter.
+        pc: u32,
+        /// `DWT CYCCNT` at the event.
+        cycles: u64,
+    },
     /// A byte was read from `addr`.
-    MemRead { addr: u32, value: u8 },
+    MemRead {
+        /// Guest address read.
+        addr: u32,
+        /// Byte value read.
+        value: u8,
+    },
     /// A byte was written to `addr`.
-    MemWrite { addr: u32, value: u8 },
+    MemWrite {
+        /// Guest address written.
+        addr: u32,
+        /// Byte value written.
+        value: u8,
+    },
     /// A peripheral byte was accessed: device `name`, offset `addr`, and
     /// direction. Fires alongside (not instead of) matching watchpoints.
     Peripheral {
+        /// Device name.
         name: &'static str,
+        /// Register offset within the device.
         addr: u32,
+        /// Byte value moved.
         value: u8,
+        /// Write (else read).
         write: bool,
     },
 }

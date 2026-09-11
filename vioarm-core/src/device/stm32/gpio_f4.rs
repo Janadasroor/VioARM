@@ -5,7 +5,7 @@
 //! general output, alternate, analog), `OTYPER`, `OSPEEDR`, and `PUPDR`, with
 //! `AFRL`/`AFRH` selecting the alternate function — unlike the F1 port's
 //! single 4-bit `CRL`/`CRH` nibble. Layouts and resets come from the SVD; the
-//! two things a table cannot express live in [`Gpio4Behavior`]: `BSRR` writes
+//! two things a table cannot express live in `Gpio4Behavior`: `BSRR` writes
 //! set (low half) and reset (high half) `ODR` — there is no `BRR` on F4 — and
 //! read-only `IDR` is synthesized from the mode nibbles, the output latch, and
 //! the host-injected input level.

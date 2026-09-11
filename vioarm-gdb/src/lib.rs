@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 //! A GDB Remote Serial Protocol (RSP) server over TCP for a `vioarm` machine.
 //!
 //! Exposes one `Machine` to an `arm-none-eabi-gdb` `target remote` session:

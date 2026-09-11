@@ -502,7 +502,7 @@ pub(crate) fn mem_access(op: &TbOp) -> Option<(u32, bool)> {
 }
 
 /// Whether an op's template fully materializes NZCV into the pinned
-/// flags word (and is gated on the liveness bit — see [`flag_merge_bits`]).
+/// flags word (and is gated on the liveness bit — see `flag_merge_bits`).
 /// Exactly the 16-bit full-merge variants served by gated sites; every
 /// other variant is transparent to liveness (ungated templates merge —
 /// or never touch flags — exactly as before. Load-bearing: never mark a
@@ -587,7 +587,7 @@ fn flag_merge_bits(ops: &[TbOp]) -> Vec<bool> {
 
 /// Emit one templated op at guest `pc` into an arch assembler. Returns
 /// `false` for untemplated ops (the block then stays interpreted).
-/// `merge` allows NZCV materialization (see [`flag_merge_bits`]); single
+/// `merge` allows NZCV materialization (see `flag_merge_bits`); single
 /// ops always pass `true` so harness emission stays exactly eager.
 pub fn emit_op(
     ops: &mut arch::Assembler,

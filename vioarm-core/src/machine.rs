@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 /// A ready-to-run core+memory pair. The core owns the memory; the machine is
 /// the host-facing facade.
 pub struct Machine<M: PeripheralBus> {
+    /// The CPU core and its memory.
     pub core: Core<M>,
     /// Fast-mode quantum in steps (`0` = accurate mode, the default): NVIC
     /// scans and device-tick flushes happen on quantum boundaries only.
@@ -29,6 +30,7 @@ pub struct Machine<M: PeripheralBus> {
 }
 
 impl<M: PeripheralBus> Machine<M> {
+    /// A machine over an ARMv6-M core.
     #[must_use]
     pub fn new(mem: M) -> Self {
         Self {
@@ -139,7 +141,7 @@ impl<M: PeripheralBus> Machine<M> {
     ///
     /// # Errors
     ///
-    /// Returns [`HaltCause::InvalidVector`] if the reset vector points at a
+    /// Returns [`HaltCause::NonThumbTarget`] if the reset vector points at a
     /// non-executable or misaligned address.
     pub fn reset(&mut self) -> Result<(), HaltCause> {
         self.core.mem().reset_peripherals();

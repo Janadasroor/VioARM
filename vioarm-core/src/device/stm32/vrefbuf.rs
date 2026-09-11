@@ -47,11 +47,13 @@ impl Behavior for VrefbufBehavior {
     }
 }
 
+/// Voltage reference buffer.
 #[derive(Debug)]
 pub struct Vrefbuf {
     inner: RegisterFile<VrefbufBehavior>,
 }
 impl Vrefbuf {
+    /// A new `Vrefbuf` on another chip's device tables.
     #[must_use]
     pub fn new_for<D: Device>() -> Self {
         let def = D::peripheral("VREFBUF")

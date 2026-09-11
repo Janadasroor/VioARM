@@ -62,10 +62,15 @@ const PLL1DIVR_OFFSET: u32 = 0x30;
 /// 25 MHz crystal on H7; `CSI` is the H7 4 MHz RC. `HSI` is per-family.
 /// Firmware that needs another crystal rate is outside the model.
 pub const HSE_HZ: u32 = 8_000_000;
+/// Assumed HSE frequency on H7, in Hz.
 pub const HSE_H7_HZ: u32 = 25_000_000;
+/// CSI oscillator frequency, in Hz.
 pub const CSI_HZ: u32 = 4_000_000;
+/// HSI oscillator frequency on F1, in Hz.
 pub const HSI_F1_HZ: u32 = 8_000_000;
+/// HSI oscillator frequency on F4, in Hz.
 pub const HSI_F4_HZ: u32 = 16_000_000;
+/// HSI oscillator frequency on H7, in Hz.
 pub const HSI_H7_HZ: u32 = 64_000_000;
 
 /// Which `CFGR`/`PLL` register layout (and `HSI` rate) an `RCC` decodes.

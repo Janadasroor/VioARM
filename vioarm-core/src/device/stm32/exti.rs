@@ -3,7 +3,7 @@
 //!
 //! The full 16-line register file comes from the SVD (`IMR`/`EMR`/`RTSR`/
 //! `FTSR`/`SWIER`/`PR`); the table cannot express the edge-detection logic, so
-//! [`ExtiBehavior`] runs it. Hosts raise lines through the stimulus channel to
+//! `ExtiBehavior` runs it. Hosts raise lines through the stimulus channel to
 //! simulate a button or GPIO pin; software can also self-trigger via `SWIER`.
 //! Pending bits are cleared the silicon way: writing 1 to `PR`. Only line 0 is
 //! wired to an exception (IRQ 6), which the SVD lists as `EXTI0`.

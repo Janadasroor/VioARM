@@ -7,7 +7,7 @@
 //! 32-bit word into the CRC with polynomial `0x04C1_1DB7` (init `0xFFFF_FFFF`,
 //! no final xor, bit-by-bit as on silicon). Reads of `DR` return the current
 //! CRC; `IDR` is plain 8-bit storage. The SVD tables drive the decode; the
-//! [`CrcBehavior`] latch implements the calculation.
+//! `CrcBehavior` latch implements the calculation.
 
 use crate::device::svd::{Behavior, Device, RegisterFile, Registers};
 use crate::device::{InterruptSource, Peripheral};

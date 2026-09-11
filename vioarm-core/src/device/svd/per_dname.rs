@@ -14,9 +14,13 @@
 
 use super::PeripheralDef;
 
+/// Per-variant chip descriptor (donor plus removal deltas).
 pub struct PerDname {
+    /// CMSIS device name.
     pub dname: &'static str,
+    /// Flash size in bytes.
     pub flash_len: u32,
+    /// RAM size in bytes.
     pub ram_len: u32,
     /// One of the 21 SVD donors below (`donor_peripherals`).
     pub donor: &'static str,
@@ -105,6 +109,7 @@ impl PerDname {
     }
 }
 
+/// All per-variant chip descriptors.
 pub const PER_DNAMES: &[PerDname] = &[
     PerDname {
         dname: "STM32F103",
@@ -4225,6 +4230,9 @@ pub const PER_DNAMES: &[PerDname] = &[
     },
 ];
 
+/// H7 DTCM RAM size.
 pub const H7_DTCM: u32 = 0x0002_0000;
+/// H7 D1 RAM size.
 pub const H7_RAM_D1: u32 = 0x0006_0000;
+/// Total H7 RAM (DTCM plus D1).
 pub const H7_TOTAL: u32 = H7_DTCM + H7_RAM_D1;

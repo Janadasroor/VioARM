@@ -176,11 +176,13 @@ impl Behavior for DacBehavior {
     }
 }
 
+/// Digital-to-analog converter.
 #[derive(Debug)]
 pub struct Dac {
     inner: RegisterFile<DacBehavior>,
 }
 impl Dac {
+    /// A new `Dac` on another chip's device tables.
     #[must_use]
     pub fn new_for<D: Device>() -> Self {
         let def = D::peripheral("DAC").expect("generated tables contain DAC");
@@ -189,6 +191,7 @@ impl Dac {
         }
     }
 
+    /// A new peripheral with DMA request lines.
     #[must_use]
     pub fn new_with_dma<D: Device>(requests: Arc<Mutex<DmaRequests>>) -> Self {
         let def = D::peripheral("DAC").expect("generated tables contain DAC");

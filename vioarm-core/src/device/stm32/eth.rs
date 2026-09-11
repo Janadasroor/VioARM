@@ -10,7 +10,7 @@
 //!
 //! The controller has no view of the memory bus, so each descriptor fetch and
 //! each frame store is queued into an [`EthMailbox`] shared with
-//! [`SystemMemory`], which drains it after every device tick. At most one read
+//! [`crate::mem::system::SystemMemory`], which drains it after every device tick. At most one read
 //! is outstanding at a time: a phased state machine walks the RX ring (read
 //! the descriptor, write the frame into its buffer, write back the status word)
 //! and the TX ring (read the descriptor, read the frame data, write back the
@@ -144,9 +144,19 @@ fn eth_hash(mac: &[u8]) -> u32 {
 #[derive(Debug)]
 pub enum EthMemOp {
     /// Read `len` bytes at `addr`.
-    Read { addr: u32, len: u16 },
+    Read {
+        /// Byte address.
+        addr: u32,
+        /// Byte count.
+        len: u16,
+    },
     /// Write `bytes` at `addr`.
-    Write { addr: u32, bytes: Vec<u8> },
+    Write {
+        /// Byte address.
+        addr: u32,
+        /// Payload bytes.
+        bytes: Vec<u8>,
+    },
 }
 
 /// The shared Ethernet mailbox: the controller pushes memory requests here and

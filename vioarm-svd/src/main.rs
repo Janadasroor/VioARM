@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 //! `vioarm-svd`: turn a CMSIS `*.svd` device description into the register
 //! tables `vioarm-core` consumes.
 //!

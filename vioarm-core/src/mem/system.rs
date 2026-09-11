@@ -1047,7 +1047,7 @@ impl<M: Bus> PeripheralBus for SystemMemory<M> {
     }
 
     /// Drain a named host-output channel: `itm` first, then any attached
-    /// device with a matching [`Peripheral::name`](crate::device::Peripheral::name).
+    /// device with a matching [`Peripheral::name`].
     fn drain_channel(&mut self, name: &str) -> Vec<u8> {
         if name == self.itm.name() {
             return self.itm.drain_output();

@@ -2,16 +2,16 @@
 //! the SVD-generated register tables.
 //!
 //! Register layout and resets come from the SVD; the table cannot express the
-//! bus, so [`I2cBehavior`] runs a master-mode state machine over it. Setting
+//! bus, so `I2cBehavior` runs a master-mode state machine over it. Setting
 //! `CR1.START` while enabled and idle generates a start: after
-//! [`START_CYCLES`] `SR1.SB` is set (and `CR1.START` self-clears, as on
+//! `START_CYCLES` `SR1.SB` is set (and `CR1.START` self-clears, as on
 //! silicon). The firmware then writes the address byte (7-bit address plus
 //! read/write) to `DR`; when the byte is shifted out the slave's
 //! acknowledge sets `SR1.ADDR`, with `SR2.TRA` reflecting the direction.
 //! Reading `SR2` acknowledges `ADDR`, and in master-receive mode streams in
 //! the byte the host slave drives, setting `SR1.RXNE` with `DR` filled.
 //! Master-transmit data bytes shift out the same way, restoring `SR1.TXE` on
-//! completion. `CR1.STOP` ends the transfer after [`BYTE_CYCLES`], releasing
+//! completion. `CR1.STOP` ends the transfer after `BYTE_CYCLES`, releasing
 //! the bus (`SR2.BUSY` drops) and clearing the `START`/`STOP` bits.
 //!
 //! The host injects the connected slave's response through
@@ -372,6 +372,7 @@ impl I2c {
         }
     }
 
+    /// A new `I2C4` on another chip's device tables.
     #[must_use]
     pub fn i2c4_for<D: Device>() -> Self {
         let def = D::peripheral("I2C4").expect("generated tables contain I2C4");

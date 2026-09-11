@@ -60,11 +60,13 @@ impl Behavior for SpdifrxBehavior {
     }
 }
 
+/// SPDIF receiver.
 #[derive(Debug)]
 pub struct Spdifrx {
     inner: RegisterFile<SpdifrxBehavior>,
 }
 impl Spdifrx {
+    /// A new `Spdifrx` on another chip's device tables.
     #[must_use]
     pub fn new_for<D: Device>() -> Self {
         let def = D::peripheral("SPDIFRX").expect("SPDIFRX");

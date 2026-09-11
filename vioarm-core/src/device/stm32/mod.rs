@@ -34,12 +34,15 @@ pub mod gpio_f4;
 pub mod hash;
 pub mod hsem;
 pub mod i2c;
+/// STM32 I3C peripheral.
 pub mod i3c;
 pub mod jpeg;
 pub mod lptim;
 pub mod mdios;
+/// STM32 OCTOSPI peripheral.
 pub mod octospi;
 pub mod opamp;
+/// STM32 OTFDEC peripheral.
 pub mod otfdec;
 pub mod pwr;
 pub mod radio;
@@ -49,6 +52,7 @@ pub mod rtc;
 pub mod sdio;
 pub mod spdifrx;
 pub mod spi;
+/// STM32 SUBGHZ radio peripheral.
 pub mod subghz;
 pub mod swpmi;
 pub mod syscfg;
@@ -62,11 +66,19 @@ pub mod watchdog;
 
 /// STM32F103 (medium-density) peripheral base addresses, from the SVD.
 pub const RCC: u32 = 0x4002_1000;
+/// Base address of the AFIO peripheral.
 pub const AFIO: u32 = 0x4001_0000;
+/// Base address of the EXTI peripheral.
 pub const EXTI: u32 = 0x4001_0400;
+/// Base address of TIM2.
 pub const TIM2: u32 = 0x4000_0000;
+/// Base address of TIM3.
 pub const TIM3: u32 = 0x4000_0400;
+/// Base address of USART1.
 pub const USART1: u32 = 0x4001_3800;
+/// Base address of GPIOA.
 pub const GPIOA: u32 = 0x4001_0800;
+/// Base address of GPIOB.
 pub const GPIOB: u32 = 0x4001_0C00;
+/// Base address of GPIOC.
 pub const GPIOC: u32 = 0x4001_1000;

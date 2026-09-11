@@ -2,8 +2,11 @@
 
 /// Application-level program status register bits we model.
 pub const APSR_N: u32 = 1 << 31;
+/// Zero flag mask.
 pub const APSR_Z: u32 = 1 << 30;
+/// Carry flag mask.
 pub const APSR_C: u32 = 1 << 29;
+/// Overflow flag mask.
 pub const APSR_V: u32 = 1 << 28;
 /// Sticky saturation flag, set by the saturating instructions when they
 /// clamp. Only the instructions that saturate (and `msr`/`mrs`) touch it.
@@ -34,40 +37,48 @@ pub const XPSR_T: u32 = 1 << 24;
 pub struct Xpsr(u32);
 
 impl Xpsr {
+    /// A new `Xpsr`.
     #[must_use]
     pub const fn new(value: u32) -> Self {
         Self(value)
     }
 
+    /// The raw xPSR word.
     #[must_use]
     pub const fn get(&self) -> u32 {
         self.0
     }
 
+    /// Overwrite the raw xPSR word.
     pub const fn set(&mut self, value: u32) {
         self.0 = value;
     }
 
+    /// The N (negative) flag.
     #[must_use]
     pub const fn n(&self) -> bool {
         self.0 & APSR_N != 0
     }
 
+    /// The Z (zero) flag.
     #[must_use]
     pub const fn z(&self) -> bool {
         self.0 & APSR_Z != 0
     }
 
+    /// The C (carry) flag.
     #[must_use]
     pub const fn c(&self) -> bool {
         self.0 & APSR_C != 0
     }
 
+    /// The V (overflow) flag.
     #[must_use]
     pub const fn v(&self) -> bool {
         self.0 & APSR_V != 0
     }
 
+    /// The Q (saturation) flag.
     #[must_use]
     pub const fn q(&self) -> bool {
         self.0 & APSR_Q != 0
@@ -94,11 +105,13 @@ impl Xpsr {
         self.0 = (self.0 & !APSR_GE) | ((v & 0xF) << 16);
     }
 
+    /// Whether the Thumb bit is set (always true while executing).
     #[must_use]
     pub const fn is_thumb(&self) -> bool {
         self.0 & XPSR_T != 0
     }
 
+    /// Write the N/Z/C/V flags together.
     pub fn set_nzcv(&mut self, n: bool, z: bool, c: bool, v: bool) {
         self.0 &= !APSR_FLAGS;
         self.0 |= u32::from(n) << 31 | u32::from(z) << 30 | u32::from(c) << 29 | u32::from(v) << 28;
@@ -123,13 +136,17 @@ impl Xpsr {
 /// and `psp` hold the banked copies so switching `SPSEL` does not lose state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Registers {
+    /// General registers `r0`–`r12`.
     pub r: [u32; 13],
+    /// Currently active stack pointer.
     pub sp: u32,
     /// Main stack pointer (the active `sp` when `SPSEL == 0`).
     pub msp: u32,
     /// Process stack pointer (the active `sp` when `SPSEL == 1`).
     pub psp: u32,
+    /// Link register.
     pub lr: u32,
+    /// Program counter.
     pub pc: u32,
 }
 
@@ -147,6 +164,7 @@ impl Default for Registers {
 }
 
 impl Registers {
+    /// A new `Registers`.
     #[must_use]
     pub const fn new(pc: u32, sp: u32) -> Self {
         Self {
@@ -189,8 +207,11 @@ impl Registers {
 /// plain value: copying it is cheap and `snapshot()` does not allocate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Snapshot {
+    /// General registers and stack pointers.
     pub regs: Registers,
+    /// Program status.
     pub xpsr: Xpsr,
+    /// Retired-instruction count.
     pub cycles: u64,
 }
 

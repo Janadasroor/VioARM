@@ -30,6 +30,7 @@ impl Behavior for OtfdecBehavior {
     }
 }
 
+/// On-the-fly decryption.
 #[derive(Debug)]
 pub struct Otfdec {
     inner: RegisterFile<OtfdecBehavior>,
@@ -37,6 +38,7 @@ pub struct Otfdec {
 }
 
 impl Otfdec {
+    /// A new `Otfdec` on another chip's device tables.
     #[must_use]
     pub fn new_for<D: crate::device::svd::Device>() -> Self {
         let def = D::peripheral("OTFDEC")

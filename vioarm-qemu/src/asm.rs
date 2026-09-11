@@ -90,7 +90,9 @@ fn size_of(item: &Item) -> u32 {
 
 /// The assembled image: raw bytes plus the resolved label table.
 pub struct Image {
+    /// Raw instruction bytes in emission order.
     pub bytes: Vec<u8>,
+    /// Label name to absolute address.
     pub labels: HashMap<String, u32>,
 }
 
@@ -112,6 +114,7 @@ pub struct Asm {
 }
 
 impl Asm {
+    /// A fresh assembler.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -165,14 +168,17 @@ impl Asm {
 
     // ------------------------------- moves ------------------------------
 
+    /// `MOVS Rd, #imm`.
     pub fn movs_imm8(&mut self, rd: u8, imm: u8) {
         self.raw(0x2000 | (u16::from(rd) & 7) << 8 | u16::from(imm));
     }
 
+    /// `MOVW Rd, #imm`.
     pub fn movw(&mut self, rd: u8, imm: u16) {
         self.movwide(0xF240, rd, imm);
     }
 
+    /// `MOVT Rd, #imm`.
     pub fn movt(&mut self, rd: u8, imm: u16) {
         self.movwide(0xF2C0, rd, imm);
     }
@@ -200,30 +206,37 @@ impl Asm {
 
     // ---------------------------- add / subtract ----------------------------
 
+    /// `ADDS Rd, Rn, Rm`.
     pub fn adds_reg(&mut self, rd: u8, rn: u8, rm: u8) {
         self.raw(0x1800 | (u16::from(rm) & 7) << 6 | (u16::from(rn) & 7) << 3 | u16::from(rd) & 7);
     }
 
+    /// `SUBS Rd, Rn, Rm`.
     pub fn subs_reg(&mut self, rd: u8, rn: u8, rm: u8) {
         self.raw(0x1A00 | (u16::from(rm) & 7) << 6 | (u16::from(rn) & 7) << 3 | u16::from(rd) & 7);
     }
 
+    /// `ADDS Rd, Rn, #imm`.
     pub fn adds_imm3(&mut self, rd: u8, rn: u8, imm: u8) {
         self.raw(0x1C00 | (u16::from(imm) & 7) << 6 | (u16::from(rn) & 7) << 3 | u16::from(rd) & 7);
     }
 
+    /// `SUBS Rd, Rn, #imm`.
     pub fn subs_imm3(&mut self, rd: u8, rn: u8, imm: u8) {
         self.raw(0x1E00 | (u16::from(imm) & 7) << 6 | (u16::from(rn) & 7) << 3 | u16::from(rd) & 7);
     }
 
+    /// `ADDS Rd, #imm`.
     pub fn adds_imm8(&mut self, rd: u8, imm: u8) {
         self.raw(0x3000 | (u16::from(rd) & 7) << 8 | u16::from(imm));
     }
 
+    /// `SUBS Rd, #imm`.
     pub fn subs_imm8(&mut self, rd: u8, imm: u8) {
         self.raw(0x3800 | (u16::from(rd) & 7) << 8 | u16::from(imm));
     }
 
+    /// `CMP Rn, #imm`.
     pub fn cmp_imm8(&mut self, rn: u8, imm: u8) {
         self.raw(0x2800 | (u16::from(rn) & 7) << 8 | u16::from(imm));
     }
@@ -335,16 +348,19 @@ impl Asm {
 
     // ------------------------------- shifts -------------------------------
 
+    /// `LSLS Rd, Rm, #amount`.
     pub fn lsls_imm(&mut self, rd: u8, rm: u8, amount: u8) {
         self.raw(((u16::from(amount) & 0x1F) << 6) | (u16::from(rm) & 7) << 3 | u16::from(rd) & 7);
     }
 
+    /// `LSRS Rd, Rm, #amount`.
     pub fn lsrs_imm(&mut self, rd: u8, rm: u8, amount: u8) {
         self.raw(
             0x0800 | (u16::from(amount) & 0x1F) << 6 | (u16::from(rm) & 7) << 3 | u16::from(rd) & 7,
         );
     }
 
+    /// `ASRS Rd, Rm, #amount`.
     pub fn asrs_imm(&mut self, rd: u8, rm: u8, amount: u8) {
         self.raw(
             0x1000 | (u16::from(amount) & 0x1F) << 6 | (u16::from(rm) & 7) << 3 | u16::from(rd) & 7,
@@ -360,57 +376,74 @@ impl Asm {
         );
     }
 
+    /// `ANDS Rd, Rm`.
     pub fn ands(&mut self, rd: u8, rm: u8) {
         self.alu(0, rd, rm);
     }
+    /// `EORS Rd, Rm`.
     pub fn eors(&mut self, rd: u8, rm: u8) {
         self.alu(1, rd, rm);
     }
+    /// `LSLS Rd, Rm`.
     pub fn lsls_reg(&mut self, rd: u8, rm: u8) {
         self.alu(2, rd, rm);
     }
+    /// `LSRS Rd, Rm`.
     pub fn lsrs_reg(&mut self, rd: u8, rm: u8) {
         self.alu(3, rd, rm);
     }
+    /// `ASRS Rd, Rm`.
     pub fn asrs_reg(&mut self, rd: u8, rm: u8) {
         self.alu(4, rd, rm);
     }
+    /// `ADCS Rd, Rm`.
     pub fn adcs(&mut self, rd: u8, rm: u8) {
         self.alu(5, rd, rm);
     }
+    /// `SBCS Rd, Rm`.
     pub fn sbcs(&mut self, rd: u8, rm: u8) {
         self.alu(6, rd, rm);
     }
+    /// `RORS Rd, Rm`.
     pub fn rors_reg(&mut self, rd: u8, rm: u8) {
         self.alu(7, rd, rm);
     }
+    /// `TST Rn, Rm`.
     pub fn tst(&mut self, rd: u8, rm: u8) {
         self.alu(8, rd, rm);
     }
+    /// `NEGS Rd, Rm` (RSBS #0).
     pub fn negs(&mut self, rd: u8, rm: u8) {
         self.alu(9, rd, rm);
     }
+    /// `CMP Rn, Rm`.
     pub fn cmp_reg(&mut self, rd: u8, rm: u8) {
         self.alu(10, rd, rm);
     }
+    /// `CMN Rn, Rm`.
     pub fn cmn(&mut self, rd: u8, rm: u8) {
         self.alu(11, rd, rm);
     }
+    /// `ORRS Rd, Rm`.
     pub fn orrs(&mut self, rd: u8, rm: u8) {
         self.alu(12, rd, rm);
     }
+    /// `MULS Rd, Rm`.
     pub fn muls(&mut self, rd: u8, rm: u8) {
         self.alu(13, rd, rm);
     }
+    /// `BICS Rd, Rm`.
     pub fn bics(&mut self, rd: u8, rm: u8) {
         self.alu(14, rd, rm);
     }
+    /// `MVNS Rd, Rm`.
     pub fn mvns(&mut self, rd: u8, rm: u8) {
         self.alu(15, rd, rm);
     }
 
     // ------------------------------- branch -------------------------------
 
+    /// `B <label>`.
     pub fn b(&mut self, target: impl Into<String>) {
         self.emit(Item::B {
             target: target.into(),
@@ -424,6 +457,7 @@ impl Asm {
         });
     }
 
+    /// `B<cond> <label>`.
     pub fn bc(&mut self, cc: u8, target: impl Into<String>) {
         self.emit(Item::Bc {
             cc,
@@ -450,12 +484,14 @@ impl Asm {
         self.raw32((0xE8D0 | u16::from(rn)) as u32 | ((0xF010 | u16::from(rm)) as u32) << 16);
     }
 
+    /// `BL <label>`.
     pub fn bl(&mut self, target: impl Into<String>) {
         self.emit(Item::Bl {
             target: target.into(),
         });
     }
 
+    /// `CBZ Rn, <label>`.
     pub fn cbz(&mut self, rn: u8, target: impl Into<String>) {
         self.emit(Item::Cbz {
             rn,
@@ -464,6 +500,7 @@ impl Asm {
         });
     }
 
+    /// `CBNZ Rn, <label>`.
     pub fn cbnz(&mut self, rn: u8, target: impl Into<String>) {
         self.emit(Item::Cbz {
             rn,
@@ -472,10 +509,12 @@ impl Asm {
         });
     }
 
+    /// `BX Rm`.
     pub fn bx(&mut self, rm: u8) {
         self.raw(0x4700 | u16::from(rm) << 3);
     }
 
+    /// `BLX Rm`.
     pub fn blx(&mut self, rm: u8) {
         self.raw(0x4780 | u16::from(rm) << 3);
     }
@@ -502,27 +541,34 @@ impl Asm {
 
     // ------------------------------ IT block ------------------------------
 
+    /// `IT{mask} firstcond`.
     pub fn it(&mut self, firstcond: u8, mask: u8) {
         self.raw(0xBF00 | u16::from(firstcond) << 4 | u16::from(mask));
     }
 
     // ---------------------------- load / store ----------------------------
 
+    /// `STR Rt, Rn, #imm`.
     pub fn str_imm(&mut self, rt: u8, rn: u8, imm: u8) {
         self.raw(0x6000 | u16::from(imm / 4) << 6 | (u16::from(rn) & 7) << 3 | u16::from(rt) & 7);
     }
+    /// `LDR Rt, Rn, #imm`.
     pub fn ldr_imm(&mut self, rt: u8, rn: u8, imm: u8) {
         self.raw(0x6800 | u16::from(imm / 4) << 6 | (u16::from(rn) & 7) << 3 | u16::from(rt) & 7);
     }
+    /// `STRB Rt, Rn, #imm`.
     pub fn strb_imm(&mut self, rt: u8, rn: u8, imm: u8) {
         self.raw(0x7000 | u16::from(imm) << 6 | (u16::from(rn) & 7) << 3 | u16::from(rt) & 7);
     }
+    /// `LDRB Rt, Rn, #imm`.
     pub fn ldrb_imm(&mut self, rt: u8, rn: u8, imm: u8) {
         self.raw(0x7800 | u16::from(imm) << 6 | (u16::from(rn) & 7) << 3 | u16::from(rt) & 7);
     }
+    /// `STRH Rt, Rn, #imm`.
     pub fn strh_imm(&mut self, rt: u8, rn: u8, imm: u8) {
         self.raw(0x8000 | u16::from(imm / 2) << 6 | (u16::from(rn) & 7) << 3 | u16::from(rt) & 7);
     }
+    /// `LDRH Rt, Rn, #imm`.
     pub fn ldrh_imm(&mut self, rt: u8, rn: u8, imm: u8) {
         self.raw(0x8800 | u16::from(imm / 2) << 6 | (u16::from(rn) & 7) << 3 | u16::from(rt) & 7);
     }
@@ -555,33 +601,43 @@ impl Asm {
             target: target.into(),
         });
     }
+    /// `LDR Rt, <label>`. (wide literal).
     pub fn ldr_lit_wide(&mut self, rt: u8, target: impl Into<String>) {
         self.mem_lit(MemAccess::Ldr, rt, false, target);
     }
+    /// `LDRB Rt, <label>`. (wide literal).
     pub fn ldrb_lit_wide(&mut self, rt: u8, target: impl Into<String>) {
         self.mem_lit(MemAccess::Ldrb, rt, false, target);
     }
+    /// `LDRH Rt, <label>`. (wide literal).
     pub fn ldrh_lit_wide(&mut self, rt: u8, target: impl Into<String>) {
         self.mem_lit(MemAccess::Ldrh, rt, false, target);
     }
+    /// `LDRSB Rt, <label>`. (wide literal).
     pub fn ldrsb_lit_wide(&mut self, rt: u8, target: impl Into<String>) {
         self.mem_lit(MemAccess::Ldrsb, rt, false, target);
     }
+    /// `LDRSH Rt, <label>`. (wide literal).
     pub fn ldrsh_lit_wide(&mut self, rt: u8, target: impl Into<String>) {
         self.mem_lit(MemAccess::Ldrsh, rt, false, target);
     }
+    /// `LDR Rt, <label>`. (negative literal).
     pub fn ldr_lit_neg(&mut self, rt: u8, target: impl Into<String>) {
         self.mem_lit(MemAccess::Ldr, rt, true, target);
     }
+    /// `LDRB Rt, <label>`. (negative literal).
     pub fn ldrb_lit_neg(&mut self, rt: u8, target: impl Into<String>) {
         self.mem_lit(MemAccess::Ldrb, rt, true, target);
     }
+    /// `LDRH Rt, <label>`. (negative literal).
     pub fn ldrh_lit_neg(&mut self, rt: u8, target: impl Into<String>) {
         self.mem_lit(MemAccess::Ldrh, rt, true, target);
     }
+    /// `LDRSB Rt, <label>`. (negative literal).
     pub fn ldrsb_lit_neg(&mut self, rt: u8, target: impl Into<String>) {
         self.mem_lit(MemAccess::Ldrsb, rt, true, target);
     }
+    /// `LDRSH Rt, <label>`. (negative literal).
     pub fn ldrsh_lit_neg(&mut self, rt: u8, target: impl Into<String>) {
         self.mem_lit(MemAccess::Ldrsh, rt, true, target);
     }
@@ -598,9 +654,11 @@ impl Asm {
         );
     }
 
+    /// `STR Rt, [SP, #imm]`.
     pub fn str_sp(&mut self, rt: u8, imm: u8) {
         self.raw(0x9000 | (u16::from(rt) & 7) << 8 | u16::from(imm / 4));
     }
+    /// `LDR Rt, [SP, #imm]`.
     pub fn ldr_sp(&mut self, rt: u8, imm: u8) {
         self.raw(0x9800 | (u16::from(rt) & 7) << 8 | u16::from(imm / 4));
     }
@@ -612,13 +670,16 @@ impl Asm {
         self.raw(0xA000 | (u16::from(rd) & 7) << 8 | u16::from(imm / 4));
     }
 
+    /// `ADD Rd, SP, #imm`.
     pub fn addr_sp(&mut self, rd: u8, imm: u8) {
         self.raw(0xA800 | (u16::from(rd) & 7) << 8 | u16::from(imm / 4));
     }
 
+    /// `ADD SP, #imm`.
     pub fn add_sp(&mut self, imm: u8) {
         self.raw(0xB000 | u16::from(imm / 4));
     }
+    /// `SUB SP, #imm`.
     pub fn sub_sp(&mut self, imm: u8) {
         self.raw(0xB080 | u16::from(imm / 4));
     }
@@ -633,9 +694,11 @@ impl Asm {
         self.raw(0xBC00 | u16::from(load_pc) << 8 | u16::from(regs));
     }
 
+    /// `STMIA Rn!, {list}`.
     pub fn stmia(&mut self, rn: u8, list: u8) {
         self.raw(0xC000 | (u16::from(rn) & 7) << 8 | u16::from(list));
     }
+    /// `LDMIA Rn!, {list}`.
     pub fn ldmia(&mut self, rn: u8, list: u8) {
         self.raw(0xC800 | (u16::from(rn) & 7) << 8 | u16::from(list));
     }
@@ -671,21 +734,27 @@ impl Asm {
     pub fn ldr_wide(&mut self, rt: u8, rn: u8, off: u16) {
         self.mem_imm12(MemAccess::Ldr, rt, rn, off);
     }
+    /// `LDRB Rt, Rn, #off`. (32-bit Thumb-2).
     pub fn ldrb_wide(&mut self, rt: u8, rn: u8, off: u16) {
         self.mem_imm12(MemAccess::Ldrb, rt, rn, off);
     }
+    /// `STRB Rt, Rn, #off`. (32-bit Thumb-2).
     pub fn strb_wide(&mut self, rt: u8, rn: u8, off: u16) {
         self.mem_imm12(MemAccess::Strb, rt, rn, off);
     }
+    /// `STRH Rt, Rn, #off`. (32-bit Thumb-2).
     pub fn strh_wide(&mut self, rt: u8, rn: u8, off: u16) {
         self.mem_imm12(MemAccess::Strh, rt, rn, off);
     }
+    /// `LDRH Rt, Rn, #off`. (32-bit Thumb-2).
     pub fn ldrh_wide(&mut self, rt: u8, rn: u8, off: u16) {
         self.mem_imm12(MemAccess::Ldrh, rt, rn, off);
     }
+    /// `LDRSB Rt, Rn, #off`. (32-bit Thumb-2).
     pub fn ldrsb_wide(&mut self, rt: u8, rn: u8, off: u16) {
         self.mem_imm12(MemAccess::Ldrsb, rt, rn, off);
     }
+    /// `LDRSH Rt, Rn, #off`. (32-bit Thumb-2).
     pub fn ldrsh_wide(&mut self, rt: u8, rn: u8, off: u16) {
         self.mem_imm12(MemAccess::Ldrsh, rt, rn, off);
     }
@@ -887,6 +956,7 @@ impl Asm {
         self.raw32(hi as u32 | (list as u32) << 16);
     }
 
+    /// `STMIA/STMDB Rn[!], {list}` (wide).
     pub fn stm_wide(&mut self, rn: u8, writeback: bool, dec_before: bool, list: u16) {
         let hi = if dec_before { 0xE900 } else { 0xE880 };
         let hi = hi | u16::from(writeback) << 5 | u16::from(rn);
@@ -965,15 +1035,19 @@ impl Asm {
         self.dual_mem(true, rt, rt2, rn, false, true, true, imm);
     }
 
+    /// `DMB`.
     pub fn dmb(&mut self) {
         self.raw32(0x8F5F_F3BF);
     }
+    /// `DSB`.
     pub fn dsb(&mut self) {
         self.raw32(0x8F4F_F3BF);
     }
+    /// `ISB`.
     pub fn isb(&mut self) {
         self.raw32(0x8F6F_F3BF);
     }
+    /// `CLREX`.
     pub fn clrex(&mut self) {
         self.raw32(0x8F2F_F3BF);
     }
@@ -1127,9 +1201,11 @@ impl Asm {
 
     // ---------------------------- divide / multiply ----------------------------
 
+    /// `SDIV Rd, Rn, Rm`.
     pub fn sdiv(&mut self, rd: u8, rn: u8, rm: u8) {
         self.divide(0xFB90, rd, rn, rm);
     }
+    /// `UDIV Rd, Rn, Rm`.
     pub fn udiv(&mut self, rd: u8, rn: u8, rm: u8) {
         self.divide(0xFBB0, rd, rn, rm);
     }
@@ -1140,6 +1216,7 @@ impl Asm {
         self.raw32(hi as u32 | (lo as u32) << 16);
     }
 
+    /// `MUL Rd, Rn, Rm`. (32-bit Thumb-2).
     pub fn mul_wide(&mut self, rd: u8, rn: u8, rm: u8) {
         self.mul(0xFB00, 0xF, rd, rn, rm);
     }
@@ -1163,12 +1240,15 @@ impl Asm {
     pub fn smull(&mut self, rdlo: u8, rdhi: u8, rn: u8, rm: u8) {
         self.long_mul(0xFB80, rdlo, rdhi, rn, rm);
     }
+    /// `UMULL RdLo, RdHi, Rn, Rm`.
     pub fn umull(&mut self, rdlo: u8, rdhi: u8, rn: u8, rm: u8) {
         self.long_mul(0xFBA0, rdlo, rdhi, rn, rm);
     }
+    /// `SMLAL RdLo, RdHi, Rn, Rm`.
     pub fn smlal(&mut self, rdlo: u8, rdhi: u8, rn: u8, rm: u8) {
         self.long_mul(0xFBC0, rdlo, rdhi, rn, rm);
     }
+    /// `UMLAL RdLo, RdHi, Rn, Rm`.
     pub fn umlal(&mut self, rdlo: u8, rdhi: u8, rn: u8, rm: u8) {
         self.long_mul(0xFBE0, rdlo, rdhi, rn, rm);
     }
@@ -1190,33 +1270,43 @@ impl Asm {
         self.raw32(hi as u32 | (lo as u32) << 16);
     }
 
+    /// `SMULBB Rd, Rn, Rm`.
     pub fn smulbb(&mut self, rd: u8, rn: u8, rm: u8) {
         self.dsp_mul(1, 0, rd, rn, rm, 0xF);
     }
+    /// `SMULBT Rd, Rn, Rm`.
     pub fn smulbt(&mut self, rd: u8, rn: u8, rm: u8) {
         self.dsp_mul(1, 1, rd, rn, rm, 0xF);
     }
+    /// `SMULTB Rd, Rn, Rm`.
     pub fn smultb(&mut self, rd: u8, rn: u8, rm: u8) {
         self.dsp_mul(1, 2, rd, rn, rm, 0xF);
     }
+    /// `SMULTT Rd, Rn, Rm`.
     pub fn smultt(&mut self, rd: u8, rn: u8, rm: u8) {
         self.dsp_mul(1, 3, rd, rn, rm, 0xF);
     }
+    /// `SMULWB Rd, Rn, Rm`.
     pub fn smulwb(&mut self, rd: u8, rn: u8, rm: u8) {
         self.dsp_mul(3, 0, rd, rn, rm, 0xF);
     }
+    /// `SMULWT Rd, Rn, Rm`.
     pub fn smulwt(&mut self, rd: u8, rn: u8, rm: u8) {
         self.dsp_mul(3, 1, rd, rn, rm, 0xF);
     }
+    /// `SMMUL Rd, Rn, Rm`.
     pub fn smmul(&mut self, rd: u8, rn: u8, rm: u8) {
         self.dsp_mul(5, 0, rd, rn, rm, 0xF);
     }
+    /// `SMMULR Rd, Rn, Rm`.
     pub fn smmulr(&mut self, rd: u8, rn: u8, rm: u8) {
         self.dsp_mul(5, 1, rd, rn, rm, 0xF);
     }
+    /// `USAD8 Rd, Rn, Rm`.
     pub fn usad8(&mut self, rd: u8, rn: u8, rm: u8) {
         self.dsp_mul(7, 0, rd, rn, rm, 0xF);
     }
+    /// `USADA8 Rd, Rn, Rm, Ra`.
     pub fn usada8(&mut self, rd: u8, rn: u8, rm: u8, ra: u8) {
         self.dsp_mul(7, 0, rd, rn, rm, ra);
     }
@@ -1232,72 +1322,95 @@ impl Asm {
         self.raw32(hi as u32 | (lo as u32) << 16);
     }
 
+    /// `SMLABB Rd, Rn, Rm, Ra`.
     pub fn smlabb(&mut self, rd: u8, rn: u8, rm: u8, ra: u8) {
         self.dual_mul(0xFB10, 0, rd, rn, rm, ra);
     }
+    /// `SMLABT Rd, Rn, Rm, Ra`.
     pub fn smlabt(&mut self, rd: u8, rn: u8, rm: u8, ra: u8) {
         self.dual_mul(0xFB10, 1, rd, rn, rm, ra);
     }
+    /// `SMLATB Rd, Rn, Rm, Ra`.
     pub fn smlatb(&mut self, rd: u8, rn: u8, rm: u8, ra: u8) {
         self.dual_mul(0xFB10, 2, rd, rn, rm, ra);
     }
+    /// `SMLATT Rd, Rn, Rm, Ra`.
     pub fn smlatt(&mut self, rd: u8, rn: u8, rm: u8, ra: u8) {
         self.dual_mul(0xFB10, 3, rd, rn, rm, ra);
     }
+    /// `SMLAD Rd, Rn, Rm, Ra`.
     pub fn smlad(&mut self, rd: u8, rn: u8, rm: u8, ra: u8) {
         self.dual_mul(0xFB20, 0, rd, rn, rm, ra);
     }
+    /// `SMLADX Rd, Rn, Rm, Ra`.
     pub fn smladx(&mut self, rd: u8, rn: u8, rm: u8, ra: u8) {
         self.dual_mul(0xFB20, 1, rd, rn, rm, ra);
     }
+    /// `SMLAWB Rd, Rn, Rm, Ra`.
     pub fn smlawb(&mut self, rd: u8, rn: u8, rm: u8, ra: u8) {
         self.dual_mul(0xFB30, 0, rd, rn, rm, ra);
     }
+    /// `SMLAWT Rd, Rn, Rm, Ra`.
     pub fn smlawt(&mut self, rd: u8, rn: u8, rm: u8, ra: u8) {
         self.dual_mul(0xFB30, 1, rd, rn, rm, ra);
     }
+    /// `SMLSD Rd, Rn, Rm, Ra`.
     pub fn smlsd(&mut self, rd: u8, rn: u8, rm: u8, ra: u8) {
         self.dual_mul(0xFB40, 0, rd, rn, rm, ra);
     }
+    /// `SMLSDX Rd, Rn, Rm, Ra`.
     pub fn smlsdx(&mut self, rd: u8, rn: u8, rm: u8, ra: u8) {
         self.dual_mul(0xFB40, 1, rd, rn, rm, ra);
     }
+    /// `SMMLA Rd, Rn, Rm, Ra`.
     pub fn smmla(&mut self, rd: u8, rn: u8, rm: u8, ra: u8) {
         self.dual_mul(0xFB50, 0, rd, rn, rm, ra);
     }
+    /// `SMMLAR Rd, Rn, Rm, Ra`.
     pub fn smmlar(&mut self, rd: u8, rn: u8, rm: u8, ra: u8) {
         self.dual_mul(0xFB50, 1, rd, rn, rm, ra);
     }
+    /// `SMMLS Rd, Rn, Rm, Ra`.
     pub fn smmls(&mut self, rd: u8, rn: u8, rm: u8, ra: u8) {
         self.dual_mul(0xFB60, 0, rd, rn, rm, ra);
     }
+    /// `SMMLSR Rd, Rn, Rm, Ra`.
     pub fn smmlsr(&mut self, rd: u8, rn: u8, rm: u8, ra: u8) {
         self.dual_mul(0xFB60, 1, rd, rn, rm, ra);
     }
+    /// `SMLALBB RdLo, RdHi, Rn, Rm`.
     pub fn smlalbb(&mut self, rdlo: u8, rdhi: u8, rn: u8, rm: u8) {
         self.dual_mul(0xFBC0, 8, rdlo, rn, rm, rdhi);
     }
+    /// `SMLALBT RdLo, RdHi, Rn, Rm`.
     pub fn smlalbt(&mut self, rdlo: u8, rdhi: u8, rn: u8, rm: u8) {
         self.dual_mul(0xFBC0, 9, rdlo, rn, rm, rdhi);
     }
+    /// `SMLALTB RdLo, RdHi, Rn, Rm`.
     pub fn smlaltb(&mut self, rdlo: u8, rdhi: u8, rn: u8, rm: u8) {
         self.dual_mul(0xFBC0, 0xA, rdlo, rn, rm, rdhi);
     }
+    /// `SMLALTT RdLo, RdHi, Rn, Rm`.
     pub fn smlaltt(&mut self, rdlo: u8, rdhi: u8, rn: u8, rm: u8) {
         self.dual_mul(0xFBC0, 0xB, rdlo, rn, rm, rdhi);
     }
+    /// `SMLALD RdLo, RdHi, Rn, Rm`.
     pub fn smlald(&mut self, rdlo: u8, rdhi: u8, rn: u8, rm: u8) {
         self.dual_mul(0xFBC0, 0xC, rdlo, rn, rm, rdhi);
     }
+    /// `SMLALDX RdLo, RdHi, Rn, Rm`.
     pub fn smlaldx(&mut self, rdlo: u8, rdhi: u8, rn: u8, rm: u8) {
         self.dual_mul(0xFBC0, 0xD, rdlo, rn, rm, rdhi);
     }
+    /// `SMLSLD RdLo, RdHi, Rn, Rm`.
     pub fn smlsld(&mut self, rdlo: u8, rdhi: u8, rn: u8, rm: u8) {
         self.dual_mul(0xFBD0, 0xC, rdlo, rn, rm, rdhi);
     }
+    /// `SMLSLDX RdLo, RdHi, Rn, Rm`.
     pub fn smlsldx(&mut self, rdlo: u8, rdhi: u8, rn: u8, rm: u8) {
         self.dual_mul(0xFBD0, 0xD, rdlo, rn, rm, rdhi);
     }
+    /// `UMAAL RdLo, RdHi, Rn, Rm`.
     pub fn umaal(&mut self, rdlo: u8, rdhi: u8, rn: u8, rm: u8) {
         self.dual_mul(0xFBE0, 6, rdlo, rn, rm, rdhi);
     }
@@ -1376,15 +1489,19 @@ impl Asm {
         self.raw32(hi as u32 | (lo as u32) << 16);
     }
 
+    /// `QADD Rd, Rn, Rm`.
     pub fn qadd(&mut self, rd: u8, rn: u8, rm: u8) {
         self.qop(0x0080, rd, rn, rm);
     }
+    /// `QDADD Rd, Rn, Rm`.
     pub fn qdadd(&mut self, rd: u8, rn: u8, rm: u8) {
         self.qop(0x0090, rd, rn, rm);
     }
+    /// `QSUB Rd, Rn, Rm`.
     pub fn qsub(&mut self, rd: u8, rn: u8, rm: u8) {
         self.qop(0x00A0, rd, rn, rm);
     }
+    /// `QDSUB Rd, Rn, Rm`.
     pub fn qdsub(&mut self, rd: u8, rn: u8, rm: u8) {
         self.qop(0x00B0, rd, rn, rm);
     }
@@ -1399,18 +1516,23 @@ impl Asm {
         self.raw32(hi as u32 | (lo as u32) << 16);
     }
 
+    /// `REV Rd, Rm`. (32-bit Thumb-2).
     pub fn rev_wide(&mut self, rd: u8, rm: u8) {
         self.unary(0xFA90, 0x0080, rd, rm);
     }
+    /// `REV16 Rd, Rm`. (32-bit Thumb-2).
     pub fn rev16_wide(&mut self, rd: u8, rm: u8) {
         self.unary(0xFA90, 0x0090, rd, rm);
     }
+    /// `RBIT Rd, Rm`.
     pub fn rbit(&mut self, rd: u8, rm: u8) {
         self.unary(0xFA90, 0x00A0, rd, rm);
     }
+    /// `REVSH Rd, Rm`. (32-bit Thumb-2).
     pub fn revsh_wide(&mut self, rd: u8, rm: u8) {
         self.unary(0xFA90, 0x00B0, rd, rm);
     }
+    /// `CLZ Rd, Rm`.
     pub fn clz(&mut self, rd: u8, rm: u8) {
         self.unary(0xFAB0, 0x0080, rd, rm);
     }
@@ -1425,15 +1547,19 @@ impl Asm {
         );
     }
 
+    /// `SXTH Rd, Rm`.
     pub fn sxth(&mut self, rd: u8, rm: u8) {
         self.narrow_extend(0, rd, rm);
     }
+    /// `SXTB Rd, Rm`.
     pub fn sxtb(&mut self, rd: u8, rm: u8) {
         self.narrow_extend(1, rd, rm);
     }
+    /// `UXTH Rd, Rm`.
     pub fn uxth(&mut self, rd: u8, rm: u8) {
         self.narrow_extend(2, rd, rm);
     }
+    /// `UXTB Rd, Rm`.
     pub fn uxtb(&mut self, rd: u8, rm: u8) {
         self.narrow_extend(3, rd, rm);
     }
@@ -1446,12 +1572,15 @@ impl Asm {
         );
     }
 
+    /// `REV Rd, Rm`.
     pub fn rev(&mut self, rd: u8, rm: u8) {
         self.narrow_reverse(0, rd, rm);
     }
+    /// `REV16 Rd, Rm`.
     pub fn rev16(&mut self, rd: u8, rm: u8) {
         self.narrow_reverse(1, rd, rm);
     }
+    /// `REVSH Rd, Rm`.
     pub fn revsh(&mut self, rd: u8, rm: u8) {
         self.narrow_reverse(3, rd, rm);
     }
@@ -1465,21 +1594,27 @@ impl Asm {
         self.raw32(hi as u32 | (lo as u32) << 16);
     }
 
+    /// `SXTAH Rd, Rn, Rm, ROR #rot`.
     pub fn sxtah(&mut self, rd: u8, rn: u8, rm: u8, rot: u8) {
         self.extend_add(0, rd, rn, rm, rot);
     }
+    /// `UXTAH Rd, Rn, Rm, ROR #rot`.
     pub fn uxtah(&mut self, rd: u8, rn: u8, rm: u8, rot: u8) {
         self.extend_add(1, rd, rn, rm, rot);
     }
+    /// `SXTAB16 Rd, Rn, Rm, ROR #rot`.
     pub fn sxtab16(&mut self, rd: u8, rn: u8, rm: u8, rot: u8) {
         self.extend_add(2, rd, rn, rm, rot);
     }
+    /// `UXTAB16 Rd, Rn, Rm, ROR #rot`.
     pub fn uxtab16(&mut self, rd: u8, rn: u8, rm: u8, rot: u8) {
         self.extend_add(3, rd, rn, rm, rot);
     }
+    /// `SXTAB Rd, Rn, Rm, ROR #rot`.
     pub fn sxtab(&mut self, rd: u8, rn: u8, rm: u8, rot: u8) {
         self.extend_add(4, rd, rn, rm, rot);
     }
+    /// `UXTAB Rd, Rn, Rm, ROR #rot`.
     pub fn uxtab(&mut self, rd: u8, rn: u8, rm: u8, rot: u8) {
         self.extend_add(5, rd, rn, rm, rot);
     }
@@ -1494,30 +1629,39 @@ impl Asm {
         self.raw32(hi as u32 | (lo as u32) << 16);
     }
 
+    /// `SADD8 Rd, Rn, Rm`.
     pub fn sadd8(&mut self, rd: u8, rn: u8, rm: u8) {
         self.par(0x8, 0x0, rd, rn, rm);
     }
+    /// `QADD8 Rd, Rn, Rm`.
     pub fn qadd8(&mut self, rd: u8, rn: u8, rm: u8) {
         self.par(0x8, 0x1, rd, rn, rm);
     }
+    /// `SHADD8 Rd, Rn, Rm`.
     pub fn shadd8(&mut self, rd: u8, rn: u8, rm: u8) {
         self.par(0x8, 0x2, rd, rn, rm);
     }
+    /// `UADD8 Rd, Rn, Rm`.
     pub fn uadd8(&mut self, rd: u8, rn: u8, rm: u8) {
         self.par(0x8, 0x4, rd, rn, rm);
     }
+    /// `UQADD8 Rd, Rn, Rm`.
     pub fn uqadd8(&mut self, rd: u8, rn: u8, rm: u8) {
         self.par(0x8, 0x5, rd, rn, rm);
     }
+    /// `UHADD8 Rd, Rn, Rm`.
     pub fn uhadd8(&mut self, rd: u8, rn: u8, rm: u8) {
         self.par(0x8, 0x6, rd, rn, rm);
     }
+    /// `SADD16 Rd, Rn, Rm`.
     pub fn sadd16(&mut self, rd: u8, rn: u8, rm: u8) {
         self.par(0x9, 0x0, rd, rn, rm);
     }
+    /// `SASX Rd, Rn, Rm`.
     pub fn sasx(&mut self, rd: u8, rn: u8, rm: u8) {
         self.par(0xA, 0x0, rd, rn, rm);
     }
+    /// `SSAX Rd, Rn, Rm`.
     pub fn ssax(&mut self, rd: u8, rn: u8, rm: u8) {
         self.par(0xE, 0x0, rd, rn, rm);
     }
@@ -1529,84 +1673,111 @@ impl Asm {
 
     // 16-bit add, ASX/SAX, and byte/halfword sub families: Q/SH/U/UQ/UH are the
     // relabeled `S` selector modes of the same encoding.
+    /// `QADD16 Rd, Rn, Rm`.
     pub fn qadd16(&mut self, rd: u8, rn: u8, rm: u8) {
         self.par(0x9, 0x1, rd, rn, rm);
     }
+    /// `SHADD16 Rd, Rn, Rm`.
     pub fn shadd16(&mut self, rd: u8, rn: u8, rm: u8) {
         self.par(0x9, 0x2, rd, rn, rm);
     }
+    /// `UADD16 Rd, Rn, Rm`.
     pub fn uadd16(&mut self, rd: u8, rn: u8, rm: u8) {
         self.par(0x9, 0x4, rd, rn, rm);
     }
+    /// `UQADD16 Rd, Rn, Rm`.
     pub fn uqadd16(&mut self, rd: u8, rn: u8, rm: u8) {
         self.par(0x9, 0x5, rd, rn, rm);
     }
+    /// `UHADD16 Rd, Rn, Rm`.
     pub fn uhadd16(&mut self, rd: u8, rn: u8, rm: u8) {
         self.par(0x9, 0x6, rd, rn, rm);
     }
+    /// `QASX Rd, Rn, Rm`.
     pub fn qasx(&mut self, rd: u8, rn: u8, rm: u8) {
         self.par(0xA, 0x1, rd, rn, rm);
     }
+    /// `SHASX Rd, Rn, Rm`.
     pub fn shasx(&mut self, rd: u8, rn: u8, rm: u8) {
         self.par(0xA, 0x2, rd, rn, rm);
     }
+    /// `UASX Rd, Rn, Rm`.
     pub fn uasx(&mut self, rd: u8, rn: u8, rm: u8) {
         self.par(0xA, 0x4, rd, rn, rm);
     }
+    /// `UQASX Rd, Rn, Rm`.
     pub fn uqasx(&mut self, rd: u8, rn: u8, rm: u8) {
         self.par(0xA, 0x5, rd, rn, rm);
     }
+    /// `UHASX Rd, Rn, Rm`.
     pub fn uhasx(&mut self, rd: u8, rn: u8, rm: u8) {
         self.par(0xA, 0x6, rd, rn, rm);
     }
+    /// `SSUB8 Rd, Rn, Rm`.
     pub fn ssub8(&mut self, rd: u8, rn: u8, rm: u8) {
         self.par(0xC, 0x0, rd, rn, rm);
     }
+    /// `QSUB8 Rd, Rn, Rm`.
     pub fn qsub8(&mut self, rd: u8, rn: u8, rm: u8) {
         self.par(0xC, 0x1, rd, rn, rm);
     }
+    /// `SHSUB8 Rd, Rn, Rm`.
     pub fn shsub8(&mut self, rd: u8, rn: u8, rm: u8) {
         self.par(0xC, 0x2, rd, rn, rm);
     }
+    /// `USUB8 Rd, Rn, Rm`.
     pub fn usub8(&mut self, rd: u8, rn: u8, rm: u8) {
         self.par(0xC, 0x4, rd, rn, rm);
     }
+    /// `UQSUB8 Rd, Rn, Rm`.
     pub fn uqsub8(&mut self, rd: u8, rn: u8, rm: u8) {
         self.par(0xC, 0x5, rd, rn, rm);
     }
+    /// `UHSUB8 Rd, Rn, Rm`.
     pub fn uhsub8(&mut self, rd: u8, rn: u8, rm: u8) {
         self.par(0xC, 0x6, rd, rn, rm);
     }
+    /// `SSUB16 Rd, Rn, Rm`.
     pub fn ssub16(&mut self, rd: u8, rn: u8, rm: u8) {
         self.par(0xD, 0x0, rd, rn, rm);
     }
+    /// `QSUB16 Rd, Rn, Rm`.
     pub fn qsub16(&mut self, rd: u8, rn: u8, rm: u8) {
         self.par(0xD, 0x1, rd, rn, rm);
     }
+    /// `SHSUB16 Rd, Rn, Rm`.
     pub fn shsub16(&mut self, rd: u8, rn: u8, rm: u8) {
         self.par(0xD, 0x2, rd, rn, rm);
     }
+    /// `USUB16 Rd, Rn, Rm`.
     pub fn usub16(&mut self, rd: u8, rn: u8, rm: u8) {
         self.par(0xD, 0x4, rd, rn, rm);
     }
+    /// `UQSUB16 Rd, Rn, Rm`.
     pub fn uqsub16(&mut self, rd: u8, rn: u8, rm: u8) {
         self.par(0xD, 0x5, rd, rn, rm);
     }
+    /// `UHSUB16 Rd, Rn, Rm`.
     pub fn uhsub16(&mut self, rd: u8, rn: u8, rm: u8) {
         self.par(0xD, 0x6, rd, rn, rm);
     }
+    /// `QSAX Rd, Rn, Rm`.
     pub fn qsax(&mut self, rd: u8, rn: u8, rm: u8) {
         self.par(0xE, 0x1, rd, rn, rm);
     }
+    /// `SHSAX Rd, Rn, Rm`.
     pub fn shsax(&mut self, rd: u8, rn: u8, rm: u8) {
         self.par(0xE, 0x2, rd, rn, rm);
     }
+    /// `USAX Rd, Rn, Rm`.
     pub fn usax(&mut self, rd: u8, rn: u8, rm: u8) {
         self.par(0xE, 0x4, rd, rn, rm);
     }
+    /// `UQSAX Rd, Rn, Rm`.
     pub fn uqsax(&mut self, rd: u8, rn: u8, rm: u8) {
         self.par(0xE, 0x5, rd, rn, rm);
     }
+    /// `UHSAX Rd, Rn, Rm`.
     pub fn uhsax(&mut self, rd: u8, rn: u8, rm: u8) {
         self.par(0xE, 0x6, rd, rn, rm);
     }
@@ -2196,7 +2367,7 @@ impl Asm {
 /// Encode the 25-bit signed branch offset (from `pc + 4`, in bytes) as a
 /// `(hi, lo)` halfword pair. The decoder reconstructs the byte offset as
 /// `S:imm10:I1:I2:imm11:0` (see `branch_off25`), so the fields are sliced from
-/// the *byte* offset directly: `imm11` is bits[11:1], `imm10` bits[23:14], and
+/// the *byte* offset directly: `imm11` is `bits[11:1]`, `imm10` `bits[23:14]`, and
 /// the single-bit `I1`/`I2` fall at bits 13/12. `lo_prefix` is `0x9000` for
 /// `B.W` (T4) and `0xD000` for `BL` (T1).
 #[must_use]

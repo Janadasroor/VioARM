@@ -58,11 +58,13 @@ impl Behavior for SwpmiBehavior {
     }
 }
 
+/// Single-wire protocol master.
 #[derive(Debug)]
 pub struct Swpmi {
     inner: RegisterFile<SwpmiBehavior>,
 }
 impl Swpmi {
+    /// A new `Swpmi` on another chip's device tables.
     #[must_use]
     pub fn new_for<D: Device>() -> Self {
         let def = D::peripheral("SWPMI").expect("SWPMI");

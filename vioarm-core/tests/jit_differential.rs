@@ -100,7 +100,7 @@ fn tbb(rn: u8, rm: u8) -> (u16, u16) {
 }
 
 /// `MOVW rd, #imm16` halves (`imm = imm4:i:imm3:imm8` per the decoder:
-/// `imm4 = h0[3:0]`, `i = h0[10]`, `imm3 = h1[14:12]`; verified below).
+/// `imm4 = `h0[3:0]``, `i = `h0[10]``, `imm3 = `h1[14:12]``; verified below).
 fn movw(rd: u8, imm: u16) -> (u16, u16) {
     let i = (imm >> 11) & 1;
     let imm4 = (imm >> 12) & 0xF;

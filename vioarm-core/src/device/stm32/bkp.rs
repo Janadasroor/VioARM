@@ -16,11 +16,13 @@ impl Behavior for BkpBehavior {
     }
 }
 
+/// Backup registers.
 #[derive(Debug)]
 pub struct Bkp {
     inner: RegisterFile<BkpBehavior>,
 }
 impl Bkp {
+    /// A new `Bkp` on another chip's device tables.
     #[must_use]
     pub fn new_for<D: Device>() -> Self {
         let def = D::peripheral("BKP").expect("generated tables contain BKP");

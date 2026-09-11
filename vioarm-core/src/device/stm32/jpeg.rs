@@ -60,11 +60,13 @@ impl Behavior for JpegBehavior {
     }
 }
 
+/// JPEG codec (handshake model).
 #[derive(Debug)]
 pub struct Jpeg {
     inner: RegisterFile<JpegBehavior>,
 }
 impl Jpeg {
+    /// A new `Jpeg` on another chip's device tables.
     #[must_use]
     pub fn new_for<D: Device>() -> Self {
         let def = D::peripheral("JPEG").expect("JPEG");

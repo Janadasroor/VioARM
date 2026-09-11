@@ -105,6 +105,7 @@ impl<M: PeripheralBus> Fabric<M> {
             spi_pairs: Vec::new(),
         }
     }
+    /// Add a machine, returning its index.
     pub fn add(&mut self, machine: Machine<M>) -> usize {
         self.machines.push(machine);
         self.machines.len() - 1

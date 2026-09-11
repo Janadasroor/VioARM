@@ -42,9 +42,13 @@ use std::collections::BTreeMap;
 /// behavior on this field so a single core type serves all.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Isa {
+    /// ARMv6-M (Cortex-M0/M0+).
     Armv6M,
+    /// ARMv7-M (Cortex-M3/M4).
     Armv7M,
+    /// ARMv7E-M (Cortex-M7).
     Armv7EM,
+    /// ARMv8-M baseline (Cortex-M23).
     Armv8MBaseline,
     /// ARMv8-M mainline (Cortex-M33): the v7-M Thumb-2 set (DSP, `ldm`/`stm`,
     /// table branches, single-precision VFP) plus `TT`/`SG`/acquire-release.
@@ -95,7 +99,7 @@ pub(crate) const FNC_RETURN_MIN_MAGIC: u32 = 0xFEFF_FFFE;
 const FNC_RETURN: u32 = 0xFEFF_FFFF;
 
 /// `EXC_RETURN` field masks (ARMv8-M; also used to build the value on
-/// exception entry). `RES1` is bits[31:7], `S` the target-security bit,
+/// exception entry). `RES1` is `bits[31:7]`, `S` the target-security bit,
 /// `DCRS` the callee-saves stacking bit, `FTYPE` the FP-frame bit, `MODE` the
 /// thread/handler bit, `SPSEL` the target stack bit, `RES0` a reserved bit
 /// and `ES` the exception-security bit.
@@ -155,16 +159,16 @@ pub mod fpscr {
     pub const IDC: u32 = 1 << 7;
     /// The six cumulative exception flags.
     pub const CEXC: u32 = IOC | DZC | OFC | UFC | IXC | IDC;
-    /// Rounding-mode field, bits [23:22] (`0`=nearest-even, `1`=+inf,
+    /// Rounding-mode field, bits `23:22` (`0`=nearest-even, `1`=+inf,
     /// `2`=-inf, `3`=towards zero).
     pub const RMODE: u32 = 3 << 22;
     /// Flush-to-zero enable (bit 24): denormal results are flushed.
     pub const FZ: u32 = 1 << 24;
     /// Default-NaN enable (bit 25).
     pub const DN: u32 = 1 << 25;
-    /// The condition flags, bits [31:28], written by VFP comparisons.
+    /// The condition flags, bits `31:28`, written by VFP comparisons.
     pub const NZCV: u32 = 0xF << 28;
-    /// Floating-point trap enable bits, bits [12:8] and [15] (IOE/DZE/OFE/
+    /// Floating-point trap enable bits, bits `12:8` and `15` (IOE/DZE/OFE/
     /// UFE/IXE/IDE) — supported only in VFPv2/VFPv3U/VFPv4U, RAZ/WI on the
     /// Cortex-M4's FPv4-SP (and thus on the `FPSCR` VMSR/VMRS window and on
     /// the `FPDSCR` reset value).
@@ -191,7 +195,9 @@ fn is_f64_nan(raw: u64) -> bool {
 /// 64-bit move and load/store instructions.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct VfpState {
+    /// S0–S31, raw bit patterns.
     pub s: [u32; 32],
+    /// The FPSCR.
     pub fpscr: u32,
 }
 
@@ -225,7 +231,7 @@ impl VfpState {
         self.s[(2 * d + 1) as usize] = (v >> 32) as u32;
     }
 
-    /// Rounding mode encoded in FPSCR bits [23:22], as a `RoundMode`.
+    /// Rounding mode encoded in FPSCR bits `23:22`, as a `RoundMode`.
     #[inline]
     #[must_use]
     pub fn rounding_mode(&self) -> fpu::RoundMode {
@@ -293,16 +299,16 @@ impl VfpState {
 /// the architecture and QEMU.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FpuCtx {
-    /// FPCCR[31]: automatic FP context switching (set `CONTROL.FPCA` on the
+    /// `FPCCR[31]`: automatic FP context switching (set `CONTROL.FPCA` on the
     /// first FP instruction of a new context).
     pub aspen: bool,
-    /// FPCCR[30]: lazy stacking of FP registers on exception entry.
+    /// `FPCCR[30]`: lazy stacking of FP registers on exception entry.
     pub lspen: bool,
-    /// FPCCR[0]: an FP frame is reserved on the stack at `FPCAR` but not yet
+    /// `FPCCR[0]`: an FP frame is reserved on the stack at `FPCAR` but not yet
     /// written. Set by hardware; the first FP instruction or exception return
     /// resolves it.
     pub lspact: bool,
-    /// The address of the outstanding lazy FP frame (bits [31:3]).
+    /// The address of the outstanding lazy FP frame (bits `31:3`).
     pub fpcar: u32,
     /// FPDSCR: the FPSCR control bits (AHP/DN/FZ/RMode; trap enables RAZ/WI on
     /// FPv4-SP) loaded into a new FP context on its first FP instruction.
@@ -449,7 +455,9 @@ struct SAttrs {
 
 /// The core CPU state plus its bus.
 pub struct Core<B: PeripheralBus> {
+    /// General registers and stack pointers.
     pub regs: Registers,
+    /// Program status.
     pub xpsr: Xpsr,
     /// VFP (FPv4-SP) registers and FPSCR.
     pub vfp: VfpState,
@@ -466,7 +474,7 @@ pub struct Core<B: PeripheralBus> {
     pub control: u32,
     /// Current exception number: 0 in Thread mode, non-zero in Handler mode.
     pub ipsr: u8,
-    /// IT block state (ARMv7-M): bits [3:0] condition, bits [7:4] remaining
+    /// IT block state (ARMv7-M): bits `3:0` condition, bits `7:4` remaining
     /// conditional instructions. Zero outside an IT block.
     pub itstate: u8,
     /// The local exclusive monitor: the address tagged by the last `LDREX*`.
@@ -487,6 +495,7 @@ pub struct Core<B: PeripheralBus> {
     /// new exception is taken. The `Machine` consumes it (via `take`) at the
     /// start of the next step to skip that step's exception pre-check.
     pub(crate) just_returned: bool,
+    /// Retired-instruction count.
     pub cycles: u64,
     /// DWT CYCCNT – TRM-accurate per-opcode cycle count (data 1c, LDR/STR 2c,
     /// LDM/STM n+1, taken branch 3-4c). `cycles` stays 1c/insn for backward
@@ -582,6 +591,11 @@ impl<B: PeripheralBus> Core<B> {
         core
     }
 
+    /// An ARMv7E-M core whose FP context-control state is shared with the
+    /// `SCB` device (like [`Core::armv7m_with_fpu`], plus FPv5-D16 double
+    /// precision). `mem` must be a `SystemMemory` built with the same
+    /// `fpu_ctx`; core-only uses keep the default (architectural reset)
+    /// state.
     #[must_use]
     pub fn armv7em_with_fpu(mem: B, fpu_ctx: std::sync::Arc<std::sync::Mutex<FpuCtx>>) -> Self {
         let mut core = Self::new_with_isa(mem, Isa::Armv7EM);

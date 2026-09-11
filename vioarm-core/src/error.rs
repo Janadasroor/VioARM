@@ -18,7 +18,10 @@ pub enum HaltCause {
     Breakpoint,
     /// Firmware requested process exit through the semihosting `SYS_EXIT`
     /// call (`BKPT 0xAB` with semihosting enabled).
-    SemihostExit { code: i32 },
+    SemihostExit {
+        /// Application exit code.
+        code: i32,
+    },
     /// The CPU attempted to take an exception the simulator does not model,
     /// or executed a system instruction it cannot service.
     UnhandledException,
@@ -28,14 +31,23 @@ pub enum HaltCause {
     CycleBudgetExhausted,
     /// A data access fault: reserved address, unaligned access to a device
     /// that requires alignment, etc.
-    BusFault { address: u32 },
+    BusFault {
+        /// Faulting data address.
+        address: u32,
+    },
     /// The stack-pointer ended up misaligned at a point where the machine
     /// requires a word-aligned SP (exceptions, `pop {pc}`). Mirrors a
     /// HardFault-with-UNALIGNED condition.
-    StackMisaligned { address: u32 },
+    StackMisaligned {
+        /// Misaligned stack pointer value.
+        address: u32,
+    },
     /// A load returned an invalid PC-like value; e.g. `bx` to an even
     /// address in an ARMv6-M system that is required to run Thumb.
-    NotImplemented { what: &'static str },
+    NotImplemented {
+        /// Unimplemented feature name.
+        what: &'static str,
+    },
 }
 
 impl fmt::Display for HaltCause {
@@ -118,8 +130,13 @@ impl Exception {
 /// An access to the memory system that cannot be satisfied.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum BusError {
+    /// Access to a reserved address.
     Reserved,
-    Unaligned { width: u32 },
+    /// Unaligned access.
+    Unaligned {
+        /// Access width in bytes.
+        width: u32,
+    },
 }
 
 impl fmt::Display for BusError {
@@ -136,13 +153,21 @@ impl fmt::Display for BusError {
 /// Everything that can fail while turning bytes into a loadable `Image`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ImageError {
+    /// Host I/O error message.
     Io(String),
+    /// Truncated image.
     Truncated,
+    /// Bad magic number.
     BadMagic,
+    /// Unsupported ELF class.
     UnsupportedElfClass,
+    /// Unsupported ELF machine.
     UnsupportedMachine,
+    /// No loadable segments.
     NoLoadableSegments,
+    /// Segment outside memory.
     SegmentOutOfMemory,
+    /// Unsupported BSS segment.
     UnsupportedBss,
     /// A record that is not valid Intel HEX syntax (bad characters, missing
     /// `:`, wrong length).

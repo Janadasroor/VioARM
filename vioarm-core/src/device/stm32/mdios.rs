@@ -57,11 +57,13 @@ impl Behavior for MdiosBehavior {
     }
 }
 
+/// MDIO slave.
 #[derive(Debug)]
 pub struct Mdios {
     inner: RegisterFile<MdiosBehavior>,
 }
 impl Mdios {
+    /// A new `Mdios` on another chip's device tables.
     #[must_use]
     pub fn new_for<D: Device>() -> Self {
         let def = D::peripheral("MDIOS").expect("MDIOS");

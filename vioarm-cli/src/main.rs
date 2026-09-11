@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 //! `VioARM` CLI — cool terminal with subcommands, ANSI, and REPL.
 
 use std::path::PathBuf;
@@ -1705,7 +1706,7 @@ enum Commands {
         #[arg(long, default_value_t = 0, value_parser = parse_u32)]
         base: u32,
     },
-    /// Serve GDB RSP on TCP port (target remote :<port>)
+    /// Serve GDB RSP on TCP port (`target remote :<port>`)
     Gdb {
         image: PathBuf,
         #[arg(long, default_value_t = 3333)]

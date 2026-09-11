@@ -4,7 +4,7 @@
 //! Register layout and resets come from the SVD: `CRL`/`CRH` hold a 4-bit
 //! config nibble per pin (`MODE[1:0] | CNF[1:0]`, `MODE == 0` means input,
 //! resetting to all-float-input `0x4444_4444`). The two things a table cannot
-//! express live in [`GpioBehavior`]: `BSRR`/`BRR` writes set/reset `ODR` (a
+//! express live in `GpioBehavior`: `BSRR`/`BRR` writes set/reset `ODR` (a
 //! cross-register side effect), and read-only `IDR` is synthesized from the
 //! config nibbles, the output latch, and the host-injected input level.
 

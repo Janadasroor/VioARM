@@ -7,7 +7,7 @@ use crate::mem::bus::Region;
 /// STM32WL `SUBGHZ` radio: `CR` enable + `READY` status IRQ (the original
 /// stub surface, preserved bit-for-bit), plus the virtual packet endpoint
 /// (`TXLEN`/`TXDATA`/`TXGO`/`RXSTAT`/`RXDATA`, see
-/// [`PacketBehavior`](super::radio::PacketBehavior)) — real WL packets move
+/// [`PacketBehavior`]) — real WL packets move
 /// through `SUBGHZSPI` commands, a whole protocol out of scope.
 #[derive(Debug)]
 pub struct Subghz {
@@ -16,6 +16,7 @@ pub struct Subghz {
 }
 
 impl Subghz {
+    /// A new `Subghz` on another chip's device tables.
     #[must_use]
     pub fn new_for<D: crate::device::svd::Device>() -> Self {
         let def = D::peripheral("SUBGHZSPI")
@@ -27,6 +28,7 @@ impl Subghz {
         }
     }
 
+    /// A new window, or `None` when the tables lack it.
     #[must_use]
     pub fn new_for_opt<D: crate::device::svd::Device>() -> Option<Self> {
         let def = D::peripheral("SUBGHZSPI").or_else(|| D::peripheral("SUBGHZ"))?;

@@ -167,7 +167,7 @@ const USBAEP: u32 = 1 << 15;
 const NAKSTS: u32 = 1 << 17;
 const XFRC: u32 = 1 << 0; // DIEPINT/DOEPINT
 const STUP: u32 = 1 << 3; // DOEPINT
-/// `DIEPCTLn.EPTYPE` bits [12:11]: `01` selects an isochronous endpoint,
+/// `DIEPCTLn.EPTYPE` bits `12:11`: `01` selects an isochronous endpoint,
 /// whose IN transfers complete on the SOF boundary instead of immediately.
 const EPTYPE_SHIFT: u32 = 11;
 const EPTYPE_ISO: u32 = 0b01;

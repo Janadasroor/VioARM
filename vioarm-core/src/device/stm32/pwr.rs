@@ -58,11 +58,13 @@ impl Behavior for PwrBehavior {
     }
 }
 
+/// Power controller.
 #[derive(Debug)]
 pub struct Pwr {
     inner: RegisterFile<PwrBehavior>,
 }
 impl Pwr {
+    /// A new `Pwr` on another chip's device tables.
     #[must_use]
     pub fn new_for<D: Device>() -> Self {
         let def = D::peripheral("PWR").expect("generated tables contain PWR");

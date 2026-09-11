@@ -38,6 +38,7 @@ pub struct SysTick {
 }
 
 impl SysTick {
+    /// A new `SysTick`.
     #[must_use]
     pub const fn new() -> Self {
         Self {

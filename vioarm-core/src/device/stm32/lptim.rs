@@ -194,12 +194,14 @@ impl Behavior for LptimBehavior {
     }
 }
 
+/// Low-power timer.
 #[derive(Debug)]
 pub struct Lptim {
     inner: RegisterFile<LptimBehavior>,
 }
 
 impl Lptim {
+    /// A new `Lptim` on another chip's device tables.
     #[must_use]
     pub fn new_for<D: Device>(name: &str) -> Self {
         let def = D::peripheral(name).expect("LPTIM");

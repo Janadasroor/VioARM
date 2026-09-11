@@ -2,10 +2,10 @@
 //! SVD-generated register tables.
 //!
 //! Register layout and resets come from the SVD; the table cannot express the
-//! shift register, so [`SpiBehavior`] runs it: with the SPI enabled
+//! shift register, so `SpiBehavior` runs it: with the SPI enabled
 //! (`CR1.SPE`) and configured as master (`CR1.MSTR`), writing the data
 //! register begins a frame — `CR1.TXE` drops, `SR.BSY` rises, and after a
-//! [`SpiBehavior::transfer_cycles`] the byte a connected slave drove on `MISO`
+//! `SpiBehavior::transfer_cycles` the byte a connected slave drove on `MISO`
 //! lands in `DR` with `SR.RXNE` and `SR.TXE` restored. Reading `DR` clears
 //! `RXNE`, exactly as on silicon. `CR2.TXEIE`/`CR2.RXNEIE` raise the SPI
 //! interrupt line while `TXE`/`RXNE` are set and the peripheral is enabled.
@@ -404,16 +404,19 @@ impl Spi {
         Self::for_device::<D>("SPI3", "spi3")
     }
 
+    /// A new `SPI4` on another chip's device tables.
     #[must_use]
     pub fn spi4_for<D: Device>() -> Self {
         Self::for_device::<D>("SPI4", "spi4")
     }
 
+    /// A new `SPI5` on another chip's device tables.
     #[must_use]
     pub fn spi5_for<D: Device>() -> Self {
         Self::for_device::<D>("SPI5", "spi5")
     }
 
+    /// A new `SPI6` on another chip's device tables.
     #[must_use]
     pub fn spi6_for<D: Device>() -> Self {
         Self::for_device::<D>("SPI6", "spi6")

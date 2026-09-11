@@ -48,11 +48,13 @@ impl Behavior for OpampBehavior {
     }
 }
 
+/// Operational amplifier.
 #[derive(Debug)]
 pub struct Opamp {
     inner: RegisterFile<OpampBehavior>,
 }
 impl Opamp {
+    /// A new `Opamp` on another chip's device tables.
     #[must_use]
     pub fn new_for<D: Device>() -> Self {
         let def = D::peripheral("OPAMP")

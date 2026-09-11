@@ -165,9 +165,13 @@ pub fn qemu_is_oracle(exe: &std::path::Path) -> bool {
 /// Cortex-M4 board has an FPU to report).
 #[derive(Clone, Debug)]
 pub struct QemuMachine {
+    /// `qemu-system-arm` binary path.
     pub exe: PathBuf,
+    /// Board model (e.g. `mps2-an385`).
     pub machine: String,
+    /// CPU model (e.g. `cortex-m3`).
     pub cpu: String,
+    /// Whether the `-d fpu` log item is enabled.
     pub fpu: bool,
     /// Where the loader places the raw image. Boards that boot from address 0
     /// (micro:bit, mps2-an385/386) use 0; the ARMv8-M reference boards
@@ -177,6 +181,7 @@ pub struct QemuMachine {
 }
 
 impl QemuMachine {
+    /// Locate a usable oracle binary, preferring the pinned version.
     #[must_use]
     pub fn detect() -> Option<Self> {
         Self::for_cpu("cortex-m3", "mps2-an385", false)

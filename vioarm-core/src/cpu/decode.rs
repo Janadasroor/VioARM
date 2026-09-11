@@ -12,7 +12,9 @@ use crate::error::HaltCause;
 /// An instruction that the decoder does not recognize within ARMv6-M.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DecodeError {
+    /// Offending halfword.
     pub opcode: u16,
+    /// Why it cannot decode.
     pub cause: HaltCause,
 }
 

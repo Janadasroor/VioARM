@@ -27,10 +27,15 @@ pub enum SysReg {
     ApsrG,
     /// `APSR_nzcvqg`: an `MSR` here updates `nzcvq` and `GE[3:0]`.
     ApsrNzvCqg,
+    /// The combined xPSR.
     Xpsr,
+    /// The IPSR (exception number).
     Ipsr,
+    /// The EPSR (execution state).
     Epsr,
+    /// The main stack pointer.
     Msp,
+    /// The process stack pointer.
     Psp,
     /// ARMv8-M mainline and baseline stack-limit register for the main stack.
     /// A write that would move the *current* SP below it raises a StackFault
@@ -38,6 +43,7 @@ pub enum SysReg {
     MspLim,
     /// Stack-limit register for the process stack.
     PspLim,
+    /// PRIMASK (exception mask).
     Primask,
     /// `BASEPRI` masks configurable-priority exceptions at priority `>=` its
     /// value; `0` disables the mask.
@@ -47,6 +53,7 @@ pub enum SysReg {
     BasepriMax,
     /// `FAULTMASK` masks every configurable-priority exception.
     Faultmask,
+    /// The CONTROL register.
     Control,
     /// ARMv8-M TrustZone `MSP_NS` (0x88): the other security state's main
     /// stack pointer. Reads as 0 and ignores writes from the Non-secure state;
@@ -100,8 +107,11 @@ impl From<u8> for SysReg {
 /// Memory barrier kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Barrier {
+    /// Data memory barrier.
     Dmb,
+    /// Data synchronization barrier.
     Dsb,
+    /// Instruction synchronization barrier.
     Isb,
 }
 
@@ -109,21 +119,37 @@ pub enum Barrier {
 /// forms. The test aliases (`TST`/`TEQ`/`CMP`/`CMN`) never write `Rd`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DpOp {
+    /// Bitwise AND.
     And,
+    /// Bitwise exclusive-OR.
     Eor,
+    /// Bit clear.
     Bic,
+    /// Bitwise OR.
     Orr,
+    /// OR NOT.
     Orn,
+    /// Move (copy register).
     Mov,
+    /// Move NOT.
     Mvn,
+    /// Add.
     Add,
+    /// Add with carry.
     Adc,
+    /// Subtract with carry.
     Sbc,
+    /// Subtract.
     Sub,
+    /// Reverse subtract.
     Rsb,
+    /// Test bits.
     Tst,
+    /// Test equivalence.
     Teq,
+    /// Compare.
     Cmp,
+    /// Compare negative.
     Cmn,
 }
 
@@ -135,13 +161,21 @@ pub enum DpOp {
 /// only names the memory op.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MemOp {
+    /// Word store.
     Str,
+    /// Word load.
     Ldr,
+    /// Byte store.
     Strb,
+    /// Byte load.
     Ldrb,
+    /// Halfword store.
     Strh,
+    /// Halfword load.
     Ldrh,
+    /// Sign-extending byte load.
     Ldrsb,
+    /// Sign-extending halfword load.
     Ldrsh,
 }
 
@@ -150,9 +184,13 @@ pub enum MemOp {
 /// RRX) is resolved from the raw shift type plus its 5-bit amount.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShiftType {
+    /// Logical shift left.
     Lsl,
+    /// Logical shift right.
     Lsr,
+    /// Arithmetic shift right.
     Asr,
+    /// Rotate right.
     Ror,
 }
 
@@ -160,8 +198,11 @@ pub enum ShiftType {
 /// (`LDREXD`/`STREXD`) are not valid on M-profile and are not modeled.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExSize {
+    /// Byte-sized access.
     Byte,
+    /// Halfword-sized access.
     Half,
+    /// Word-sized access.
     Word,
 }
 
@@ -189,17 +230,21 @@ pub enum Inst32 {
     /// `BL {label}`. `off` is the already-sign-extended byte offset from
     /// `pc + 4`. LR is set to `pc + 4 | 1` by the executor.
     Bl {
+        /// Byte offset.
         off: i32,
     },
     /// `B.W {label}` (unconditional T4). `off` is the already-sign-extended
     /// byte offset from `pc + 4`.
     BranchWide {
+        /// Byte offset.
         off: i32,
     },
     /// `B<c>.W {label}` (conditional T3). `off` is the already-sign-extended
     /// byte offset from `pc + 4`.
     BranchCondWide {
+        /// Condition code.
         cond: u8,
+        /// Byte offset.
         off: i32,
     },
     /// `BLX {label}` (immediate). `off` is the already-sign-extended byte
@@ -207,35 +252,53 @@ pub enum Inst32 {
     /// selects the ARM state, which faults on ARMv7-M. LR is set to
     /// `pc + 4 | 1` by the executor.
     BlxImm {
+        /// Byte offset.
         off: i32,
     },
+    /// Move from special register to GPR.
     Mrs {
+        /// Destination register.
         rd: u8,
+        /// System register.
         sys: SysReg,
     },
+    /// Move from GPR to special register.
     Msr {
+        /// First operand register (base register for memory forms).
         rn: u8,
+        /// System register.
         sys: SysReg,
     },
+    /// Memory barrier.
     Barrier {
+        /// The operation kind.
         kind: Barrier,
     },
     /// `LDREX{B,H}` (word `LDREX`). `off` is the word-form `imm8 << 2`
     /// offset (0 for the byte/halfword forms). The executor marks the
     /// effective address with the exclusive monitor.
     Ldrex {
+        /// Target register.
         rt: u8,
+        /// First operand register (base register for memory forms).
         rn: u8,
+        /// Access size.
         size: ExSize,
+        /// Byte offset.
         off: u32,
     },
     /// `STREX{B,H}` (word `STREX`). `rd` receives 0 on success and 1 on
     /// failure; `off` is the word-form `imm8 << 2` offset.
     Strex {
+        /// Destination register.
         rd: u8,
+        /// Target register.
         rt: u8,
+        /// First operand register (base register for memory forms).
         rn: u8,
+        /// Access size.
         size: ExSize,
+        /// Byte offset.
         off: u32,
     },
     /// `CLREX`: clear the local exclusive monitor.
@@ -245,9 +308,13 @@ pub enum Inst32 {
     /// effective address with the exclusive monitor exactly like `LDREX`;
     /// the acquire ordering is a no-op on the in-order single-core model.
     Lda {
+        /// Target register.
         rt: u8,
+        /// First operand register (base register for memory forms).
         rn: u8,
+        /// Access size.
         size: ExSize,
+        /// Exclusive access form.
         exclusive: bool,
     },
     /// `STL{B,H}` (word `STL`) and their exclusive `STLEX{B,H}` forms:
@@ -257,10 +324,15 @@ pub enum Inst32 {
     /// like `STREX`. The release ordering is a no-op on the in-order
     /// single-core model.
     Stl {
+        /// Destination register.
         rd: u8,
+        /// Target register.
         rt: u8,
+        /// First operand register (base register for memory forms).
         rn: u8,
+        /// Access size.
         size: ExSize,
+        /// Exclusive access form.
         exclusive: bool,
     },
     /// ARMv7-M data-processing with a shifted-register operand:
@@ -268,30 +340,46 @@ pub enum Inst32 {
     /// which do not read `Rn`. `amount` is the 5-bit shift amount; a `Ror`
     /// with `amount == 0` is the RRX form.
     DpReg {
+        /// The opcode.
         op: DpOp,
+        /// Destination register.
         rd: u8,
+        /// First operand register (base register for memory forms).
         rn: u8,
+        /// Second operand register.
         rm: u8,
+        /// Shift applied to the operand.
         shift: ShiftType,
+        /// Shift amount.
         amount: u8,
+        /// Whether condition flags update.
         set_flags: bool,
     },
     /// ARMv7-M data-processing with a 12-bit immediate. `imm12` is either
     /// fed through `ThumbExpandImm` (`expand`) or used as a raw 12-bit value
     /// (the `addw`/`subw` forms).
     DpImm {
+        /// The opcode.
         op: DpOp,
+        /// Destination register.
         rd: u8,
+        /// First operand register (base register for memory forms).
         rn: u8,
+        /// 12-bit immediate (expanded or raw).
         imm12: u16,
+        /// Whether the immediate passes through ThumbExpandImm.
         expand: bool,
+        /// Whether condition flags update.
         set_flags: bool,
     },
     /// ARMv7-M `MOVW`/`MOVT`. `imm` is the 16-bit literal; `high` selects
     /// `MOVT`.
     MovWide {
+        /// Destination register.
         rd: u8,
+        /// Immediate operand.
         imm: u16,
+        /// Upper half (MOVT).
         high: bool,
     },
     /// ARMv7-M single-data-transfer with an immediate or register offset:
@@ -307,15 +395,25 @@ pub enum Inst32 {
     /// W == 0`), which performs the access against unprivileged permission;
     /// without an MPU the access itself is identical.
     Mem {
+        /// Memory access size and direction.
         access: MemOp,
+        /// Target register.
         rt: u8,
+        /// First operand register (base register for memory forms).
         rn: u8,
+        /// Byte offset.
         off: u32,
+        /// Second operand register.
         rm: Option<u8>,
+        /// Shift applied to the operand.
         shift: u8,
+        /// Whether the offset adds (else subtracts).
         add: bool,
+        /// Pre-indexed addressing.
         index: bool,
+        /// Writeback enabled.
         writeback: bool,
+        /// Unprivileged access form.
         unprivileged: bool,
     },
     /// ARMv7-M load/store dual: `LDRD`/`STRD` with an immediate offset.
@@ -325,38 +423,58 @@ pub enum Inst32 {
     /// `Align(pc + 4, 4)`; the low word goes to `rt` and the high word to
     /// `rt2`. Flags are not affected.
     LdrdStrd {
+        /// Load (else store).
         is_load: bool,
+        /// Target register.
         rt: u8,
+        /// Second target register (pairs).
         rt2: u8,
+        /// First operand register (base register for memory forms).
         rn: u8,
+        /// Immediate operand.
         imm: u32,
+        /// Whether the offset adds (else subtracts).
         add: bool,
+        /// Pre-indexed addressing.
         index: bool,
+        /// Writeback enabled.
         writeback: bool,
     },
     /// ARMv7-M load/store multiple: `STMIA`/`LDMIA`/`STMDB`/`LDMDB
     /// rn{!}, {list}`. `regs` is the 16-bit register mask; `writeback` is the
     /// `!`, `dec_before` selects the decrement-before (DB) forms over IA.
     LdmStm {
+        /// Load (else store).
         is_load: bool,
+        /// First operand register (base register for memory forms).
         rn: u8,
+        /// Register-list bitmask.
         regs: u16,
+        /// Writeback enabled.
         writeback: bool,
+        /// Decrement-before addressing.
         dec_before: bool,
     },
     /// ARMv7-M table branch: `TBB [Rn, Rm]` (`half == false`) or
     /// `TBH [Rn, Rm]` (`half == true`).
     TblBranch {
+        /// First operand register (base register for memory forms).
         rn: u8,
+        /// Second operand register.
         rm: u8,
+        /// Halfword table entries (else bytes).
         half: bool,
     },
     /// ARMv7-M signed (`signed == true`) or unsigned divide:
     /// `div Rd, Rn, Rm`. Flags are not affected.
     Div {
+        /// Sign-extending form.
         signed: bool,
+        /// Destination register.
         rd: u8,
+        /// First operand register (base register for memory forms).
         rn: u8,
+        /// Second operand register.
         rm: u8,
     },
     /// ARMv7-M multiply family. `MUL` writes the low 32 bits of `Rn * Rm`;
@@ -365,9 +483,13 @@ pub enum Inst32 {
     /// decode as `rd` (bits11:8) and `ra` (bits15:12) respectively. Flags
     /// are never affected, so `MUL` and `MLA` need no `S` bit.
     Mul {
+        /// The opcode.
         op: MulOp,
+        /// Destination register.
         rd: u8,
+        /// First operand register (base register for memory forms).
         rn: u8,
+        /// Second operand register.
         rm: u8,
         /// `MLA`/`MLS` accumulator, or the `RdLo` half of a long multiply
         /// (bits15:12 of the encoding). For `MUL` this is the all-ones
@@ -377,10 +499,15 @@ pub enum Inst32 {
     /// ARMv7-M DSP multiply family. `ra` is the `USADA8` accumulator (the
     /// all-ones sentinel for every other form). Flags are never affected.
     DspMul {
+        /// The opcode.
         op: DspMulOp,
+        /// Destination register.
         rd: u8,
+        /// First operand register (base register for memory forms).
         rn: u8,
+        /// Second operand register.
         rm: u8,
+        /// Accumulate register.
         ra: u8,
     },
     /// ARMv7-M dual multiply family. `ra` is the accumulate operand (the
@@ -389,17 +516,25 @@ pub enum Inst32 {
     /// `RdLo`, mirroring `Mul`. Flags are never touched, though `Q` may be
     /// sticky-set.
     DualMul {
+        /// The opcode.
         op: DualMulOp,
+        /// Destination register.
         rd: u8,
+        /// First operand register (base register for memory forms).
         rn: u8,
+        /// Second operand register.
         rm: u8,
+        /// Accumulate register.
         ra: u8,
     },
     /// ARMv7-M unary register data-processing: `REV`/`REV16`/`REVSH`,
     /// `RBIT`, and `CLZ`. Flags are not affected.
     Unary {
+        /// The opcode.
         op: UnaryOp,
+        /// Destination register.
         rd: u8,
+        /// Second operand register.
         rm: u8,
     },
     /// ARMv7-M saturating add/subtract: `QADD`/`QSUB` and the doubling
@@ -407,9 +542,13 @@ pub enum Inst32 {
     /// the sticky APSR.Q flag is set when clamping happens. Flags are
     /// otherwise not affected.
     Qadd {
+        /// The opcode.
         op: QaddOp,
+        /// Destination register.
         rd: u8,
+        /// First operand register (base register for memory forms).
         rn: u8,
+        /// Second operand register.
         rm: u8,
     },
     /// ARMv7-M saturate: `SSAT`/`USAT` (optionally shifted) and their 16-bit
@@ -417,11 +556,17 @@ pub enum Inst32 {
     /// target range; `shift`/`sh` apply only to the full-word forms. Sets
     /// APSR.Q on saturation. Flags are otherwise not affected.
     Sat {
+        /// The opcode.
         op: SatOp,
+        /// Destination register.
         rd: u8,
+        /// First operand register (base register for memory forms).
         rn: u8,
+        /// Saturation bit position.
         sat_n: u8,
+        /// Shift before saturating.
         sh: bool,
+        /// Shift applied to the operand.
         shift: u8,
     },
     /// ARMv7-M bitfield extract/insert: `SBFX`/`UBFX`/`BFI`/`BFC`. `field`
@@ -429,10 +574,15 @@ pub enum Inst32 {
     /// for the inserts; `rn` is the source register, or `15` for the `BFC`
     /// clear form. Flags are not affected.
     Bitfield {
+        /// The opcode.
         op: BitfieldOp,
+        /// Destination register.
         rd: u8,
+        /// First operand register (base register for memory forms).
         rn: u8,
+        /// Bit-field least-significant bit.
         lsb: u8,
+        /// Bit-field width.
         field: u8,
     },
     /// ARMv7-M parallel add/subtract: the `S`/`Q`/`SH`/`U`/`UQ`/`UH` forms of
@@ -441,17 +591,25 @@ pub enum Inst32 {
     /// write the per-lane GE flags. The per-lane saturating forms never touch
     /// the sticky `APSR.Q` flag.
     Par {
+        /// The opcode.
         op: ParOp,
+        /// Saturation mode.
         sat: ParSat,
+        /// Destination register.
         rd: u8,
+        /// First operand register (base register for memory forms).
         rn: u8,
+        /// Second operand register.
         rm: u8,
     },
     /// ARMv7-M `SEL Rd, Rn, Rm`: byte lane `i` of `Rd` comes from `Rn` when
     /// GE flag `i` is set, and from `Rm` otherwise. Flags are not affected.
     Sel {
+        /// Destination register.
         rd: u8,
+        /// First operand register (base register for memory forms).
         rn: u8,
+        /// Second operand register.
         rm: u8,
     },
     /// ARMv7-M register-extend: `SXTAH`/`UXTAH`/`SXTAB16`/`UXTAB16`/`SXTAB`/
@@ -459,55 +617,84 @@ pub enum Inst32 {
     /// two-operand `SXTH`/`UXTH`/`SXTB16`/`UXTB16`/`SXTB`/`UXTB` forms, which
     /// the executor folds by skipping the addend. Flags are not affected.
     ExtendAdd {
+        /// The opcode.
         op: ExtendAddOp,
+        /// Destination register.
         rd: u8,
+        /// First operand register (base register for memory forms).
         rn: u8,
+        /// Second operand register.
         rm: u8,
+        /// Rotation amount.
         rot: u8,
     },
     /// VFP three-operand arithmetic. `is_dp` selects `D` (double, FPv5)
     /// vs `S` (single) registers; `op` selects the operation.
     Vfp3 {
+        /// The opcode.
         op: Vfp3Op,
+        /// Destination FP register.
         vd: u8,
+        /// First FP operand.
         vn: u8,
+        /// Second FP operand.
         vm: u8,
+        /// Double-precision form.
         is_dp: bool,
     },
     /// VFP two-operand data processing (`VMOV`/`VABS`/`VNEG`/`VSQRT`).
     /// `is_dp` selects `D` vs `S` registers.
     Vfp2 {
+        /// The opcode.
         op: Vfp2Op,
+        /// Destination FP register.
         vd: u8,
+        /// Second FP operand.
         vm: u8,
+        /// Double-precision form.
         is_dp: bool,
     },
     /// VFP comparison `VCMP`/`VCMPE`. `is_dp` selects `D` vs `S`;
     /// `e` selects the signaling form; `z` selects compare-against-zero.
     VfpCmp {
+        /// Destination FP register.
         vd: u8,
+        /// Second FP operand.
         vm: u8,
+        /// Signaling compare form (else quiet).
         e: bool,
+        /// Compare against zero (else register).
         z: bool,
+        /// Double-precision form.
         is_dp: bool,
     },
     /// VFP round-to-integral (`VRINTR`/`VRINTZ`/`VRINTX`). `is_dp`
     /// selects `D` (double) vs `S` (single) registers.
     VfpVrint {
+        /// The opcode.
         op: VrintOp,
+        /// Destination FP register.
         vd: u8,
+        /// Second FP operand.
         vm: u8,
+        /// Double-precision form.
         is_dp: bool,
     },
     /// VFP convert between float and integer: `VCVT.F{32,64}.{S,U}32`
     /// (`to_float`) or `VCVT{R}.{S,U}32.F{32,64}` (to integer; `rz` selects the
     /// `R` form). `is_dp` selects the float size (double vs single).
     VfpCvtInt {
+        /// Convert to floating-point (else to integer).
         to_float: bool,
+        /// Sign-extending form.
         signed: bool,
+        /// Round toward zero.
         rz: bool,
+        /// Destination FP register.
         vd: u8,
+        /// Second FP operand.
         vm: u8,
+        /// Double-precision form.
         is_dp: bool,
     },
     /// VFP fixed-point convert: `VCVT.F{32,64}.{S,U}{16,32}.{fbits}` and the
@@ -515,92 +702,137 @@ pub enum Inst32 {
     /// field (bit18, bit16, bit7); `frac` is the fraction length (16 or 32
     /// minus `imm`). `is_dp` selects `D` vs `S`.
     VfpCvtFix {
+        /// VMOV-immediate opcode field.
         opc: u8,
+        /// VMOV-immediate fraction field.
         frac: u8,
+        /// Destination FP register.
         vd: u8,
+        /// Double-precision form.
         is_dp: bool,
     },
     /// VFP float↔float convert `VCVT.F64.F32` / `VCVT.F32.F64`. `to_double`
     /// selects `F64` destination.
     VfpCvt {
+        /// Convert to double-precision.
         to_double: bool,
+        /// Destination FP register.
         vd: u8,
+        /// Second FP operand.
         vm: u8,
     },
     /// `VMOV.F32/F64 S/D{vd}, #imm` where `imm` is the already-expanded float
     /// bits (low 32 bits for single, full 64 for double). `is_dp` selects size.
     VfpMovImm {
+        /// Destination FP register.
         vd: u8,
+        /// Immediate operand.
         imm: u64,
+        /// Double-precision form.
         is_dp: bool,
     },
     /// `VMOV S{vd}, Rt` / `VMOV Rt, S{vd}`: single-word VFP/GP move.
     VfpMov {
+        /// Transfer to general-purpose register (else from).
         to_gp: bool,
+        /// Destination FP register.
         vd: u8,
+        /// Target register.
         rt: u8,
     },
     /// `VMOV D{vm}, Rt, Rt2` / `VMOV Rt, Rt2, D{vm}`: doubleword VFP/GP move
     /// (also the two-S form). On FPv4-SP (no double arithmetic) the D16-D31
     /// forms are undefined.
     VfpMov64 {
+        /// Transfer to general-purpose register (else from).
         to_gp: bool,
+        /// Second FP operand.
         vm: u8,
+        /// Target register.
         rt: u8,
+        /// Second target register (pairs).
         rt2: u8,
+        /// Double-precision form.
         is_dp: bool,
     },
     /// `VMRS Rt, FPSCR` / `VMSR FPSCR, Rt`. On FPv4-SP only `reg == 1`
     /// (FPSCR) is legal.
     VfpMrsVmsr {
+        /// Read (else write).
         is_read: bool,
+        /// Target register.
         rt: u8,
     },
     /// `VLDR`/`VSTR S{vd}, [Rn, #±imm]` with `imm` the already-scaled byte
     /// offset (`imm8 << 2`). `add` selects `+`/`-`.
     VfpLdSt {
+        /// Load (else store).
         is_load: bool,
+        /// Destination FP register.
         vd: u8,
+        /// First operand register (base register for memory forms).
         rn: u8,
+        /// Whether the offset adds (else subtracts).
         add: bool,
+        /// Immediate operand.
         imm: u32,
     },
     /// `VLDR`/`VSTR D{vd}, [Rn, #±imm]` with `imm` the already-scaled byte
     /// offset (`imm8 << 2`). On FPv4-SP the D16-D31 forms are undefined.
     VfpLdStD {
+        /// Load (else store).
         is_load: bool,
+        /// Destination FP register.
         vd: u8,
+        /// First operand register (base register for memory forms).
         rn: u8,
+        /// Whether the offset adds (else subtracts).
         add: bool,
+        /// Immediate operand.
         imm: u32,
     },
     /// `VLDM`/`VSTM` S-register list: `{S{vd}-S{vd+n-1}}`, ascending (IA) or
     /// decrement-before (DB). `writeback` is the `!`; `rn == 15` marks the
     /// `VPOP`/`VPUSH` aliases (write-back only).
     VfpLdStMult {
+        /// Load (else store).
         is_load: bool,
+        /// Destination FP register.
         vd: u8,
+        /// First operand register (base register for memory forms).
         rn: u8,
+        /// Register count.
         n: u8,
+        /// Writeback enabled.
         writeback: bool,
+        /// Decrement-before addressing.
         dec_before: bool,
     },
     /// `VLDM`/`VSTM` D-register list: `{D{vd}-D{vd+n-1}}`. On FPv4-SP the
     /// D16-D31 range is undefined.
     VfpLdStMultD {
+        /// Load (else store).
         is_load: bool,
+        /// Destination FP register.
         vd: u8,
+        /// First operand register (base register for memory forms).
         rn: u8,
+        /// Register count.
         n: u8,
+        /// Writeback enabled.
         writeback: bool,
+        /// Decrement-before addressing.
         dec_before: bool,
     },
     /// ARMv8-M `TT` family: read the security state of the address in `rn`
     /// into `rd` without performing an access. The result word is the
     /// concatenated SAU/IDAU/MPU attribution bits. Flags are not affected.
     Tt {
+        /// TT instruction variant.
         variant: TtVariant,
+        /// Destination register.
         rd: u8,
+        /// First operand register (base register for memory forms).
         rn: u8,
     },
     /// ARMv8-M `SG`: in the Secure state, clear the IT state; in the
@@ -1114,7 +1346,7 @@ pub fn decode32_v8m_mainline(hi: u16, lo: u16) -> Result<Inst32, DecodeError> {
 /// Decode the ARMv8-M `TT` instruction family. The encodings share the
 /// `1110 1000 0100 Rn` first-halfword space with the ARMv7-M `LDRD`/`STRD`
 /// pair, distinguished by the second halfword's `1111 Rd A T 000000` form
-/// (`Rd` in bits [11:8], so any register sets bit 11; the low six bits are
+/// (`Rd` in bits `11:8`, so any register sets bit 11; the low six bits are
 /// reserved); `TT` is ARMv8-M only and never reaches the ARMv7-M decoder.
 /// The architecture constrains the unpredictable forms (`Rd` of 13/15, `Rn`
 /// of 15, a non-zero low halfword) as undefined.
@@ -1314,14 +1546,14 @@ fn decode_clrex(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
 /// decode the ARMv7-M exclusive load/store family: the word `LDREX`/`STREX`
 /// and the `LDREX{B,H}`/`STREX{B,H}` forms.
 ///
-/// First-halfword bits [7:4] name the instruction: `0100` the word `STREX`,
+/// First-halfword bits `7:4` name the instruction: `0100` the word `STREX`,
 /// `0101` the word `LDREX`, `1100` the `STREX{B,H}`, `1101` the
 /// `LDREX{B,H}`. The word forms carry `Rt Rd imm8` / `Rt 1111 imm8` in the
 /// second halfword (offset `imm8 << 2`); the byte/halfword forms fix
-/// second-halfword bits [11:8] = `1111` and put the width selector in bits
-/// [7:4] (`0100` byte, `0101` halfword, `0111` doubleword — the doubleword
+/// second-halfword bits `11:8` = `1111` and put the width selector in bits
+/// `7:4` (`0100` byte, `0101` halfword, `0111` doubleword — the doubleword
 /// forms are not valid on M-profile). The `0xE8C0`/`0xE8D0` spaces are
-/// shared with `STRD`/`LDRD` (bits [11:8] = `Rt2`) and `TBB`/`TBH`, so a
+/// shared with `STRD`/`LDRD` (bits `11:8` = `Rt2`) and `TBB`/`TBH`, so a
 /// second halfword without the `1111` tag is handed back to those decoders.
 fn decode_exclusive(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
     let rn = (hi & 0xF) as u8;
@@ -1400,7 +1632,7 @@ fn decode_exclusive(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
 /// Decode the ARMv8-M load-acquire/store-release family. The encodings share
 /// the `1110 1000 1100/1101 Rn` first-halfword space with `STREXB/H` and
 /// `LDREXB/H`, distinguished by the second halfword's `0b1111` tag at bits
-/// [11:8] and the access selector at bits [7:4]: `0x8` byte, `0x9` halfword,
+/// `11:8` and the access selector at bits `7:4`: `0x8` byte, `0x9` halfword,
 /// `0xA` word, and the exclusive forms `0xC`/`0xD`/`0xE`. `0xE8D0` selects
 /// the loads (`LDA`/`LDAB`/`LDAH`/`LDAEX`/`LDAEXB`/`LDAEXH`, whose low nibble
 /// is fixed at `0b1111`) and `0xE8C0` the stores (`STL`/`STLB`/`STLH` and the
@@ -2250,8 +2482,8 @@ const fn decode_sat(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
 ///
 /// The `1111 0011 010/110/011 0` first-halfword prefixes select
 /// `SBFX`/`UBFX`/`BFI`, with the source `Rn` in the low nibble (`Rn == 15`
-/// turns `BFI` into `BFC`). The second halfword packs `0 imm3 Rd imm2 0
-/// field`, where `imm3:imm2` builds the `lsb` position (the same composition
+/// `turns BFI into BFC). The second halfword packs `0 imm3 Rd imm2 0`.
+/// `field, where imm3:imm2 builds the lsb` position (the same composition`.
 /// as the data-processing shift amounts) and `field` is `widthm1` for the
 /// extracts or `msb` for the inserts. The extracts UNDEFINE when the field
 /// runs past bit 31; the inserts UNDEFINE when `msb < lsb`.
@@ -2309,7 +2541,7 @@ const fn decode_bitfield(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>
 //     (vm = bits[3:0] | bit5<<4).
 // ---------------------------------------------------------------------------
 
-/// VFP single-register Dn field: `vd<4:1>` in bits[15:12], D = bit22.
+/// VFP single-register Dn field: `vd<4:1>` in `bits[15:12]`, D = bit22.
 #[allow(clippy::cast_possible_truncation)]
 const fn vd_sp(w: u32) -> u8 {
     ((((w >> 12) & 0xF) << 1) as u8) | ((w >> 22) & 1) as u8
@@ -2327,7 +2559,7 @@ const fn vm_sp(w: u32) -> u8 {
     (((w & 0xF) << 1) as u8) | ((w >> 5) & 1) as u8
 }
 
-/// VFP double-register Vd field: `vd<3:0>` in bits[15:12], D = bit22.
+/// VFP double-register Vd field: `vd<3:0>` in `bits[15:12]`, D = bit22.
 const fn vd_dp(w: u32) -> u8 {
     (((w >> 12) & 0xF) as u8) | ((((w >> 22) & 1) as u8) << 4)
 }

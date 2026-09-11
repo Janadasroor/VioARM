@@ -56,6 +56,7 @@ impl Behavior for OctospiBehavior {
     }
 }
 
+/// Octal SPI controller.
 #[derive(Debug)]
 pub struct Octospi {
     inner: RegisterFile<OctospiBehavior>,
@@ -63,6 +64,7 @@ pub struct Octospi {
 }
 
 impl Octospi {
+    /// A new `Octospi` on another chip's device tables.
     #[must_use]
     pub fn new_for<D: crate::device::svd::Device>(name: &str) -> Self {
         let def = D::peripheral(name).unwrap_or_else(|| panic!("generated tables contain {name}"));
@@ -71,6 +73,7 @@ impl Octospi {
             name: "octospi",
         }
     }
+    /// A new window with an optional gate.
     #[must_use]
     pub fn new_for_with_gate<D: crate::device::svd::Device>(
         name: &str,
@@ -158,20 +161,24 @@ impl Octospi {
             name: "octospi",
         }
     }
+    /// A new `OCTOSPI1` on another chip's device tables.
     #[must_use]
     pub fn octospi1_for<D: crate::device::svd::Device>() -> Self {
         Self::new_for::<D>("OCTOSPI1")
     }
+    /// A new `OCTOSPI1` with an optional gate.
     #[must_use]
     pub fn octospi1_for_with_gate<D: crate::device::svd::Device>(
         gate: Option<Arc<Mutex<QspiGate>>>,
     ) -> Self {
         Self::new_for_with_gate::<D>("OCTOSPI1", gate)
     }
+    /// A new `OCTOSPI2` on another chip's device tables.
     #[must_use]
     pub fn octospi2_for<D: crate::device::svd::Device>() -> Self {
         Self::new_for::<D>("OCTOSPI2")
     }
+    /// A new `OCTOSPI2` with an optional gate.
     #[must_use]
     pub fn octospi2_for_with_gate<D: crate::device::svd::Device>(
         gate: Option<Arc<Mutex<QspiGate>>>,
@@ -179,6 +186,7 @@ impl Octospi {
         Self::new_for_with_gate::<D>("OCTOSPI2", gate)
     }
 
+    /// A new OCTOSPI window (WL manual definition).
     #[must_use]
     pub fn new_wl() -> Self {
         use crate::device::svd::{Access, FieldDef, IrqDef, PeripheralDef, RegisterDef};

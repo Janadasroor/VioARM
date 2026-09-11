@@ -36,6 +36,7 @@ impl Behavior for I3cBehavior {
     }
 }
 
+/// Improved Inter-Integrated Circuit.
 #[derive(Debug)]
 pub struct I3c {
     inner: RegisterFile<I3cBehavior>,
@@ -43,6 +44,7 @@ pub struct I3c {
 }
 
 impl I3c {
+    /// A new `I3c` on another chip's device tables.
     #[must_use]
     pub fn new_for<D: crate::device::svd::Device>() -> Self {
         Self::for_device::<D>("I3C1", "i3c1")

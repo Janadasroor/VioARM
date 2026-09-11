@@ -69,12 +69,14 @@ impl Behavior for TscBehavior {
     }
 }
 
+/// Touch sensing controller.
 #[derive(Debug)]
 pub struct Tsc {
     inner: RegisterFile<TscBehavior>,
 }
 
 impl Tsc {
+    /// A new `Tsc` on another chip's device tables.
     #[must_use]
     pub fn new_for<D: Device>() -> Self {
         let def = D::peripheral("TSC").expect("TSC peripheral");

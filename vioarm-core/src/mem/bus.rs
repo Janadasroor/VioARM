@@ -22,6 +22,7 @@ pub struct Region {
 }
 
 impl Region {
+    /// A bus region spanning `base..base + len`.
     #[must_use]
     pub const fn new(base: u32, len: u32) -> Self {
         Self { base, len }
@@ -130,7 +131,12 @@ pub enum DataTranslate {
     /// Host page base (page-aligned) plus contiguous bytes available from
     /// it. The page alignment is load-bearing: the JIT checks page
     /// crossings against it, and the TLB tags whole pages.
-    Direct { ptr: *mut u8, len: u32 },
+    Direct {
+        /// Host page base (page-aligned).
+        ptr: *mut u8,
+        /// Contiguous bytes available from it.
+        len: u32,
+    },
     /// Device window, gated region, or unmapped address: the JIT side-exits
     /// and the interpreter performs the access (MMIO semantics, faults).
     Indirect,
@@ -219,7 +225,12 @@ pub enum SauHit {
     None,
     /// Exactly one enabled region covers the address; `index` is its region
     /// number and `nsc` whether `SAU_RLAR.NSC` marks it Non-secure-callable.
-    Region { index: u8, nsc: bool },
+    Region {
+        /// Covering region number.
+        index: u8,
+        /// Whether `SAU_RLAR.NSC` marks it Non-secure-callable.
+        nsc: bool,
+    },
     /// Two or more enabled regions overlap the address: the result collapses
     /// to Secure with no valid region number.
     Multiple,

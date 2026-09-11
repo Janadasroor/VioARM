@@ -14,72 +14,114 @@ use crate::error::HaltCause;
 /// Load/store access type for register-offset addressing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LsReg {
+    /// Word store.
     Str,
+    /// Halfword store.
     Strh,
+    /// Byte store.
     Strb,
+    /// Sign-extending byte load.
     Ldrsb,
+    /// Word load.
     Ldr,
+    /// Halfword load.
     Ldrh,
+    /// Byte load.
     Ldrb,
+    /// Sign-extending halfword load.
     Ldrsh,
 }
 
 /// Load/store access type for immediate-offset addressing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LsImm {
+    /// Word store.
     Str,
+    /// Word load.
     Ldr,
+    /// Byte store.
     Strb,
+    /// Byte load.
     Ldrb,
+    /// Halfword store.
     Strh,
+    /// Halfword load.
     Ldrh,
 }
 
 /// ALU register data-processing ops (0x4000 space).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AluOp {
+    /// Bitwise AND.
     And,
+    /// Bitwise exclusive-OR.
     Eor,
+    /// Logical shift left.
     Lsl,
+    /// Logical shift right.
     Lsr,
+    /// Arithmetic shift right.
     Asr,
+    /// Add with carry.
     Adc,
+    /// Subtract with carry.
     Sbc,
+    /// Rotate right.
     Ror,
+    /// Test bits.
     Tst,
+    /// Negate.
     Neg,
+    /// Compare.
     Cmp,
+    /// Compare negative.
     Cmn,
+    /// Bitwise OR.
     Orr,
+    /// Multiply.
     Mul,
+    /// Bit clear.
     Bic,
+    /// Move NOT.
     Mvn,
 }
 
 /// Shift kinds for register-by-register shifts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Shift {
+    /// Logical shift left.
     Lsl,
+    /// Logical shift right.
     Lsr,
+    /// Arithmetic shift right.
     Asr,
+    /// Rotate right.
     Ror,
 }
 
 /// Shift with immediate amount (LSL/LSR/ASR #imm).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShiftImm {
+    /// Logical shift left.
     Lsl,
+    /// Logical shift right.
     Lsr,
+    /// Arithmetic shift right.
     Asr,
 }
 
 /// Architecture hint instructions (`HINT #imm8`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Hint {
+    /// No operation.
     Nop,
+    /// Yield (hint).
     Yield,
+    /// Wait for event.
     Wfe,
+    /// Wait for interrupt.
     Wfi,
+    /// Send event.
     Sev,
 }
 
@@ -87,199 +129,316 @@ pub enum Hint {
 /// 16-bit (`T*H`) form over the 8-bit (`T*B`) form.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExtendKind {
+    /// Sign-extend halfword.
     Sxth,
+    /// Sign-extend byte.
     Sxtb,
+    /// Zero-extend halfword.
     Uxth,
+    /// Zero-extend byte.
     Uxtb,
 }
 
 /// Byte-reversal (`REV`/`REV16`/`REVSH`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReverseKind {
+    /// Byte-reverse word.
     Rev,
+    /// Byte-reverse packed halfwords.
     Rev16,
+    /// Byte-reverse signed halfword.
     Revsh,
 }
 
 /// A decoded 16-bit instruction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Inst16 {
+    /// Immediate shift (LSL/LSR/ASR by an amount).
     ShiftImm {
+        /// Destination register.
         rd: u8,
+        /// Second operand register.
         rm: u8,
+        /// The operation kind.
         kind: ShiftImm,
+        /// Shift amount.
         amount: u8,
     },
+    /// Register-controlled shift.
     ShiftReg {
+        /// Destination register.
         rd: u8,
+        /// First operand register (base register for memory forms).
         rn: u8,
+        /// Second operand register.
         rm: u8,
+        /// The operation kind.
         kind: Shift,
     },
+    /// ADD (register).
     AddReg {
+        /// Destination register.
         rd: u8,
+        /// First operand register (base register for memory forms).
         rn: u8,
+        /// Second operand register.
         rm: u8,
     },
+    /// SUB (register).
     SubReg {
+        /// Destination register.
         rd: u8,
+        /// First operand register (base register for memory forms).
         rn: u8,
+        /// Second operand register.
         rm: u8,
     },
+    /// ADD with a 3-bit immediate.
     AddImm3 {
+        /// Destination register.
         rd: u8,
+        /// First operand register (base register for memory forms).
         rn: u8,
+        /// Immediate operand.
         imm: u8,
     },
+    /// SUB with a 3-bit immediate.
     SubImm3 {
+        /// Destination register.
         rd: u8,
+        /// First operand register (base register for memory forms).
         rn: u8,
+        /// Immediate operand.
         imm: u8,
     },
+    /// Move an 8-bit immediate.
     MovImm {
+        /// Destination register.
         rd: u8,
+        /// Immediate operand.
         imm: u8,
     },
+    /// Compare with an 8-bit immediate.
     CmpImm {
+        /// First operand register (base register for memory forms).
         rn: u8,
+        /// Immediate operand.
         imm: u8,
     },
+    /// ADD with an 8-bit immediate.
     AddImm8 {
+        /// Destination register.
         rd: u8,
+        /// Immediate operand.
         imm: u8,
     },
+    /// SUB with an 8-bit immediate.
     SubImm8 {
+        /// Destination register.
         rd: u8,
+        /// Immediate operand.
         imm: u8,
     },
+    /// Low-register data processing.
     Alu {
+        /// Destination register.
         rd: u8,
+        /// Second operand register.
         rm: u8,
+        /// The opcode.
         op: AluOp,
     },
+    /// ADD SP plus an 8-bit immediate.
     AddSpImm8 {
+        /// Immediate operand.
         imm: usize,
     },
+    /// SUB SP minus an 8-bit immediate.
     SubSpImm8 {
+        /// Immediate operand.
         imm: usize,
     },
     /// High/Low ADD (no flags).
     SpecialAdd {
+        /// Destination register.
         rd: u8,
+        /// Second operand register.
         rm: u8,
     },
+    /// High-register compare.
     SpecialCmp {
+        /// First operand register (base register for memory forms).
         rn: u8,
+        /// Second operand register.
         rm: u8,
     },
+    /// High-register move/add.
     SpecialMov {
+        /// Destination register.
         rd: u8,
+        /// Second operand register.
         rm: u8,
     },
+    /// Branch and exchange.
     Bx {
+        /// Second operand register.
         rm: u8,
     },
+    /// Branch with link and exchange (register).
     Blx {
+        /// Second operand register.
         rm: u8,
     },
     /// ARMv8-M `BXNS` (`0100 0111 0 ... 100`): branch and exchange to the
     /// security state selected by `Rm<0>`. Undefined on ARMv6-M/ARMv7-M.
     BxNs {
+        /// Second operand register.
         rm: u8,
     },
     /// ARMv8-M `BLXNS` (`0100 0111 1 ... 100`): branch with link to the
     /// security state selected by `Rm<0>`. Undefined on ARMv6-M/ARMv7-M.
     BlxNs {
+        /// Second operand register.
         rm: u8,
     },
+    /// PC-relative literal load.
     LdrLiteral {
+        /// Target register.
         rt: u8,
+        /// Immediate operand.
         imm: usize,
     },
+    /// Register-offset load/store.
     LsReg {
+        /// Target register.
         rt: u8,
+        /// First operand register (base register for memory forms).
         rn: u8,
+        /// Second operand register.
         rm: u8,
+        /// The operation kind.
         kind: LsReg,
     },
+    /// Immediate-offset load/store.
     LsImm {
+        /// Target register.
         rt: u8,
+        /// First operand register (base register for memory forms).
         rn: u8,
+        /// Immediate operand.
         imm: usize,
+        /// The operation kind.
         kind: LsImm,
     },
+    /// SP-relative load/store.
     LsSp {
+        /// Target register.
         rt: u8,
+        /// Immediate operand.
         imm: usize,
+        /// Load (else store).
         is_load: bool,
     },
+    /// Form a PC-relative address (ADR).
     AddrPc {
+        /// Destination register.
         rd: u8,
+        /// Immediate operand.
         imm: usize,
     },
+    /// Form an SP-relative address (ADD).
     AddrSp {
+        /// Destination register.
         rd: u8,
+        /// Immediate operand.
         imm: usize,
     },
     /// Conditional branch `B<cond> imm8` (imm8 sign-extended to the PC
     /// offset in bytes).
     BranchCond {
+        /// Condition code.
         cond: u8,
+        /// Byte offset.
         off: i32,
     },
     /// Unconditional branch `B imm11`.
     Branch {
+        /// Byte offset.
         off: i32,
     },
     /// `CBZ`/`CBNZ`: compare `rn` against zero and take the branch when the
     /// condition matches. `off` is the byte offset from `pc + 4`.
     CbzCbnz {
+        /// First operand register (base register for memory forms).
         rn: u8,
+        /// Byte offset.
         off: i32,
+        /// Branch on nonzero (else on zero).
         nonzero: bool,
     },
+    /// Supervisor call.
     Svc {
+        /// Immediate operand.
         imm: u8,
     },
+    /// Breakpoint.
     Bkpt {
+        /// Immediate operand.
         imm: u8,
     },
+    /// Hint instruction.
     Hint {
+        /// The operation kind.
         kind: Hint,
     },
     /// `CPSIE/CPSID im`; only the `i` bit (PRIMASK) is architecturally
     /// meaningful on ARMv6-M.
     Cps {
+        /// Disable interrupts (else enable).
         disable: bool,
+        /// Interrupt mask bit for CPS.
         im: u8,
     },
     /// `SXTH`/`SXTB`/`UXTH`/`UXTB Rd, Rm`.
     Extend {
+        /// Destination register.
         rd: u8,
+        /// Second operand register.
         rm: u8,
+        /// The operation kind.
         kind: ExtendKind,
     },
     /// `REV`/`REV16`/`REVSH Rd, Rm`.
     Reverse {
+        /// Destination register.
         rd: u8,
+        /// Second operand register.
         rm: u8,
+        /// The operation kind.
         kind: ReverseKind,
     },
     /// `PUSH {r0-r7}` plus `lr` when `include_lr`.
     Push {
+        /// Register-list bitmask.
         regs: u8,
+        /// Whether LR joins the push list.
         include_lr: bool,
     },
     /// `POP {r0-r7}` plus `pc` when `load_pc`.
     Pop {
+        /// Register-list bitmask.
         regs: u8,
+        /// Whether PC joins the pop list.
         load_pc: bool,
     },
     /// `STMIA rn!, {list}` / `LDMIA rn!, {list}`. Writeback is mandatory in
     /// ARMv6-M.
     LdmStm {
+        /// Load (else store).
         is_load: bool,
+        /// First operand register (base register for memory forms).
         rn: u8,
+        /// Register-list bitmask.
         regs: u8,
     },
     /// `IT{ x {y {z}}} <firstcond>`: marks the next 1-4 instructions
@@ -287,11 +446,18 @@ pub enum Inst16 {
     /// The executor derives the running ITSTATE from `(cond << 4) | mask`.
     /// ARMv7-M only.
     It {
+        /// Condition code.
         cond: u8,
+        /// IT block mask.
         mask: u8,
     },
 }
 
+/// Decode a 16-bit Thumb (ARMv6-M) instruction.
+///
+/// # Errors
+///
+/// Returns [`DecodeError`] when the halfword is not a known instruction.
 pub fn decode16(op: u16) -> Result<Inst16, DecodeError> {
     let err = || DecodeError {
         opcode: op,

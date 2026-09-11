@@ -139,6 +139,7 @@ impl Behavior for CompBehavior {
     }
 }
 
+/// Comparator.
 #[derive(Debug)]
 pub struct Comp {
     inner: RegisterFile<CompBehavior>,
@@ -146,6 +147,7 @@ pub struct Comp {
 }
 
 impl Comp {
+    /// A new `Comp` on another chip's device tables.
     #[must_use]
     pub fn new_for<D: Device>() -> Self {
         let def = D::peripheral("COMP")
@@ -161,6 +163,7 @@ impl Comp {
             name: "comp",
         }
     }
+    /// A new `COMP` on another chip's device tables.
     #[must_use]
     pub fn comp_for<D: Device>() -> Self {
         Self::new_for::<D>()

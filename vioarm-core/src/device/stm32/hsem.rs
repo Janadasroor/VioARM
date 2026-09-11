@@ -38,11 +38,13 @@ impl Behavior for HsemBehavior {
     }
 }
 
+/// Hardware semaphore.
 #[derive(Debug)]
 pub struct Hsem {
     inner: RegisterFile<HsemBehavior>,
 }
 impl Hsem {
+    /// A new `Hsem` on another chip's device tables.
     #[must_use]
     pub fn new_for<D: Device>() -> Self {
         let def = D::peripheral("HSEM").expect("HSEM");

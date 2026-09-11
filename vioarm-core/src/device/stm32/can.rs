@@ -766,6 +766,7 @@ pub struct CanFilter {
 }
 
 impl CanFilter {
+    /// A new `CanFilter`.
     #[must_use]
     pub fn new() -> Self {
         Self {

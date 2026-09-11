@@ -112,11 +112,13 @@ impl Behavior for RngBehavior {
     }
 }
 
+/// Random number generator.
 #[derive(Debug)]
 pub struct Rng {
     inner: RegisterFile<RngBehavior>,
 }
 impl Rng {
+    /// A new `Rng` on another chip's device tables.
     #[must_use]
     pub fn new_for<D: Device>() -> Self {
         let def = D::peripheral("RNG").expect("RNG");

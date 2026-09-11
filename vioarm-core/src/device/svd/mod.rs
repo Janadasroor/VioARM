@@ -59,45 +59,65 @@ pub mod stm32wba55;
 /// The register access vocabulary used by the supported SVD files.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Access {
+    /// Readable and writable.
     ReadWrite,
+    /// Readable only.
     ReadOnly,
+    /// Writable only.
     WriteOnly,
 }
 
 /// A single bit field within a register.
 #[derive(Clone, Copy, Debug)]
 pub struct FieldDef {
+    /// Field name.
     pub name: &'static str,
+    /// Bit offset within the register.
     pub offset: u8,
+    /// Bit width.
     pub width: u8,
+    /// Access vocabulary.
     pub access: Access,
 }
 
 /// A single register within a peripheral.
 #[derive(Clone, Copy, Debug)]
 pub struct RegisterDef {
+    /// Register name.
     pub name: &'static str,
+    /// Byte offset within the peripheral.
     pub offset: u32,
+    /// Register width in bits.
     pub width: u8,
+    /// Access vocabulary.
     pub access: Access,
+    /// Reset value.
     pub reset: u32,
+    /// Bit fields.
     pub fields: &'static [FieldDef],
 }
 
 /// An interrupt line a peripheral can raise.
 #[derive(Clone, Copy, Debug)]
 pub struct IrqDef {
+    /// Interrupt number.
     pub number: u8,
+    /// Interrupt name.
     pub name: &'static str,
 }
 
 /// One memory-mapped peripheral, exactly as the SVD describes it.
 #[derive(Clone, Copy, Debug)]
 pub struct PeripheralDef {
+    /// Peripheral name.
     pub name: &'static str,
+    /// Base address.
     pub base: u32,
+    /// Window size in bytes.
     pub window: u32,
+    /// Interrupt lines.
     pub irqs: &'static [IrqDef],
+    /// Registers.
     pub registers: &'static [RegisterDef],
 }
 

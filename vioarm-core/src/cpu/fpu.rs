@@ -121,19 +121,33 @@ pub enum RoundMode {
 
 /// The IEEE exception flags, in QEMU's bit numbering.
 pub const FLAG_INVALID: u32 = 0x0001;
+/// Divide-by-zero cumulative flag.
 pub const FLAG_DIVBYZERO: u32 = 0x0002;
+/// Overflow cumulative flag.
 pub const FLAG_OVERFLOW: u32 = 0x0004;
+/// Underflow cumulative flag.
 pub const FLAG_UNDERFLOW: u32 = 0x0008;
+/// Inexact cumulative flag.
 pub const FLAG_INEXACT: u32 = 0x0010;
+/// Flushed input denormal flag.
 pub const FLAG_INPUT_DENORMAL_FLUSHED: u32 = 0x0020;
+/// Flushed output denormal flag.
 pub const FLAG_OUTPUT_DENORMAL_FLUSHED: u32 = 0x0040;
+/// Invalid operation (infinity minus infinity) flag.
 pub const FLAG_INVALID_ISI: u32 = 0x0080;
+/// Invalid operation (infinity times zero) flag.
 pub const FLAG_INVALID_IMZ: u32 = 0x0100;
+/// Invalid operation (zero over zero, infinity over infinity) flag.
 pub const FLAG_INVALID_IDI: u32 = 0x0200;
+/// Invalid operation (zero over zero) flag.
 pub const FLAG_INVALID_ZDZ: u32 = 0x0400;
+/// Invalid operation (square root of negative) flag.
 pub const FLAG_INVALID_SQRT: u32 = 0x0800;
+/// Invalid operation (integer conversion overflow) flag.
 pub const FLAG_INVALID_CVTI: u32 = 0x1000;
+/// Invalid operation (signaling NaN) flag.
 pub const FLAG_INVALID_SNAN: u32 = 0x2000;
+/// Denormal operand used flag.
 pub const FLAG_INPUT_DENORMAL_USED: u32 = 0x4000;
 
 /// The per-operation floating-point status word.
@@ -496,7 +510,7 @@ fn parts_uncanon(p: &mut Parts, status: &mut FloatStatus) {
 // ---------------------------------------------------------------------------
 
 /// QEMU's `parts64_default_nan`. For ARM the default NaN pattern is
-/// `0b01000000`, placed into bits [62:56] (bit 62 set); uncanon shifts it
+/// `0b01000000`, placed into bits `62:56` (bit 62 set); uncanon shifts it
 /// into the raw fraction position later.
 fn parts_default_nan(p: &mut Parts, status: &FloatStatus) {
     p.cls = FloatClass::QNaN;
@@ -1535,9 +1549,13 @@ fn parts_uint_to_float(p: &mut Parts, a: u64, scale: i32) {
 /// QEMU's `FloatRelation`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FloatRelation {
+    /// First operand compares less.
     Less = -1,
+    /// Operands compare equal.
     Equal = 0,
+    /// First operand compares greater.
     Greater = 1,
+    /// Unordered (a NaN operand).
     Unordered = 2,
 }
 

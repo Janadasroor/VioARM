@@ -29,7 +29,7 @@
 //! is not told which exception is running, so they are only correct in Thread
 //! mode. `CFSR` and `HFSR` are write-1-to-clear fault status; the core records
 //! the folding fault causes (`UNDEFINSTR`, `DIVBYZERO`, `PRECISERR`) and the
-//! `FORCED` escalation bit through [`PeripheralBus::record_fault`].
+//! `FORCED` escalation bit through [`crate::mem::bus::PeripheralBus::record_fault`].
 //!
 //! The `FPCCR` (`0xE000_EF34`) and `FPCAR` (`0xE000_EF38`) windows expose the
 //! M-profile lazy-FP-stacking control to firmware. Their state lives in the
@@ -161,7 +161,7 @@ const HFSR_MASK: u32 = 0x4000_0002;
 const HFSR_FORCED: u32 = 0x4000_0000;
 
 /// One MPU region, holding the raw `RBAR`/`RASR` words exactly as firmware
-/// wrote them. The base is kept in `RBAR` bits [31:5] (firmware's `REGION`/
+/// wrote them. The base is kept in `RBAR` bits `31:5` (firmware's `REGION`/
 /// `VALID` bits are consumed on the word write); the region size, subregion
 /// disable, and access permissions decode from `RASR`.
 #[derive(Debug, Clone, Copy, Default)]
@@ -290,11 +290,11 @@ struct MpuV8 {
     ctrl: [u32; 2],
     /// `MPU_RNR.REGION` per security state.
     rnr: [u32; 2],
-    /// `MPU_RBAR` per security state: `XN` (bit 0) and `AP` (bits [2:1]) in
-    /// the low byte, the base in bits [31:5].
+    /// `MPU_RBAR` per security state: `XN` (bit 0) and `AP` (bits `2:1`) in
+    /// the low byte, the base in bits `31:5`.
     rbar: [[u32; 8]; 2],
     /// `MPU_RLAR` per security state: `ENABLE` (bit 0) and the inclusive
-    /// limit in bits [31:5] (32-byte granularity).
+    /// limit in bits `31:5` (32-byte granularity).
     rlar: [[u32; 8]; 2],
 }
 
@@ -375,6 +375,7 @@ pub struct Scb {
 }
 
 impl Scb {
+    /// A new `Scb`.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -504,7 +505,7 @@ impl Scb {
         self.reset_requested
     }
 
-    /// `VTOR`: the vector table base (bits [31:7], 128-byte aligned).
+    /// `VTOR`: the vector table base (bits `31:7`, 128-byte aligned).
     #[must_use]
     pub const fn vtor(&self) -> u32 {
         self.vtor

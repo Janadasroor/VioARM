@@ -149,6 +149,7 @@ pub struct NullDevice {
 }
 
 impl NullDevice {
+    /// A null device covering one region.
     #[must_use]
     pub const fn new(region: Region) -> Self {
         Self { ranges: [region] }

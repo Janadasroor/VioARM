@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 //! QEMU conformance harness.
 //!
 //! Runs identical raw Thumb binaries in `vioarm-core` and in
@@ -39,7 +40,9 @@ pub const FPSCR_MASK: u32 = 0xF000_0000
 /// FPSCR.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VfpState {
+    /// S0–S31, raw bit patterns.
     pub s: [u32; 32],
+    /// The FPSCR.
     pub fpscr: u32,
 }
 
@@ -57,12 +60,16 @@ impl VfpState {
 /// and the diff skips it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CpuState {
+    /// General registers (`r[13]` SP, `r[14]` LR, `r[15]` PC).
     pub r: [u32; 16],
+    /// Modeled xPSR bits (ITSTATE folded in by the snapshot helper).
     pub xpsr: u32,
+    /// VFP state when the oracle reports it.
     pub vfp: Option<VfpState>,
 }
 
 impl CpuState {
+    /// xPSR masked to the modeled bits.
     #[must_use]
     pub const fn masked_xpsr(self) -> u32 {
         self.xpsr & XPSR_MASK
