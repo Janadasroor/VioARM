@@ -1295,6 +1295,25 @@ All three former open questions are resolved by the plan above:
 - First SVD families → F1/F4/F0/F3/G4/L4/H7 packs already vendored; no new
   families before v2.0.
 
+## Closed futures (2026-09-11)
+
+Deferred items resolved as final decisions rather than future work. None
+has an owner, a customer scenario, or a failing HAL behind it; each
+reopens only on a written trigger (failed real firmware, customer
+scenario, steering ruling).
+- JIT default-off stands (no steering ruling to enable by default; G3
+  acceptance holds on the sustained metric, per-platform mac/Windows
+  baselines stay ungated until CI hosts exist).
+- F4 `CHSEL` zero-means-stream and H7 `DMAMUX` board-convention IDs are
+  the permanent routing model. Full RM Table 41/42 + §14 transcription is
+  closed: it would replace tested behavior with transcribed constants no
+  in-tree firmware needs (every board route works; HAL failures would
+  reopen it with a reproducer).
+- H7 display/audio data-paths stay handshake-only (B6, reaffirmed);
+  A-profile stays a non-goal (M10, reaffirmed); USB split/hub and
+  sub-SOF periodic scheduling stay out (no failure observed — the ISO
+  e2e covers full/short/capture frames).
+
 ## Non-goals (for now)
 
 - JIT compilation as an unguarded default (throughput is M7-committed, but
