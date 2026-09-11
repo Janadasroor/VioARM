@@ -1,0 +1,2 @@
+# Fuzz corpus seeds are byte-exact inputs; never normalize line endings.
+fuzz/corpus/** -text

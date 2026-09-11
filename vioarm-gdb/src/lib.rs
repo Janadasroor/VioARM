@@ -458,7 +458,9 @@ impl<'a, M: PeripheralBus> Session<'a, M> {
         if req.get(1..2) != Some("0") {
             return Outcome::Reply(String::new());
         }
-        let Some((addr, len)) = mem_range(&req[3..]) else {
+        // `req.get`, not slicing: short packets like `Z0` must reply, never
+        // panic (found by `fuzz_rsp`: `$Z0#...` crashed the server).
+        let Some((addr, len)) = req.get(3..).and_then(mem_range) else {
             return Outcome::Reply("E01".to_owned());
         };
         if len != 2 {
@@ -786,6 +788,52 @@ pub fn serve_jit<M: PeripheralBus>(
     }
 }
 
+/// Feed raw RSP-stream bytes through packet framing and request dispatch,
+/// discarding replies. This is the fuzz-harness entry (`fuzz/fuzz_rsp`):
+/// checksum failures drop the packet exactly like the socket path, `c`/`s`
+/// resume packets retire at most one instruction each (total work bounded
+/// by the input length), and `D`/`k` end the stream. Any panic on malformed
+/// input is a fuzzer finding — the parse paths must be total.
+pub fn fuzz_stream(data: &[u8]) {
+    use vioarm_core::mem::flat::FlatMemory;
+    let mem = FlatMemory::with_layout(&[0, 0x2000_0000], &[0x2000, 0x4000]);
+    let mut machine = Machine::new(mem);
+    machine.core.regs.pc = 0x100;
+    machine.core.regs.sp = 0x2000_3F00;
+    let mut session = Session::new(&mut machine);
+    let mut i = 0;
+    while i < data.len() {
+        // Frame like `read_packet`: skip to `$`, payload to `#`, then two
+        // checksum bytes; a bad checksum drops the packet.
+        if data[i] != b'$' {
+            i += 1;
+            continue;
+        }
+        let mut j = i + 1;
+        while j < data.len() && data[j] != b'#' {
+            j += 1;
+        }
+        if j + 2 >= data.len() {
+            break;
+        }
+        let payload = &data[i + 1..j];
+        let expected =
+            hex_nibble(data[j + 1]).unwrap_or(0) << 4 | hex_nibble(data[j + 2]).unwrap_or(0);
+        i = j + 3;
+        if expected != checksum(payload) {
+            continue;
+        }
+        let request = String::from_utf8_lossy(payload).into_owned();
+        match session.handle(&request) {
+            Outcome::Reply(_) => {}
+            Outcome::Resume { .. } => {
+                let _ = session.machine.step();
+            }
+            Outcome::Quit => break,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::{Read, Write};
@@ -868,6 +916,48 @@ mod tests {
         assert_eq!(gdb_signal(HaltCause::Breakpoint), 5);
         assert_eq!(gdb_signal(HaltCause::BusFault { address: 0 }), 11);
         assert_eq!(gdb_signal(HaltCause::UndefinedInstruction), 4);
+    }
+
+    /// The fuzz entry never panics: garbage bytes, truncated frames, bad
+    /// checksums, and a well-formed mixed session all run to completion.
+    #[test]
+    fn fuzz_stream_never_panics() {
+        use super::fuzz_stream;
+        fuzz_stream(b"");
+        fuzz_stream(b"\xff\x00\x80$$$$$$$$");
+        fuzz_stream(b"$g#");
+        fuzz_stream(b"$g#67$");
+        // Regression: a bare `$Z0` crashed `handle_breakpoint` on `&req[3..]`
+        // (found by `fuzz_rsp` 5-minute soak). Short `z0` and truncated
+        // breakpoint forms reply instead of panicking.
+        fuzz_stream(b"$Z0#8a");
+        fuzz_stream(b"$z0#aa");
+        fuzz_stream(b"$Z0,100#47");
+        fuzz_stream(b"$m0,0#00$M0,0:#00$qX#00$?#00$c#00$s#00$D#00$k#00");
+        // A well-formed session: g, m, M, Z/z breakpoints, step, query.
+        let mut session = Vec::new();
+        for payload in [
+            "g",
+            "m100,4",
+            "M100,4:deadbeef",
+            "Z0,100,2",
+            "z0,100,2",
+            "p0",
+            "P0=12345678",
+            "qSupported",
+            "?",
+            "s",
+            "c",
+            "Hc0",
+            "D",
+        ] {
+            session.push(b'$');
+            session.extend_from_slice(payload.as_bytes());
+            session.push(b'#');
+            let sum: u8 = payload.bytes().fold(0u8, |a, b| a.wrapping_add(b));
+            session.extend_from_slice(format!("{sum:02x}").as_bytes());
+        }
+        fuzz_stream(&session);
     }
 
     /// A scripted GDB session over a loopback TCP socket: register and memory

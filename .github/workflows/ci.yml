@@ -257,8 +257,8 @@ jobs:
         # tokens are in RELEASING.md).
         run: cargo publish --dry-run -p vioarm-core
 
-  jit-fuzz:
-    name: JIT differential fuzz (ubuntu-latest, stable)
+  fuzz:
+    name: Fuzz harnesses (ubuntu-latest, stable)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -275,19 +275,27 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             fuzz/target
-          key: jit-fuzz-cargo-${{ hashFiles('fuzz/Cargo.lock') }}
+          key: fuzz-cargo-${{ hashFiles('fuzz/Cargo.lock') }}
 
-      # P3-2: the seed corpus must pass byte-for-byte through the raw
-      # differential entry, then a short bounded deterministic run.
-      # Nightly extends this with `--trials 20000` (or a libFuzzer loop
-      # over the same entry — see fuzz/src/bin/fuzz_jit.rs).
-      - name: Build fuzz_jit
+      # M14-M1: every stdin harness builds; each corpus must run clean
+      # (any nonzero exit is a finding). The JIT differential entry
+      # additionally runs a short bounded deterministic batch.
+      # Nightly extends this with `python3 soak.py --seconds 300`
+      # (5 clean minutes per target) or a libFuzzer loop over the same
+      # entries — see fuzz/soak.py and fuzz/src/bin/fuzz_jit.rs.
+      - name: Build all fuzz targets
         working-directory: fuzz
-        run: cargo build --release --bin fuzz_jit
+        run: cargo build --release --bins
 
       - name: Corpus seeds
         working-directory: fuzz
-        run: ./target/release/fuzz_jit corpus/fuzz_jit/trial_*.bin
+        run: |
+          for t in fuzz_elf fuzz_hex fuzz_decode fuzz_rsp fuzz_svd; do
+            for f in corpus/$t/*; do
+              ./target/release/$t < "$f" || exit 1
+            done
+          done
+          ./target/release/fuzz_jit corpus/fuzz_jit/trial_*.bin
 
       - name: Bounded trials
         working-directory: fuzz

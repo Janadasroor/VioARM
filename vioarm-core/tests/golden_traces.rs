@@ -7,8 +7,11 @@ use vioarm_core::mem::Bus;
 
 #[test]
 fn golden_traces_per_board_boot() {
-    // For each board, boot to NOP;BKPT at RAM and snapshot regs
-    for (name, ctor) in board::all_boards().iter().take(5) {
+    // Every board boots to NOP;BKPT at RAM and snapshots regs; each boot
+    // runs twice and must be byte-identical (M14-M3: was `.take(5)`).
+    let boards = board::all_boards();
+    assert!(!boards.is_empty(), "board registry must not be empty");
+    for (name, ctor) in boards.iter() {
         let mut m = Machine::new(ctor());
         let code = [0x00, 0xBF, 0x00, 0xBE]; // nop; bkpt
         m.load_image(&load_flat(0x20000000, &code));

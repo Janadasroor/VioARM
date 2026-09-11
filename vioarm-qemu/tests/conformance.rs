@@ -3777,29 +3777,31 @@ fn ns_irq_handler_bytes() -> Vec<u8> {
     code_bytes(&a)
 }
 
-/// A Secure-thread external interrupt whose ARMSSE-default `ITNS` targets the
-/// Non-secure state is a Secure-to-Non-secure v8-M exception entry, diffed
-/// against the M33: both simulators must stack the callee-saves block
-/// (integrity signature + `r4-r11`) on the Secure stack and run the handler in
-/// Non-secure state with `r0-r12` cleared; the handler clobbers every register
-/// and returns through `EXC_RETURN`, and the diff after the return is the
-/// direct check that the whole `DCRS` block and the basic frame are restored.
+/// A Secure-thread external interrupt whose `ITNS`-pinned targeting selects
+/// the Non-secure state is a Secure-to-Non-secure v8-M exception entry: both
+/// simulators must stack the callee-saves block (integrity signature +
+/// `r4-r11`) on the Secure stack and run the handler in Non-secure state
+/// with `r0-r12` cleared; the handler clobbers every register and returns
+/// through `EXC_RETURN`, and the diff after the return is the direct check
+/// that the whole `DCRS` block and the basic frame are restored.
 ///
 /// The Non-secure vector table and handler live in the shared system RAM at
 /// `0x8000_0000` (the only Non-secure-executable memory on the AN505 oracle),
 /// and the Non-secure `VTOR` is pointed there by a `BLXNS` round-trip before
 /// the interrupt is software-pended.
 ///
-/// This scenario cannot be diffed against current `qemu-system-arm`
-/// (10.2.x, `mps2-an505`): there the board delivers external interrupts
-/// Secure-targeted regardless of `NVIC_ITNS` programming — the entry builds a
-/// basic frame (`EXC_RETURN` `0xFFFFFFF9`) and vectors through `VTOR_S`, so
-/// the Secure-to-Non-secure entry this test exercises never happens on the
-/// oracle side. The full round trip is therefore locked VioARM-only below,
-/// asserting every register the cross-state return must restore: caller-saved
-/// from the basic frame, callee-saved `r4-r11` from the integrity block.
-#[test]
-fn m33_baseline_secure_irq_returns_nonsecure() {
+/// Whether the oracle delivers it is probed per-run (see the probe test):
+/// QEMU 10.2.x (`mps2-an505`) was observed delivering external interrupts
+/// Secure-targeted regardless of `NVIC_ITNS` programming, in which case the
+/// Secure-to-Non-secure entry never happens oracle-side and the round trip
+/// stays locked VioARM-only.
+/// Build the Secure-to-Non-secure `IRQ0` scenario shared by
+/// [`m33_baseline_secure_irq_returns_nonsecure`] and the oracle-delivery
+/// probe: SAU all-Non-secure, an NS vector table + handler in shared RAM,
+/// `MSP_NS` set, `VTOR_S` re-homed, primed registers, `NVIC_ITNS0`-pinned
+/// Non-secure targeting, and a software-pended `IRQ0`. Returns the image
+/// and the `halt` stop address.
+fn secure_irq_image() -> (Image, u32) {
     let mut a = Asm::new();
     sync_flags(&mut a);
 
@@ -3874,6 +3876,16 @@ fn m33_baseline_secure_irq_returns_nonsecure() {
 
     let img: Image = a.finish_at(V8M_NS_SP, 0x1000_0000).expect("assemble");
     let stop = img.addr("halt").expect("halt label");
+    (img, stop)
+}
+
+/// The full Secure-to-Non-secure round trip, locked register-for-register
+/// VioARM-only (see the module doc above for the oracle situation): the
+/// caller-saved registers from the basic frame and `r4-r11` from the
+/// integrity block.
+#[test]
+fn m33_baseline_secure_irq_returns_nonsecure() {
+    let (img, stop) = secure_irq_image();
     let (vio, reached) = vio_run_v8m(&img.bytes, stop);
     assert!(
         reached,
@@ -4450,4 +4462,299 @@ fn m33_mainline_sp_fp() {
     a.label("halt");
     a.b("halt");
     conformance_v8m_mainline("m33_mainline_sp_fp", &mut a, "halt", &mt);
+}
+
+// ---------------------------------------------------------------------------
+// C3 differential expansion (M14-M2): load/store-multiple writeback edges,
+// saturating QADD/QSUB corners, the VFP denormal/rounding matrix, the
+// IT-block taken-branch form on M33, exclusive-access contention loops,
+// LDRD/STRD indexed writeback, decrement-before multiples, and the
+// probe-gated Secure-IRQ differential. Each program grows the suite by one
+// `#[test]`; all must stay green on both pinned oracles.
+// ---------------------------------------------------------------------------
+
+/// Load/store-multiple writeback edges: an increment-after round trip plus
+/// the base-register-in-list probe (the loaded value must win) on the
+/// 16-bit forms.
+#[test]
+fn ldm_stm_writeback_overlap() {
+    let Some(mt) = qemu() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+    a.mov_imm32(4, 0x2000_1000);
+    a.mov_imm32(0, 0x1111_1111);
+    a.mov_imm32(1, 0x2222_2222);
+    a.mov_imm32(2, 0x3333_3333);
+    a.mov_imm32(3, 0x4444_4444);
+    // IA round trip with writeback: r4 advances 16, then reloads.
+    a.stmia(4, 0b1111); // [r4] = r0..r3, r4 += 16
+    a.mov_imm32(5, 0x2000_1000);
+    a.ldmia(5, 0b0110_0000); // r5,r6 loaded; r5 final = loaded word
+    a.mov_imm32(6, 0x2000_1000);
+    a.ldmia(6, 0b0000_1111); // r0..r3 restored, r6 += 16
+    a.label("halt");
+    a.b("halt");
+    conformance("ldm_stm_writeback_overlap", &mut a, "halt", &mt);
+}
+
+/// Decrement-before multiples: a `STMDB` store paired with an `LDMIA` load
+/// round-trips both a general base and the stack pointer exactly (a DB
+/// store followed by a DB load would address different windows; the IA
+/// load is the correct counterpart, and vice versa).
+#[test]
+fn ldm_stm_decrement_before() {
+    let Some(mt) = qemu() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+    a.mov_imm32(4, 0x2000_1000);
+    a.mov_imm32(0, 0x1111_1111);
+    a.mov_imm32(1, 0x2222_2222);
+    a.mov_imm32(2, 0x3333_3333);
+    a.mov_imm32(3, 0x4444_4444);
+    // STMDB r4!, {r0-r3} stores below the base (r4 -= 16); LDMIA r4!
+    // loads the same window back and restores the base.
+    a.stm_wide(4, true, true, 0x000F);
+    a.ldmia(4, 0x0F);
+    // SP-based pair: SP dips 16 and returns exactly.
+    a.mov_reg(7, 13); // stash SP
+    a.stm_wide(13, true, true, 0x000F); // STMDB sp!, {r0-r3}
+    a.movs_imm8(0, 0);
+    a.movs_imm8(1, 0);
+    a.movs_imm8(2, 0);
+    a.movs_imm8(3, 0);
+    a.ldm_wide(13, true, false, 0x000F); // LDMIA sp!, {r0-r3}
+    a.subs_reg(6, 13, 7); // r6 = sp - stashed == 0
+    a.label("halt");
+    a.b("halt");
+    conformance("ldm_stm_decrement_before", &mut a, "halt", &mt);
+}
+
+/// Saturating `QADD`/`QSUB` corners: exact extremes saturate with `Q` set,
+/// while an exact non-saturating follow-up leaves the sticky `Q` latched.
+/// The snapshot compares `Q` via xPSR[27] on every instruction.
+#[test]
+fn qadd_qsub_saturation_corners() {
+    let Some(mt) = qemu_m4() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+    a.mov_imm32(0, 0x7FFF_FFFF);
+    a.mov_imm32(1, 0x0000_0001);
+    a.qadd(2, 0, 1); // max + 1 -> 0x7FFFFFFF, Q
+    a.mov_imm32(3, 0x8000_0000);
+    a.mov_imm32(4, 0xFFFF_FFFF); // -1
+    a.qadd(5, 3, 4); // min + -1 -> 0x80000000, Q
+    a.qsub(6, 3, 1); // min - 1 -> 0x80000000, Q
+    a.qsub(7, 0, 4); // max - -1 -> 0x7FFFFFFF, Q
+    a.qdadd(8, 0, 0); // max + 2*max -> 0x7FFFFFFF, Q
+    a.mov_imm32(9, 0x4000_0000);
+    a.qdadd(10, 9, 9); // 2*0x40000000 exact, +0x40000000 saturates
+    a.qdadd(11, 4, 4); // -1 + 2*-1 = -3 exact: no new saturation, Q stays
+    a.qdsub(12, 1, 9); // 1 - 2*0x40000000 -> 0x7FFFFFFF, Q
+    a.label("halt");
+    a.b("halt");
+    conformance("qadd_qsub_saturation_corners", &mut a, "halt", &mt);
+}
+
+/// VFP denormal/rounding matrix: denormal operand patterns through `VADD`/
+/// `VMUL` under each `RMode`, plus flush-to-zero, with the FPSCR (flags +
+/// mode echo) captured to GPRs by `VMRS` after every shape.
+#[test]
+fn vfp_denormal_rounding() {
+    let Some(mt) = qemu_m4() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+    a.enable_fpu();
+    // Operand bit patterns (r0/r1 are clobbered by enable_fpu).
+    a.mov_imm32(2, 0x0000_0001); // smallest denormal
+    a.mov_imm32(3, 0x007F_FFFF); // largest denormal
+    a.mov_imm32(4, 0x0080_0000); // smallest normal
+    a.mov_imm32(5, 0x3F80_0000); // 1.0
+    a.mov_imm32(6, 0x3DCC_CCCD); // ~0.1
+    a.vmov_s_gpr(0, 2);
+    a.vmov_s_gpr(1, 3);
+    a.vmov_s_gpr(2, 4);
+    a.vmov_s_gpr(3, 5);
+    a.vmov_s_gpr(4, 6);
+    // Default RMode (to nearest): denormal arithmetic + underflow to zero.
+    a.vadd_f32(5, 0, 1); // tiny + tiny
+    a.vmul_f32(6, 1, 3); // largest-denormal * 1.0
+    a.vmul_f32(7, 0, 0); // smallest-denormal squared
+    a.vmrs(8, 1); // FPSCR flags (IDC/IXC) + mode echo
+                  // RMode=1 (round down): 0.1 + 0.1.
+    a.mov_imm32(9, 0x0020_0000);
+    a.vmsr(9);
+    a.vadd_f32(10, 4, 4);
+    a.vmrs(11, 1);
+    // RMode=2 (round up).
+    a.mov_imm32(9, 0x0040_0000);
+    a.vmsr(9);
+    a.vadd_f32(12, 4, 4);
+    a.vmrs(2, 1);
+    // RMode=3 (toward zero).
+    a.mov_imm32(9, 0x0060_0000);
+    a.vmsr(9);
+    a.vmul_f32(13, 4, 4);
+    a.vmrs(3, 1);
+    // FZ=1 (flush-to-zero, RMode back to nearest): denormals flush.
+    a.mov_imm32(9, 0x0100_0000);
+    a.vmsr(9);
+    a.vadd_f32(14, 0, 1);
+    a.vmul_f32(15, 1, 3);
+    a.vmrs(4, 1);
+    a.label("halt");
+    a.b("halt");
+    conformance("vfp_denormal_rounding", &mut a, "halt", &mt);
+}
+
+/// The IT-block taken-branch form on M33 (`it ne; bne` with the condition
+/// true): the taken branch clears `ITSTATE`. Probed 2026-09-11: the AN505
+/// oracle HardFault-locks on this exactly like the M3 model (QEMU never
+/// reaches halt), so the taken-branch clear is locked VioARM-only: the
+/// branch lands, the skipped slot never writes, and the else slot stays
+/// suppressed.
+#[test]
+fn m33_it_taken_branch() {
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+    a.movs_imm8(0, 1); // Z=0 -> NE true
+    a.it(1, 0b1000); // [T], single, cond NE
+    a.bc(1, "taken"); // bne taken: clears ITSTATE, lands
+    a.movs_imm8(1, 0xEE); // skipped
+    a.label("taken");
+    a.movs_imm8(2, 0x22); // executed
+                          // A two-slot T,E shape with a taken branch in the T slot.
+    a.it(1, 0b0100);
+    a.bc(1, "taken2"); // taken
+    a.movs_imm8(3, 0xEE); // else slot: suppressed after the take
+    a.label("taken2");
+    a.movs_imm8(4, 0x44);
+    a.b("halt");
+    a.label("halt");
+    a.b("halt");
+    let img: Image = a.finish_at(SP, 0x1000_0000).expect("assemble");
+    let stop = img.addr("halt").expect("halt label");
+    let (vio, reached) = vio_run_v8m(&img.bytes, stop);
+    assert!(
+        reached,
+        "vioarm never reached halt @ {stop:#x} (last {})",
+        snapshot_like(&vio)
+    );
+    let s = vio.last().expect("trace states");
+    assert_eq!(s.r[15] & !1, stop);
+    assert_eq!(s.r[1], 0, "skipped slot never wrote");
+    assert_eq!(s.r[2], 0x22, "taken target executed");
+    assert_eq!(s.r[3], 0, "else slot suppressed");
+    assert_eq!(s.r[4], 0x44, "post-block executed");
+}
+
+/// Exclusive-access contention: a plain store to the tagged address between
+/// `LDREX` and `STREX` is the single-core contention shape. Both models
+/// must agree whether the monitor survives it, then a bounded retry loop
+/// covers the contention-loop form and a clean pair proves success.
+#[test]
+fn exclusive_contention_retry() {
+    let Some(mt) = qemu() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+    a.mov_imm32(4, 0x2000_1000);
+    a.mov_imm32(1, 0xAAAA_AAAA);
+    a.mov_imm32(2, 0xBBBB_BBBB);
+    a.str_imm(1, 4, 0); // seed [r4]
+                        // Contention probe: interfere, then observe the STREX status.
+    a.ldrex(3, 4, 0);
+    a.str_imm(1, 4, 0); // interfering plain store to the tagged address
+    a.strex(5, 2, 4, 0); // r5 records survival; [r4] as agreed
+                         // Bounded retry loop over a fresh tag (at most 3 tries).
+    a.movs_imm8(6, 3);
+    a.label("retry");
+    a.ldrex(3, 4, 0);
+    a.strex(7, 2, 4, 0);
+    a.cbz(7, "done");
+    a.subs_imm8(6, 1);
+    a.bc(1, "retry"); // bne while budget remains
+    a.label("done");
+    // Clean pair succeeds unconditionally.
+    a.ldrex(3, 4, 0);
+    a.strex(7, 2, 4, 0); // r7 = 0
+    a.ldr_imm(3, 4, 0); // verify stored value
+    a.label("halt");
+    a.b("halt");
+    conformance("exclusive_contention_retry", &mut a, "halt", &mt);
+}
+
+/// `LDRD`/`STRD` indexed writeback: pre/post-indexed forms with positive
+/// and negative offsets, verifying both the loaded pairs and the updated
+/// base (no base overlap: `Rt`/`Rt2` stay clear of `Rn`).
+#[test]
+fn ldrd_strd_indexed_writeback() {
+    let Some(mt) = qemu() else { return };
+    let mut a = Asm::new();
+    sync_flags(&mut a);
+    a.mov_imm32(4, 0x2000_1000);
+    a.mov_imm32(0, 0x1111_1111);
+    a.mov_imm32(1, 0x2222_2222);
+    a.mov_imm32(2, 0x3333_3333);
+    a.mov_imm32(3, 0x4444_4444);
+    // Seed four words, then exercise every indexed form over them.
+    a.str_imm(0, 4, 0);
+    a.str_imm(1, 4, 4);
+    a.str_imm(2, 4, 8);
+    a.str_imm(3, 4, 12);
+    a.ldrd_pre(5, 6, 4, 8); // r4 += 8; r5,r6 = words 2,3
+    a.ldrd_post(7, 8, 4, 8); // r7,r8 = words 2,3; r4 += 8
+    a.ldrd_pre_neg(9, 10, 4, 8); // r4 -= 8; r9,r10 = words 2,3
+    a.strd_post(5, 6, 4, 4); // [r4] = r5,r6; r4 += 4
+    a.strd_pre_neg(7, 8, 4, 4); // r4 -= 4; [r4] = r7,r8
+    a.label("halt");
+    a.b("halt");
+    conformance("ldrd_strd_indexed_writeback", &mut a, "halt", &mt);
+}
+
+/// Probe-gated Secure-IRQ differential: the same image as
+/// [`m33_baseline_secure_irq_returns_nonsecure`], diffed against the M33
+/// oracle only when the oracle actually delivers the Non-secure-targeted
+/// `IRQ0` (detected by the NS handler's PCs in the oracle trace).
+/// Otherwise the VioARM-only lock holds (halt + restored SP/LR + untouched
+/// primed registers), and the test stays green instead of forcing a
+/// divergence through a known oracle limitation.
+#[test]
+fn m33_secure_irq_probe_gated() {
+    let (img, stop) = secure_irq_image();
+    let (vio, reached) = vio_run_v8m(&img.bytes, stop);
+    assert!(
+        reached,
+        "vioarm never reached halt @ {stop:#x} (last {})",
+        snapshot_like(&vio)
+    );
+    let vio_only = |s: &CpuState| {
+        assert_eq!(s.r[15] & !1, stop);
+        assert_eq!(s.r[13], V8M_NS_SP, "thread SP restored");
+        assert_eq!(s.r[14], 0xFEFF_FFFF, "thread LR restored");
+        assert_eq!(s.r[2], 0x3333_3333, "r2 untouched");
+        assert_eq!(s.r[3], 0x4444_4444, "r3 untouched");
+        assert_eq!(s.r[12], 0xCCCC_CCCC, "r12 untouched");
+    };
+    let Some(mt) = qemu_m33() else {
+        vio_only(vio.last().expect("trace states"));
+        return;
+    };
+    let qemu = qemu_run_retry(&mt, &img.bytes, stop);
+    // The NS handler lives at 0x8000_0140 in shared RAM: any oracle PC
+    // there proves Non-secure-targeted delivery happened.
+    let delivered = qemu
+        .iter()
+        .any(|s| (0x8000_0140..0x8000_0200).contains(&(s.r[15] & !1)));
+    let halted = !qemu.is_empty() && qemu.last().expect("empty").r[15] & !1 == stop;
+    if delivered && halted {
+        if let Err(first) = compare_traces("m33_secure_irq_probe_gated", &vio, &qemu) {
+            let (vio2, reached2) = vio_run_v8m(&img.bytes, stop);
+            assert!(reached2, "retry never reached halt");
+            let qemu2 = qemu_run_retry(&mt, &img.bytes, stop);
+            if let Err(second) = compare_traces("m33_secure_irq_probe_gated", &vio2, &qemu2) {
+                panic!("traces diverge (retried): first: {first}\nsecond: {second}");
+            }
+        }
+    } else {
+        vio_only(vio.last().expect("trace states"));
+    }
 }

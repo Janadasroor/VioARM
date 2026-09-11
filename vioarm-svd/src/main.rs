@@ -4,8 +4,7 @@
 //! Defaults point at the workspace's STM32F103 pack; pass two paths to emit a
 //! different device to a different output file.
 
-mod emit;
-mod svd;
+use vioarm_svd::{emit, svd};
 
 use std::env;
 use std::fs;

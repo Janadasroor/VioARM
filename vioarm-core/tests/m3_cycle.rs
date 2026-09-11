@@ -78,16 +78,42 @@ fn ldr_2c_and_load_use_stall() {
 
 #[test]
 fn branch_taken_3c_and_bl_4c() {
+    // Taken `B`: 3c per TRM Table 11-2 (pipeline refill); the skipped
+    // slot never retires.
     let mut m = mem();
-    // b +4 (skip movs), movs r0,#1 (not taken), bkpt
-    // Encoding for b +4 (imm11=1) => 0xE001 (branch +2 insn *2)
-    write_half(&mut m, CODE, 0xE001); // b CODE+6
-    write_half(&mut m, CODE + 2, 0x2001); // movs r0,#1 skipped
-    write_half(&mut m, CODE + 4, 0x2002); // movs r0,#2 at CODE+4? Actually target is CODE+6
+    write_half(&mut m, CODE, 0xE000); // b CODE+4 (offset 0)
+    write_half(&mut m, CODE + 2, 0x2001); // movs r0,#1 (skipped)
+    write_half(&mut m, CODE + 4, 0x2002); // movs r0,#2
     write_half(&mut m, CODE + 6, 0xBE00);
-    // Fix: b offset should land at CODE+6. From CODE pc+4+off => off=2 => enc 1? Let's just use unconditional via loop test below
-    // Simpler: test BL 4c
-    // Instead test taken branch via loop below
+    let mut core = Core::armv7m(m);
+    core.regs.pc = CODE;
+    core.xpsr.set(0x01000000);
+    core.step().unwrap(); // taken branch: 3c
+    assert_eq!(core.cyccnt, 3);
+    assert_eq!(core.regs.pc, CODE + 4);
+    core.step().unwrap(); // movs: 1c
+    assert_eq!(core.cyccnt, 4);
+    assert_eq!(core.regs.r[0], 2);
+
+    // `BL`: 4c; the link points past the call and the return lands there.
+    let mut m = mem();
+    write_half(&mut m, CODE, 0xF000); // bl CODE+8 (h0)
+    write_half(&mut m, CODE + 2, 0xF802); // (h1: J1=J2=1, imm11=2)
+    write_half(&mut m, CODE + 4, 0xBE00); // return landing (not executed)
+    write_half(&mut m, CODE + 8, 0x2007); // movs r0,#7
+    write_half(&mut m, CODE + 10, 0x4770); // bx lr
+    let mut core = Core::armv7m(m);
+    core.regs.pc = CODE;
+    core.xpsr.set(0x01000000);
+    core.step().unwrap(); // bl: 4c
+    assert_eq!(core.cyccnt, 4);
+    assert_eq!(core.regs.pc, CODE + 8);
+    assert_eq!(core.regs.lr, CODE + 5);
+    core.step().unwrap(); // movs: 1c
+    assert_eq!(core.cyccnt, 5);
+    assert_eq!(core.regs.r[0], 7);
+    core.step().unwrap(); // bx lr: taken branch back to CODE+4
+    assert_eq!(core.regs.pc, CODE + 4);
 }
 
 #[test]

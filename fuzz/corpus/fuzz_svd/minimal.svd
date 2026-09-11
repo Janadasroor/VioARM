@@ -1,0 +1,1 @@
+<?xml version="1.0"?><device><name>TEST</name><peripherals><peripheral><name>GPIOA</name><baseAddress>0x40010800</baseAddress><registers><register><name>ODR</name><addressOffset>0xC</addressOffset></register></registers></peripheral></peripherals></device>
