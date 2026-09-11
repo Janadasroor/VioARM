@@ -60,11 +60,12 @@ laps → `A`). Best-of runs, sub-ms repeatability.
 |---|---|---|---|
 | Branch loop, 1B ops (2 ops/lap) | 1.52 s (1.5 ns/op) | 4.3 s (4.3 ns/op) | ~595 s |
 | Branch loop, 2B ops | 2.92 s | 8.4 s | — |
-| ALU mix, 500M ops (31 ops/lap) | 0.32 s (0.6 ns/op) | 1.7 s (3.4 ns/op) | ~295 s |
-| ALU mix, 1B ops | 0.52 s | 3.3 s | — |
+| ALU mix, 500M ops (31 ops/lap) | 0.32 s (0.6 ns/op) | 1.1 s (2.2 ns/op) | ~295 s |
+| ALU mix, 1B ops | 0.52 s | 2.2 s | — |
 
-QEMU is ~3× the JIT on branch-dense code, ~5–6× on straight-line
-ALU; the JIT is ~140–180× the stepper on both. No parity-claim change
+QEMU is ~3× the JIT on branch-dense code, ~3.5× on straight-line
+ALU (was ~5–6× before lazy NZCV); the JIT is ~140–270× the stepper on
+both. No parity-claim change
 (N3): QEMU is a speed reference only. Two findings filed from the
 comparison: `WRITEC` takes `r1` as a *pointer* (spec; VioARM took the
 value — fixed in `semihost.rs`), and a TLB index-thrash cliff (flash
