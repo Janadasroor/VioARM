@@ -11,6 +11,13 @@
 //! SPI model is master-oriented (a slave never drains), so pair wiring
 //! needs slave TX capture first.
 //!
+//! Analog lane (N3 seam): millivolt `u32` values move between `apin`
+//! endpoints in machine-index order; each receiver holds the last
+//! delivery, so a two-member net exchanges values exactly while
+//! concurrent drivers on bigger nets resolve highest-index-wins
+//! (documented simplification — no analog physics by design, and the
+//! future SPICE-class engine plugs into this exact seam).
+//!
 //! Lockstep is instruction-step granularity, not cycle-exact across
 //! machines: each machine keeps its own `cyccnt`, and wires move bytes
 //! between steps. Byte delivery is immediate within the pumping round.
@@ -69,6 +76,16 @@ pub struct SpiPair {
     pub peripheral: Endpoint,
 }
 
+/// A shared analog net: every member's drained millivolt words reach every
+/// other member in machine-index order, each delivery overwriting the last
+/// (a net holds one voltage; two members exchange exactly, more resolve
+/// highest-index-wins — documented simplification).
+#[derive(Clone, Debug)]
+pub struct AnalogBus {
+    /// Net members.
+    pub members: Vec<Endpoint>,
+}
+
 /// `Fabric::step` outcomes, one per machine in index order: `Ok` for a
 /// retired step, `Err` with the halt cause (a halted machine keeps
 /// reporting its cause; stepping it again is harmless).
@@ -91,6 +108,7 @@ pub struct Fabric<M: PeripheralBus> {
     can_buses: Vec<CanBus>,
     radio_buses: Vec<RadioBus>,
     spi_pairs: Vec<SpiPair>,
+    analog_buses: Vec<AnalogBus>,
 }
 
 impl<M: PeripheralBus> Fabric<M> {
@@ -103,6 +121,7 @@ impl<M: PeripheralBus> Fabric<M> {
             can_buses: Vec::new(),
             radio_buses: Vec::new(),
             spi_pairs: Vec::new(),
+            analog_buses: Vec::new(),
         }
     }
     /// Add a machine, returning its index.
@@ -153,6 +172,20 @@ impl<M: PeripheralBus> Fabric<M> {
     /// SUBGHZ/BLE packet endpoints; pair and star both work).
     pub fn link_radio(&mut self, members: &[(usize, &str)]) {
         self.radio_buses.push(RadioBus {
+            members: members
+                .iter()
+                .map(|(machine, device)| Endpoint {
+                    machine: *machine,
+                    device: (*device).to_owned(),
+                })
+                .collect(),
+        });
+    }
+
+    /// Join an analog net: millivolt words drained from any member's
+    /// `apin` reach every other member's `apin` each round.
+    pub fn link_analog(&mut self, members: &[(usize, &str)]) {
+        self.analog_buses.push(AnalogBus {
             members: members
                 .iter()
                 .map(|(machine, device)| Endpoint {
@@ -239,6 +272,7 @@ impl<M: PeripheralBus> Fabric<M> {
         self.pump_can();
         self.pump_radio();
         self.pump_spi();
+        self.pump_analog();
         outcomes
     }
 
@@ -335,6 +369,36 @@ impl<M: PeripheralBus> Fabric<M> {
                         continue;
                     }
                     let _ = self.machines[ep.machine].drive_device(&ep.device, bytes);
+                }
+            }
+        }
+    }
+
+    /// Move millivolt words across every analog net: drained bytes reach
+    /// every other member in index order, each delivery overwriting the last
+    /// (the endpoint reassembles whole `u32`s and holds partial tails).
+    fn pump_analog(&mut self) {
+        for i in 0..self.analog_buses.len() {
+            let bus = self.analog_buses[i].clone();
+            let mut aired: Vec<(usize, Vec<u8>)> = Vec::new();
+            for ep in &bus.members {
+                if ep.machine >= self.machines.len() {
+                    continue;
+                }
+                let bytes = self.machines[ep.machine].drain_device(&ep.device);
+                if !bytes.is_empty() {
+                    aired.push((ep.machine, bytes));
+                }
+            }
+            for (src, bytes) in &aired {
+                for ep in &bus.members {
+                    if ep.machine == *src || ep.machine >= self.machines.len() {
+                        continue;
+                    }
+                    // Whole words only; a partial tail stays staged at the
+                    // source (the endpoint reassembles across rounds).
+                    let whole = bytes.len() & !3;
+                    let _ = self.machines[ep.machine].drive_device(&ep.device, &bytes[..whole]);
                 }
             }
         }

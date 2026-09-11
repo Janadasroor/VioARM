@@ -12,6 +12,7 @@
 //! real peripheral map; a third, [`stm32f107`], models a connectivity-line
 //! STM32F107 on the shared `STM32F107xx.svd` tables.
 
+use crate::device::analog::Apin;
 use crate::device::dwt::Dwt;
 use crate::device::gpio::Gpio;
 use crate::device::stm32::adc::{Adc, AdcCommon, AdcCommonState};
@@ -70,9 +71,12 @@ pub const RAM_LEN: u32 = 0x0001_0000;
 pub const GPIO_BASE: u32 = 0x4000_0000;
 /// UART base.
 pub const UART_BASE: u32 = 0x4000_1000;
+/// Virtual analog pin window base (N3 lane endpoint, documented-virtual).
+pub const APIN_BASE: u32 = 0x4000_2000;
 
 /// A fully-attached virtual-board memory: flash + RAM backing, `GPIO`, `UART`,
-/// and `SysTick`, with the `NVIC` wired for whichever device lines assert.
+/// a virtual analog pin (`APIN`, the N3 lane endpoint), and `SysTick`, with
+/// the `NVIC` wired for whichever device lines assert.
 #[must_use]
 pub fn virtual_board() -> BoardMemory {
     let backing = FlatMemory::with_layout(&[FLASH, RAM], &[FLASH_LEN, RAM_LEN]);
@@ -81,6 +85,7 @@ pub fn virtual_board() -> BoardMemory {
     mem.set_clock(clock.clone());
     mem.attach(Box::new(Gpio::at(GPIO_BASE)));
     mem.attach(Box::new(UartTx::at(UART_BASE)));
+    mem.attach(Box::new(Apin::at(APIN_BASE)));
     mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
     mem.attach(Box::new(Dwt::new()));
     mem

@@ -1134,6 +1134,13 @@ Acceptance: two-engine ping-pong e2e (e.g., DAC-driven comparator
 flips an EXTI line through the analog side and back); determinism
 rerun byte-identical at the digital boundary.
 Effort: ~2 agent-weeks plus the external engine (e.g., ngspice).
+- Status 2026-09-11 (seam shipped, engine still gated): the
+  engine-agnostic half is done — `apin` millivolt endpoint
+  (`device/analog.rs`, on the virtual board), `Fabric::link_analog`
+  with last-delivery-wins pumping, two-machine ping-pong +
+  loopback + determinism e2e (`tests/analog_pair.rs`). No physics,
+  no external engine: that half still waits for a pin-level analog
+  scenario.
 
 ### WP-N4 Hardware-anchored validation (trigger: bench access + owner go)
 

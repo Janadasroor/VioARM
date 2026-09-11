@@ -13,6 +13,7 @@
 use crate::error::BusError;
 use crate::mem::bus::Region;
 
+pub mod analog;
 pub mod dwt;
 pub mod gpio;
 pub mod itm;
