@@ -215,19 +215,24 @@ here):
   C-ABI-only run RISE ≤1ms / FALL (50,51]ms: same count, same times
   to sampling resolution. Full golden-trace + EXTI-button scenarios
   ride with the P4 suite.
-- Fork bugs found (VioMATRIXC side, with repros — NOT VioARM bugs):
-  - B1 (memory corruption): d_cosim instances past ~136 ports crash
-    ngspice non-monotonically (`realloc(-2GB)`, segfaults) even when
-    our shim is never loaded (repro: `simulation="/nonexistent.so"`).
-    Bisected: 128 ok / 140+ fails; wrapped continuation lines do NOT
-    reliably help. Workaround: 64-pin vector.
-  - B2 (param case): `.model` param values are lowercased before
-    `Cosim_setup` sees them (`VioARM` → `vioarm` in `simulation=`).
-    Workaround: lowercase-only `simulation=` paths and `sim_args`
-    (board names already are; firmware paths must be).
-  - Build note: the shim output must NOT be named `libvioarm_cosim.so`
-    (the cdylib's name — the linker silently drops the dep); it is
-    `libvioarm_cosim_shim.so` (see `cosim/CMakeLists.txt`).
+- Fork bugs found (VioMATRIXC side — both ROOT-CAUSED and FIXED):
+  - B1 (memory corruption past ~136 d_cosim ports): TWO stacked bugs.
+    (1) `inpcompat.c`: `while ((toks[nt] = ...) != NULL && nt < 16)`
+    wrote `toks[16]` past the array before testing the bound — every
+    wide A-line smashed one stack slot (fixed: test first, drain rest).
+    (2) `mif/mif_inp2.c`: per-card token GC array `alltokens[512]`
+    overflowed past ~330 vector nodes — WRITE overflow proven by ASan
+    (`MIFget_token_gc` ← `MIFget_port` ← `MIF_INP2A`); fixed with a
+    growable array. Verified: 140/150/160/164/168/176-port instances
+    all graceful. The 64-pin shim vector stays (no need to grow it
+    until a scenario demands ports E..K).
+  - B2 (param case): `.model` string values (and even `.param`
+    quoted strings) arrive lowercased — this is STOCK deck-reader
+    behavior, not the fork (proven with transforms off; node folding
+    is load-bearing SPICE case-insensitivity, so a general fix means
+    teaching deck-read quote-awareness — upstream-sized, deferred).
+    Constraint stands: lowercase-only `simulation=`/`sim_args`
+    paths and board names (all ours already are).
 
 ## 4. Phase P3 — Analog bridges `vioarm_analog` (~1 agent-week)
 
