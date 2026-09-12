@@ -281,8 +281,11 @@ pub extern "C" fn vioarm_cosim_get_active_handle() -> *mut VioArmHandle {
     ACTIVE_HANDLE.load(Ordering::SeqCst)
 }
 
-/// Advance `handle` by `seconds` of SPICE virtual time, converted to core
-/// cycles at the live CPU clock. Returns [`VIOARM_STEP_OK`] when the whole
+/// Advance `handle` by `seconds` of SPICE virtual time, converted to
+/// true core cycles at the live CPU clock (`run_cycles`: fetch wait
+/// states included, so SPICE time and core time agree absolutely —
+/// driving by retired-instruction count instead would run ahead wherever
+/// flash wait states apply). Returns [`VIOARM_STEP_OK`] when the whole
 /// budget retired, [`VIOARM_STEP_HALTED`] on an early halt (detail in
 /// [`vioarm_cosim_last_error`]), or a negative error code.
 #[no_mangle]
@@ -297,7 +300,7 @@ pub extern "C" fn vioarm_cosim_step_duration(handle: *mut VioArmHandle, seconds:
             let hz = machine.cpu_hz();
             #[allow(clippy::cast_possible_truncation)]
             let cycles = (seconds * f64::from(hz)) as u64;
-            match machine.run(cycles) {
+            match machine.run_cycles(cycles) {
                 Err(HaltCause::CycleBudgetExhausted) => VIOARM_STEP_OK,
                 Err(cause) => {
                     set_error(format!("halted: {cause}"));

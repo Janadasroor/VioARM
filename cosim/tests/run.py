@@ -218,8 +218,11 @@ def t_gpio_toggle():
         return check("gpio_toggle", False, "ngspice exit %d %.200s" % (rc, err))
     times = [r[0] for a, r in zip(rows, rows[1:])
              if (a[1] > 2.5) != (r[1] > 2.5)]
+    # Cycle-true stepping (run_cycles): the F103 toggle firmware's
+    # half-period is ~100ms of SPICE time (was 50ms under the old
+    # instruction-count mapping, which ran 2x fast on flash).
     ok = (len(times) == 2 and times[0] < 0.001
-          and 0.04 < times[1] < 0.06)
+          and 0.09 < times[1] < 0.11)
     return check("gpio_toggle", ok,
                  "edges=%d times=%s" % (len(times), ["%.6f" % t for t in times]))
 
@@ -355,6 +358,14 @@ def build_shim():
             print(r.stdout[-2000:])
             print(r.stderr[-2000:])
             raise SystemExit("cmake configure failed")
+    # Rust cdylib first, loudly: the CMake custom command for it proved
+    # unreliable (silently skipped rebuilds), so drive cargo here.
+    r = subprocess.run(["cargo", "build", "--release", "-p", "vioarm-cosim"],
+                       cwd=REPO, capture_output=True, text=True, timeout=900)
+    if r.returncode != 0:
+        print(r.stdout[-2000:])
+        print(r.stderr[-2000:])
+        raise SystemExit("cargo cdylib build failed")
     r = subprocess.run(["cmake", "--build", BUILD, "--target",
                         "vioarm_cosim", "vioarm_cm"],
                        cwd=ROOT, capture_output=True, text=True, timeout=900)

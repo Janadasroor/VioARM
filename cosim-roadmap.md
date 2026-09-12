@@ -138,6 +138,11 @@ New crate `vioarm-cosim` (C ABI, `cdylib` + `staticlib` as the shim needs):
   boot-alias convention (STM32 firmware at the `0x0` flash alias —
   gated-`0x0800_0000` stores drop while locked); the shim must rebase,
   like `vioarm-qemu` does.
+  CORRECTED 2026-09-12: budgets are TRUE cycles via `Machine::run_cycles`
+  (`cyccnt`, wait states included), not retired-instruction counts — the
+  instruction-count mapping ran ~2x fast on flash (proven by a PWM period
+  landing at half its firmware value in SPICE time). Overshoot bounded
+  by one step, deterministic; devices already tick off `cyccnt`.
 - [x] P1-3: digital pins — `pin_get(handle, port, pin) -> {level, driving}`,
   `pin_set(handle, port, pin, level)` driving the GPIO model through the
   bus (MODER-gated: input pins never drive, matching the AVR shim's
@@ -215,6 +220,9 @@ here):
   C-ABI-only run RISE ≤1ms / FALL (50,51]ms: same count, same times
   to sampling resolution. Full golden-trace + EXTI-button scenarios
   ride with the P4 suite.
+  RE-BASELINED 2026-09-12 (cycle-true `run_cycles`): RISE 4µs /
+  FALL 100.004ms — the old instruction-count mapping ran 2x fast
+  on flash wait states; SPICE time and core time now agree absolutely.
 - Fork bugs found (VioMATRIXC side — both ROOT-CAUSED and FIXED):
   - B1 (memory corruption past ~136 d_cosim ports): TWO stacked bugs.
     (1) `inpcompat.c`: `while ((toks[nt] = ...) != NULL && nt < 16)`
@@ -277,20 +285,22 @@ scenario tests plus netlists:
 - [x] P4-1: GPIO toggle/square-wave event-order test.
   DONE (`cosim/tests/run.py::gpio_toggle`): F103 PC13, 2 edges at
   2us / 50.003ms. Tolerance: quantum phase + delay-loop cycle math.
+  RE-BASELINED 2026-09-12: 4us / 100.004ms (cycle-true stepping).
 - [x] P4-2: ADC capture (DC level + slow ramp) within quantization.
   DONE (`adc_dc`: 3.0V DC → 3.0000V, mV quantization;
   `adc_ramp`: 0→5V/100ms PWL tracks within 0.0211V worst-case —
-  lag + quantization bound).
+  lag + quantization bound; 0.0411V cycle-true, same bound).
 - [x] P4-3: DAC playback into an RC load vs analytic expectation.
   DONE (`dac_playback`): 25% PWM → rc 1.2405V / dac 1.2381V vs 1.25V
-  analytic (duty overhead + ripple + quantization; 0.06V bound).
+  analytic (duty overhead + ripple + quantization; 0.06V bound;
+  cycle-true: rc 1.2378V / dac 1.2335V).
 - [x] P4-4: UART TX observed on a SPICE probe node (event order only —
   baud timing is digital-side).
   DONE as `spice_button` (stronger than planned): PWL button →
   adc_bridge → d_in → firmware echo → dac_bridge: follow at 10.010ms
-  / release at 20.0045ms (<2ms lag bound). A UART-TX-baud variant is
-  unnecessary — P2 already proves digital event timing; this proves
-  the SPICE→MCU direction.
+  / release at 20.0045ms (<2ms lag bound; cycle-true: 10.0115ms /
+  20.0055ms). A UART-TX-baud variant is unnecessary — P2 already proves
+  digital event timing; this proves the SPICE→MCU direction.
 - [x] P4-5: determinism rerun — whole suite twice, byte-identical
   digital boundary.
   DONE (`--rerun 2`): all 5 tests reproduce edge times (6 decimals)

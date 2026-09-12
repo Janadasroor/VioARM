@@ -382,6 +382,36 @@ impl<M: PeripheralBus> Machine<M> {
         Err(HaltCause::CycleBudgetExhausted)
     }
 
+    /// Advance until `cyccnt` grows by `cycles` (or the machine halts).
+    /// Unlike [`Machine::run`], whose budget counts retired instructions,
+    /// this counts true core cycles (fetch wait states included) — the
+    /// unit SPICE seconds convert into. Overshoot is bounded by one
+    /// step's cost and deterministic; device ticks already follow
+    /// `cyccnt` (`tick_fast(delta)`), so device time stays exact. The
+    /// loop is bounded by the budget (every step retires, so this always
+    /// terminates) — a pathological zero-cost step would merely meet the
+    /// budget in steps, never hang.
+    ///
+    /// # Errors
+    ///
+    /// Returns the halt cause if the machine halts first, or
+    /// [`HaltCause::CycleBudgetExhausted`] once the cycle budget is met.
+    pub fn run_cycles(&mut self, cycles: u64) -> Result<(), HaltCause> {
+        let start = self.core.cyccnt;
+        for _ in 0..cycles.saturating_add(1) {
+            if self.core.cyccnt.wrapping_sub(start) >= cycles {
+                self.settle_fast();
+                return Err(HaltCause::CycleBudgetExhausted);
+            }
+            if let Err(cause) = self.step() {
+                self.settle_fast();
+                return Err(cause);
+            }
+        }
+        self.settle_fast();
+        Err(HaltCause::CycleBudgetExhausted)
+    }
+
     /// Flush outstanding fast-mode device debt without scanning (also what
     /// `set_fast_quantum` and end-of-`run` do). Accurate mode has no debt,
     /// so this is a no-op there.

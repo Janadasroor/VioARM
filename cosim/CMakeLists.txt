@@ -43,19 +43,17 @@ if(NOT EXISTS "${VioMATRIXC_BUILD_INCLUDE}/ngspice/config.h")
         "configure a VioMATRIXC build (release/ or build/) first.")
 endif()
 
-# The Rust cdylib: built here via cargo so one cmake invocation suffices.
+# The Rust cdylib is built by cargo directly (cosim/tests/run.py drives
+# `cargo build --release -p vioarm-cosim` loudly; a CMake custom command
+# for it proved unreliable). Fail here if it is missing.
 set(VIOARM_CDYLIB "${VIOARM_ROOT}/target/release/libvioarm_cosim.so")
-add_custom_command(
-    OUTPUT "${VIOARM_CDYLIB}"
-    COMMAND cargo build --release -p vioarm-cosim
-    WORKING_DIRECTORY "${VIOARM_ROOT}"
-    COMMENT "Building vioarm-cosim cdylib with cargo"
-    VERBATIM
-)
-add_custom_target(vioarm_cosim_cdylib DEPENDS "${VIOARM_CDYLIB}")
+if(NOT EXISTS "${VIOARM_CDYLIB}")
+    message(FATAL_ERROR "vioarm-cosim cdylib missing: run "
+        "`cargo build --release -p vioarm-cosim` in ${VIOARM_ROOT} first "
+        "(or run cosim/tests/run.py, which does).")
+endif()
 
 add_library(vioarm_cosim SHARED vioarm_cosim_shim.cpp)
-add_dependencies(vioarm_cosim vioarm_cosim_cdylib)
 target_include_directories(vioarm_cosim PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
     "${VioMATRIXC_ROOT}/src/include"
