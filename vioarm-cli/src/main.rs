@@ -1623,6 +1623,15 @@ enum Commands {
         /// while state stays exact).
         #[arg(long)]
         jit: bool,
+        /// Sample GPIO pins during the run (`c13`, `a0,a1`; repeatable or
+        /// comma-separated). Prints one plain `t=<s> <pin>=<0|1>` line per
+        /// sample, starting at t=0, for waveform checks without a debugger.
+        #[arg(long, value_delimiter = ',')]
+        pin_log: Vec<String>,
+        /// Retired instructions between `--pin-log` samples
+        /// (deterministic: reruns print identical lines).
+        #[arg(long, default_value_t = 1000)]
+        pin_sample: u64,
     },
     /// Record a golden trace (deterministic replay artifact)
     Record {
@@ -1820,12 +1829,97 @@ fn machine_for(board: Board, img: &LoadedImage) -> Machine<board::BoardMemory> {
     m
 }
 
-fn run_quiet(m: &mut Machine<board::BoardMemory>, budget: u64, jit: bool) {
-    let outcome = if jit {
-        let mut runner = vioarm_core::jit::TbRunner::new();
-        m.run_tb(&mut runner, budget)
-    } else {
-        m.run(budget)
+/// A `--pin-log` entry: GPIO port (0 = A) + pin + the original text.
+/// Ports run `a`..`k` (validated against the board at run time); pins
+/// `0`..`31` (GPIO flavors narrow further).
+fn parse_pin_spec(s: &str) -> Result<(u8, u8, String), String> {
+    let err = || format!("bad --pin-log entry '{s}': want PORTPIN like c13 (port a-k, pin 0-31)");
+    let s = s.trim();
+    if s.is_empty() {
+        return Err(err());
+    }
+    let letter = s.chars().next().ok_or_else(err)?;
+    if !letter.is_ascii_alphabetic() {
+        return Err(err());
+    }
+    let port = letter.to_ascii_lowercase() as u8 - b'a';
+    if port >= 16 {
+        return Err(err());
+    }
+    let pin: u8 = s.get(1..).ok_or_else(err)?.parse().map_err(|_| err())?;
+    if pin >= 32 {
+        return Err(err());
+    }
+    Ok((port, pin, s.to_owned()))
+}
+
+/// Print one `--pin-log` sample line: `t=<seconds> <pin>=<0|1> ...`.
+/// Cycle counts are exact chunk multiples, so reruns print identical
+/// lines; an early halt prints the lines so far plus the usual halt
+/// report below.
+fn sample_pins(
+    m: &mut Machine<board::BoardMemory>,
+    pins: &[(u8, u8, String)],
+    hz: f64,
+    cycles: u64,
+) {
+    // Precision loss below one cycle at astronomical budgets; the
+    // printed lines stay rerun-identical regardless.
+    #[allow(clippy::cast_precision_loss)]
+    let seconds = cycles as f64 / hz;
+    let mut line = format!("t={seconds:.6}");
+    for (port, pin, name) in pins {
+        let level = m
+            .gpio_pin(*port, *pin)
+            .map_or(0, |(_, level)| u8::from(level));
+        line.push_str(&format!(" {name}={level}"));
+    }
+    println!("{line}");
+}
+
+fn run_quiet(
+    m: &mut Machine<board::BoardMemory>,
+    budget: u64,
+    jit: bool,
+    pins: &[(u8, u8, String)],
+    sample: u64,
+) {
+    // Pin sampling: print the initial state, then one line per `sample`
+    // retired instructions.
+    let hz = f64::from(m.cpu_hz());
+    let mut remaining = budget;
+    let mut cycles = 0u64;
+    if !pins.is_empty() {
+        if sample == 0 {
+            eprintln!("{} --pin-sample must be at least 1", "error:".red().bold());
+            std::process::exit(2);
+        }
+        sample_pins(m, pins, hz, 0);
+    }
+    let mut runner = jit.then(vioarm_core::jit::TbRunner::new);
+    let outcome = loop {
+        if remaining == 0 {
+            break Err(HaltCause::CycleBudgetExhausted);
+        }
+        let chunk = if pins.is_empty() {
+            remaining
+        } else {
+            sample.min(remaining)
+        };
+        let step = match runner.as_mut() {
+            Some(runner) => m.run_tb(runner, chunk),
+            None => m.run(chunk),
+        };
+        match step {
+            Err(HaltCause::CycleBudgetExhausted) => {
+                cycles += chunk;
+                remaining -= chunk;
+                if !pins.is_empty() {
+                    sample_pins(m, pins, hz, cycles);
+                }
+            }
+            other => break other,
+        }
     };
     match outcome {
         Err(HaltCause::CycleBudgetExhausted) => {
@@ -2117,6 +2211,8 @@ fn main() {
                 semihost,
                 fast,
                 jit,
+                pin_log,
+                pin_sample,
             } => {
                 if jit && fast != 0 {
                     eprintln!(
@@ -2129,8 +2225,27 @@ fn main() {
                 let mut m = machine_for(board, &img);
                 m.semihost_enable(semihost);
                 m.set_fast_quantum(fast);
+                let mut pins = Vec::with_capacity(pin_log.len());
+                for spec in &pin_log {
+                    match parse_pin_spec(spec) {
+                        Ok(parsed) => pins.push(parsed),
+                        Err(cause) => {
+                            eprintln!("{} {cause}", "error:".red().bold());
+                            std::process::exit(2);
+                        }
+                    }
+                }
+                for (port, pin, name) in &pins {
+                    if m.gpio_pin(*port, *pin).is_none() {
+                        eprintln!(
+                            "{} --pin-log entry '{name}': no such pin on this board",
+                            "error:".red().bold()
+                        );
+                        std::process::exit(2);
+                    }
+                }
                 banner();
-                run_quiet(&mut m, budget, jit);
+                run_quiet(&mut m, budget, jit, &pins, pin_sample);
             }
             Commands::Record {
                 image,
@@ -2407,7 +2522,7 @@ fn main() {
     if cli.trace {
         run_traced(&mut m, cli.budget);
     } else {
-        run_quiet(&mut m, cli.budget, false);
+        run_quiet(&mut m, cli.budget, false, &[], 0);
     }
     for device in m.core.mem().devices_mut() {
         let tx = device.drain_output();
@@ -2417,6 +2532,28 @@ fn main() {
                 "uart:".bright_magenta().bold(),
                 String::from_utf8_lossy(&tx)
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod pin_spec_tests {
+    use super::parse_pin_spec;
+
+    #[test]
+    fn accepts_boards_pins() {
+        assert_eq!(parse_pin_spec("c13").unwrap(), (2, 13, "c13".to_owned()));
+        assert_eq!(parse_pin_spec("A0").unwrap(), (0, 0, "A0".to_owned()));
+        assert_eq!(
+            parse_pin_spec("  k15 ").unwrap(),
+            (10, 15, "k15".to_owned())
+        );
+    }
+
+    #[test]
+    fn rejects_garbage() {
+        for bad in ["", "13", "c", "c32", "z0", "c-1", "cc1", "c1x"] {
+            assert!(parse_pin_spec(bad).is_err(), "{bad}");
         }
     }
 }
