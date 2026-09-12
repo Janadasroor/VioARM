@@ -646,6 +646,14 @@ impl Machine<BoardMemory> {
         self.core.set_vector_base(base);
     }
 
+    /// Drive the supply rail to `mv` millivolts (brown-out evaluated
+    /// with hysteresis; see `SystemMemory::set_operating_millivolts`).
+    /// Takes `&mut` only because the bus accessor does; the rail write
+    /// itself is the mutation.
+    pub fn set_operating_millivolts(&mut self, mv: u32) {
+        self.core.mem().set_operating_millivolts(mv);
+    }
+
     /// The current CPU clock in Hz (see `SystemMemory::cpu_hz`): the rate
     /// the co-simulation shim converts SPICE seconds into core cycles with.
     /// Takes `&mut` only because the bus accessor does; nothing is mutated.

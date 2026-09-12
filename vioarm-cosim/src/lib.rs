@@ -450,6 +450,33 @@ pub extern "C" fn vioarm_cosim_set_external_voltage(
     })
 }
 
+/// Drive the supply rail to `volts` (the `vcc_bridge` path): brown-out
+/// is evaluated with hysteresis, so a rail held under ~2.0V holds the
+/// machine in reset like silicon. Negative/NaN saturate to 0 mV, huge
+/// values to `u32::MAX` mV, infinities are rejected. Returns 0 on
+/// success or a negative error code.
+#[no_mangle]
+pub extern "C" fn vioarm_cosim_set_operating_voltage(
+    handle: *mut VioArmHandle,
+    volts: c_double,
+) -> i32 {
+    guard(|| {
+        if volts.is_infinite() {
+            set_error(format!("bad voltage {volts}"));
+            return VIOARM_ERR_BAD_ARG;
+        }
+        // Saturation is the intent (`as` saturates float-to-int by
+        // definition): negatives and NaN land on 0 mV.
+        #[allow(clippy::cast_possible_truncation)]
+        let mv = (volts * 1000.0) as u32;
+        with_handle(handle, |harness| {
+            harness.machine_mut().set_operating_millivolts(mv);
+            0
+        })
+        .unwrap_or_else(|code| code)
+    })
+}
+
 /// Read the DAC `channel` output (volts): the most recently transmitted
 /// `apin` word, if firmware staged one (`TXMV` + `TXGO`). Only channel 0
 /// exists. `volts_out` must be non-null. With nothing staged, the output

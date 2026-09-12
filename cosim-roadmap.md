@@ -266,10 +266,17 @@ Port of `avr_analog_bridge/` (`ifspec.c`/`cfunc.c`/`dlmain.c`):
   firmware stages ~1 word/ms while SPICE evaluates per Newton
   iteration; a consuming read would show mostly empty).
 - [x] P3-3: `vcc_bridge` — supply rail (brown-out scenarios later).
-  DONE as mirror-only 2026-09-11: `vioarm_vcc_bridge` passes the rail
-  through with NO injection (no core VDD concept exists — nothing
-  honest to drive). Netlist-compatible placeholder; brown-out plugs
-  in here when a core hook lands.
+  DONE 2026-09-12 as the VDD design (this section): shared `VddState`
+  rail (`device::vdd`, millivolt word + BOR hysteresis at
+  2000/2100 mV documented-virtual), default-wired into every bus;
+  PWR evaluates PVD live against the real `PLS` ladder on CSR reads
+  (F1/F4 class; H7/G0/U5 maps deferred) with the host-bit path kept;
+  brown-out holds the machine in reset rail-side (no latch, recovery
+  resumes); `vioarm_cosim_set_operating_voltage` feeds it and the
+  `vcc_bridge` calls that (no longer mirror-only). Proven: PVD unit
+  tests, C-ABI brown-out reboot/recovery, SPICE `vcc_pvd` e2e
+  (rail dip → PVDO → GPIO at 12.5005/42.5005ms). ADC/DAC VREF
+  coupling is phase 2 (hosts still inject counts/words directly).
 - [x] P3-4: units discipline — volts on the wire, millivolts at the
   VioARM seam (`apin`-compatible words; conversion in exactly one
   place, tested).

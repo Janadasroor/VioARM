@@ -61,6 +61,8 @@ int32_t vioarm_cosim_set_external_voltage(VioArmHandle *handle, int32_t channel,
                                           double volts);
 int32_t vioarm_cosim_get_dac_voltage(VioArmHandle *handle, int32_t channel,
                                      double *volts_out);
+int32_t vioarm_cosim_set_operating_voltage(VioArmHandle *handle,
+                                           double volts);
 const char *vioarm_cosim_last_error(void);
 
 #ifdef __cplusplus

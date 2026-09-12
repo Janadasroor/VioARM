@@ -380,6 +380,84 @@ def t_multi_chain():
                  "a_edges=%d b_edges=%d lag_ok=%s" % (len(ea), len(eb), lag_ok))
 
 
+def fw_pvd_f103():
+    """PVD->GPIO copier on stm32f103: PVDE + PLS=111 (2.9V), GPIOC CRH
+    pin13 output; loop copies CSR.PVDO to the pin. Assembled with
+    verifiable immediates (branch targets + literal slots checked at
+    authoring; see cosim-roadmap P3 notes)."""
+    code = bytes([
+        0x0F, 0x48, 0x01, 0x68, 0x10, 0x22, 0x11, 0x43, 0x01, 0x60,
+        0x0E, 0x48, 0x01, 0x68, 0x0E, 0x4A, 0x11, 0x43, 0x01, 0x60,
+        0x0D, 0x48, 0xF0, 0x21, 0x01, 0x60,
+        0x0D, 0x48, 0x01, 0x68, 0x0D, 0x4A, 0x91, 0x43, 0x0D, 0x4A,
+        0x11, 0x43, 0x01, 0x60,
+        0x0C, 0x48, 0x0D, 0x49, 0x0D, 0x4C, 0x0E, 0x4D,
+        0x02, 0x68, 0x04, 0x23, 0x1A, 0x42, 0x01, 0xD0,
+        0x0C, 0x60, 0xF9, 0xE7,
+        0x0D, 0x60, 0xF7, 0xE7,
+    ])
+    pool = [0x40021018, 0x4002101C, 0x10000000, 0x40007000, 0x40011004,
+            0x00F00000, 0x00300000, 0x40007004, 0x40011010, 0x00002000,
+            0x20000000]
+    fw = bytes([0x00, 0x10, 0x00, 0x20, 0x09, 0x00, 0x00, 0x00]) + code
+    for word in pool:
+        fw += struct.pack("<I", word)
+    assert (8 + len(code)) % 4 == 0, "pool misaligned"
+    return fw
+
+
+def t_vcc_pvd():
+    """P3-3: SPICE rail -> vcc_bridge -> PVD flag -> firmware GPIO.
+    Rail 3.3V, dip to 2.5V (PVD trips at PLS=111/2.9V, BOR at ~2.0V
+    stays clear), recover. Asserts the pin follows with <2ms lag
+    (quantum + firmware loop + Newton; tolerance named)."""
+    fw = fw_pvd_f103()
+    pc13 = 2 * 16 + 13
+    li = wrap(["0"] * N_PINS)
+    lo = wrap(["pvd" if i == pc13 else "0" for i in range(N_PINS)])
+    lines = ["* p3-3 vcc pvd",
+             "v_rail vcc 0 pwl(0 3.3 10m 3.3 15m 2.5 40m 2.5 45m 3.3)",
+             "a_vcc vcc dummy0 vioarm_vcc_bridge_0",
+             ".model vioarm_vcc_bridge_0 vioarm_vcc_bridge",
+             "r_dummy0 dummy0 0 1k",
+             "a_dac0 [pvd] [pvd_an 0] dac_bridge_model",
+             ".model dac_bridge_model "
+             "dac_bridge(out_low=0.0 out_high=5.0 input_load=1e12)"]
+    lines.append("a_mcu [" + li[0])
+    for seg in li[1:]:
+        lines.append("+ " + seg)
+    lines[-1] += "] [" + lo[0]
+    for seg in lo[1:]:
+        lines.append("+ " + seg)
+    lines[-1] += "] mcu_model"
+    lines.append(
+        '.model mcu_model d_cosim(simulation="./libvioarm_cosim_shim.so" '
+        'sim_args=["stm32f103","pvd.bin","base=0x0"] '
+        'queue_size=1024 irreversible=1 delay=1e-9)')
+    lines += [OPTIONS, ".tran 1u 60m", ".control", "run",
+              "print v(pvd_an)", ".endc", ".end"]
+    d = os.path.join(OUT, "vcc_pvd")
+    shutil.rmtree(d, ignore_errors=True)
+    os.makedirs(d)
+    shutil.copy(os.path.join(BUILD, "libvioarm_cosim_shim.so"), d)
+    shutil.copy(os.path.join(BUILD, "vioarm.cm"), d)
+    with open(os.path.join(d, "pvd.bin"), "wb") as f:
+        f.write(fw)
+    write(os.path.join(d, "test.cir"), lines)
+    write(os.path.join(d, ".spiceinit"),
+          ["codemodel %s" % DIGITAL_CM, "codemodel %s" % ANALOG_CM,
+           "codemodel ./vioarm.cm"])
+    rc, rows, err = run_ngspice(d)
+    if rc != 0 or not rows:
+        return check("vcc_pvd", False, "ngspice exit %d" % rc)
+    ups = [r[0] for a, r in zip(rows, rows[1:]) if a[1] < 2.5 <= r[1]]
+    dns = [r[0] for a, r in zip(rows, rows[1:]) if a[1] >= 2.5 > r[1]]
+    # Rail crosses 2.9V falling ~12.5ms, rising ~42.5ms (PWL slopes).
+    ok = (len(ups) == 1 and len(dns) == 1
+          and 0.011 < ups[0] < 0.020 and 0.041 < dns[0] < 0.050)
+    return check("vcc_pvd", ok, "up=%s down=%s" % (ups[:1], dns[:1]))
+
+
 def t_spice_button():
     """P4-4: PWL button -> adc_bridge -> d_in[pin1]; firmware echoes
     IN[1]->OUT[2]; dac_bridge observes. Asserts follow lag < 2ms
@@ -418,6 +496,7 @@ TESTS = {
     "dac_playback": t_dac_playback,
     "spice_button": t_spice_button,
     "multi_chain": t_multi_chain,
+    "vcc_pvd": t_vcc_pvd,
 }
 
 

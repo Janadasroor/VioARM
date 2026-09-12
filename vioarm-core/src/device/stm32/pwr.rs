@@ -5,12 +5,37 @@
 //! touching `BKP` still works, and the window no longer `HardFault`s.
 
 use crate::device::svd::{Behavior, Device, RegisterFile, Registers};
+use crate::device::vdd::VddState;
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
 use crate::mem::bus::Region;
+use std::sync::{Arc, Mutex};
+
+/// PVD threshold ladder in millivolts by `PLS[2:0]` (F1/F4 class:
+/// RM0008/RM0090 PVD levels; H7/G0/U5 ladders differ and follow in
+/// phase 2).
+const PVD_LADDER_MV: [u32; 8] = [2200, 2300, 2400, 2500, 2600, 2700, 2800, 2900];
 
 #[derive(Debug, Default)]
-struct PwrBehavior;
+struct PwrBehavior {
+    vdd: Option<Arc<Mutex<VddState>>>,
+}
+
+impl PwrBehavior {
+    /// Whether the rail is under the `PLS`-selected PVD threshold.
+    fn pvd_tripped(&self, view: &Registers<&mut [u32]>) -> bool {
+        let Some(vdd) = self.vdd.as_ref() else {
+            return false;
+        };
+        let cr = view.get(0x00);
+        if cr & (1 << 4) == 0 {
+            return false; // PVDE clear.
+        }
+        let pls = ((cr >> 5) & 7) as usize;
+        let rail = vdd.lock().unwrap_or_else(|poison| poison.into_inner());
+        rail.millivolts() < PVD_LADDER_MV[pls]
+    }
+}
 impl Behavior for PwrBehavior {
     // Power control latches; no time-driven state.
     fn needs_tick() -> bool {
@@ -56,6 +81,17 @@ impl Behavior for PwrBehavior {
             }
         }
     }
+
+    fn on_read(&mut self, view: &mut Registers<&mut [u32]>, offset: u32, value: u32) -> u32 {
+        // Live PVD: with PVDE set, a rail under the PLS threshold reads
+        // PVDO set on CSR byte 0 — alongside (never instead of) the
+        // host-latched bit, so host-driven tests are unaffected.
+        if offset == 0x04 && self.pvd_tripped(view) {
+            value | (1 << 2)
+        } else {
+            value
+        }
+    }
 }
 
 /// Power controller.
@@ -69,8 +105,17 @@ impl Pwr {
     pub fn new_for<D: Device>() -> Self {
         let def = D::peripheral("PWR").expect("generated tables contain PWR");
         Self {
-            inner: RegisterFile::new(def, PwrBehavior),
+            inner: RegisterFile::new(def, PwrBehavior::default()),
         }
+    }
+
+    /// Share the supply rail: `CSR.PVDO` then also reflects a rail under
+    /// the `PLS` threshold (live, alongside the host-driven latch).
+    /// Brown-out needs no wiring: it is evaluated rail-side.
+    #[must_use]
+    pub fn with_vdd(mut self, vdd: Arc<Mutex<VddState>>) -> Self {
+        self.inner.behavior_mut().vdd = Some(vdd);
+        self
     }
 }
 impl Peripheral for Pwr {
@@ -103,6 +148,7 @@ impl InterruptSource for Pwr {
 mod tests {
     use super::Pwr;
     use crate::device::svd::stm32f103::Stm32f103;
+    use crate::device::vdd::VddState;
     use crate::device::Peripheral;
     const BASE: u32 = 0x4000_7000;
     fn write_word(p: &mut Pwr, off: u32, val: u32) {
@@ -126,5 +172,38 @@ mod tests {
             p.read(BASE + 0x500),
             Err(crate::error::BusError::Reserved)
         ));
+    }
+
+    #[test]
+    fn pvdo_follows_rail_under_pls_threshold() {
+        let vdd = VddState::shared();
+        let mut p = Pwr::new_for::<Stm32f103>().with_vdd(vdd.clone());
+        // PVDE + PLS=000 (2.2 V ladder bottom).
+        write_word(&mut p, 0x00, 0x10);
+        // Nominal rail: clear.
+        assert_eq!(read_word(&mut p, 0x04) & (1 << 2), 0);
+        // Dip under 2.2 V: live assert, no latch involved.
+        vdd.lock().unwrap().set_millivolts(1500);
+        assert_eq!(read_word(&mut p, 0x04) & (1 << 2), 1 << 2);
+        // Recovery clears (live comparison, not sticky).
+        vdd.lock().unwrap().set_millivolts(3300);
+        assert_eq!(read_word(&mut p, 0x04) & (1 << 2), 0);
+        // PVDE clear: rail dip no longer visible.
+        write_word(&mut p, 0x00, 0x00);
+        vdd.lock().unwrap().set_millivolts(1500);
+        assert_eq!(read_word(&mut p, 0x04) & (1 << 2), 0);
+    }
+
+    #[test]
+    fn pvdo_honors_pls_selection() {
+        let vdd = VddState::shared();
+        let mut p = Pwr::new_for::<Stm32f103>().with_vdd(vdd.clone());
+        // PLS=111 (2.9 V top): a 2.5 V rail trips.
+        write_word(&mut p, 0x00, 0x10 | (0x7 << 5));
+        vdd.lock().unwrap().set_millivolts(2500);
+        assert_eq!(read_word(&mut p, 0x04) & (1 << 2), 1 << 2);
+        // Same rail under PLS=000 (2.2 V): clear.
+        write_word(&mut p, 0x00, 0x10);
+        assert_eq!(read_word(&mut p, 0x04) & (1 << 2), 0);
     }
 }

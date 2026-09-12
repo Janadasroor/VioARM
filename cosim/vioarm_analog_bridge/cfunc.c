@@ -181,14 +181,12 @@ void cm_vioarm_dac_bridge(Mif_Private_t *mif_private)
 }
 
 /* ------------------------------------------------------------------ */
-/* cm_vioarm_vcc_bridge — supply-rail mirror for co-simulation          */
+/* cm_vioarm_vcc_bridge — supply-rail driver for co-simulation          */
 /*                                                                     */
-/* MIRROR ONLY (P3-3 partial): there is deliberately no injection —   */
-/* VioARM models have no operating-voltage concept yet, so there is   */
-/* nothing honest to drive (no brown-out, no VDD-coupled ADC). The   */
-/* unity-gain mirror keeps netlists forward-compatible: when a core   */
-/* VDD hook lands, this is where it plugs in, and existing netlists  */
-/* keep working unchanged.                                            */
+/* Drives the shared rail (`VddState`) that PWR compares PVD/BOR      */
+/* against, via `vioarm_cosim_set_operating_voltage` (dlsym'd like    */
+/* the adc bridge). Volts on the wire; millivolt conversion lives in  */
+/* the C ABI, not here.                                                */
 /*                                                                     */
 /* Ports:                                                             */
 /*   vcc — analog voltage input (VCC node)                            */
@@ -199,12 +197,48 @@ void cm_vioarm_dac_bridge(Mif_Private_t *mif_private)
 /*   .model vioarm_vcc_bridge vioarm_vcc_bridge                             */
 /* ------------------------------------------------------------------ */
 
+static int (*g_set_operating_voltage)(void*, double) = NULL;
+static int g_vcc_initialized = 0;
+
+static void try_resolve_vcc_symbols(void)
+{
+    if (g_set_operating_voltage) return;
+
+    if (!g_get_handle) {
+        g_get_handle = (void* (*)(void))dlsym(RTLD_DEFAULT,
+                                              "vioarm_cosim_get_active_handle");
+    }
+    g_set_operating_voltage = (int (*)(void*, double))dlsym(
+        RTLD_DEFAULT, "vioarm_cosim_set_operating_voltage");
+
+    if (g_get_handle && g_set_operating_voltage) {
+        void* h = g_get_handle();
+        if (h) {
+            g_arm_handle = h;
+            g_initialized = 1;
+            g_vcc_initialized = 1;
+        }
+    }
+}
+
 void cm_vioarm_vcc_bridge(Mif_Private_t *mif_private)
 {
+    if (!g_vcc_initialized) {
+        try_resolve_vcc_symbols();
+    }
+
     /* Read VCC voltage from analog input port */
     double vcc = mif_private->conn[0]->port[0]->input.rvalue;
 
-    /* No injection point exists yet (see above) — mirror only. */
+    /* Drive the shared rail (dlsym'd); a rail held under ~2.0 V holds
+     * the machine in reset like silicon. */
+    if (g_vcc_initialized && g_arm_handle && g_set_operating_voltage) {
+        void* current_handle = g_get_handle ? g_get_handle() : NULL;
+        if (current_handle) {
+            g_arm_handle = current_handle;
+            g_set_operating_voltage(g_arm_handle, vcc);
+        }
+    }
 
     /* Output: unity gain mirror for Newton coupling */
     mif_private->conn[1]->port[0]->output.rvalue = vcc;

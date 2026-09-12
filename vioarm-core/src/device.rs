@@ -23,6 +23,7 @@ pub mod stm32;
 pub mod svd;
 pub mod systick;
 pub mod uart;
+pub mod vdd;
 
 /// A time-advancing, addressable source of state on the memory bus.
 ///

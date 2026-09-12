@@ -20,8 +20,8 @@ Three layers, each with one job:
   (inputs; open-drain releases for HIGH).
 - `cosim/vioarm_analog_bridge/` (`vioarm.cm`): `vioarm_adc_bridge`
   (node volts → `apin` injection), `vioarm_dac_bridge` (staged word →
-  node volts, held-DAC semantics), `vioarm_vcc_bridge` (rail mirror;
-  no injection yet — brown-out plugs in here later).
+  node volts, held-DAC semantics), `vioarm_vcc_bridge` (rail driver —
+  brown-out holds the machine in reset under ~2.0V like silicon).
 
 Units: volts on the wire, millivolts at the seam. Conversion lives in
 exactly one place — the C ABI.

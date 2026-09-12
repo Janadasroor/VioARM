@@ -144,9 +144,9 @@ pub fn stm32f103() -> BoardMemory {
     mem.set_clock(clock.clone());
     mem.attach(Box::new(FlashF1::new(gate)));
     mem.attach(Box::new(Rcc::new().with_clock(clock.clone())));
-    mem.attach(Box::new(Pwr::new_for::<
-        crate::device::svd::stm32f103::Stm32f103,
-    >()));
+    mem.attach(Box::new(
+        Pwr::new_for::<crate::device::svd::stm32f103::Stm32f103>().with_vdd(mem.vdd_handle()),
+    ));
     mem.attach(Box::new(Crc::new_for::<
         crate::device::svd::stm32f103::Stm32f103,
     >()));
@@ -254,7 +254,9 @@ pub fn stm32f107() -> BoardMemory {
     mem.attach(Box::new(
         Rcc::for_device::<Stm32f107>().with_clock(clock.clone()),
     ));
-    mem.attach(Box::new(Pwr::new_for::<Stm32f107>()));
+    mem.attach(Box::new(
+        Pwr::new_for::<Stm32f107>().with_vdd(mem.vdd_handle()),
+    ));
     mem.attach(Box::new(Crc::new_for::<Stm32f107>()));
     let dma_requests = Arc::new(Mutex::new(DmaRequests::new()));
     mem.attach(Box::new(Dac::new_with_dma::<Stm32f107>(
@@ -400,7 +402,9 @@ pub fn stm32f407() -> BoardMemory {
     mem.attach(Box::new(
         Rcc::for_device::<Stm32f407>().with_clock(clock.clone()),
     ));
-    mem.attach(Box::new(Pwr::new_for::<Stm32f407>()));
+    mem.attach(Box::new(
+        Pwr::new_for::<Stm32f407>().with_vdd(mem.vdd_handle()),
+    ));
     mem.attach(Box::new(Crc::new_for::<Stm32f407>()));
     mem.attach(Box::new(Dac::new_for::<Stm32f407>()));
     mem.attach(Box::new(Rtc::new_for::<Stm32f407>()));
@@ -567,7 +571,9 @@ fn f4_full_board(flash_len: u32, ram_len: u32, ccm_len: u32) -> BoardMemory {
     mem.attach(Box::new(
         Rcc::for_device::<Stm32f407>().with_clock(clock.clone()),
     ));
-    mem.attach(Box::new(Pwr::new_for::<Stm32f407>()));
+    mem.attach(Box::new(
+        Pwr::new_for::<Stm32f407>().with_vdd(mem.vdd_handle()),
+    ));
     mem.attach(Box::new(Crc::new_for::<Stm32f407>()));
     mem.attach(Box::new(Dac::new_for::<Stm32f407>()));
     mem.attach(Box::new(Rtc::new_for::<Stm32f407>()));
@@ -771,7 +777,7 @@ fn f4gen_full_board<D: crate::device::svd::Device>(
     }
     mem.attach(Box::new(Rcc::for_device::<D>().with_clock(clock.clone())));
     if live("PWR") {
-        mem.attach(Box::new(Pwr::new_for::<D>()));
+        mem.attach(Box::new(Pwr::new_for::<D>().with_vdd(mem.vdd_handle())));
     }
     if live("CRC") {
         mem.attach(Box::new(Crc::new_for::<D>()));
@@ -1347,7 +1353,9 @@ fn f0_full_board(flash_len: u32, ram_len: u32) -> BoardMemory {
         Rcc::for_device::<Stm32f072>().with_clock(clock.clone()),
     ));
     if <Stm32f072 as crate::device::svd::Device>::peripheral("PWR").is_some() {
-        mem.attach(Box::new(Pwr::new_for::<Stm32f072>()));
+        mem.attach(Box::new(
+            Pwr::new_for::<Stm32f072>().with_vdd(mem.vdd_handle()),
+        ));
     }
     if <Stm32f072 as crate::device::svd::Device>::peripheral("CRC").is_some() {
         mem.attach(Box::new(Crc::new_for::<Stm32f072>()));
@@ -1676,7 +1684,9 @@ pub fn stm32f072() -> BoardMemory {
         Rcc::for_device::<Stm32f072>().with_clock(clock.clone()),
     ));
     if <Stm32f072 as crate::device::svd::Device>::peripheral("PWR").is_some() {
-        mem.attach(Box::new(Pwr::new_for::<Stm32f072>()));
+        mem.attach(Box::new(
+            Pwr::new_for::<Stm32f072>().with_vdd(mem.vdd_handle()),
+        ));
     }
     if <Stm32f072 as crate::device::svd::Device>::peripheral("CRC").is_some() {
         mem.attach(Box::new(Crc::new_for::<Stm32f072>()));
@@ -1827,7 +1837,9 @@ pub fn stm32f030() -> BoardMemory {
         Rcc::for_device::<Stm32f030>().with_clock(clock.clone()),
     ));
     if <Stm32f030 as crate::device::svd::Device>::peripheral("PWR").is_some() {
-        mem.attach(Box::new(Pwr::new_for::<Stm32f030>()));
+        mem.attach(Box::new(
+            Pwr::new_for::<Stm32f030>().with_vdd(mem.vdd_handle()),
+        ));
     }
     if <Stm32f030 as crate::device::svd::Device>::peripheral("CRC").is_some() {
         mem.attach(Box::new(Crc::new_for::<Stm32f030>()));
@@ -1956,7 +1968,9 @@ pub fn stm32f031() -> BoardMemory {
         Rcc::for_device::<Stm32f031>().with_clock(clock.clone()),
     ));
     if <Stm32f031 as crate::device::svd::Device>::peripheral("PWR").is_some() {
-        mem.attach(Box::new(Pwr::new_for::<Stm32f031>()));
+        mem.attach(Box::new(
+            Pwr::new_for::<Stm32f031>().with_vdd(mem.vdd_handle()),
+        ));
     }
     if <Stm32f031 as crate::device::svd::Device>::peripheral("CRC").is_some() {
         mem.attach(Box::new(Crc::new_for::<Stm32f031>()));
@@ -2083,7 +2097,9 @@ pub fn stm32f042() -> BoardMemory {
         Rcc::for_device::<Stm32f042>().with_clock(clock.clone()),
     ));
     if <Stm32f042 as crate::device::svd::Device>::peripheral("PWR").is_some() {
-        mem.attach(Box::new(Pwr::new_for::<Stm32f042>()));
+        mem.attach(Box::new(
+            Pwr::new_for::<Stm32f042>().with_vdd(mem.vdd_handle()),
+        ));
     }
     if <Stm32f042 as crate::device::svd::Device>::peripheral("CRC").is_some() {
         mem.attach(Box::new(Crc::new_for::<Stm32f042>()));
@@ -2268,7 +2284,9 @@ pub fn stm32f091() -> BoardMemory {
         Rcc::for_device::<Stm32f091>().with_clock(clock.clone()),
     ));
     if <Stm32f091 as crate::device::svd::Device>::peripheral("PWR").is_some() {
-        mem.attach(Box::new(Pwr::new_for::<Stm32f091>()));
+        mem.attach(Box::new(
+            Pwr::new_for::<Stm32f091>().with_vdd(mem.vdd_handle()),
+        ));
     }
     if <Stm32f091 as crate::device::svd::Device>::peripheral("CRC").is_some() {
         mem.attach(Box::new(Crc::new_for::<Stm32f091>()));
@@ -2616,7 +2634,9 @@ pub fn stm32f100() -> BoardMemory {
         Rcc::for_device::<Stm32f100>().with_clock(clock.clone()),
     ));
     if <Stm32f100 as crate::device::svd::Device>::peripheral("PWR").is_some() {
-        mem.attach(Box::new(Pwr::new_for::<Stm32f100>()));
+        mem.attach(Box::new(
+            Pwr::new_for::<Stm32f100>().with_vdd(mem.vdd_handle()),
+        ));
     }
     if <Stm32f100 as crate::device::svd::Device>::peripheral("CRC").is_some() {
         mem.attach(Box::new(Crc::new_for::<Stm32f100>()));
@@ -7813,7 +7833,9 @@ pub fn stm32f303xe() -> BoardMemory {
         Rcc::for_device::<Stm32f303xe>().with_clock(clock.clone()),
     ));
     if <Stm32f303xe as crate::device::svd::Device>::peripheral("PWR").is_some() {
-        mem.attach(Box::new(Pwr::new_for::<Stm32f303xe>()));
+        mem.attach(Box::new(
+            Pwr::new_for::<Stm32f303xe>().with_vdd(mem.vdd_handle()),
+        ));
     }
     if <Stm32f303xe as crate::device::svd::Device>::peripheral("CRC").is_some() {
         mem.attach(Box::new(Crc::new_for::<Stm32f303xe>()));

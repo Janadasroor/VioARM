@@ -17,6 +17,7 @@ use crate::device::stm32::fdcan::{FdcanMailbox, FdcanResult};
 use crate::device::stm32::flash::{FlashErase, FlashGate};
 use crate::device::stm32::fmc::QspiGate;
 use crate::device::stm32::rcc::ClockState;
+use crate::device::vdd::VddState;
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
 use crate::hooks::Hooks;
@@ -94,6 +95,13 @@ pub struct SystemMemory<M: Bus> {
     /// counter underflows; `reset_requested()` folds it into the SCB's latch so
     /// the `Machine` performs a full reset, and `reset_devices()` clears it.
     watchdog: Option<Arc<Mutex<bool>>>,
+    /// The supply rail shared by power-aware models (`Pwr` PVD/BOR; ADC
+    /// reference in phase 2). Present on every bus, defaulting to nominal
+    /// voltage, so hosts can drive it on any board; see [`VddState`].
+    /// Brown-out needs no latch: `reset_requested()` reads the rail's
+    /// asserted level directly, so a held-low rail holds the machine in
+    /// reset like silicon (and recovery resumes immediately).
+    vdd: Arc<Mutex<VddState>>,
     /// The shared RCC prescaler state, written by the `RCC` device on
     /// `CFGR`/`D1CFGR`/`D2CFGR` writes. When present, `tick_devices` scales
     /// general-timer deltas by the APB timer-kernel ratio (including the ×2
@@ -167,6 +175,7 @@ impl<M: Bus> SystemMemory<M> {
             eth_mailbox: None,
             fdcan_mailbox: None,
             watchdog: None,
+            vdd: VddState::shared(),
             clock: None,
             tim_phase: [0, 0],
             itm: Itm::new(),
@@ -316,6 +325,30 @@ impl<M: Bus> SystemMemory<M> {
         self.watchdog = Some(latch);
     }
 
+    /// The shared supply rail (pre-installed at nominal voltage; see
+    /// [`Self::set_vdd`] to replace it).
+    #[must_use]
+    pub fn vdd_handle(&self) -> Arc<Mutex<VddState>> {
+        self.vdd.clone()
+    }
+
+    /// Replace the shared supply-rail state.
+    pub fn set_vdd(&mut self, vdd: Arc<Mutex<VddState>>) {
+        self.vdd = vdd;
+    }
+
+    /// Drive the rail to `mv` millivolts, evaluating brown-out with
+    /// hysteresis (see [`VddState::set_millivolts`]). This is the
+    /// host/SPICE entry point (firmware cannot move the rail); a rail
+    /// held under [`BOR_FALL_MV`](crate::device::vdd::BOR_FALL_MV) holds
+    /// the machine in reset via [`Self::reset_requested`].
+    pub fn set_operating_millivolts(&mut self, mv: u32) {
+        self.vdd
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .set_millivolts(mv);
+    }
+
     /// Install the shared RCC prescaler state. The attached `RCC` device must
     /// be built with a clone of the same `Arc` (see `Rcc::with_clock`); this
     /// bus then scales general-timer tick deltas by the APB timer-kernel
@@ -382,9 +415,11 @@ impl<M: Bus> SystemMemory<M> {
         }
     }
 
-    /// Whether a reset has been latched since the last one — either by
-    /// `AIRCR.SYSRESETREQ` through the SCB or by an IWDG/WWDG underflow. The
-    /// `Machine` performs a full reset when set.
+    /// Whether a reset has been latched since the last one — by
+    /// `AIRCR.SYSRESETREQ` through the SCB, by an IWDG/WWDG underflow, or
+    /// by brown-out (the rail reads asserted while held low, so recovery
+    /// resumes immediately with no stale latch). The `Machine` performs a
+    /// full reset when set.
     #[must_use]
     pub fn reset_requested(&self) -> bool {
         self.scb.reset_requested()
@@ -392,6 +427,11 @@ impl<M: Bus> SystemMemory<M> {
                 .watchdog
                 .as_ref()
                 .is_some_and(|latch| *latch.lock().unwrap_or_else(|e| e.into_inner()))
+            || self
+                .vdd
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .bor_asserted()
     }
 
     /// The APB domain of a general timer by device name (`TIM1`/`tim1` and
