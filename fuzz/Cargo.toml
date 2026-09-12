@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 vioarm-core = { path = "../vioarm-core", features = ["jit"] }
+vioarm-cosim = { path = "../vioarm-cosim" }
 vioarm-gdb = { path = "../vioarm-gdb" }
 vioarm-svd = { path = "../vioarm-svd" }
 arbitrary = "1.4"
@@ -35,3 +36,7 @@ path = "src/bin/fuzz_svd.rs"
 [[bin]]
 name = "fuzz_jit"
 path = "src/bin/fuzz_jit.rs"
+
+[[bin]]
+name = "fuzz_cosim"
+path = "src/bin/fuzz_cosim.rs"

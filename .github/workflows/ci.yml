@@ -317,7 +317,7 @@ jobs:
       - name: Corpus seeds
         working-directory: fuzz
         run: |
-          for t in fuzz_elf fuzz_hex fuzz_decode fuzz_rsp fuzz_svd; do
+          for t in fuzz_elf fuzz_hex fuzz_decode fuzz_rsp fuzz_svd fuzz_cosim; do
             for f in corpus/$t/*; do
               ./target/release/$t < "$f" || exit 1
             done

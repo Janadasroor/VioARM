@@ -172,6 +172,12 @@ New crate `vioarm-cosim` (C ABI, `cdylib` + `staticlib` as the shim needs):
   clippy `-D warnings` clean (stable + 1.83), `cargo deny` clean,
   `cargo doc` clean, core suite 723 + integration green, fmt clean.
   Fuzz targets for the entry surface ride with P4 (scenario tests).
+  DONE 2026-09-12 (`fuzz/fuzz_cosim.rs` + corpus + CI/soak wiring):
+  stdin harness over create/step/pin/analog/destroy with scripted ops
+  (durations clamped so inputs can't hang the harness), fixed NaN/inf/
+  wild-channel nasties every run, null-handle paths every run;
+  10,604 soak runs clean. Double-destroy stays a caller contract
+  violation (untestable in-process by construction).
 - Acceptance: crate builds `cdylib`/`staticlib`; a Rust-side loopback
   test (create → step → pin round-trip → destroy) green under Miri Anwar
   (stacked-borrows clean); `cargo deny` still green (no new deps —

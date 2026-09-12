@@ -7,7 +7,7 @@ mutates random corpus seeds and feeds them to the release binary until the
 time budget expires, saving any finding next to the corpus.
 
 Usage: `python3 soak.py [--seconds N] [--bin DIR] [target ...]`
-Defaults: 300 s per target, `./target/release`, all six targets.
+Defaults: 300 s per target, `./target/release`, all seven targets.
 Stdlib only; no new dependencies.
 """
 
@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).parent
-TARGETS = ["fuzz_elf", "fuzz_hex", "fuzz_decode", "fuzz_rsp", "fuzz_svd", "fuzz_jit"]
+TARGETS = ["fuzz_elf", "fuzz_hex", "fuzz_decode", "fuzz_rsp", "fuzz_svd", "fuzz_jit", "fuzz_cosim"]
 
 
 def mutate(rng: random.Random, data: bytes) -> bytes:
