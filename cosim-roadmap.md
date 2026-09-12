@@ -207,11 +207,13 @@ here):
   output→input transitions emit one HI-Z release; pure input traffic
   never forwarded (never fights external drivers). SPICE→MCU via
   `shim_input` → `pin_set`.
-- [ ] P2-4: multi-instance (mirror `MAX_CHIPS` fan-out) only if a
+- [x] P2-4: multi-instance (mirror `MAX_CHIPS` fan-out) only if a
   scenario needs it; single-chip first, gate the rest.
-  PENDING (single-chip shipped; per-instance state already — no
-  globals — so fan-out is additive) + blocked on the >136-port fork
-  bug below (2+ chips need bigger vectors).
+  DONE 2026-09-12: up to 2 chips × 64 pins (128 ports/side, inside
+  the verified envelope; per-chip vtime/pins/halt state, no globals;
+  `[board, fw]` pairs + shared base/quantum). Proven by `multi_chain`:
+  chip-A PWM → SPICE wire → chip-B echo → observed, 76/76 edges with
+  2ms lag bound. Growing pins-per-chip (E..K) or chip count is additive.
 - Acceptance: a GPIO-toggle netlist (firmware blinks PD12, SPICE sees
   the square wave; SPICE-driven button wakes EXTI) matches the
   VioARM-only golden trace pin-for-pin in event order.
@@ -306,7 +308,7 @@ scenario tests plus netlists:
   DONE (`--rerun 2`): all 5 tests reproduce edge times (6 decimals)
   and means (4 decimals) EXACTLY across reps. SUITE GREEN.
 - [x] P4-6: multi-instance only if P2-4 shipped.
-  NOT SHIPPED (P2-4 gated) — no suite entry.
+  DONE 2026-09-12 (`multi_chain`, in the `--rerun` determinism set).
 - Acceptance: suite green against the P0 build; each test names its
   tolerance source (quantization, quantum phase, solver tolerance —
   never vibes).

@@ -310,6 +310,76 @@ def t_dac_playback():
                  "rc=%.4f dac=%.4f" % (rc_mean, dac_mean))
 
 
+def t_multi_chain():
+    """P4-6/P2-4: two chips through SPICE — chip A (virtual, PWM on pin0)
+    drives chip B (virtual, IN1->OUT2 echo); B's output observed.
+    Asserts B follows A: >=4 B edges in 30ms, each within 2ms after an
+    A edge     (quantum + B loop + Newton; tolerance named)."""
+    fw_a = fw_pwm_virtual()
+    fw_b = fw_echo_virtual()
+    N2 = N_PINS * 2
+    lo_a = ["apwm" if i == 0 else "0" for i in range(N_PINS)]
+    lo_b = ["bled" if i == 2 else "0" for i in range(N_PINS)]
+    li_a = ["0"] * N_PINS
+    li_b = ["bwire" if i == 1 else "0" for i in range(N_PINS)]
+
+    def wrap2(ns):
+        return wrap(ns)
+
+    lines = ["* p4-6 two-chip chain",
+             "r_wire apwm bwire 1k",
+             "a_daca [apwm] [apwm_an 0] dac_bridge_model",
+             "a_dacb [bled] [bled_an 0] dac_bridge_model",
+             ".model dac_bridge_model "
+             "dac_bridge(out_low=0.0 out_high=5.0 input_load=1e12)"]
+    in_all = li_a + li_b
+    out_all = lo_a + lo_b
+    wi, wo = wrap2(in_all), wrap2(out_all)
+    lines.append("a_mcu [" + wi[0])
+    for seg in wi[1:]:
+        lines.append("+ " + seg)
+    lines[-1] += "] [" + wo[0]
+    for seg in wo[1:]:
+        lines.append("+ " + seg)
+    lines[-1] += "] mcu_model"
+    lines.append(
+        '.model mcu_model d_cosim(simulation="./libvioarm_cosim_shim.so" '
+        'sim_args=["virtual","fw_a.bin","virtual","fw_b.bin","base=0x0"] '
+        'queue_size=1024 irreversible=1 delay=1e-9)')
+    lines += [OPTIONS, ".tran 1u 30m", ".control", "run",
+              "print v(apwm_an) v(bled_an)", ".endc", ".end"]
+    d = os.path.join(OUT, "multi_chain")
+    shutil.rmtree(d, ignore_errors=True)
+    os.makedirs(d)
+    shutil.copy(os.path.join(BUILD, "libvioarm_cosim_shim.so"), d)
+    shutil.copy(os.path.join(BUILD, "vioarm.cm"), d)
+    with open(os.path.join(d, "fw_a.bin"), "wb") as f:
+        f.write(fw_a)
+    with open(os.path.join(d, "fw_b.bin"), "wb") as f:
+        f.write(fw_b)
+    write(os.path.join(d, "test.cir"), lines)
+    write(os.path.join(d, ".spiceinit"),
+          ["codemodel %s" % DIGITAL_CM, "codemodel %s" % ANALOG_CM,
+           "codemodel ./vioarm.cm"])
+    rc, rows, err = run_ngspice(d)
+    if rc != 0 or not rows:
+        return check("multi_chain", False, "ngspice exit %d" % rc)
+    # rows: [time, apwm, bled]
+    def edge_times(col):
+        return [r[0] for a, r in zip(rows, rows[1:])
+                if (a[col] > 2.5) != (r[col] > 2.5)]
+    ea, eb = edge_times(1), edge_times(2)
+    ok = len(eb) >= 4
+    lag_ok = True
+    for t in eb:
+        if not any(0 <= t - s <= 0.002 for s in ea):
+            lag_ok = False
+            break
+    ok &= lag_ok
+    return check("multi_chain", ok,
+                 "a_edges=%d b_edges=%d lag_ok=%s" % (len(ea), len(eb), lag_ok))
+
+
 def t_spice_button():
     """P4-4: PWL button -> adc_bridge -> d_in[pin1]; firmware echoes
     IN[1]->OUT[2]; dac_bridge observes. Asserts follow lag < 2ms
@@ -347,6 +417,7 @@ TESTS = {
     "adc_ramp": t_adc_ramp,
     "dac_playback": t_dac_playback,
     "spice_button": t_spice_button,
+    "multi_chain": t_multi_chain,
 }
 
 
