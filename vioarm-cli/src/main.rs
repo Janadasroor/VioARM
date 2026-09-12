@@ -1814,7 +1814,11 @@ fn print_info(img: &LoadedImage) {
     }
 }
 
-fn machine_for(board: Board, img: &LoadedImage) -> Machine<board::BoardMemory> {
+fn machine_for(
+    board: Board,
+    img: &LoadedImage,
+    vector_base: Option<u32>,
+) -> Machine<board::BoardMemory> {
     let mem = board.mem();
     // WP-K1: the core follows the board family; the dispatch lives in
     // `Machine::for_mem` (shared with the co-simulation embedding path).
@@ -1822,8 +1826,19 @@ fn machine_for(board: Board, img: &LoadedImage) -> Machine<board::BoardMemory> {
     let name = board.name();
     let mut m = Machine::for_mem(name, mem);
     m.load_image(img);
+    // Raw binaries carry no vector-table address: boot from their load
+    // base when the caller passes one (ELF/HEX keep the default table).
+    if let Some(base) = vector_base {
+        m.set_vector_base(base);
+    }
     if let Err(cause) = m.reset() {
         eprintln!("{} reset failed: {cause}", "error:".red().bold());
+        if vector_base.is_some() {
+            eprintln!(
+                "  {} raw binaries boot from their load base; on STM32 load at the 0x0 flash alias — stores to the gated 0x0800_0000 window are dropped while the FLASH controller is locked",
+                "hint:".bright_cyan().bold()
+            );
+        }
         std::process::exit(3);
     }
     m
@@ -2086,8 +2101,8 @@ fn docs_topic(topic: Option<String>) {
 }
 
 fn debug_repl(image: PathBuf, board: Board, base: u32) {
-    let (img, _) = load_image_auto(&image, base);
-    let mut m = machine_for(board, &img);
+    let (img, kind) = load_image_auto(&image, base);
+    let mut m = machine_for(board, &img, (kind == "bin").then_some(base));
     println!(
         "{} {} — type {} for help",
         "VioARM debug".bright_cyan().bold(),
@@ -2221,8 +2236,8 @@ fn main() {
                     );
                     std::process::exit(2);
                 }
-                let (img, _) = load_image_auto(&image, base);
-                let mut m = machine_for(board, &img);
+                let (img, kind) = load_image_auto(&image, base);
+                let mut m = machine_for(board, &img, (kind == "bin").then_some(base));
                 m.semihost_enable(semihost);
                 m.set_fast_quantum(fast);
                 let mut pins = Vec::with_capacity(pin_log.len());
@@ -2261,7 +2276,7 @@ fn main() {
                 use vioarm_core::replay::{parse_snap, record, RecordMeta};
                 let (img, _) = load_image_auto(&image, base);
                 let image_bytes = flat_image_bytes(&img);
-                let mut m = machine_for(board, &img);
+                let mut m = machine_for(board, &img, None);
                 m.semihost_enable(semihost);
                 m.set_fast_quantum(fast);
                 let spans: Vec<(u32, u32)> = if snap.is_empty() {
@@ -2349,7 +2364,7 @@ fn main() {
                     .collect();
                 let spans: Vec<(u32, u32)> =
                     golden.snaps.iter().map(|(b, l, _)| (*b, *l)).collect();
-                let mut m = machine_for(board, &img);
+                let mut m = machine_for(board, &img, None);
                 m.semihost_enable(golden.semihost);
                 let mut diffs = Vec::new();
                 let want_board = format!("{board:?}").to_ascii_lowercase();
@@ -2379,7 +2394,7 @@ fn main() {
                 output,
             } => {
                 let (img, _) = load_image_auto(&image, base);
-                let mut m = machine_for(board, &img);
+                let mut m = machine_for(board, &img, None);
                 m.semihost_enable(semihost);
                 banner();
                 match format {
@@ -2421,7 +2436,7 @@ fn main() {
                 jit,
             } => {
                 let (img, _) = load_image_auto(&image, base);
-                let mut m = machine_for(board, &img);
+                let mut m = machine_for(board, &img, None);
                 m.semihost_enable(semihost);
                 let listener =
                     std::net::TcpListener::bind(("127.0.0.1", port)).unwrap_or_else(|e| {
@@ -2444,7 +2459,8 @@ fn main() {
         return;
     }
     // Legacy flat flags fallback (vioarm --bin/--elf/--hex --board --trace --gdb)
-    let img = if let Some(path) = cli.elf {
+    // `flat_base` tracks a raw-binary load so it boots from its base.
+    let (img, flat_base): (LoadedImage, Option<u32>) = if let Some(path) = cli.elf {
         let bytes = std::fs::read(&path).unwrap_or_else(|e| {
             eprintln!(
                 "{} cannot read {}: {e}",
@@ -2453,10 +2469,13 @@ fn main() {
             );
             std::process::exit(2);
         });
-        loader::load_elf(&bytes).unwrap_or_else(|e| {
-            eprintln!("{} {}: {e}", "error:".red().bold(), path.display());
-            std::process::exit(2);
-        })
+        (
+            loader::load_elf(&bytes).unwrap_or_else(|e| {
+                eprintln!("{} {}: {e}", "error:".red().bold(), path.display());
+                std::process::exit(2);
+            }),
+            None,
+        )
     } else if let Some(path) = cli.hex {
         let bytes = std::fs::read(&path).unwrap_or_else(|e| {
             eprintln!(
@@ -2466,10 +2485,13 @@ fn main() {
             );
             std::process::exit(2);
         });
-        loader::load_hex(&bytes).unwrap_or_else(|e| {
-            eprintln!("{} {}: {e}", "error:".red().bold(), path.display());
-            std::process::exit(2);
-        })
+        (
+            loader::load_hex(&bytes).unwrap_or_else(|e| {
+                eprintln!("{} {}: {e}", "error:".red().bold(), path.display());
+                std::process::exit(2);
+            }),
+            None,
+        )
     } else if let Some(path) = cli.bin {
         let bytes = std::fs::read(&path).unwrap_or_else(|e| {
             eprintln!(
@@ -2479,7 +2501,7 @@ fn main() {
             );
             std::process::exit(2);
         });
-        loader::load_flat(cli.base, &bytes)
+        (loader::load_flat(cli.base, &bytes), Some(cli.base))
     } else {
         eprintln!(
             "{} provide --bin/--elf/--hex or subcommand `run`",
@@ -2498,7 +2520,7 @@ fn main() {
         }
         return;
     }
-    let mut m = machine_for(cli.board, &img);
+    let mut m = machine_for(cli.board, &img, flat_base);
     m.semihost_enable(cli.semihost);
     if let Some(port) = cli.gdb {
         let listener = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap_or_else(|e| {
