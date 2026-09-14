@@ -8,6 +8,7 @@
 //! bus.
 
 use crate::cpu::FpuCtx;
+use crate::device::analog::AnalogBusState;
 use crate::device::itm::Itm;
 use crate::device::nvic::Nvic;
 use crate::device::scb::Scb;
@@ -107,6 +108,12 @@ pub struct SystemMemory<M: Bus> {
     /// general-timer deltas by the APB timer-kernel ratio (including the ×2
     /// rule); without it every timer runs at core rate, the old behavior.
     clock: Option<Arc<Mutex<ClockState>>>,
+    /// The shared analog bus (WP-R4): one host-driven millivolt node every
+    /// `Apin`-fed consumer samples coherently. Pre-installed unset, like
+    /// the supply rail is pre-installed at nominal voltage — hosts drive
+    /// it on any board via [`Self::set_analog_millivolts`]; consumers fall
+    /// back to legacy digital paths while it is unset.
+    analog: Arc<Mutex<AnalogBusState>>,
     /// Fractional-tick accumulators, one per APB domain (index 0 = APB1,
     /// 1 = APB2), for exact rational timer scaling across sync points.
     tim_phase: [u64; 2],
@@ -177,6 +184,7 @@ impl<M: Bus> SystemMemory<M> {
             watchdog: None,
             vdd: VddState::shared(),
             clock: None,
+            analog: AnalogBusState::shared(),
             tim_phase: [0, 0],
             itm: Itm::new(),
             hooks: Hooks::default(),
@@ -369,6 +377,33 @@ impl<M: Bus> SystemMemory<M> {
             .as_ref()
             .and_then(|clock| clock.lock().ok().map(|guard| guard.cpu_hz()))
             .unwrap_or_else(|| ClockState::default().cpu_hz())
+    }
+
+    /// The shared analog bus (pre-installed unset; see the `analog` field).
+    /// Boards wire `Apin` + `Apin`-fed consumers with clones of this handle
+    /// (see `AnalogBusState::shared`); hand-built buses can do the same.
+    #[must_use]
+    pub fn analog_handle(&self) -> Arc<Mutex<AnalogBusState>> {
+        self.analog.clone()
+    }
+
+    /// Replace the shared analog-bus state.
+    pub fn set_analog(&mut self, analog: Arc<Mutex<AnalogBusState>>) {
+        self.analog = analog;
+    }
+
+    /// Drive the shared analog bus to `mv` millivolts. This is the
+    /// host/SPICE entry point (firmware observes through ADC/COMP/GPIO/EXTI/
+    /// timer); a single driver per net by convention.
+    pub fn set_analog_millivolts(&mut self, mv: u32) {
+        AnalogBusState::set_millivolts(&self.analog, mv);
+    }
+
+    /// The driven bus value, if the host has driven yet (`None` means
+    /// consumers use legacy digital paths).
+    #[must_use]
+    pub fn analog_millivolts(&self) -> Option<u32> {
+        AnalogBusState::millivolts(&self.analog)
     }
 
     /// The attached devices, in attach order.

@@ -24,6 +24,7 @@
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
 use crate::mem::bus::Region;
+use std::sync::{Arc, Mutex};
 
 /// Staged millivolts.
 const TXMV: u32 = 0x00;
@@ -45,6 +46,116 @@ const EN: u32 = 1;
 /// `CR` loopback bit.
 const LOOPBACK: u32 = 1 << 1;
 
+/// ADC reference in millivolts (documented-virtual): the full-scale rail
+/// every consumer converts against. Matches the nominal supply rail.
+pub const VDDA_MV: u32 = 3300;
+/// ADC full-scale code (12-bit).
+pub const ADC_MAX: u32 = 4095;
+
+/// GPIO/EXTI Schmitt thresholds in millivolts (documented-virtual CMOS):
+/// above `GPIO_VIH_MV` reads high, below `GPIO_VIL_MV` reads low, between
+/// holds the previous level.
+pub const GPIO_VIH_MV: u32 = 2000;
+/// GPIO/EXTI Schmitt low threshold (see [`GPIO_VIH_MV`]).
+pub const GPIO_VIL_MV: u32 = 800;
+
+/// Comparator trip point in millivolts (documented-virtual `VDDA/2`).
+pub const COMP_THRESH_MV: u32 = 1650;
+/// Comparator hysteresis band in millivolts (output flips at
+/// `THRESH ± HYST/2`, holds between).
+pub const COMP_HYST_MV: u32 = 100;
+
+/// Convert bus millivolts to a 12-bit ADC code against [`VDDA_MV`]:
+/// saturates at full scale, truncates otherwise. The `u64` intermediate
+/// keeps `u32::MAX` inputs overflow-safe.
+#[must_use]
+pub const fn mv_to_adc_code(mv: u32) -> u32 {
+    if mv >= VDDA_MV {
+        return ADC_MAX;
+    }
+    ((mv as u64 * ADC_MAX as u64) / VDDA_MV as u64) as u32
+}
+
+/// The digital level of `mv` millivolts through the GPIO/EXTI Schmitt
+/// path: high above [`GPIO_VIH_MV`], low below [`GPIO_VIL_MV`], `prev`
+/// between (hysteresis).
+#[must_use]
+pub const fn schmitt_level(mv: u32, prev: bool) -> bool {
+    if mv >= GPIO_VIH_MV {
+        true
+    } else if mv <= GPIO_VIL_MV {
+        false
+    } else {
+        prev
+    }
+}
+
+/// The comparator output for `plus_mv` millivolts against the fixed
+/// [`COMP_THRESH_MV`] with [`COMP_HYST_MV`] hysteresis: high above
+/// `THRESH + HYST/2`, low below `THRESH - HYST/2`, `prev` between.
+#[must_use]
+pub const fn comp_level(plus_mv: u32, prev: bool) -> bool {
+    let hi = COMP_THRESH_MV + COMP_HYST_MV / 2;
+    let lo = COMP_THRESH_MV - COMP_HYST_MV / 2;
+    if plus_mv >= hi {
+        true
+    } else if plus_mv <= lo {
+        false
+    } else {
+        prev
+    }
+}
+
+/// The shared analog bus (WP-R4): one host-driven voltage every consumer
+/// on a machine reads coherently.
+///
+/// Explicitly NOT analog physics (same stance as [`Apin`]): one exact
+/// millivolt `u32`, no noise/settling/impedance. Single-driver per net by
+/// convention — the host (or the `apin` window it feeds) drives, firmware
+/// observes — matching the fabric's lowest-index-wins discipline across
+/// machines. [`Apin`] stays the transport endpoint; this is what
+/// `Apin`-fed consumers (ADC, comparator, GPIO/EXTI, timer ext-clock)
+/// sample.
+///
+/// The value starts unset (`None`): consumers fall back to their legacy
+/// host-digital paths until the host first drives the bus, so existing
+/// tests and boards without a bus wired behave exactly as before.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct AnalogBusState {
+    mv: Option<u32>,
+}
+
+impl AnalogBusState {
+    /// An unset bus (no driver yet).
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { mv: None }
+    }
+
+    /// A shareable bus (the constructor pattern: boards/tests wire one,
+    /// devices clone it — same as `VddState`/`ClockState`).
+    #[must_use]
+    pub fn shared() -> Arc<Mutex<Self>> {
+        Arc::new(Mutex::new(Self::new()))
+    }
+
+    /// Drive the bus (host side). Never fails; poison is recovered.
+    pub fn set_millivolts(bus: &Arc<Mutex<Self>>, mv: u32) {
+        bus.lock().unwrap_or_else(|poison| poison.into_inner()).mv = Some(mv);
+    }
+
+    /// The driven value, if the host has driven yet.
+    #[must_use]
+    pub fn millivolts(bus: &Arc<Mutex<Self>>) -> Option<u32> {
+        bus.lock().unwrap_or_else(|poison| poison.into_inner()).mv
+    }
+
+    /// Forget the driver (tests only): consumers revert to legacy paths.
+    pub fn reset(bus: &Arc<Mutex<Self>>) {
+        bus.lock().unwrap_or_else(|poison| poison.into_inner()).mv = None;
+    }
+}
+
 /// A virtual analog pin: millivolt staging/transmit on one side, last-
 /// value receive on the other, over the fabric's analog bus.
 #[derive(Debug, Clone, Default)]
@@ -57,6 +168,7 @@ pub struct Apin {
     rx_ready: bool,
     tx_out: Vec<u8>,
     pending: Vec<u8>,
+    bus: Option<Arc<Mutex<AnalogBusState>>>,
 }
 
 impl Apin {
@@ -72,6 +184,24 @@ impl Apin {
             rx_ready: false,
             tx_out: Vec::new(),
             pending: Vec::new(),
+            bus: None,
+        }
+    }
+
+    /// Share the analog bus: received millivolts publish into it, so
+    /// `Apin`-fed consumers (ADC/COMP/GPIO/EXTI/timer) read one node.
+    /// The bus is host-owned and survives [`Peripheral::reset`] (like the
+    /// supply rail survives a PWR reset).
+    #[must_use]
+    pub fn with_bus(mut self, bus: Arc<Mutex<AnalogBusState>>) -> Self {
+        self.bus = Some(bus);
+        self
+    }
+
+    /// Publish `mv` into the shared bus, if one is wired.
+    fn publish(&self, mv: u32) {
+        if let Some(bus) = self.bus.as_ref() {
+            AnalogBusState::set_millivolts(bus, mv);
         }
     }
 
@@ -84,6 +214,7 @@ impl Apin {
         if self.loopback {
             self.rx_mv = self.tx_mv;
             self.rx_ready = true;
+            self.publish(self.tx_mv);
         } else {
             self.tx_out.extend_from_slice(&self.tx_mv.to_le_bytes());
         }
@@ -163,6 +294,7 @@ impl Peripheral for Apin {
         self.rx_ready = false;
         self.tx_out.clear();
         self.pending.clear();
+        // The shared bus survives: it is host-owned, like the supply rail.
     }
 
     fn name(&self) -> &'static str {
@@ -190,6 +322,7 @@ impl Peripheral for Apin {
             self.pending.drain(..4);
             self.rx_mv = word;
             self.rx_ready = true;
+            self.publish(word);
         }
     }
 }
@@ -198,7 +331,10 @@ impl InterruptSource for Apin {}
 
 #[cfg(test)]
 mod tests {
-    use super::{Apin, CR, EN, LOOPBACK, READY, RXMV, SR, TXGO, TXMV};
+    use super::{
+        comp_level, mv_to_adc_code, schmitt_level, AnalogBusState, Apin, CR, EN, LOOPBACK, READY,
+        RXMV, SR, TXGO, TXMV,
+    };
     use crate::device::Peripheral;
     use crate::error::BusError;
 
@@ -274,5 +410,47 @@ mod tests {
         let mut p = Apin::at(BASE);
         assert!(matches!(p.read(BASE + 0x14), Err(BusError::Reserved)));
         assert!(matches!(p.write(BASE - 1, 0), Err(BusError::Reserved)));
+    }
+
+    #[test]
+    fn mv_to_code_saturates_and_scales() {
+        assert_eq!(mv_to_adc_code(0), 0);
+        assert_eq!(mv_to_adc_code(1650), 2047);
+        assert_eq!(mv_to_adc_code(3300), 4095);
+        assert_eq!(mv_to_adc_code(5000), 4095);
+        assert_eq!(mv_to_adc_code(u32::MAX), 4095);
+    }
+
+    #[test]
+    fn schmitt_holds_between_thresholds() {
+        assert!(schmitt_level(2500, false));
+        assert!(!schmitt_level(500, true));
+        assert!(schmitt_level(1200, true));
+        assert!(!schmitt_level(1200, false));
+    }
+
+    #[test]
+    fn comp_holds_between_thresholds() {
+        assert!(comp_level(1800, false));
+        assert!(!comp_level(1500, true));
+        assert!(comp_level(1650, true));
+        assert!(!comp_level(1650, false));
+    }
+
+    #[test]
+    fn apin_receipt_publishes_into_the_bus() {
+        let bus = AnalogBusState::shared();
+        let mut p = Apin::at(BASE).with_bus(bus.clone());
+        write_word(&mut p, CR, EN);
+        assert_eq!(AnalogBusState::millivolts(&bus), None);
+        for b in 1200u32.to_le_bytes() {
+            p.drive_inputs(u32::from(b));
+        }
+        assert_eq!(AnalogBusState::millivolts(&bus), Some(1200));
+        // Device reset keeps the host-owned bus (like the supply rail).
+        p.reset();
+        assert_eq!(AnalogBusState::millivolts(&bus), Some(1200));
+        AnalogBusState::reset(&bus);
+        assert_eq!(AnalogBusState::millivolts(&bus), None);
     }
 }

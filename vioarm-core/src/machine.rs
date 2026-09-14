@@ -14,7 +14,34 @@ use crate::error::HaltCause;
 use crate::hooks::HookEvent;
 use crate::loader::LoadedImage;
 use crate::mem::PeripheralBus;
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
+
+/// One retired instruction, as reported by [`Machine::backtrace`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BacktraceEntry {
+    /// Program counter the instruction retired from.
+    pub pc: u32,
+    /// First halfword at `pc` (`None` when the code bytes are unreadable).
+    pub h0: Option<u16>,
+    /// Halfword at `pc + 2` (present whenever readable; the consumer
+    /// decides the encoding width from the opcode).
+    pub h1: Option<u16>,
+    /// `DWT CYCCNT` after the instruction retired.
+    pub cyccnt: u64,
+}
+
+/// What the ring stores per retire: address and time only. Code halfwords
+/// are re-read when [`Machine::backtrace`] renders, so recording costs two
+/// stores plus one predicted branch per retired instruction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Retired {
+    pc: u32,
+    cyccnt: u64,
+}
+
+/// Default backtrace depth. `set_backtrace(0)` disables recording.
+const DEFAULT_BACKTRACE: usize = 256;
 
 /// A ready-to-run core+memory pair. The core owns the memory; the machine is
 /// the host-facing facade.
@@ -29,40 +56,41 @@ pub struct Machine<M: PeripheralBus> {
     fast_countdown: u64,
     /// Device cycles owed by retired instructions, flushed on boundaries.
     fast_debt: u64,
+    /// Last-retired-instruction ring (observe-only host triage aid; never
+    /// influences execution, so reruns stay byte-identical).
+    retired: VecDeque<Retired>,
+    /// Ring capacity (`0` = recording disabled).
+    backtrace_cap: usize,
 }
 
 impl<M: PeripheralBus> Machine<M> {
-    /// A machine over an ARMv6-M core.
-    #[must_use]
-    pub fn new(mem: M) -> Self {
+    fn with_core(core: Core<M>) -> Self {
         Self {
-            core: Core::new(mem),
+            core,
             fast_quantum: 0,
             fast_countdown: 0,
             fast_debt: 0,
+            retired: VecDeque::new(),
+            backtrace_cap: DEFAULT_BACKTRACE,
         }
+    }
+
+    /// A machine over an ARMv6-M core.
+    #[must_use]
+    pub fn new(mem: M) -> Self {
+        Self::with_core(Core::new(mem))
     }
 
     /// A machine over an ARMv7-M (Cortex-M3/M4) core.
     #[must_use]
     pub fn armv7m(mem: M) -> Self {
-        Self {
-            core: Core::armv7m(mem),
-            fast_quantum: 0,
-            fast_countdown: 0,
-            fast_debt: 0,
-        }
+        Self::with_core(Core::armv7m(mem))
     }
 
     /// A machine over an ARMv7E-M (Cortex-M7) core with FPv5-D16.
     #[must_use]
     pub fn armv7em(mem: M) -> Self {
-        Self {
-            core: Core::armv7em(mem),
-            fast_quantum: 0,
-            fast_countdown: 0,
-            fast_debt: 0,
-        }
+        Self::with_core(Core::armv7em(mem))
     }
 
     /// An ARMv7-M machine whose FP context-control state is shared between the
@@ -70,46 +98,26 @@ impl<M: PeripheralBus> Machine<M> {
     /// same `fpu_ctx`.
     #[must_use]
     pub fn armv7m_with_fpu(mem: M, fpu_ctx: Arc<Mutex<FpuCtx>>) -> Self {
-        Self {
-            core: Core::armv7m_with_fpu(mem, fpu_ctx),
-            fast_quantum: 0,
-            fast_countdown: 0,
-            fast_debt: 0,
-        }
+        Self::with_core(Core::armv7m_with_fpu(mem, fpu_ctx))
     }
 
     /// An ARMv7E-M machine whose FP context-control state is shared.
     #[must_use]
     pub fn armv7em_with_fpu(mem: M, fpu_ctx: Arc<Mutex<FpuCtx>>) -> Self {
-        Self {
-            core: Core::armv7em_with_fpu(mem, fpu_ctx),
-            fast_quantum: 0,
-            fast_countdown: 0,
-            fast_debt: 0,
-        }
+        Self::with_core(Core::armv7em_with_fpu(mem, fpu_ctx))
     }
 
     /// A machine over an ARMv8-M baseline (Cortex-M23) core.
     #[must_use]
     pub fn armv8m(mem: M) -> Self {
-        Self {
-            core: Core::armv8m(mem),
-            fast_quantum: 0,
-            fast_countdown: 0,
-            fast_debt: 0,
-        }
+        Self::with_core(Core::armv8m(mem))
     }
 
     /// A machine over an ARMv8-M mainline (Cortex-M33) core: full Thumb-2
     /// with DSP and single-precision VFP.
     #[must_use]
     pub fn armv8m_mainline(mem: M) -> Self {
-        Self {
-            core: Core::armv8m_mainline(mem),
-            fast_quantum: 0,
-            fast_countdown: 0,
-            fast_debt: 0,
-        }
+        Self::with_core(Core::armv8m_mainline(mem))
     }
 
     /// An ARMv8-M mainline machine whose FP context-control state is shared
@@ -117,12 +125,54 @@ impl<M: PeripheralBus> Machine<M> {
     /// built with the same `fpu_ctx`.
     #[must_use]
     pub fn armv8m_mainline_with_fpu(mem: M, fpu_ctx: Arc<Mutex<FpuCtx>>) -> Self {
-        Self {
-            core: Core::armv8m_mainline_with_fpu(mem, fpu_ctx),
-            fast_quantum: 0,
-            fast_countdown: 0,
-            fast_debt: 0,
+        Self::with_core(Core::armv8m_mainline_with_fpu(mem, fpu_ctx))
+    }
+
+    /// Resize the backtrace ring (`0` disables recording). Resizing clears
+    /// the ring; every other host config (quantum, semihosting) survives.
+    pub fn set_backtrace(&mut self, cap: usize) {
+        self.backtrace_cap = cap;
+        self.retired.clear();
+    }
+
+    /// Last retired instructions, oldest first, up to `max` entries. Code
+    /// halfwords are re-read from the bus here (not at retire time), so a
+    /// self-modifying image shows current bytes and unreadable words report
+    /// `None`. Only the stepper and its fallbacks record: under `--jit`
+    /// block-interior pcs are absent, so rerun without it for full depth.
+    #[must_use]
+    pub fn backtrace(&mut self, max: usize) -> Vec<BacktraceEntry> {
+        let skip = self.retired.len().saturating_sub(max);
+        let tail: Vec<Retired> = self.retired.iter().skip(skip).copied().collect();
+        tail.into_iter()
+            .map(|r| {
+                let h0 = self.core.mem().read_half(r.pc).ok();
+                let h1 = self.core.mem().read_half(r.pc.wrapping_add(2)).ok();
+                BacktraceEntry {
+                    pc: r.pc,
+                    h0,
+                    h1,
+                    cyccnt: r.cyccnt,
+                }
+            })
+            .collect()
+    }
+
+    /// Push one retired pc into the ring. Exception-entry steps retire
+    /// nothing and never reach here; the faulting instruction itself does
+    /// not retire either, so a halt report pairs this prefix with the live
+    /// `pc` from the halt-line snapshot.
+    fn record_retired(&mut self, pc: u32) {
+        if self.backtrace_cap == 0 {
+            return;
         }
+        if self.retired.len() >= self.backtrace_cap {
+            self.retired.pop_front();
+        }
+        self.retired.push_back(Retired {
+            pc,
+            cyccnt: self.core.cyccnt,
+        });
     }
 
     /// Load an image's segments into the machine's memory.
@@ -152,8 +202,11 @@ impl<M: PeripheralBus> Machine<M> {
         self.core.semihost.reset_session();
         // Fast scheduling restarts too (the quantum is host config and
         // survives), so no stale device debt leaks into the fresh boot.
+        // The backtrace ring restarts as well (capacity is host config and
+        // survives): history belongs to the previous boot.
         self.fast_countdown = 0;
         self.fast_debt = 0;
+        self.retired.clear();
         self.core.reset_from_vector_table()
     }
 
@@ -314,6 +367,9 @@ impl<M: PeripheralBus> Machine<M> {
             }
         }
         self.core.step()?;
+        if !was_sleeping {
+            self.record_retired(pc);
+        }
         if hooked {
             let cycles = self.core.cyccnt;
             if let Some(h) = self.core.mem().hooks_mut() {
@@ -652,6 +708,19 @@ impl Machine<BoardMemory> {
     /// itself is the mutation.
     pub fn set_operating_millivolts(&mut self, mv: u32) {
         self.core.mem().set_operating_millivolts(mv);
+    }
+
+    /// Drive the shared analog bus to `mv` millivolts (WP-R4): every
+    /// `Apin`-fed consumer (ADC/COMP/GPIO/EXTI/timer ext-clock) observes
+    /// one node. Single driver per net by convention.
+    pub fn analog_drive_mv(&mut self, mv: u32) {
+        self.core.mem().set_analog_millivolts(mv);
+    }
+
+    /// The driven bus value, if the host has driven yet (`None` means
+    /// consumers use legacy digital paths).
+    pub fn analog_mv(&mut self) -> Option<u32> {
+        self.core.mem().analog_millivolts()
     }
 
     /// The current CPU clock in Hz (see `SystemMemory::cpu_hz`): the rate

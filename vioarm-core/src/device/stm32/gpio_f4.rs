@@ -8,14 +8,18 @@
 //! two things a table cannot express live in `Gpio4Behavior`: `BSRR` writes
 //! set (low half) and reset (high half) `ODR` — there is no `BRR` on F4 — and
 //! read-only `IDR` is synthesized from the mode nibbles, the output latch, and
-//! the host-injected input level.
+//! the host-injected input level. With a shared analog bus wired (WP-R4),
+//! input and alternate pins follow the bus through the Schmitt path.
 
+use crate::device::analog::{schmitt_level, AnalogBusState};
 use crate::device::svd::stm32f407;
 use crate::device::svd::{Behavior, Device, RegisterFile, Registers};
 use crate::device::{GpioPinMode, InterruptSource, Peripheral};
 use crate::error::BusError;
 use crate::mem::bus::Region;
 use core::ops::Deref;
+use std::cell::Cell;
+use std::sync::{Arc, Mutex};
 
 /// Register offsets within the port, per the SVD.
 const MODER: u32 = 0x00;
@@ -28,9 +32,14 @@ const ODR: u32 = 0x14;
 const BSRR: u32 = 0x18;
 
 /// The cross-register side effects the SVD cannot express.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct Gpio4Behavior {
     input: u32,
+    /// Shared analog bus (WP-R4): when wired and driven, input and
+    /// alternate pins follow it through the Schmitt path.
+    analog_bus: Option<Arc<Mutex<AnalogBusState>>>,
+    /// Previous bus-derived level (Schmitt holds between thresholds).
+    analog_prev: Cell<bool>,
 }
 
 impl Gpio4Behavior {
@@ -43,17 +52,36 @@ impl Gpio4Behavior {
         (view.get(MODER) >> (2 * p)) & 3
     }
 
+    /// The effective host-driven input word: the bus-derived level once the
+    /// bus is driven, else the digital `drive_inputs` latch.
+    fn effective_input(&self) -> u32 {
+        let Some(bus) = self.analog_bus.clone() else {
+            return self.input;
+        };
+        let Some(mv) = AnalogBusState::millivolts(&bus) else {
+            return self.input;
+        };
+        let level = schmitt_level(mv, self.analog_prev.get());
+        self.analog_prev.set(level);
+        if level {
+            0xFFFF
+        } else {
+            0
+        }
+    }
+
     /// The level firmware observes on `IDR`: output pins read their own latch,
     /// input and alternate pins read the host-driven level, analog reads 0.
-    fn idr<W>(self, view: &Registers<W>) -> u32
+    fn idr<W>(&self, view: &Registers<W>) -> u32
     where
         W: Deref<Target = [u32]>,
     {
+        let input = self.effective_input();
         let mut v = 0;
         let mut p = 0;
         while p < 16 {
             let src = match Self::mode(view, p) {
-                0 | 2 => self.input,
+                0 | 2 => input,
                 1 => view.get(ODR),
                 _ => 0,
             };
@@ -67,7 +95,7 @@ impl Gpio4Behavior {
 
     /// The host-driven input word, for co-simulation level queries.
     fn input_level(&self) -> u32 {
-        self.input
+        self.effective_input()
     }
 }
 
@@ -106,6 +134,8 @@ impl Behavior for Gpio4Behavior {
 
     fn reset(&mut self) {
         self.input = 0;
+        self.analog_prev.set(false);
+        // The shared bus survives: it is host-owned.
     }
 
     fn drive_inputs(&mut self, _view: &mut Registers<&mut [u32]>, value: u32) {
@@ -149,6 +179,14 @@ impl GpioF4 {
     #[must_use]
     pub fn output(&self) -> u32 {
         self.inner.word(ODR)
+    }
+
+    /// Share the analog bus: input and alternate pins follow its millivolts
+    /// through the Schmitt path (WP-R4).
+    #[must_use]
+    pub fn with_analog_bus(mut self, bus: Arc<Mutex<AnalogBusState>>) -> Self {
+        self.inner.behavior_mut().analog_bus = Some(bus);
+        self
     }
 }
 
@@ -322,5 +360,22 @@ mod tests {
         // Registers run MODER..AFRH (0x00..0x28); the next slot is reserved.
         assert!(matches!(g.read(BASE + 0x28), Err(BusError::Reserved)));
         assert!(matches!(g.read(BASE - 1), Err(BusError::Reserved)));
+    }
+
+    #[test]
+    fn bus_drives_input_and_alternate_pins() {
+        use crate::device::analog::AnalogBusState;
+        let bus = AnalogBusState::shared();
+        let mut g = new_port().with_analog_bus(bus.clone());
+        set_mode(&mut g, 0, 0); // input
+        set_mode(&mut g, 1, 2); // alternate
+        set_mode(&mut g, 2, 1); // output (latch-driven)
+        set_mode(&mut g, 3, 3); // analog (reads 0)
+        write_word(&mut g, BASE + BSRR, 1 << 2); // PA2 latch high
+        g.drive_inputs(0); // decoy: the bus wins once driven
+        AnalogBusState::set_millivolts(&bus, 2500);
+        assert_eq!(read_word(&mut g, BASE + IDR) & 0xF, 0b0111);
+        AnalogBusState::set_millivolts(&bus, 500);
+        assert_eq!(read_word(&mut g, BASE + IDR) & 0xF, 0b0100);
     }
 }

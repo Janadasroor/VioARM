@@ -85,7 +85,9 @@ pub fn virtual_board() -> BoardMemory {
     mem.set_clock(clock.clone());
     mem.attach(Box::new(Gpio::at(GPIO_BASE)));
     mem.attach(Box::new(UartTx::at(UART_BASE)));
-    mem.attach(Box::new(Apin::at(APIN_BASE)));
+    // The shared analog bus: `Apin` receipts publish into it so future
+    // `Apin`-fed consumers read one node (WP-R4).
+    mem.attach(Box::new(Apin::at(APIN_BASE).with_bus(mem.analog_handle())));
     mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
     mem.attach(Box::new(Dwt::new()));
     mem
@@ -162,9 +164,15 @@ pub fn stm32f103() -> BoardMemory {
     mem.attach(Box::new(Sdio::new_for::<
         crate::device::svd::stm32f103::Stm32f103,
     >()));
-    mem.attach(Box::new(StmGpio::at(stm32::GPIOA, "gpioa")));
-    mem.attach(Box::new(StmGpio::at(stm32::GPIOB, "gpiob")));
-    mem.attach(Box::new(StmGpio::at(stm32::GPIOC, "gpioc")));
+    mem.attach(Box::new(
+        StmGpio::at(stm32::GPIOA, "gpioa").with_analog_bus(mem.analog_handle()),
+    ));
+    mem.attach(Box::new(
+        StmGpio::at(stm32::GPIOB, "gpiob").with_analog_bus(mem.analog_handle()),
+    ));
+    mem.attach(Box::new(
+        StmGpio::at(stm32::GPIOC, "gpioc").with_analog_bus(mem.analog_handle()),
+    ));
     mem.attach(Box::new(Usart::with_dma(dma_requests.clone())));
     mem.attach(Box::new(Usart::usart2_for_device_with_dma::<Stm32f103>(
         dma_requests.clone(),
@@ -172,21 +180,25 @@ pub fn stm32f103() -> BoardMemory {
     mem.attach(Box::new(Usart::usart3_for_device_with_dma::<Stm32f103>(
         dma_requests.clone(),
     )));
-    mem.attach(Box::new(Timer::tim2().with_dma_update(
-        dma_requests.clone(),
-        0,
-        2,
-    ))); // DMA1 ch2: TIM2_UP (RM0008 §13.3.7 Table 78)
-    mem.attach(Box::new(Timer::tim3()));
-    mem.attach(Box::new(Timer::tim1()));
-    mem.attach(Box::new(Timer::tim4()));
-    mem.attach(Box::new(Timer::tim6()));
-    mem.attach(Box::new(Timer::tim7()));
-    mem.attach(Box::new(Exti::new()));
+    mem.attach(Box::new(
+        Timer::tim2()
+            .with_dma_update(dma_requests.clone(), 0, 2)
+            .with_analog_bus(mem.analog_handle()),
+    )); // DMA1 ch2: TIM2_UP (RM0008 §13.3.7 Table 78)
+    mem.attach(Box::new(Timer::tim3().with_analog_bus(mem.analog_handle())));
+    mem.attach(Box::new(Timer::tim1().with_analog_bus(mem.analog_handle())));
+    mem.attach(Box::new(Timer::tim4().with_analog_bus(mem.analog_handle())));
+    mem.attach(Box::new(Timer::tim6().with_analog_bus(mem.analog_handle())));
+    mem.attach(Box::new(Timer::tim7().with_analog_bus(mem.analog_handle())));
+    mem.attach(Box::new(Exti::new().with_analog_bus(mem.analog_handle())));
     mem.attach(Box::new(Afio::new()));
-    mem.attach(Box::new(Adc::adc1().with_dma(dma_requests.clone(), 0, 1))); // DMA1 ch1: ADC1
-    mem.attach(Box::new(Adc::adc2()));
-    mem.attach(Box::new(Adc::adc3()));
+    mem.attach(Box::new(
+        Adc::adc1()
+            .with_dma(dma_requests.clone(), 0, 1)
+            .with_analog_bus(mem.analog_handle()),
+    )); // DMA1 ch1: ADC1
+    mem.attach(Box::new(Adc::adc2().with_analog_bus(mem.analog_handle())));
+    mem.attach(Box::new(Adc::adc3().with_analog_bus(mem.analog_handle())));
     mem.attach(Box::new(Spi::spi1().with_dma(
         Some((dma_requests.clone(), 0, 3)),
         Some((dma_requests.clone(), 0, 2)),
@@ -7846,7 +7858,8 @@ pub fn stm32f303xe() -> BoardMemory {
     {
         mem.attach(Box::new(Dac::new_for::<Stm32f303xe>()));
     }
-    // F3 GPIO is F4-style (MODER)
+    // F3 GPIO is F4-style (MODER); input and alternate pins follow the
+    // shared analog bus through the Schmitt path (WP-R4).
     for (base, name) in [
         (0x4800_0000u32, "gpioa"),
         (0x4800_0400, "gpiob"),
@@ -7856,7 +7869,9 @@ pub fn stm32f303xe() -> BoardMemory {
         (0x4800_1400, "gpiof"),
     ] {
         if <Stm32f303xe as crate::device::svd::Device>::by_base(base).is_some() {
-            mem.attach(Box::new(GpioF4::at_in::<Stm32f303xe>(base, name)));
+            mem.attach(Box::new(
+                GpioF4::at_in::<Stm32f303xe>(base, name).with_analog_bus(mem.analog_handle()),
+            ));
         }
     }
     // USART family
@@ -7878,9 +7893,10 @@ pub fn stm32f303xe() -> BoardMemory {
         Timer::tim6_for::<Stm32f303xe>,
         Timer::tim7_for::<Stm32f303xe>,
     ] {
-        let base = ctor().ranges()[0].base;
+        let timer = ctor();
+        let base = timer.ranges()[0].base;
         if <Stm32f303xe as crate::device::svd::Device>::by_base(base).is_some() {
-            mem.attach(Box::new(ctor()));
+            mem.attach(Box::new(timer.with_analog_bus(mem.analog_handle())));
         }
     }
     for name in ["TIM4", "TIM8", "TIM15", "TIM16", "TIM17", "TIM20"] {
@@ -7888,7 +7904,8 @@ pub fn stm32f303xe() -> BoardMemory {
             if let Some(def) = crate::device::svd::stm32f303xe::peripheral(name) {
                 if matches!(mem.read(def.base), Err(crate::error::BusError::Reserved)) {
                     mem.attach(Box::new(
-                        crate::device::stm32::timer::Timer::new_for_name::<Stm32f303xe>(name),
+                        crate::device::stm32::timer::Timer::new_for_name::<Stm32f303xe>(name)
+                            .with_analog_bus(mem.analog_handle()),
                     ));
                     let _ = def.base;
                 }
@@ -7896,7 +7913,9 @@ pub fn stm32f303xe() -> BoardMemory {
         }
     }
     if <Stm32f303xe as crate::device::svd::Device>::peripheral("EXTI").is_some() {
-        mem.attach(Box::new(Exti::for_device::<Stm32f303xe>()));
+        mem.attach(Box::new(
+            Exti::for_device::<Stm32f303xe>().with_analog_bus(mem.analog_handle()),
+        ));
     }
     if <Stm32f303xe as crate::device::svd::Device>::peripheral("SYSCFG").is_some() {
         mem.attach(Box::new(Syscfg::for_device::<Stm32f303xe>()));
@@ -7910,24 +7929,33 @@ pub fn stm32f303xe() -> BoardMemory {
     }
     if <Stm32f303xe as crate::device::svd::Device>::peripheral("ADC1").is_some() {
         mem.attach(Box::new(
-            Adc::new_for::<Stm32f303xe>().with_common(adc12_state.clone()),
+            Adc::new_for::<Stm32f303xe>()
+                .with_common(adc12_state.clone())
+                .with_analog_bus(mem.analog_handle()),
         ));
     }
     if <Stm32f303xe as crate::device::svd::Device>::peripheral("ADC2").is_some() {
         mem.attach(Box::new(
-            Adc::adc2_for::<Stm32f303xe>().with_common(adc12_state.clone()),
+            Adc::adc2_for::<Stm32f303xe>()
+                .with_common(adc12_state.clone())
+                .with_analog_bus(mem.analog_handle()),
         ));
     }
     if <Stm32f303xe as crate::device::svd::Device>::peripheral("ADC3").is_some() {
-        mem.attach(Box::new(Adc::adc3_for::<Stm32f303xe>()));
+        mem.attach(Box::new(
+            Adc::adc3_for::<Stm32f303xe>().with_analog_bus(mem.analog_handle()),
+        ));
     }
     if <Stm32f303xe as crate::device::svd::Device>::peripheral("ADC4").is_some() {
-        mem.attach(Box::new(Adc::adc4_for::<Stm32f303xe>()));
+        mem.attach(Box::new(
+            Adc::adc4_for::<Stm32f303xe>().with_analog_bus(mem.analog_handle()),
+        ));
     }
     if <Stm32f303xe as crate::device::svd::Device>::peripheral("COMP").is_some() {
-        mem.attach(Box::new(crate::device::stm32::comp::Comp::new_for::<
-            Stm32f303xe,
-        >()));
+        mem.attach(Box::new(
+            crate::device::stm32::comp::Comp::new_for::<Stm32f303xe>()
+                .with_analog_bus(mem.analog_handle()),
+        ));
     }
     if <Stm32f303xe as crate::device::svd::Device>::peripheral("OPAMP").is_some() {
         mem.attach(Box::new(crate::device::stm32::opamp::Opamp::new_for::<

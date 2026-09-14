@@ -20,6 +20,9 @@ enum TraceFormat {
     Text,
     /// `{"cycle":N,"pc":"0x..."}` per retired instruction, hook-driven.
     Jsonl,
+    /// Value-change dump (`$date/$var/#ts`) of `pc` plus `--pin-log`
+    /// pins, one row per change; opens in a waveform viewer.
+    Vcd,
 }
 
 /// The concrete boards the CLI can boot (21 SVD tables + 500 Dnames via core_only, 13 full).
@@ -1689,14 +1692,32 @@ enum Commands {
         /// Arm semihosting (`BKPT 0xAB`) plus ITM stimulus capture
         #[arg(long)]
         semihost: bool,
-        /// Trace format: human-readable text (default) or `jsonl` streaming
+        /// Trace format: human-readable text (default), `jsonl` streaming
         /// (`{"cycle":N,"pc":"0x..."}` per retired instruction, driven by
-        /// the hook registry).
+        /// the hook registry), or `vcd` waveform (needs `--pin-log`).
         #[arg(long, value_enum, default_value_t = TraceFormat::Text)]
         format: TraceFormat,
         /// Write the trace here instead of stdout.
         #[arg(long)]
         output: Option<PathBuf>,
+        /// Sample GPIO pins into the trace (`c13`, `a0,a1`; repeatable or
+        /// comma-separated). Only `vcd` consumes these today.
+        #[arg(long, value_delimiter = ',')]
+        pin_log: Vec<String>,
+        /// Retired instructions between `vcd` samples (reruns identical).
+        #[arg(long, default_value_t = 1)]
+        pin_sample: u64,
+    },
+    /// Measure throughput on this machine (field benchmark, no criterion)
+    Benchmark {
+        #[arg(long, value_enum, default_value_t = Board::Stm32f103, help = BOARD_HELP)]
+        board: Board,
+        /// Retired steps per kernel (kernels repeat fixed windows to it).
+        #[arg(long, default_value_t = 1_000_000)]
+        cycles: u64,
+        /// Exit 1 when any kernel lands below this MIPS (CI floor).
+        #[arg(long)]
+        fail_under: Option<f64>,
     },
     /// Show image layout (segments, entry)
     Info { image: PathBuf },
@@ -1892,6 +1913,43 @@ fn sample_pins(
     println!("{line}");
 }
 
+/// Format one backtrace opcode: the halfword at `pc`, plus `:h1` when the
+/// opcode prefix marks a 32-bit Thumb-2 encoding (top five bits `11101`,
+/// `11110`, or `11111`) and the second halfword reads. Narrow opcodes
+/// print alone so the next instruction's bytes never masquerade as part
+/// of this one; unreadable code prints placeholders.
+fn format_backtrace_op(e: &vioarm_core::machine::BacktraceEntry) -> String {
+    let Some(h0) = e.h0 else {
+        return "????????".to_owned();
+    };
+    let wide = matches!(h0 & 0xF800, 0xE800 | 0xF000 | 0xF800);
+    match (wide, e.h1) {
+        (true, Some(h1)) => format!("{h0:#06x}:{h1:#06x}"),
+        _ => format!("{h0:#06x}"),
+    }
+}
+
+/// Print the last-retired-instruction ring after a fault halt (at most
+/// `max` entries, oldest first). Empty rings print nothing, so
+/// budget-exhausted and disabled-ring runs stay quiet. The faulting
+/// instruction itself never retires, so this prefix pairs with the live
+/// `pc` on the halt line above.
+fn print_backtrace(m: &mut Machine<board::BoardMemory>, max: usize) {
+    let entries = m.backtrace(max);
+    if entries.is_empty() {
+        return;
+    }
+    println!("{} (last {}):", "backtrace".dimmed().bold(), entries.len());
+    for (i, e) in entries.iter().enumerate() {
+        println!(
+            "  #{i} pc={:#010x} op={} cyccnt={}",
+            e.pc,
+            format_backtrace_op(e),
+            e.cyccnt
+        );
+    }
+}
+
 fn run_quiet(
     m: &mut Machine<board::BoardMemory>,
     budget: u64,
@@ -1965,6 +2023,7 @@ fn run_quiet(
                 "xpsr".bright_cyan(),
                 xpsr.get()
             );
+            print_backtrace(m, 32);
         }
         Ok(()) => unreachable!(),
     }
@@ -2027,6 +2086,134 @@ fn run_traced_jsonl(m: &mut Machine<board::BoardMemory>, budget: u64, output: Op
     }
 }
 
+/// Minimal value-change-dump writer: header with one wire per signal plus
+/// a 32-bit `pc` bus, then `#<ns>` timestamps with one row per change.
+/// `$date` is fixed text so reruns are byte-identical.
+struct VcdWriter<W: std::io::Write> {
+    out: W,
+    ids: Vec<char>,
+    widths: Vec<u8>,
+    last: Vec<u64>,
+    last_ts: Option<u64>,
+}
+
+impl<W: std::io::Write> VcdWriter<W> {
+    fn new(mut out: W, signals: &[(String, u8)]) -> std::io::Result<Self> {
+        let mut ids = Vec::with_capacity(signals.len());
+        let mut widths = Vec::with_capacity(signals.len());
+        let mut last = Vec::with_capacity(signals.len());
+        let mut head = format!(
+            "$date VioARM {}$end\n$version VioARM {}$end\n$timescale 1ns $end\n$scope module top $end\n",
+            env!("CARGO_PKG_VERSION"),
+            env!("CARGO_PKG_VERSION")
+        );
+        for (i, (name, width)) in signals.iter().enumerate() {
+            let id = char::from_u32(33 + i as u32).unwrap_or('?');
+            head.push_str(&format!("$var wire {width} {id} {name} $end\n"));
+            ids.push(id);
+            widths.push(*width);
+            last.push(u64::MAX);
+        }
+        head.push_str("$upscope $end\n$enddefinitions $end\n#0\n");
+        out.write_all(head.as_bytes())?;
+        Ok(Self {
+            out,
+            ids,
+            widths,
+            last,
+            last_ts: Some(0),
+        })
+    }
+
+    fn stamp_ns(cycles: u64, hz: u32) -> u64 {
+        if hz == 0 {
+            return cycles;
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        {
+            (u128::from(cycles) * 1_000_000_000 / u128::from(hz)) as u64
+        }
+    }
+
+    fn sample(&mut self, cycles: u64, hz: u32, values: &[u64]) -> std::io::Result<()> {
+        debug_assert_eq!(values.len(), self.ids.len());
+        let ts = Self::stamp_ns(cycles, hz);
+        let mut pending = Vec::new();
+        for (i, (&value, &width)) in values.iter().zip(self.widths.iter()).enumerate() {
+            if self.last[i] != value {
+                self.last[i] = value;
+                if width == 1 {
+                    pending.push(format!("{}{}\n", value & 1, self.ids[i]));
+                } else {
+                    pending.push(format!(
+                        "b{value:0width$b} {}\n",
+                        self.ids[i],
+                        width = width as usize
+                    ));
+                }
+            }
+        }
+        if pending.is_empty() {
+            return Ok(());
+        }
+        if self.last_ts != Some(ts) {
+            self.last_ts = Some(ts);
+            self.out.write_all(format!("#{ts}\n").as_bytes())?;
+        }
+        for row in pending {
+            self.out.write_all(row.as_bytes())?;
+        }
+        Ok(())
+    }
+}
+
+/// VCD trace: `pc` plus `--pin-log` pins sampled every `sample` retired
+/// instructions. `output` selects a file, `None` streams to stdout.
+fn run_traced_vcd(
+    m: &mut Machine<board::BoardMemory>,
+    budget: u64,
+    output: Option<PathBuf>,
+    pins: &[(u8, u8, String)],
+    sample: u64,
+) {
+    use std::io::Write;
+    let sink: Box<dyn Write + Send> = match output {
+        Some(path) => Box::new(
+            std::fs::File::create(&path)
+                .unwrap_or_else(|e| panic!("trace output {}: {e}", path.display())),
+        ),
+        None => Box::new(std::io::stdout()),
+    };
+    let hz = m.cpu_hz();
+    let mut signals: Vec<(String, u8)> =
+        pins.iter().map(|(_, _, name)| (name.clone(), 1)).collect();
+    signals.push(("pc".to_owned(), 32));
+    let mut vcd = VcdWriter::new(sink, &signals).unwrap_or_else(|e| panic!("trace output: {e}"));
+    let dump = |m: &mut Machine<board::BoardMemory>, vcd: &mut VcdWriter<Box<dyn Write + Send>>| {
+        let (regs, _, cycles) = m.core.snapshot();
+        let mut values: Vec<u64> = pins
+            .iter()
+            .map(|(port, pin, _)| {
+                u64::from(
+                    m.gpio_pin(*port, *pin)
+                        .map_or(0, |(_, level)| u8::from(level)),
+                )
+            })
+            .collect();
+        values.push(u64::from(regs.pc));
+        vcd.sample(cycles, hz, &values).ok();
+    };
+    dump(m, &mut vcd);
+    for i in 1..=budget {
+        if m.step().is_err() {
+            break;
+        }
+        if i % sample == 0 {
+            dump(m, &mut vcd);
+        }
+    }
+}
+
 fn run_traced(m: &mut Machine<board::BoardMemory>, budget: u64) {
     for cycle in 0..budget {
         let (regs, xpsr, _) = m.core.snapshot();
@@ -2058,6 +2245,7 @@ fn run_traced(m: &mut Machine<board::BoardMemory>, budget: u64) {
                 "xpsr".bright_cyan(),
                 xpsr.get()
             );
+            print_backtrace(m, 32);
             return;
         }
     }
@@ -2072,6 +2260,269 @@ fn run_traced(m: &mut Machine<board::BoardMemory>, budget: u64) {
         "xpsr".bright_cyan(),
         xpsr.get()
     );
+}
+
+/// Field benchmark kernels (WP-R3): the same shapes as the criterion
+/// group in `vioarm-core/benches/mips.rs`, reimplemented inline so the
+/// CLI needs no dev-dependencies at runtime. Every kernel boots from a
+/// vector table and repeats a fixed retired-step window until it reaches
+/// `cycles`; only stepping is timed (setup and `reset()` stay outside,
+/// mirroring `iter_batched`), so the number is stepping throughput.
+struct BenchResult {
+    kernel: &'static str,
+    steps: u64,
+    wall_s: f64,
+    cyccnt: u64,
+    /// Trailing `# ...` comment (e.g. USART bytes drained).
+    note: Option<String>,
+}
+
+impl BenchResult {
+    #[allow(clippy::cast_precision_loss)]
+    fn mips(&self) -> f64 {
+        self.steps as f64 / self.wall_s / 1e6
+    }
+    fn wall_ms(&self) -> f64 {
+        self.wall_s * 1e3
+    }
+}
+
+/// One stdout row: `kernel mips wall-ms cyccnt [# note]` — plain numbers
+/// scripts parse; humans read the optional comment.
+fn bench_row(r: &BenchResult) -> String {
+    let mut s = format!(
+        "{} {:.3} {:.1} {}",
+        r.kernel,
+        r.mips(),
+        r.wall_ms(),
+        r.cyccnt
+    );
+    if let Some(note) = &r.note {
+        s.push_str(&format!(" # {note}"));
+    }
+    s
+}
+
+/// Kernels below this MIPS trip `--fail-under`.
+fn bench_floor_failures(results: &[BenchResult], floor: f64) -> Vec<&str> {
+    results
+        .iter()
+        .filter(|r| r.mips() < floor)
+        .map(|r| r.kernel)
+        .collect()
+}
+
+/// Step exactly `steps` retired instructions, timing the stepping only.
+/// A fault aborts the kernel loudly — benchmarks never swallow halts.
+fn bench_window<M: vioarm_core::mem::PeripheralBus>(
+    m: &mut Machine<M>,
+    steps: u64,
+) -> Result<(f64, u64), HaltCause> {
+    let c0 = m.core.cyccnt;
+    let start = std::time::Instant::now();
+    for _ in 0..steps {
+        m.step()?;
+    }
+    Ok((
+        start.elapsed().as_secs_f64(),
+        m.core.cyccnt.wrapping_sub(c0),
+    ))
+}
+
+/// Vector-table image at `base`: SP + reset vector, padding, then `code`
+/// at `base + 0x10`. Every kernel boots from it via `reset()` or a
+/// direct pc set, like field firmware.
+fn bench_image(base: u32, code: &[u8]) -> Vec<u8> {
+    let mut img = vec![0u8; 0x10];
+    img[0..4].copy_from_slice(&0x2000_8000u32.to_le_bytes());
+    img[4..8].copy_from_slice(&(base.wrapping_add(0x10) | 1).to_le_bytes());
+    img.extend_from_slice(code);
+    img
+}
+
+/// `nops` NOPs (`0xBF00`, Thumb-1 on every core) plus a `b .` landing.
+fn bench_nop_code(nops: usize) -> Vec<u8> {
+    let mut code = Vec::with_capacity(nops * 2 + 2);
+    for _ in 0..nops {
+        code.extend_from_slice(&[0x00, 0xBF]);
+    }
+    code.extend_from_slice(&[0xFE, 0xE7]);
+    code
+}
+
+/// Bare NOP loop on `FlatMemory` (mirrors `mips/nop_loop_1k`, ~4.5 MIPS):
+/// no bus scan, no device ticks — the ceiling the board kernels divide by.
+fn bench_bare_nop(cycles: u64) -> Result<BenchResult, String> {
+    use vioarm_core::mem::flat::FlatMemory;
+    const BASE: u32 = 0x0800_0000;
+    const ENTRY: u32 = BASE + 0x10;
+    const NOPS: u32 = 1000;
+    const WINDOW: u64 = 1000;
+    let mut m = Machine::armv7m(FlatMemory::with_layout(&[BASE], &[0x10000]));
+    m.load_image(&loader::load_flat(
+        BASE,
+        &bench_image(BASE, &bench_nop_code(1000)),
+    ));
+    if m.core.mem().read_half(ENTRY + NOPS * 2) != Ok(0xE7FE) {
+        return Err("bare-nop: image did not land".to_owned());
+    }
+    let reps = cycles.div_ceil(WINDOW).max(1);
+    let (mut wall, mut cyccnt, mut steps) = (0.0, 0u64, 0u64);
+    for _ in 0..reps {
+        // Flat memory holds no peripheral state: re-arming the pc is the
+        // whole reboot (mirrors the bench's direct pc set).
+        m.core.regs.pc = ENTRY;
+        m.core.xpsr.set(0x0100_0000);
+        let (dt, dcy) = bench_window(&mut m, WINDOW)
+            .map_err(|e| format!("bare-nop: faulted after {steps} steps: {e}"))?;
+        wall += dt;
+        cyccnt += dcy;
+        steps += WINDOW;
+    }
+    Ok(BenchResult {
+        kernel: "bare-nop",
+        steps,
+        wall_s: wall,
+        cyccnt,
+        note: None,
+    })
+}
+
+/// Board boot-to-halt shape (mirrors `board/stm32f103_boot_10k_nop`):
+/// vector-table boot at the flash alias, 10k NOPs per window, the
+/// family-correct core via `Machine::for_mem`. The bus scan plus device
+/// ticks are the measured cost over `bare-nop`.
+fn bench_board_boot(board: Board, cycles: u64) -> Result<BenchResult, String> {
+    const BASE: u32 = 0x0000_0000;
+    const ENTRY: u32 = 0x10;
+    const NOPS: u32 = 10_000;
+    const WINDOW: u64 = 10_000;
+    let mut m = Machine::for_mem(board.name(), board.mem());
+    m.load_image(&loader::load_flat(
+        BASE,
+        &bench_image(BASE, &bench_nop_code(NOPS as usize)),
+    ));
+    if m.core.mem().read_half(ENTRY + NOPS * 2) != Ok(0xE7FE) {
+        return Err(format!(
+            "board-boot: image did not land on {} (no flash alias at 0x0?)",
+            board.name()
+        ));
+    }
+    let reps = cycles.div_ceil(WINDOW).max(1);
+    let (mut wall, mut cyccnt, mut steps) = (0.0, 0u64, 0u64);
+    for _ in 0..reps {
+        m.reset()
+            .map_err(|e| format!("board-boot: reboot failed: {e}"))?;
+        let (dt, dcy) = bench_window(&mut m, WINDOW)
+            .map_err(|e| format!("board-boot: faulted after {steps} steps: {e}"))?;
+        wall += dt;
+        cyccnt += dcy;
+        steps += WINDOW;
+    }
+    Ok(BenchResult {
+        kernel: "board-boot",
+        steps,
+        wall_s: wall,
+        cyccnt,
+        note: None,
+    })
+}
+
+/// USART1 base for `board` from its SVD chip table (`None` for the
+/// virtual board, which carries a `uart` instead of a `usart1`).
+fn bench_usart1_base(board_name: &str) -> Option<u32> {
+    board::all_chip_tables()
+        .into_iter()
+        .find(|(name, _)| *name == board_name)
+        .and_then(|(_, peris)| peris.iter().find(|p| p.name == "USART1").map(|p| p.base))
+}
+
+/// USART-TX soak: F1-map firmware (`CR1=UE|TE`, then 200 `STR` to `DR`
+/// per window) on the selected board. The peripheral addresses stamp in
+/// as literals, so any F1-map family (F1/F2/F4/F7) runs; other maps fail
+/// the host-side TX probe below and skip the kernel (`Ok(None)`) instead
+/// of timing a dead store.
+fn bench_usart_tx(board: Board, cycles: u64) -> Result<Option<BenchResult>, String> {
+    const BASE: u32 = 0x0000_0000;
+    const ENTRY: u32 = 0x10;
+    const TRIPS: u64 = 200;
+    const WINDOW: u64 = 6 + TRIPS * 3; // setup + 200×(str,subs,bne)
+    const CR1_OFF: u32 = 0x0C;
+    const DR_OFF: u32 = 0x04;
+    const UE_TE: u32 = (1 << 13) | (1 << 3);
+    let Some(u1) = bench_usart1_base(board.name()) else {
+        return Ok(None);
+    };
+    let mut m = Machine::for_mem(board.name(), board.mem());
+    // Hand-encoded Thumb-1, literals word-aligned after the code:
+    //   0x10: ldr r3,[pc,#16]  ; [0x24] = USART1_CR1
+    //   0x12: ldr r0,[pc,#20]  ; [0x28] = UE|TE
+    //   0x14: str r0,[r3]      ; enable TX
+    //   0x16: ldr r3,[pc,#20]  ; [0x2C] = USART1_DR
+    //   0x18: movs r0,#'A'; 0x1A: movs r2,#200
+    //   0x1C: str r0,[r3]; 0x1E: subs r2,r2,#1; 0x20: bne 0x1C; 0x22: b .
+    let mut img = bench_image(
+        BASE,
+        &[
+            0x04, 0x4B, 0x05, 0x48, 0x18, 0x60, 0x05, 0x4B, 0x41, 0x20, 0xC8, 0x22, 0x18, 0x60,
+            0x52, 0x1E, 0xFC, 0xD1, 0xFE, 0xE7,
+        ],
+    );
+    // Room for the three literal words at 0x24/0x28/0x2C.
+    img.resize(0x30, 0);
+    img[0x24..0x28].copy_from_slice(&(u1 + CR1_OFF).to_le_bytes());
+    img[0x28..0x2C].copy_from_slice(&UE_TE.to_le_bytes());
+    img[0x2C..0x30].copy_from_slice(&(u1 + DR_OFF).to_le_bytes());
+    m.load_image(&loader::load_flat(BASE, &img));
+    // Host-side TX probe: the F1 map answers with our byte; anything else
+    // (new-gen ISR/RDR/TDR map) skips the kernel, no bogus row.
+    m.core
+        .mem()
+        .write_word(u1 + CR1_OFF, UE_TE)
+        .map_err(|e| format!("usart-tx: CR1 poke failed: {e}"))?;
+    m.core
+        .mem()
+        .write_word(u1 + DR_OFF, u32::from(b'X'))
+        .map_err(|e| format!("usart-tx: DR poke failed: {e}"))?;
+    if m.drain_channel("usart1") != b"X" {
+        return Ok(None);
+    }
+    let reps = cycles.div_ceil(WINDOW).max(1);
+    let (mut wall, mut cyccnt, mut steps) = (0.0, 0u64, 0u64);
+    let (mut tx_total, mut tx_ok) = (0u64, true);
+    for _ in 0..reps {
+        m.reset()
+            .map_err(|e| format!("usart-tx: reboot failed: {e}"))?;
+        // `reset()` clears the TX enable: re-arm outside the timer.
+        m.core
+            .mem()
+            .write_word(u1 + CR1_OFF, UE_TE)
+            .map_err(|e| format!("usart-tx: CR1 re-arm failed: {e}"))?;
+        let (dt, dcy) = bench_window(&mut m, WINDOW)
+            .map_err(|e| format!("usart-tx: faulted after {steps} steps: {e}"))?;
+        wall += dt;
+        cyccnt += dcy;
+        steps += WINDOW;
+        // Peripheral reset clears the queue each reboot, so drain per
+        // window (host-side, untimed) and accumulate the count.
+        let chunk = m.drain_channel("usart1");
+        tx_ok &= chunk.len() == TRIPS as usize && chunk.iter().all(|&b| b == b'A');
+        tx_total += u64::try_from(chunk.len()).unwrap_or(u64::MAX);
+    }
+    let expected = reps.saturating_mul(TRIPS);
+    let mut note = format!("tx={tx_total}B");
+    if tx_total != expected || !tx_ok {
+        // Loud, not wrong: the steps retired, but the peripheral mix is
+        // not the soak we claim — say so on the row.
+        note.push_str(" MISMATCH");
+    }
+    Ok(Some(BenchResult {
+        kernel: "usart-tx",
+        steps,
+        wall_s: wall,
+        cyccnt,
+        note: Some(note),
+    }))
 }
 
 fn docs_topic(topic: Option<String>) {
@@ -2129,7 +2580,7 @@ fn debug_repl(image: PathBuf, board: Board, base: u32) {
         let cmd = rl.trim();
         match cmd {
             "help" | "h" | "?" => {
-                println!("{}: step(s)/next(n) continue(c) regs(r) mem <addr> break <pc> budget <n> quit(q)", "commands".bright_green());
+                println!("{}: step(s)/next(n) continue(c) regs(r) mem <addr> break <pc> budget <n> history [N] quit(q)", "commands".bright_green());
             }
             "step" | "s" | "n" | "next" => match m.step() {
                 Ok(_) => {
@@ -2142,7 +2593,10 @@ fn debug_repl(image: PathBuf, board: Board, base: u32) {
                         xpsr.get()
                     );
                 }
-                Err(e) => println!("{} {e}", "halted:".yellow(),),
+                Err(e) => {
+                    println!("{} {e}", "halted:".yellow(),);
+                    print_backtrace(&mut m, 32);
+                }
             },
             "regs" | "r" => {
                 let (regs, xpsr, cycles) = m.core.snapshot();
@@ -2195,7 +2649,10 @@ fn debug_repl(image: PathBuf, board: Board, base: u32) {
                         Err(HaltCause::CycleBudgetExhausted) => {
                             println!("{}", "budget exhausted".yellow())
                         }
-                        Err(e) => println!("{} {e}", "halted:".green()),
+                        Err(e) => {
+                            println!("{} {e}", "halted:".green());
+                            print_backtrace(&mut m, 32);
+                        }
                         Ok(()) => {}
                     }
                 }
@@ -2204,9 +2661,21 @@ fn debug_repl(image: PathBuf, board: Board, base: u32) {
                 Err(HaltCause::CycleBudgetExhausted) => {
                     println!("{}", "budget exhausted — 1M".yellow())
                 }
-                Err(e) => println!("{} {e}", "halted:".green()),
+                Err(e) => {
+                    println!("{} {e}", "halted:".green());
+                    print_backtrace(&mut m, 32);
+                }
                 Ok(()) => {}
             },
+            c if c == "history"
+                || c == "hist"
+                || c.starts_with("history ")
+                || c.starts_with("hist ") =>
+            {
+                let arg = c.split_whitespace().nth(1);
+                let max = arg.map_or(32, |n| n.parse::<usize>().unwrap_or(32));
+                print_backtrace(&mut m, max.max(1));
+            }
             "quit" | "q" | "exit" => break,
             "" => continue,
             _ => println!("{} — try help", "unknown".red()),
@@ -2392,6 +2861,8 @@ fn main() {
                 semihost,
                 format,
                 output,
+                pin_log,
+                pin_sample,
             } => {
                 let (img, _) = load_image_auto(&image, base);
                 let mut m = machine_for(board, &img, None);
@@ -2400,6 +2871,80 @@ fn main() {
                 match format {
                     TraceFormat::Jsonl => run_traced_jsonl(&mut m, budget, output),
                     TraceFormat::Text => run_traced(&mut m, budget),
+                    TraceFormat::Vcd => {
+                        if pin_sample == 0 {
+                            eprintln!("{} --pin-sample must be at least 1", "error:".red().bold());
+                            std::process::exit(2);
+                        }
+                        let mut pins = Vec::with_capacity(pin_log.len());
+                        for spec in &pin_log {
+                            match parse_pin_spec(spec) {
+                                Ok(parsed) => pins.push(parsed),
+                                Err(cause) => {
+                                    eprintln!("{} {cause}", "error:".red().bold());
+                                    std::process::exit(2);
+                                }
+                            }
+                        }
+                        for (port, pin, name) in &pins {
+                            if m.gpio_pin(*port, *pin).is_none() {
+                                eprintln!(
+                                    "{} --pin-log entry '{name}': no such pin on this board",
+                                    "error:".red().bold()
+                                );
+                                std::process::exit(2);
+                            }
+                        }
+                        run_traced_vcd(&mut m, budget, output, &pins, pin_sample);
+                    }
+                }
+            }
+            Commands::Benchmark {
+                board,
+                cycles,
+                fail_under,
+            } => {
+                banner();
+                let mut results = Vec::new();
+                match bench_bare_nop(cycles) {
+                    Ok(r) => results.push(r),
+                    Err(e) => {
+                        eprintln!("{} {e}", "error:".red().bold());
+                        std::process::exit(1);
+                    }
+                }
+                match bench_board_boot(board, cycles) {
+                    Ok(r) => results.push(r),
+                    Err(e) => {
+                        eprintln!("{} {e}", "error:".red().bold());
+                        std::process::exit(1);
+                    }
+                }
+                match bench_usart_tx(board, cycles) {
+                    Ok(Some(r)) => results.push(r),
+                    Ok(None) => eprintln!(
+                        "{} usart-tx skipped: no F1-style USART1 on {}",
+                        "note:".dimmed(),
+                        board.name()
+                    ),
+                    Err(e) => {
+                        eprintln!("{} {e}", "error:".red().bold());
+                        std::process::exit(1);
+                    }
+                }
+                for r in &results {
+                    println!("{}", bench_row(r));
+                }
+                if let Some(floor) = fail_under {
+                    let bad = bench_floor_failures(&results, floor);
+                    if !bad.is_empty() {
+                        eprintln!(
+                            "{} benchmark floor {floor} MIPS missed by: {}",
+                            "fail:".red().bold(),
+                            bad.join(", ")
+                        );
+                        std::process::exit(1);
+                    }
                 }
             }
             Commands::Info { image } => {
@@ -2577,5 +3122,190 @@ mod pin_spec_tests {
         for bad in ["", "13", "c", "c32", "z0", "c-1", "cc1", "c1x"] {
             assert!(parse_pin_spec(bad).is_err(), "{bad}");
         }
+    }
+}
+
+#[cfg(test)]
+mod vcd_tests {
+    use super::VcdWriter;
+
+    fn writer() -> (Vec<u8>, Vec<(String, u8)>) {
+        (
+            Vec::new(),
+            vec![("c13".to_owned(), 1), ("pc".to_owned(), 32)],
+        )
+    }
+
+    #[test]
+    fn header_names_every_signal_and_timescale() {
+        let (mut out, signals) = writer();
+        VcdWriter::new(&mut out, &signals).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("$timescale 1ns $end"));
+        assert!(text.contains("$var wire 1 ! c13 $end"));
+        assert!(text.contains("$var wire 32 \" pc $end"));
+        assert!(text.contains("$enddefinitions $end"));
+        assert!(text.ends_with("#0\n"));
+    }
+
+    #[test]
+    fn changes_emit_once_with_cycle_true_timestamps() {
+        let (mut out, signals) = writer();
+        let mut w = VcdWriter::new(&mut out, &signals).unwrap();
+        w.sample(0, 16_000_000, &[0, 0x0800_0000]).unwrap();
+        w.sample(1, 16_000_000, &[0, 0x0800_0002]).unwrap();
+        w.sample(2, 16_000_000, &[1, 0x0800_0002]).unwrap();
+        drop(w);
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("0!\n"));
+        assert!(text.contains("b00001000000000000000000000000000 \"\n"));
+        assert!(text.contains("#62\n"));
+        assert!(text.contains("b00001000000000000000000000000010 \"\n"));
+        assert!(text.contains("#125\n"));
+        assert!(text.contains("1!\n"));
+        assert_eq!(text.matches("1!\n").count(), 1);
+    }
+
+    #[test]
+    fn steady_state_emits_no_rows() {
+        let (mut out, signals) = writer();
+        let mut w = VcdWriter::new(&mut out, &signals).unwrap();
+        w.sample(0, 16_000_000, &[1, 0x2000_0000]).unwrap();
+        let len = w.out.len();
+        w.sample(10, 16_000_000, &[1, 0x2000_0000]).unwrap();
+        assert_eq!(w.out.len(), len);
+    }
+
+    #[test]
+    fn reruns_are_byte_identical() {
+        let run = || {
+            let (mut out, signals) = writer();
+            let mut w = VcdWriter::new(&mut out, &signals).unwrap();
+            for (cycles, pin, pc) in [
+                (0, 0, 0x0800_0000),
+                (3, 1, 0x0800_0004),
+                (7, 0, 0x0800_0008),
+            ] {
+                w.sample(cycles, 8_000_000, &[pin, pc]).unwrap();
+            }
+            drop(w);
+            out
+        };
+        assert_eq!(run(), run());
+    }
+
+    #[test]
+    fn stamp_scales_by_board_clock() {
+        assert_eq!(VcdWriter::<Vec<u8>>::stamp_ns(1, 16_000_000), 62);
+        assert_eq!(
+            VcdWriter::<Vec<u8>>::stamp_ns(16_000_000, 16_000_000),
+            1_000_000_000
+        );
+        assert_eq!(VcdWriter::<Vec<u8>>::stamp_ns(5, 0), 5);
+    }
+}
+
+#[cfg(test)]
+mod backtrace_tests {
+    use super::format_backtrace_op;
+    use vioarm_core::machine::BacktraceEntry;
+
+    fn entry(pc: u32, h0: Option<u16>, h1: Option<u16>) -> BacktraceEntry {
+        BacktraceEntry {
+            pc,
+            h0,
+            h1,
+            cyccnt: 0,
+        }
+    }
+
+    #[test]
+    fn narrow_opcode_prints_alone() {
+        // `movs r0, #7` (0x2007) followed by `subs` bytes: the neighbour
+        // halfword is context, not part of this opcode.
+        assert_eq!(
+            format_backtrace_op(&entry(0x10, Some(0x2007), Some(0x1ec0))),
+            "0x2007"
+        );
+    }
+
+    #[test]
+    fn wide_prefix_pairs_with_second_halfword() {
+        // `bl` prefix 0xF000 + target halfword: one 32-bit opcode.
+        assert_eq!(
+            format_backtrace_op(&entry(0x10, Some(0xF000), Some(0xF800))),
+            "0xf000:0xf800"
+        );
+        // Unreadable second halfword: prefix alone, never placeholders.
+        assert_eq!(
+            format_backtrace_op(&entry(0x10, Some(0xF000), None)),
+            "0xf000"
+        );
+    }
+
+    #[test]
+    fn unreadable_code_prints_placeholders() {
+        assert_eq!(format_backtrace_op(&entry(0x10, None, None)), "????????");
+    }
+}
+
+#[cfg(test)]
+mod benchmark_tests {
+    use super::{
+        bench_bare_nop, bench_board_boot, bench_floor_failures, bench_row, bench_usart1_base,
+        bench_usart_tx, BenchResult, Board,
+    };
+
+    #[test]
+    fn rows_parse_as_plain_fields() {
+        let r = bench_bare_nop(2000).expect("bare kernel runs");
+        assert_eq!(r.steps, 2000);
+        assert!(r.cyccnt > 0);
+        let row = bench_row(&r);
+        let fields: Vec<&str> = row.split_whitespace().collect();
+        assert_eq!(fields.len(), 4, "{row}");
+        assert_eq!(fields[0], "bare-nop");
+        assert!(fields[1].parse::<f64>().unwrap() > 0.0);
+        assert!(fields[2].parse::<f64>().unwrap() >= 0.0);
+        assert_eq!(fields[3].parse::<u64>().unwrap(), r.cyccnt);
+    }
+
+    #[test]
+    fn board_boot_runs_windows_to_budget() {
+        let r = bench_board_boot(Board::Stm32f103, 20_000).expect("board kernel runs");
+        assert_eq!(r.steps, 20_000);
+        assert!(r.mips() > 0.0);
+    }
+
+    #[test]
+    fn usart_firmware_transmits_a_per_trip() {
+        // One 606-step window on stm32f103: validates the hand-encoded
+        // Thumb-1 (a wrong halfword faults or mistargets instead).
+        let r = bench_usart_tx(Board::Stm32f103, 606)
+            .expect("soak runs")
+            .expect("f103 has USART1");
+        assert_eq!(r.steps, 606);
+        let note = r.note.clone().unwrap();
+        assert!(note.starts_with("tx=200B"), "{note}");
+        assert!(!note.contains("MISMATCH"), "{note}");
+    }
+
+    #[test]
+    fn floor_trips_only_below_min() {
+        let rs = vec![BenchResult {
+            kernel: "k",
+            steps: 1000,
+            wall_s: 0.001,
+            cyccnt: 1000,
+            note: None,
+        }]; // exactly 1.0 MIPS
+        assert!(bench_floor_failures(&rs, 0.5).is_empty());
+        assert_eq!(bench_floor_failures(&rs, 2.0), vec!["k"]);
+    }
+
+    #[test]
+    fn usart_base_resolves_on_f103_and_absent_on_virtual() {
+        assert_eq!(bench_usart1_base("stm32f103"), Some(0x4001_3800));
+        assert_eq!(bench_usart1_base("virtual"), None);
     }
 }

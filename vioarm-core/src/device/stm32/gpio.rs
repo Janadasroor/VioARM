@@ -7,13 +7,19 @@
 //! express live in `GpioBehavior`: `BSRR`/`BRR` writes set/reset `ODR` (a
 //! cross-register side effect), and read-only `IDR` is synthesized from the
 //! config nibbles, the output latch, and the host-injected input level.
+//! With a shared analog bus wired (WP-R4), input pins instead follow the bus
+//! millivolts through the Schmitt path (`analog::schmitt_level`) — one node,
+//! every input coherent. Unset bus keeps the digital `drive_inputs` path.
 
+use crate::device::analog::{schmitt_level, AnalogBusState};
 use crate::device::svd::stm32f103;
 use crate::device::svd::{Behavior, Device, RegisterFile, Registers};
 use crate::device::{GpioPinMode, InterruptSource, Peripheral};
 use crate::error::BusError;
 use crate::mem::bus::Region;
 use core::ops::Deref;
+use std::cell::Cell;
+use std::sync::{Arc, Mutex};
 
 /// Register offsets within the port, per the SVD.
 const CRL: u32 = 0x00;
@@ -24,9 +30,15 @@ const BSRR: u32 = 0x10;
 const BRR: u32 = 0x14;
 
 /// The cross-register side effects the SVD cannot express.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct GpioBehavior {
     input: u32,
+    /// Shared analog bus (WP-R4): when wired and driven, input pins follow
+    /// it through the Schmitt path instead of the digital `input` word.
+    analog_bus: Option<Arc<Mutex<AnalogBusState>>>,
+    /// Previous bus-derived level (Schmitt holds between thresholds;
+    /// `Cell` so `&self` queries like `gpio_level` stay coherent).
+    analog_prev: Cell<bool>,
 }
 
 impl GpioBehavior {
@@ -39,18 +51,57 @@ impl GpioBehavior {
         (view.get(reg) >> (4 * (p & 7))) & 0xF
     }
 
-    /// The level firmware observes on `IDR`: output pins read their own
-    /// latch, input pins read the host-driven level.
-    fn idr<W>(self, view: &Registers<W>) -> u32
+    /// The effective host-driven input word: the bus-derived level (all
+    /// input pins share one node) once the bus is driven, else the digital
+    /// `drive_inputs` latch. Updates the Schmitt hold state.
+    fn effective_input(&self) -> u32 {
+        let Some(bus) = self.analog_bus.clone() else {
+            return self.input;
+        };
+        let Some(mv) = AnalogBusState::millivolts(&bus) else {
+            return self.input;
+        };
+        let level = schmitt_level(mv, self.analog_prev.get());
+        self.analog_prev.set(level);
+        if level {
+            0xFFFF
+        } else {
+            0
+        }
+    }
+
+    /// Whether pin `p` is analog mode (reads 0 on the bus path).
+    fn is_analog<W>(view: &Registers<W>, p: u32) -> bool
     where
         W: Deref<Target = [u32]>,
     {
+        // F1 analog: `MODE == 0` and `CNF == 0` (nibble 0).
+        Self::config(view, p) == 0
+    }
+
+    /// The level firmware observes on `IDR`: output pins read their own
+    /// latch, input pins read the host-driven level.
+    fn idr<W>(&self, view: &Registers<W>) -> u32
+    where
+        W: Deref<Target = [u32]>,
+    {
+        let input = self.effective_input();
+        let bus_driven = self
+            .analog_bus
+            .clone()
+            .is_some_and(|bus| AnalogBusState::millivolts(&bus).is_some());
         let mut v = 0;
         let mut p = 0;
         while p < 16 {
             // `MODE == 0` (the low two config bits clear) means input.
-            let src = if Self::config(view, p).trailing_zeros() >= 2 {
-                self.input
+            let is_input = Self::config(view, p).trailing_zeros() >= 2;
+            let src = if is_input {
+                // On the bus path analog-mode pins read 0 (like F4).
+                if bus_driven && Self::is_analog(view, p) {
+                    0
+                } else {
+                    input
+                }
             } else {
                 view.get(ODR)
             };
@@ -64,7 +115,7 @@ impl GpioBehavior {
 
     /// The host-driven input word, for co-simulation level queries.
     fn input_level(&self) -> u32 {
-        self.input
+        self.effective_input()
     }
 }
 
@@ -107,6 +158,8 @@ impl Behavior for GpioBehavior {
 
     fn reset(&mut self) {
         self.input = 0;
+        self.analog_prev.set(false);
+        // The shared bus survives: it is host-owned.
     }
 
     fn drive_inputs(&mut self, _view: &mut Registers<&mut [u32]>, value: u32) {
@@ -150,6 +203,14 @@ impl Gpio {
     #[must_use]
     pub fn output(&self) -> u32 {
         self.inner.word(ODR)
+    }
+
+    /// Share the analog bus: input pins follow its millivolts through the
+    /// Schmitt path (WP-R4). Unset bus keeps the digital `drive_inputs` path.
+    #[must_use]
+    pub fn with_analog_bus(mut self, bus: Arc<Mutex<AnalogBusState>>) -> Self {
+        self.inner.behavior_mut().analog_bus = Some(bus);
+        self
     }
 }
 
@@ -313,5 +374,38 @@ mod tests {
         let mut g = Gpio::at(BASE, "gpioa");
         assert!(matches!(g.read(BASE + 0x1C), Err(BusError::Reserved)));
         assert!(matches!(g.write(BASE - 1, 0), Err(BusError::Reserved)));
+    }
+
+    #[test]
+    fn bus_drives_float_inputs_through_schmitt() {
+        use crate::device::analog::AnalogBusState;
+        let bus = AnalogBusState::shared();
+        let mut g = Gpio::at(BASE, "gpioa").with_analog_bus(bus.clone());
+        // All float-input: the bus wins over the digital latch once driven.
+        write_word(&mut g, BASE, 0x4444_4444); // CRL
+        write_word(&mut g, BASE + 0x04, 0x4444_4444); // CRH
+        g.drive_inputs(0); // decoy
+        AnalogBusState::set_millivolts(&bus, 2500);
+        assert_eq!(read_word(&mut g, BASE + IDR) & 0xFFFF, 0xFFFF);
+        AnalogBusState::set_millivolts(&bus, 500);
+        assert_eq!(read_word(&mut g, BASE + IDR) & 0xFFFF, 0);
+        // Mid-band holds the previous level (sampled on read).
+        AnalogBusState::set_millivolts(&bus, 1200);
+        assert_eq!(read_word(&mut g, BASE + IDR) & 0xFFFF, 0);
+        AnalogBusState::set_millivolts(&bus, 2500);
+        assert_eq!(read_word(&mut g, BASE + IDR) & 0xFFFF, 0xFFFF);
+        AnalogBusState::set_millivolts(&bus, 1200);
+        assert_eq!(read_word(&mut g, BASE + IDR) & 0xFFFF, 0xFFFF);
+    }
+
+    #[test]
+    fn analog_mode_pins_read_zero_on_the_bus() {
+        use crate::device::analog::AnalogBusState;
+        let bus = AnalogBusState::shared();
+        let mut g = Gpio::at(BASE, "gpioa").with_analog_bus(bus.clone());
+        write_word(&mut g, BASE + 0x04, 0x4444_4444); // CRH float
+        write_word(&mut g, BASE, 0x4444_4440); // CRL: PA0 analog (nibble 0)
+        AnalogBusState::set_millivolts(&bus, 2500);
+        assert_eq!(read_word(&mut g, BASE + IDR) & 0xFFFF, 0xFFFE);
     }
 }

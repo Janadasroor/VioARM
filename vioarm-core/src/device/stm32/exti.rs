@@ -7,12 +7,17 @@
 //! simulate a button or GPIO pin; software can also self-trigger via `SWIER`.
 //! Pending bits are cleared the silicon way: writing 1 to `PR`. Only line 0 is
 //! wired to an exception (IRQ 6), which the SVD lists as `EXTI0`.
+//! With a shared analog bus wired (WP-R4), line levels derive from the bus
+//! millivolts through the Schmitt path (same thresholds as GPIO) and edges
+//! latch in `tick`; unset bus keeps the digital `drive_inputs` path.
 
+use crate::device::analog::{schmitt_level, AnalogBusState};
 use crate::device::svd::stm32f103;
 use crate::device::svd::{Behavior, Device, RegisterFile, Registers};
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
 use crate::mem::bus::Region;
+use std::sync::{Arc, Mutex};
 
 /// Register offsets within the controller, per the SVD.
 const IMR: u32 = 0x00;
@@ -22,19 +27,37 @@ const SWIER: u32 = 0x10;
 const PR: u32 = 0x14;
 
 /// The edge-detection logic the SVD cannot express.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct ExtiBehavior {
     /// The last sampled host input level, to edge against.
     level: u32,
     /// Whether `level` is the first sample; there is no prior level yet.
     level_valid: bool,
+    /// Shared analog bus (WP-R4): when wired and driven, line levels derive
+    /// from it through the Schmitt path and latch in `tick`.
+    analog_bus: Option<Arc<Mutex<AnalogBusState>>>,
+    /// Previous bus-derived digital level (all lines share one node).
+    analog_prev: bool,
+    /// Whether `analog_prev` has been established against the bus yet.
+    analog_valid: bool,
+}
+
+impl ExtiBehavior {
+    /// Edge-detect `value` against the stored digital level and latch `PR`.
+    fn edge(&mut self, view: &mut Registers<&mut [u32]>, value: u32) {
+        if self.level_valid {
+            let old = self.level;
+            let rising = value & !old;
+            let falling = old & !value;
+            let pr = view.get(PR) | (rising & view.get(RTSR)) | (falling & view.get(FTSR));
+            view.set(PR, pr);
+        }
+        self.level = value;
+        self.level_valid = true;
+    }
 }
 
 impl Behavior for ExtiBehavior {
-    // Edge detection is synchronous on GPIO writes.
-    fn needs_tick() -> bool {
-        false
-    }
     fn on_write(
         &mut self,
         view: &mut Registers<&mut [u32]>,
@@ -57,18 +80,46 @@ impl Behavior for ExtiBehavior {
         u32::from(view.get(PR) & view.get(IMR) & 1 != 0)
     }
 
-    fn drive_inputs(&mut self, view: &mut Registers<&mut [u32]>, value: u32) {
-        if self.level_valid {
-            let old = self.level;
-            let rising = value & !old;
-            let falling = old & !value;
-            let pr = view.get(PR) | (rising & view.get(RTSR)) | (falling & view.get(FTSR));
-            view.set(PR, pr);
+    fn tick(&mut self, view: &mut Registers<&mut [u32]>, _delta: u64) {
+        // Bus path: derive the digital level from the bus and edge-detect.
+        // The digital `drive_inputs` path stays the fallback while unset.
+        let Some(bus) = self.analog_bus.clone() else {
+            return;
+        };
+        let Some(mv) = AnalogBusState::millivolts(&bus) else {
+            return;
+        };
+        let level = schmitt_level(mv, self.analog_prev);
+        self.analog_prev = level;
+        if !self.analog_valid {
+            // First bus sample establishes both references; no edge yet.
+            self.analog_valid = true;
+            let word = if level { 0xFFFF_FFFF } else { 0 };
+            self.level = word;
+            self.level_valid = true;
+            return;
         }
-        // The first sample after reset only establishes the reference level;
-        // there is no prior level to edge against.
-        self.level = value;
-        self.level_valid = true;
+        let word = if level { 0xFFFF_FFFF } else { 0 };
+        self.edge(view, word);
+    }
+
+    fn drive_inputs(&mut self, view: &mut Registers<&mut [u32]>, value: u32) {
+        // While the bus drives, digital stimulus is ignored (single-driver
+        // convention: the bus is the node).
+        if let Some(bus) = self.analog_bus.clone() {
+            if AnalogBusState::millivolts(&bus).is_some() {
+                return;
+            }
+        }
+        self.edge(view, value);
+    }
+
+    fn reset(&mut self) {
+        self.level = 0;
+        self.level_valid = false;
+        self.analog_prev = false;
+        self.analog_valid = false;
+        // The shared bus survives: it is host-owned.
     }
 }
 
@@ -101,6 +152,14 @@ impl Exti {
             inner: RegisterFile::new(def, ExtiBehavior::default()),
         }
     }
+
+    /// Share the analog bus: line levels derive from its millivolts through
+    /// the Schmitt path (WP-R4). Unset bus keeps the digital path.
+    #[must_use]
+    pub fn with_analog_bus(mut self, bus: Arc<Mutex<AnalogBusState>>) -> Self {
+        self.inner.behavior_mut().analog_bus = Some(bus);
+        self
+    }
 }
 
 impl Default for Exti {
@@ -124,6 +183,10 @@ impl Peripheral for Exti {
 
     fn reset(&mut self) {
         self.inner.reset();
+    }
+
+    fn tick(&mut self, delta: u64) {
+        self.inner.tick(delta);
     }
 
     fn name(&self) -> &'static str {
@@ -222,5 +285,24 @@ mod tests {
         let mut e = Exti::new();
         assert!(matches!(e.read(BASE + 0x18), Err(BusError::Reserved)));
         assert!(matches!(e.write(BASE - 1, 0), Err(BusError::Reserved)));
+    }
+
+    #[test]
+    fn bus_rising_edge_latches_pr() {
+        use crate::device::analog::AnalogBusState;
+        let bus = AnalogBusState::shared();
+        let mut e = Exti::new().with_analog_bus(bus.clone());
+        write_word(&mut e, BASE + RTSR, 1);
+        write_word(&mut e, BASE + IMR, 1);
+        AnalogBusState::set_millivolts(&bus, 500);
+        e.tick(1); // establishes the low reference; no edge yet
+        assert_eq!(read_word(&mut e, BASE + PR) & 1, 0);
+        AnalogBusState::set_millivolts(&bus, 2500);
+        e.tick(1);
+        assert_eq!(read_word(&mut e, BASE + PR) & 1, 1);
+        assert_eq!(e.pending(), 1);
+        // Digital stimulus is ignored while the bus drives the node.
+        e.drive_inputs(0);
+        assert_eq!(read_word(&mut e, BASE + PR) & 1, 1);
     }
 }

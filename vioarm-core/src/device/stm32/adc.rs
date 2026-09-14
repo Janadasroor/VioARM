@@ -10,8 +10,11 @@
 //! re-arms continuously; `CR1.EOCIE` (and the F4's `OVR`/`OVRIE` pair) raises
 //! the ADC interrupt line. Reading `DR` clears `EOC`. The analog level of
 //! every channel comes from the host through [`Peripheral::drive_inputs`],
-//! truncated to the 12-bit result.
+//! truncated to the 12-bit result. With a shared analog bus wired (WP-R4),
+//! the channel mux instead reads the bus millivolts at conversion-complete
+//! and converts against `VDDA` — one node, every channel coherent.
 
+use crate::device::analog::{mv_to_adc_code, AnalogBusState};
 use crate::device::stm32::dma::DmaRequests;
 use crate::device::svd::stm32f103;
 use crate::device::svd::{Behavior, Device, PeripheralDef, RegisterFile, Registers};
@@ -126,6 +129,10 @@ struct AdcBehavior {
     dma: Option<(Arc<Mutex<DmaRequests>>, u8, u8)>,
     common: Option<Arc<Mutex<AdcCommonState>>>,
     adc_index: u8,
+    /// Shared analog bus (WP-R4): when wired and driven, every channel
+    /// samples it at conversion-complete instead of the `drive_inputs`
+    /// latch (which stays the fallback while the bus is unset).
+    analog_bus: Option<Arc<Mutex<AnalogBusState>>>,
 }
 
 /// Shared `C_ADC` / `ADC12_Common` state for dual-mode (R2).
@@ -159,6 +166,7 @@ impl AdcBehavior {
             dma: None,
             common: None,
             adc_index: 1,
+            analog_bus: None,
         }
     }
 
@@ -288,6 +296,13 @@ impl AdcBehavior {
     }
 
     fn sample(&self, channel: u8) -> u32 {
+        // The shared bus wins once driven (one node, every channel); the
+        // per-channel latch is the fallback while it is unset.
+        if let Some(bus) = self.analog_bus.as_ref() {
+            if let Some(mv) = AnalogBusState::millivolts(bus) {
+                return mv_to_adc_code(mv);
+            }
+        }
         u32::from(self.analog.get(usize::from(channel)).copied().unwrap_or(0) & 0x0FFF)
     }
 
@@ -638,6 +653,14 @@ impl Adc {
         channel: u8,
     ) -> Self {
         self.inner.behavior_mut().dma = Some((requests, controller, channel));
+        self
+    }
+
+    /// Share the analog bus: conversions sample its millivolts at
+    /// conversion-complete (WP-R4). Unset bus falls back to `drive_inputs`.
+    #[must_use]
+    pub fn with_analog_bus(mut self, bus: Arc<Mutex<AnalogBusState>>) -> Self {
+        self.inner.behavior_mut().analog_bus = Some(bus);
         self
     }
 }
@@ -1334,5 +1357,22 @@ mod tests {
         }
         assert_ne!(csr & (1 << 1), 0, "CSR EOC1");
         assert_ne!(csr & (1 << 9), 0, "CSR EOC2");
+    }
+
+    #[test]
+    fn bus_millivolts_win_over_the_drive_latch() {
+        let bus = AnalogBusState::shared();
+        let mut adc = Adc::adc1().with_analog_bus(bus.clone());
+        adc.drive_inputs(0x0ABC); // decoy latch: the bus wins once driven
+        AnalogBusState::set_millivolts(&bus, 1650);
+        write_word(&mut adc, CR2, ADON);
+        write_word(&mut adc, CR2, ADON | SWSTART_F1);
+        adc.tick(14);
+        assert_eq!(read_word(&mut adc, DR), mv_to_adc_code(1650));
+        // Top of scale saturates at full scale.
+        AnalogBusState::set_millivolts(&bus, 3300);
+        write_word(&mut adc, CR2, ADON | SWSTART_F1);
+        adc.tick(14);
+        assert_eq!(read_word(&mut adc, DR), 4095);
     }
 }

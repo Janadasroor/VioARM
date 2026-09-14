@@ -8,3 +8,4 @@
 [Architecture](./arch.md)
 [Translated-block engine](./jit.md)
 [Co-simulation](./cosim.md)
+[Field benchmark](./benchmark.md)

@@ -8,7 +8,10 @@
 //! raises a level-triggered IRQ. `EGR.UG` forces an update from software.
 //! Channel logic (`CCMR`/`CCER`/`CCR`) implements output compare (frozen,
 //! active/inactive, toggle, PWM1/2) with `EGR.CCxG` force, input capture
-//! via host `inject_capture`, and one-pulse `CR1.OPM`.
+//! via host `inject_capture`, and one-pulse `CR1.OPM`. With a shared analog
+//! bus wired (WP-R4), `SMCR.SMS=111` (external clock mode 1) counts rising
+//! edges on the bus-derived TI2 through the GPIO Schmitt path — the same bit
+//! the timer already samples — instead of the internal prescaler.
 //!
 //! The counter width varies by instance: `TIM2`/`TIM5` are 32-bit, the rest
 //! 16-bit. The advanced `TIM1` raises four lines (break, update, trigger/comm,
@@ -16,6 +19,7 @@
 //! the model routes its single pending line to `TIM1_UP` (IRQ 25) rather than
 //! the break line the table happens to list first.
 
+use crate::device::analog::{schmitt_level, AnalogBusState};
 use crate::device::stm32::dma::DmaRequests;
 use crate::device::svd::stm32f103;
 use crate::device::svd::{Behavior, Device, RegisterFile, Registers};
@@ -106,6 +110,9 @@ struct TimerBehavior {
     /// Encoder-interface input levels: bit 0 = TI1, bit 1 = TI2. Edges are
     /// detected against the previous drive and counted per `SMCR.SMS`.
     encoder_inputs: u8,
+    /// Shared analog bus (WP-R4): when wired and driven with `SMCR.SMS=111`,
+    /// `tick` counts bus-derived TI2 rising edges instead of the prescaler.
+    analog_bus: Option<Arc<Mutex<AnalogBusState>>>,
 }
 
 impl TimerBehavior {
@@ -120,6 +127,84 @@ impl TimerBehavior {
             dma_update: None,
             bkin: false,
             encoder_inputs: 0,
+            analog_bus: None,
+        }
+    }
+
+    /// One external-clock step: advance `CNT` past `ARR` into an update
+    /// event (shared by the prescaler path and the bus edge path).
+    fn step_count(&mut self, view: &mut Registers<&mut [u32]>) {
+        let arr = view.get(ARR) & self.width_mask;
+        let cnt = view.get(CNT) & self.width_mask;
+        let overflow = cnt >= arr;
+        let next = if overflow { 0 } else { cnt + 1 };
+        if overflow {
+            view.set(SR, view.get(SR) | UIF);
+            if view.get(CR1) & OPM != 0 {
+                view.set(CR1, view.get(CR1) & !CEN);
+            }
+            if view.get(DIER) & UDE != 0 {
+                if let Some((reqs, ctrl, ch)) = self.dma_update.as_ref() {
+                    let reqs = Arc::clone(reqs);
+                    reqs.lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .request(*ctrl, *ch, false);
+                }
+            }
+        }
+        view.set(CNT, next);
+        self.update_outputs(view, next);
+    }
+
+    /// Refresh output-compare levels for counter value `next` (PWM tracks
+    /// every step, other modes only on match).
+    fn update_outputs(&mut self, view: &mut Registers<&mut [u32]>, next: u32) {
+        for ch in 0..4 {
+            let (ccr_off, ccmr_off) = match ch {
+                0 => (CCR1, CCMR1),
+                1 => (CCR2, CCMR1),
+                2 => (CCR3, CCMR2),
+                _ => (CCR4, CCMR2),
+            };
+            let Some(ccr) = view.try_get(ccr_off) else {
+                continue;
+            };
+            let Some(ccmr) = view.try_get(ccmr_off) else {
+                continue;
+            };
+            let ccs = if ch == 0 || ch == 2 {
+                ccmr & 0x3
+            } else {
+                (ccmr >> 8) & 0x3
+            };
+            if ccs != 0 {
+                continue; // Input capture mode, not output.
+            }
+            let ocm = if ch == 0 || ch == 2 {
+                (ccmr >> 4) & 0x7
+            } else {
+                (ccmr >> 12) & 0x7
+            };
+            if ocm == 6 || ocm == 7 {
+                self.handle_compare(view, ch, ocm, next, ccr);
+            } else {
+                let ccr_masked = ccr & self.width_mask;
+                if next == ccr_masked {
+                    self.handle_compare(view, ch, ocm, next, ccr);
+                }
+            }
+        }
+    }
+
+    /// Whether external-clock mode drives the counter: `SMCR.SMS=111` with
+    /// a driven bus wired.
+    fn ext_clock_driven(&self, view: &Registers<&mut [u32]>) -> Option<u32> {
+        let bus = self.analog_bus.clone()?;
+        let mv = AnalogBusState::millivolts(&bus)?;
+        if view.try_get(SMCR).is_some_and(|smcr| smcr & 0x7 == 0b111) {
+            Some(mv)
+        } else {
+            None
         }
     }
 
@@ -528,70 +613,25 @@ impl Behavior for TimerBehavior {
             return;
         }
         self.run_dead_time(view, delta);
+        // External clock mode 1 (`SMS=111`): the counter advances on
+        // bus-derived TI2 rising edges through the GPIO Schmitt path — the
+        // same bit the timer already samples — not on the prescaler.
+        if let Some(mv) = self.ext_clock_driven(view) {
+            let prev_ti2 = self.encoder_inputs & 0b10 != 0;
+            let ti2 = schmitt_level(mv, prev_ti2);
+            let ti1 = self.encoder_inputs & 0b01 != 0;
+            self.encoder_inputs = u8::from(ti1) | (u8::from(ti2) << 1);
+            if !prev_ti2 && ti2 {
+                self.step_count(view);
+            }
+            return;
+        }
         let div = u64::from(view.get(PSC).wrapping_add(1));
-        let arr = u64::from(view.get(ARR));
         for _ in 0..delta {
             self.psc_phase += 1;
             if self.psc_phase >= div {
                 self.psc_phase = 0;
-                let cnt = u64::from(view.get(CNT)) + 1;
-                let overflow = cnt > arr;
-                let next = if overflow { 0 } else { cnt as u32 };
-                if overflow {
-                    view.set(SR, view.get(SR) | UIF);
-                    if view.get(CR1) & OPM != 0 {
-                        view.set(CR1, view.get(CR1) & !CEN);
-                    }
-                    if view.get(DIER) & UDE != 0 {
-                        if let Some((reqs, ctrl, ch)) = self.dma_update.as_ref() {
-                            let reqs = Arc::clone(reqs);
-                            reqs.lock()
-                                .unwrap_or_else(|e| e.into_inner())
-                                .request(*ctrl, *ch, false);
-                        }
-                    }
-                }
-                view.set(CNT, next);
-                // For PWM modes, update output every tick before compare check
-                // so level reflects CNT < CCR across the period.
-                // For other OC modes, handle on match.
-                for ch in 0..4 {
-                    let (ccr_off, ccmr_off) = match ch {
-                        0 => (CCR1, CCMR1),
-                        1 => (CCR2, CCMR1),
-                        2 => (CCR3, CCMR2),
-                        _ => (CCR4, CCMR2),
-                    };
-                    let Some(ccr) = view.try_get(ccr_off) else {
-                        continue;
-                    };
-                    let Some(ccmr) = view.try_get(ccmr_off) else {
-                        continue;
-                    };
-                    let ccs = if ch == 0 || ch == 2 {
-                        ccmr & 0x3
-                    } else {
-                        (ccmr >> 8) & 0x3
-                    };
-                    if ccs != 0 {
-                        continue; // Input capture mode, not output.
-                    }
-                    let ocm = if ch == 0 || ch == 2 {
-                        (ccmr >> 4) & 0x7
-                    } else {
-                        (ccmr >> 12) & 0x7
-                    };
-                    // PWM needs per-tick level update.
-                    if ocm == 6 || ocm == 7 {
-                        self.handle_compare(view, ch, ocm, next, ccr);
-                    } else {
-                        // Non-PWM: only on match.
-                        let ccr_masked = ccr & self.width_mask;
-                        if next == ccr_masked {
-                            self.handle_compare(view, ch, ocm, next, ccr);
-                        }
-                    }
-                }
+                self.step_count(view);
             }
         }
     }
@@ -618,6 +658,11 @@ impl Behavior for TimerBehavior {
         self.bkin = value & 1 != 0;
         if Self::break_active(view.try_get(BDTR), self.bkin) {
             self.latch_break(view);
+        }
+        // External-clock mode owns TI2 via the bus (single-driver
+        // convention); digital TI levels are ignored there.
+        if self.ext_clock_driven(view).is_some() {
+            return;
         }
         if view.try_get(SMCR).is_some_and(|smcr| smcr & 0x7 != 0) {
             let prev = self.encoder_inputs;
@@ -853,6 +898,14 @@ impl Timer {
         channel: u8,
     ) -> Self {
         self.inner.behavior_mut().dma_update = Some((requests, controller, channel));
+        self
+    }
+
+    /// Share the analog bus: `SMCR.SMS=111` counts its TI2 rising edges
+    /// through the Schmitt path (WP-R4). Unset bus keeps the digital path.
+    #[must_use]
+    pub fn with_analog_bus(mut self, bus: Arc<Mutex<AnalogBusState>>) -> Self {
+        self.inner.behavior_mut().analog_bus = Some(bus);
         self
     }
 
@@ -1392,5 +1445,35 @@ mod tests {
         write_word(&mut t, T1 + super::BDTR, 3);
         t.tick(1);
         assert!(!t.output_level_n(1), "MOE=0 -> OC1N inactive");
+    }
+
+    /// External clock mode 1 (`SMCR.SMS=111`): with a driven bus wired, the
+    /// counter advances on bus-derived TI2 rising edges through the Schmitt
+    /// path instead of the prescaler; digital TI stimulus is ignored.
+    #[test]
+    fn external_clock_counts_bus_ti2_rising_edges() {
+        use crate::device::analog::AnalogBusState;
+        let bus = AnalogBusState::shared();
+        let mut t = Timer::tim2().with_analog_bus(bus.clone());
+        write_word(&mut t, BASE + 0x2C, 99); // ARR
+        write_word(&mut t, BASE + 0x08, 0b111); // SMCR.SMS = external clock 1
+        write_word(&mut t, BASE, CEN); // CR1
+        AnalogBusState::set_millivolts(&bus, 500);
+        t.tick(10);
+        assert_eq!(read_word(&mut t, BASE + 0x24), 0, "low holds");
+        AnalogBusState::set_millivolts(&bus, 2500);
+        t.tick(1);
+        assert_eq!(read_word(&mut t, BASE + 0x24), 1, "rising edge counts");
+        t.tick(5); // held high: no new edge
+        assert_eq!(read_word(&mut t, BASE + 0x24), 1, "level holds");
+        AnalogBusState::set_millivolts(&bus, 500);
+        t.tick(1);
+        AnalogBusState::set_millivolts(&bus, 2500);
+        t.tick(1);
+        assert_eq!(read_word(&mut t, BASE + 0x24), 2, "second edge counts");
+        // Digital TI stimulus is ignored while the bus owns TI2.
+        t.drive_inputs(0b10);
+        t.tick(1);
+        assert_eq!(read_word(&mut t, BASE + 0x24), 2, "digital TI ignored");
     }
 }
