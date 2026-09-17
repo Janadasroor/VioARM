@@ -46,3 +46,17 @@
   `jit_cycles`, `jit_fuzz` 600 seeded trials + `fuzz/fuzz_jit.rs` CI
   target, `jit_fp` 8280 FP edge comparisons, `jit_hooks`,
   `jit_coverage`, `jit_semihost`, `jit_fabric`).
+- Second-host execution (R8): the full `--features jit` lib suite plus
+  `jit_differential`, `jit_flags`, and `jit_tlb_thrash` run on emulated
+  AArch64 in CI (`arm-exec` leg: static
+  `aarch64-unknown-linux-musl` binaries under `qemu-user`, linked by the
+  toolchain's own `rust-lld` — no cross sysroot). Local repro (needs
+  `qemu-aarch64` and the musl target):
+  `rustup target add aarch64-unknown-linux-musl`, then
+  `CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=<sysroot>/lib/rustlib/
+  <host>/bin/rust-lld CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUNNER=
+  qemu-aarch64 cargo test -p vioarm-core --features jit --target
+  aarch64-unknown-linux-musl --lib --test jit_differential --test
+  jit_flags --test jit_tlb_thrash`.
+  Proven green 2026-09-18 (861 lib + 23 + 3 + 1, zero defects); x86-64
+  results unchanged (no behavior change — CI leg plus this note).

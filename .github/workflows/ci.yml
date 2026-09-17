@@ -162,6 +162,57 @@ jobs:
       - name: Lint with jit
         run: cargo clippy -p vioarm-core --features jit --all-targets -- -D warnings
 
+  arm-exec:
+    name: Translation-engine execution on AArch64 (qemu-user, ubuntu-latest, stable)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install qemu-user
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-user
+          qemu-aarch64 --version
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          targets: aarch64-unknown-linux-musl
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: arm-exec-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      # R8: the emitter is compile-checked for AArch64 everywhere, but only
+      # executed here. Static musl binaries need no sysroot under
+      # qemu-user; the toolchain's own rust-lld links them (resolved via
+      # the sysroot so no cross-gcc is needed). Full lib suite plus the
+      # differential/flags/TLB legs must go green — this is the second-host
+      # execution proof, gating like the x86-64 suites.
+      - name: Lib suite on emulated AArch64
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUNNER: qemu-aarch64
+        run: |
+          SYSROOT=$(rustc --print sysroot)
+          HOST=$(rustc -vV | sed -n 's/^host: //p')
+          export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER="$SYSROOT/lib/rustlib/$HOST/bin/rust-lld"
+          cargo test -p vioarm-core --features jit --target aarch64-unknown-linux-musl --lib
+
+      - name: JIT differential/flags/TLB legs on emulated AArch64
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUNNER: qemu-aarch64
+        run: |
+          SYSROOT=$(rustc --print sysroot)
+          HOST=$(rustc -vV | sed -n 's/^host: //p')
+          export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER="$SYSROOT/lib/rustlib/$HOST/bin/rust-lld"
+          cargo test -p vioarm-core --features jit --target aarch64-unknown-linux-musl --test jit_differential --test jit_flags --test jit_tlb_thrash
+
   bench:
     name: Benchmarks (ubuntu-latest, stable)
     runs-on: ubuntu-latest
