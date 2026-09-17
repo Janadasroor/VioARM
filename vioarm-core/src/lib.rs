@@ -22,3 +22,4 @@ pub mod mem;
 pub mod pins;
 pub mod replay;
 pub mod semihost;
+pub mod snapshot;

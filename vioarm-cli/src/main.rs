@@ -2566,10 +2566,11 @@ fn docs_topic(topic: Option<String>) {
     match t.as_str() {
         "" | "help" => {
             println!("{}", "VioARM docs — instant terminal docs".bright_cyan().bold());
-            println!("{}", "topics: boards periphs arch dma tim adc usart spi i2c can usb eth sdio fmc h7 core".dimmed());
+            println!("{}", "topics: boards periphs arch dma tim adc usart spi i2c can usb eth sdio fmc h7 core embedding".dimmed());
             println!("  {} — 21 SVD → 500 Dnames, 197 union periphs", "boards".bright_green());
             println!("  {} — GPIO/RCC/USART/TIM/ADC/SPI/I2C/CAN/DMA/USB/ETH/SDIO/FMC/H7", "periphs".bright_green());
             println!("  {} — ARMv6-M/7-M/7E-M/8M-baseline M4F M7 FPv5-D16, DWT cyccnt, MPU", "arch".bright_green());
+            println!("  {} — C ABI version/snapshots/introspection/memory/catalog (see docs/src/embedding.md)", "embedding".bright_green());
             println!("  {} — run `vioarm boards` for 21 tables, `vioarm run <hex> --board stm32h743`", "quick".bright_yellow());
         }
         "boards" => {
@@ -2584,6 +2585,7 @@ fn docs_topic(topic: Option<String>) {
         "tim" => println!("{}", "TIM — 16/32b PSC→PCLK, ARR, UIF, OCxM 000-111 PWM1/2 OPM, BDTR MOE/BKIN DTG, encoder SMS 011 Hall 100 (timer.rs:112)".bright_green()),
         "adc" => println!("{}", "ADC — F1 CR2 SWSTART, F4 dual C_ADC CDR combine, F0/H7/F3 ISR ADRDY ADEN ADSTART, JSQR/JDR JEOC, HTR/LTR AWD (adc.rs:113)".bright_green()),
         "periphs" => println!("{}", "Periphs — GPIO F1 BSRR F4 MODER, RCC HSIRDY SWS→SW, PWR WUF, RTC WPR INIT, CAN 28-bank filter, USB OTG HS FS double-buffer, ETH H7 MAC, SDIO CRC16".bright_green()),
+        "embedding" => println!("{}", "Embedding — C ABI: vioarm_cosim_api_version, snapshot_save/restore (CPU+0x20000000:0x1000), get_pc/get_sp/get_cycles/get_instructions, read_data/write_data (VIOARM_ERR_BUS on unmapped), device_* / board_* catalog incl. board_pin (see docs/src/embedding.md)".bright_green()),
         _ => println!("{} '{}' — try `vioarm docs help`", "unknown topic".red(), t),
     }
 }

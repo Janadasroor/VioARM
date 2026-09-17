@@ -44,6 +44,18 @@
 //!    `cap > 0`, elements are written with `ptr::addr_of_mut!`‑free plain
 //!    `add(i).write` inside the buffer the caller sized, `out_len` is
 //!    null-checked always and written exactly once; nothing is retained.
+//! 7. Snapshot-buffer writes (`snapshot_save`): same discipline as leg 6 —
+//!    `out` validated for `cap` bytes, `out_len` always written once; the
+//!    core serializer refuses short buffers before touching anything.
+//! 8. String-out writes (`device_name`, `board_name`, `board_pin`):
+//!    `out`/`cap` validated (`cap` must hold bytes plus NUL), written
+//!    in-bounds with a terminating NUL, never retained; name lookups copy
+//!    out immediately (`CStr::from_ptr` board/pin inputs, same as leg 1).
+//! 9. Snapshot-restore reads (`snapshot_restore`): `buf` null-checked
+//!    whenever `len > 0`, consumed synchronously into owned state via
+//!    `slice::from_raw_parts` (same lending discipline as leg 2); the core
+//!    validator (magic/version/exact length) runs before anything is
+//!    touched, so a rejected buffer leaves the machine exactly as it was.
 //!
 //! Panics never cross the boundary: every entry wraps its body in
 //! `catch_unwind` and fails closed (null / negative status, message in
@@ -66,9 +78,11 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
+use vioarm_core::board;
 use vioarm_core::error::HaltCause;
 use vioarm_core::loader;
 use vioarm_core::machine::Machine;
+use vioarm_core::mem::Bus;
 
 pub mod handle;
 pub use handle::VioArmHandle;
@@ -83,6 +97,10 @@ pub const VIOARM_ERR_NULL_HANDLE: i32 = -1;
 pub const VIOARM_ERR_PANIC: i32 = -2;
 /// Any entry: bad argument (null pointer, unknown board/format, bad time).
 pub const VIOARM_ERR_BAD_ARG: i32 = -3;
+/// Data-space access hit unmapped or device-claimed-but-unreadable memory
+/// ([`vioarm_cosim_read_data`] / [`vioarm_cosim_write_data`]): the access
+/// was refused, nothing was touched.
+pub const VIOARM_ERR_BUS: i32 = -4;
 
 /// Firmware image formats for [`vioarm_cosim_create`]: ELF (`fw_format` 0).
 pub const VIOARM_FW_ELF: u32 = 0;
@@ -667,4 +685,439 @@ fn checked_pin(port: u32, pin: u32) -> Result<(u8, u8), i32> {
         return Err(VIOARM_ERR_BAD_ARG);
     }
     Ok((port, pin))
+}
+
+// ---------------------------------------------------------------------------
+// WP-R7 embedding API completion (additive: existing symbols untouched).
+// ---------------------------------------------------------------------------
+
+/// Embedding API version (`major.minor.patch`, from the crate version).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C)]
+pub struct VioArmApiVersion {
+    /// Major version (breaking ABI changes).
+    pub major: u32,
+    /// Minor version (additive entries).
+    pub minor: u32,
+    /// Patch version (fixes, no surface change).
+    pub patch: u32,
+}
+
+/// The embedding API version (by value, infallible — no handle needed).
+#[must_use]
+#[no_mangle]
+pub extern "C" fn vioarm_cosim_api_version() -> VioArmApiVersion {
+    VioArmApiVersion {
+        major: std::env!("CARGO_PKG_VERSION_MAJOR").parse().unwrap_or(0),
+        minor: std::env!("CARGO_PKG_VERSION_MINOR").parse().unwrap_or(0),
+        patch: std::env!("CARGO_PKG_VERSION_PATCH").parse().unwrap_or(0),
+    }
+}
+
+/// Snapshot byte size for `handle` (`0` on a null handle): the exact `cap`
+/// [`vioarm_cosim_snapshot_save`] needs.
+#[no_mangle]
+pub extern "C" fn vioarm_cosim_snapshot_size(handle: *mut VioArmHandle) -> usize {
+    match catch_unwind(AssertUnwindSafe(|| {
+        with_handle(handle, |harness| harness.machine_mut().snapshot_len())
+    })) {
+        Ok(Ok(len)) => len,
+        Ok(Err(_)) | Err(_) => 0,
+    }
+}
+
+/// Freeze integer CPU state plus the `record --snap` default RAM span
+/// (`0x20000000:0x1000`) into the caller-sized `out[cap]` buffer.
+/// `out_len` (always required) reports the snapshot size even when `cap`
+/// is short: `cap < need` fails closed with [`VIOARM_ERR_BAD_ARG`]
+/// (machine untouched), otherwise 0 with the bytes stored. `out` is
+/// required when `cap > 0`. See `docs/src/embedding.md` for what
+/// snapshots cover and what they deliberately do not.
+///
+/// `clippy::not_unsafe_ptr_arg_deref` is allowed here deliberately, same
+/// as [`vioarm_cosim_destroy`]: unsafety is unenforceable across a C ABI
+/// and the null checks make this entry total.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[no_mangle]
+pub extern "C" fn vioarm_cosim_snapshot_save(
+    handle: *mut VioArmHandle,
+    out: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
+    guard(|| {
+        if out_len.is_null() || (out.is_null() && cap > 0) {
+            set_error("null out-pointer".to_owned());
+            return VIOARM_ERR_BAD_ARG;
+        }
+        with_handle(handle, |harness| {
+            let machine = harness.machine_mut();
+            let need = machine.snapshot_len();
+            if cap < need {
+                // SAFETY CASE leg 7: `out_len` validated non-null above.
+                unsafe {
+                    out_len.write(need);
+                }
+                set_error(format!("snapshot needs {need} bytes, got {cap}"));
+                return VIOARM_ERR_BAD_ARG;
+            }
+            // SAFETY CASE leg 7: `out` validated for `cap >= need` bytes.
+            let slot = unsafe { std::slice::from_raw_parts_mut(out, need) };
+            match machine.snapshot_save(slot) {
+                Ok(len) => {
+                    unsafe {
+                        out_len.write(len);
+                    }
+                    0
+                }
+                Err(cause) => {
+                    unsafe {
+                        out_len.write(need);
+                    }
+                    set_error(format!("snapshot save failed: {cause}"));
+                    VIOARM_ERR_BAD_ARG
+                }
+            }
+        })
+        .unwrap_or_else(|code| code)
+    })
+}
+
+/// Restore state frozen by [`vioarm_cosim_snapshot_save`]: `buf[len]`
+/// must be exactly one snapshot image (magic, version, and length are
+/// validated before anything is touched — a rejected buffer leaves the
+/// machine exactly as it was). Returns 0 or a negative error code.
+///
+/// `clippy::not_unsafe_ptr_arg_deref` is allowed here deliberately, same
+/// as [`vioarm_cosim_destroy`].
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[no_mangle]
+pub extern "C" fn vioarm_cosim_snapshot_restore(
+    handle: *mut VioArmHandle,
+    buf: *const u8,
+    len: usize,
+) -> i32 {
+    guard(|| {
+        if buf.is_null() && len > 0 {
+            set_error("null snapshot buffer".to_owned());
+            return VIOARM_ERR_BAD_ARG;
+        }
+        with_handle(handle, |harness| {
+            // SAFETY CASE leg 9: null/empty rejected above; consumed
+            // synchronously, never retained.
+            let image = unsafe {
+                if len == 0 {
+                    &[][..]
+                } else {
+                    std::slice::from_raw_parts(buf, len)
+                }
+            };
+            match harness.machine_mut().snapshot_restore(image) {
+                Ok(()) => 0,
+                Err(cause) => {
+                    set_error(format!("snapshot restore failed: {cause}"));
+                    VIOARM_ERR_BAD_ARG
+                }
+            }
+        })
+        .unwrap_or_else(|code| code)
+    })
+}
+
+/// Program counter of `handle` (`0` on a null handle).
+#[no_mangle]
+pub extern "C" fn vioarm_cosim_get_pc(handle: *mut VioArmHandle) -> u32 {
+    match catch_unwind(AssertUnwindSafe(|| {
+        with_handle(handle, |harness| harness.machine_mut().core.regs.pc)
+    })) {
+        Ok(Ok(pc)) => pc,
+        Ok(Err(_)) | Err(_) => 0,
+    }
+}
+
+/// Active stack pointer of `handle` (`0` on a null handle).
+#[no_mangle]
+pub extern "C" fn vioarm_cosim_get_sp(handle: *mut VioArmHandle) -> u32 {
+    match catch_unwind(AssertUnwindSafe(|| {
+        with_handle(handle, |harness| harness.machine_mut().core.regs.sp)
+    })) {
+        Ok(Ok(sp)) => sp,
+        Ok(Err(_)) | Err(_) => 0,
+    }
+}
+
+/// True core cycles (`DWT CYCCNT`, the coupling timebase) of `handle`
+/// (`0` on a null handle).
+#[no_mangle]
+pub extern "C" fn vioarm_cosim_get_cycles(handle: *mut VioArmHandle) -> u64 {
+    match catch_unwind(AssertUnwindSafe(|| {
+        with_handle(handle, |harness| harness.machine_mut().core.cyccnt)
+    })) {
+        Ok(Ok(cyccnt)) => cyccnt,
+        Ok(Err(_)) | Err(_) => 0,
+    }
+}
+
+/// Retired instructions (1/step `cycles`, the `run` budget unit) of
+/// `handle` (`0` on a null handle).
+#[no_mangle]
+pub extern "C" fn vioarm_cosim_get_instructions(handle: *mut VioArmHandle) -> u64 {
+    match catch_unwind(AssertUnwindSafe(|| {
+        with_handle(handle, |harness| harness.machine_mut().cycles())
+    })) {
+        Ok(Ok(cycles)) => cycles,
+        Ok(Err(_)) | Err(_) => 0,
+    }
+}
+
+/// Read one data-space byte at `addr` into `val_out`: 0 on success,
+/// [`VIOARM_ERR_BUS`] when the bus refuses the address (nothing read),
+/// or a negative error code. `val_out` must be non-null.
+///
+/// `clippy::not_unsafe_ptr_arg_deref` is allowed here deliberately, same
+/// as [`vioarm_cosim_destroy`].
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[no_mangle]
+pub extern "C" fn vioarm_cosim_read_data(
+    handle: *mut VioArmHandle,
+    addr: u32,
+    val_out: *mut u8,
+) -> i32 {
+    guard(|| {
+        if val_out.is_null() {
+            set_error("null out-pointer".to_owned());
+            return VIOARM_ERR_BAD_ARG;
+        }
+        with_handle(handle, |harness| {
+            match harness.machine_mut().core.mem().read(addr) {
+                Ok(val) => {
+                    // SAFETY CASE leg 5: validated non-null above.
+                    unsafe {
+                        val_out.write(val);
+                    }
+                    0
+                }
+                Err(cause) => {
+                    set_error(format!("read {addr:#010x}: {cause}"));
+                    VIOARM_ERR_BUS
+                }
+            }
+        })
+        .unwrap_or_else(|code| code)
+    })
+}
+
+/// Write one data-space byte `val` at `addr`: 0 on success,
+/// [`VIOARM_ERR_BUS`] when the bus refuses the address (nothing written),
+/// or a negative error code.
+#[no_mangle]
+pub extern "C" fn vioarm_cosim_write_data(handle: *mut VioArmHandle, addr: u32, val: u8) -> i32 {
+    guard(|| {
+        with_handle(handle, |harness| {
+            match harness.machine_mut().core.mem().write(addr, val) {
+                Ok(()) => 0,
+                Err(cause) => {
+                    set_error(format!("write {addr:#010x}: {cause}"));
+                    VIOARM_ERR_BUS
+                }
+            }
+        })
+        .unwrap_or_else(|code| code)
+    })
+}
+
+/// Number of attached devices on `handle` (`0` on a null handle).
+#[no_mangle]
+pub extern "C" fn vioarm_cosim_device_count(handle: *mut VioArmHandle) -> usize {
+    match catch_unwind(AssertUnwindSafe(|| {
+        with_handle(handle, |harness| {
+            harness.machine_mut().core.mem().devices_mut().len()
+        })
+    })) {
+        Ok(Ok(len)) => len,
+        Ok(Err(_)) | Err(_) => 0,
+    }
+}
+
+/// Copy the `index`-th attached device name (NUL-terminated) into
+/// `out[cap]`: 0 on success, [`VIOARM_ERR_BAD_ARG`] on a null/out-of-range
+/// argument or a short buffer (the last error notes the needed size).
+/// `out` is required when `cap > 0`.
+///
+/// `clippy::not_unsafe_ptr_arg_deref` is allowed here deliberately, same
+/// as [`vioarm_cosim_destroy`].
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[no_mangle]
+pub extern "C" fn vioarm_cosim_device_name(
+    handle: *mut VioArmHandle,
+    index: usize,
+    out: *mut c_char,
+    cap: usize,
+) -> i32 {
+    guard(|| {
+        if out.is_null() && cap > 0 {
+            set_error("null out-pointer".to_owned());
+            return VIOARM_ERR_BAD_ARG;
+        }
+        with_handle(handle, |harness| {
+            let machine = harness.machine_mut();
+            let devices = machine.core.mem().devices_mut();
+            let Some(device) = devices.get(index) else {
+                set_error(format!("no device index {index}"));
+                return VIOARM_ERR_BAD_ARG;
+            };
+            write_str_out(device.name(), out, cap)
+        })
+        .unwrap_or_else(|code| code)
+    })
+}
+
+/// Number of known boards (`board::all_boards`).
+#[must_use]
+#[no_mangle]
+pub extern "C" fn vioarm_cosim_board_count() -> usize {
+    board::all_boards().len()
+}
+
+/// Copy the `index`-th board short name (NUL-terminated) into `out[cap]`:
+/// 0 on success, [`VIOARM_ERR_BAD_ARG`] on an out-of-range index or a
+/// short buffer (the last error notes the needed size). `out` is required
+/// when `cap > 0`.
+///
+/// `clippy::not_unsafe_ptr_arg_deref` is allowed here deliberately, same
+/// as [`vioarm_cosim_destroy`].
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[no_mangle]
+pub extern "C" fn vioarm_cosim_board_name(index: usize, out: *mut c_char, cap: usize) -> i32 {
+    guard(|| {
+        if out.is_null() && cap > 0 {
+            set_error("null out-pointer".to_owned());
+            return VIOARM_ERR_BAD_ARG;
+        }
+        match board::all_boards().get(index) {
+            Some((name, _)) => write_str_out(name, out, cap),
+            None => {
+                set_error(format!("no board index {index}"));
+                VIOARM_ERR_BAD_ARG
+            }
+        }
+    })
+}
+
+/// Live CPU clock in Hz for `board` (short name, e.g. `"stm32f103"`):
+/// builds the board memory and reads its clock handle — no firmware
+/// needed, clocks are static configuration. 0 on success (with `hz_out`
+/// written) or a negative error code. `board` and `hz_out` must be
+/// non-null.
+///
+/// `clippy::not_unsafe_ptr_arg_deref` is allowed here deliberately, same
+/// as [`vioarm_cosim_destroy`].
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[no_mangle]
+pub extern "C" fn vioarm_cosim_board_clock(board: *const c_char, hz_out: *mut u32) -> i32 {
+    guard(|| {
+        if board.is_null() || hz_out.is_null() {
+            set_error("null pointer".to_owned());
+            return VIOARM_ERR_BAD_ARG;
+        }
+        // SAFETY CASE leg 8: null rejected above; copied out immediately.
+        let name = unsafe { CStr::from_ptr(board) }
+            .to_str()
+            .unwrap_or_default()
+            .to_owned();
+        let builder = if name == "virtual" {
+            None
+        } else {
+            board::all_boards()
+                .into_iter()
+                .find(|(entry, _)| *entry == name)
+                .map(|(_, build)| build)
+        };
+        if name != "virtual" && builder.is_none() {
+            set_error(format!("unknown board '{name}'"));
+            return VIOARM_ERR_BAD_ARG;
+        }
+        let mem = match builder {
+            Some(build) => build(),
+            None => board::virtual_board(),
+        };
+        let mut machine = Machine::for_mem(&name, mem);
+        let hz = machine.cpu_hz();
+        // SAFETY CASE leg 5: validated non-null above, written once.
+        unsafe {
+            hz_out.write(hz);
+        }
+        0
+    })
+}
+
+/// Copy the default-AF label of `pin` (e.g. `"PA9"`, case-insensitive) on
+/// `board` (R6 `pins::pin_labels`, NUL-terminated) into `out[cap]`: 0 on
+/// success, [`VIOARM_ERR_BAD_ARG`] on an unknown board/pin or a short
+/// buffer (the last error notes the need). All three pointers must be
+/// non-null when used (`out` required when `cap > 0`).
+///
+/// `clippy::not_unsafe_ptr_arg_deref` is allowed here deliberately, same
+/// as [`vioarm_cosim_destroy`].
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[no_mangle]
+pub extern "C" fn vioarm_cosim_board_pin(
+    board: *const c_char,
+    pin: *const c_char,
+    out: *mut c_char,
+    cap: usize,
+) -> i32 {
+    guard(|| {
+        if board.is_null() || pin.is_null() || (out.is_null() && cap > 0) {
+            set_error("null pointer".to_owned());
+            return VIOARM_ERR_BAD_ARG;
+        }
+        // SAFETY CASE leg 8: nulls rejected above; copied out immediately.
+        let board_name = unsafe { CStr::from_ptr(board) }
+            .to_str()
+            .unwrap_or_default()
+            .to_owned();
+        let pin_name = unsafe { CStr::from_ptr(pin) }
+            .to_str()
+            .unwrap_or_default()
+            .to_owned();
+        let Some(table) = vioarm_core::pins::pin_labels(&board_name) else {
+            set_error(format!(
+                "unknown board '{board_name}' — valid: {}",
+                vioarm_core::pins::PIN_BOARDS.join(", ")
+            ));
+            return VIOARM_ERR_BAD_ARG;
+        };
+        match table
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(&pin_name))
+        {
+            Some((_, function)) => write_str_out(function, out, cap),
+            None => {
+                set_error(format!("no pin '{pin_name}' on '{board_name}'"));
+                VIOARM_ERR_BAD_ARG
+            }
+        }
+    })
+}
+
+/// Copy `text` plus NUL into `out[cap]`; [`VIOARM_ERR_BAD_ARG`] when `cap`
+/// is short (the last error notes the needed size).
+fn write_str_out(text: &str, out: *mut c_char, cap: usize) -> i32 {
+    let need = text.len() + 1;
+    if cap < need {
+        set_error(format!("name needs {need} bytes, got {cap}"));
+        return VIOARM_ERR_BAD_ARG;
+    }
+    if need == 1 {
+        // Empty text with `cap == 0` and null `out` is legal (zero-length
+        // names never occur, but the discipline stays total).
+        return 0;
+    }
+    // SAFETY CASE leg 8: caller-sized for `need` bytes (checked above).
+    unsafe {
+        ptr::copy_nonoverlapping(text.as_ptr().cast::<c_char>(), out, text.len());
+        out.add(text.len()).write(0);
+    }
+    0
 }
