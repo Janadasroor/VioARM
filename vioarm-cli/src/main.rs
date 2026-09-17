@@ -2561,6 +2561,67 @@ fn bench_usart_tx(board: Board, cycles: u64) -> Result<Option<BenchResult>, Stri
     }))
 }
 
+/// Parse a REPL `set` register name (`r0`-`r12`, `sp`, `lr`, `pc`,
+/// case-insensitive, `r13`-`r15` aliases included).
+fn parse_reg_name(name: &str) -> Option<u8> {
+    match name.to_ascii_lowercase().as_str() {
+        "r0" => Some(0),
+        "r1" => Some(1),
+        "r2" => Some(2),
+        "r3" => Some(3),
+        "r4" => Some(4),
+        "r5" => Some(5),
+        "r6" => Some(6),
+        "r7" => Some(7),
+        "r8" => Some(8),
+        "r9" => Some(9),
+        "r10" => Some(10),
+        "r11" => Some(11),
+        "r12" => Some(12),
+        "sp" | "r13" => Some(13),
+        "lr" | "r14" => Some(14),
+        "pc" | "r15" => Some(15),
+        _ => None,
+    }
+}
+
+/// Where a breakpoint-aware REPL run stopped.
+#[derive(Debug)]
+enum ReplStop {
+    /// Parked on a persistent breakpoint.
+    Hit(u32),
+    /// The machine halted (fault, BKPT, WFI, ...).
+    Halt(HaltCause),
+    /// The step budget ran out.
+    Exhausted,
+}
+
+/// Step until a persistent breakpoint, a halt, or `budget` steps. A
+/// breakpoint at the entry pc is stepped over once so `continue` resumes
+/// instead of re-stopping where it already sits.
+fn run_until_break(
+    m: &mut Machine<board::BoardMemory>,
+    breakpoints: &[u32],
+    mut budget: u64,
+) -> ReplStop {
+    if breakpoints.contains(&m.core.regs.pc) {
+        match m.step() {
+            Err(cause) => return ReplStop::Halt(cause),
+            Ok(()) => budget = budget.saturating_sub(1),
+        }
+    }
+    while budget > 0 {
+        if breakpoints.contains(&m.core.regs.pc) {
+            return ReplStop::Hit(m.core.regs.pc);
+        }
+        match m.step() {
+            Err(cause) => return ReplStop::Halt(cause),
+            Ok(()) => budget -= 1,
+        }
+    }
+    ReplStop::Exhausted
+}
+
 fn docs_topic(topic: Option<String>) {
     let t = topic.as_deref().unwrap_or("").to_ascii_lowercase();
     match t.as_str() {
@@ -2608,6 +2669,9 @@ fn debug_repl(image: PathBuf, board: Board, base: u32) {
         xpsr.get()
     );
     let mut rl = String::new();
+    // Persistent breakpoints for this session (`break` adds, `continue`
+    // and `budget` stop at them; `delete`/`clear` manage the set).
+    let mut breakpoints: Vec<u32> = Vec::new();
     loop {
         print!("{}", "(vioarm) ".bright_magenta().bold());
         use std::io::Write;
@@ -2619,7 +2683,7 @@ fn debug_repl(image: PathBuf, board: Board, base: u32) {
         let cmd = rl.trim();
         match cmd {
             "help" | "h" | "?" => {
-                println!("{}: step(s)/next(n) continue(c) regs(r) mem <addr> break <pc> budget <n> history [N] quit(q)", "commands".bright_green());
+                println!("{}: step(s)/next(n) continue(c) regs(r) set <reg> <val> mem <addr> [val] disas [addr] [N] break <pc> breaks delete <pc> clear budget <n> history [N] quit(q)", "commands".bright_green());
             }
             "step" | "s" | "n" | "next" => match m.step() {
                 Ok(_) => {
@@ -2642,69 +2706,153 @@ fn debug_repl(image: PathBuf, board: Board, base: u32) {
                 println!("pc={:#010x} sp={:#010x} lr={:#010x} r0={:#010x} r1={:#010x} r2={:#010x} r3={:#010x} xpsr={:#010x} cycles={cycles}",
                     regs.pc, regs.sp, regs.lr, regs.r[0], regs.r[1], regs.r[2], regs.r[3], xpsr.get());
             }
-            c if c.starts_with("mem ") => {
-                let addr = c[4..].trim();
-                if let Ok(a) = parse_u32(addr) {
-                    match m.core.mem().read_word(a) {
-                        Ok(v) => println!("{a:#010x}: {v:#010x}"),
-                        Err(e) => println!("{} {e}", "bus error:".red()),
+            c if c.starts_with("set ") => {
+                // `set r0 0x12` / `set sp 0x20001000` / `set pc <addr>`.
+                let mut parts = c.split_whitespace();
+                let (name, val) = (parts.nth(1), parts.next());
+                match (name, val) {
+                    (Some(name), Some(val)) => {
+                        let reg = parse_reg_name(name);
+                        match (reg, parse_u32(val)) {
+                            (Some(n), Ok(v)) => {
+                                m.core.regs.write(n, v);
+                                println!("{} {name}={v:#010x}", "set".dimmed());
+                            }
+                            _ => println!("{} set <r0-r12|sp|lr|pc> <hex val>", "usage:".yellow()),
+                        }
                     }
-                } else {
-                    println!("{} mem <hex addr>", "usage:".yellow());
+                    _ => println!("{} set <r0-r12|sp|lr|pc> <hex val>", "usage:".yellow()),
+                }
+            }
+            c if c.starts_with("mem ") => {
+                // `mem <addr>` reads one word; `mem <addr> <val>` writes it.
+                let mut parts = c.split_whitespace();
+                let (addr, val) = (parts.nth(1), parts.next());
+                match (addr, val) {
+                    (Some(addr), None) => match parse_u32(addr) {
+                        Ok(a) => match m.core.mem().read_word(a) {
+                            Ok(v) => println!("{a:#010x}: {v:#010x}"),
+                            Err(e) => println!("{} {e}", "bus error:".red()),
+                        },
+                        Err(_) => println!("{} mem <hex addr> [hex val]", "usage:".yellow()),
+                    },
+                    (Some(addr), Some(val)) => match (parse_u32(addr), parse_u32(val)) {
+                        (Ok(a), Ok(v)) => match m.core.mem().write_word(a, v) {
+                            Ok(()) => println!("{} {a:#010x} <- {v:#010x}", "wrote".dimmed()),
+                            Err(e) => println!("{} {e}", "bus error:".red()),
+                        },
+                        _ => println!("{} mem <hex addr> [hex val]", "usage:".yellow()),
+                    },
+                    _ => println!("{} mem <hex addr> [hex val]", "usage:".yellow()),
+                }
+            }
+            c if c == "disas" || c.starts_with("disas ") => {
+                // `disas [addr] [N]`: disassemble N instructions (default 8
+                // at the live pc) over the shared decoders.
+                let mut parts = c.split_whitespace();
+                let live_pc = m.core.regs.pc;
+                let addr = parts
+                    .nth(1)
+                    .map_or(Ok(live_pc), parse_u32)
+                    .unwrap_or_else(|_| {
+                        println!("{} disas [hex addr] [count]", "usage:".yellow());
+                        live_pc
+                    });
+                let count = parts
+                    .next()
+                    .map_or(8, |n| n.parse::<usize>().unwrap_or(8).clamp(1, 64));
+                let isa = m.core.isa;
+                let mut at = addr;
+                for _ in 0..count {
+                    match m.core.mem().read_half(at) {
+                        Ok(h0) => {
+                            let h1 = m.core.mem().read_half(at.wrapping_add(2)).ok();
+                            let (text, width) = vioarm_core::disas::disassemble(isa, at, h0, h1);
+                            if h1.is_some_and(|h| width == 4) {
+                                println!(
+                                    "{at:#010x}: {h0:04x} {h:04x}  {text}",
+                                    h = h1.expect("checked")
+                                );
+                            } else {
+                                println!("{at:#010x}: {h0:04x}       {text}");
+                            }
+                            at = at.wrapping_add(width);
+                        }
+                        Err(e) => {
+                            println!("{at:#010x}: {} {e}", "bus error:".red());
+                            break;
+                        }
+                    }
                 }
             }
             c if c.starts_with("break ") => {
-                let pc = c[6..].trim();
-                if let Ok(a) = parse_u32(pc) {
-                    println!(
-                        "{} break at {a:#010x} — run `continue` to hit BKPT",
-                        "break".bright_green()
-                    );
-                    // simple: run until pc
-                    let mut hit = false;
-                    for _ in 0..1_000_000 {
-                        let (regs, _, _) = m.core.snapshot();
-                        if regs.pc == a {
-                            hit = true;
-                            break;
-                        }
-                        if m.step().is_err() {
-                            break;
+                // `break <pc>` arms a persistent breakpoint (listed by
+                // `breaks`, honored by `continue`/`budget`, dropped by
+                // `delete`/`clear`).
+                match parse_u32(c[6..].trim()) {
+                    Ok(a) => {
+                        if breakpoints.contains(&a) {
+                            println!("{} break at {a:#010x} already armed", "break".yellow());
+                        } else {
+                            breakpoints.push(a);
+                            breakpoints.sort_unstable();
+                            println!("{} break at {a:#010x}", "break".bright_green());
                         }
                     }
-                    println!(
-                        "{}",
-                        if hit {
-                            "hit".green()
-                        } else {
-                            "not hit in 1M".yellow()
-                        }
-                    );
+                    Err(_) => println!("{} break <hex pc>", "usage:".yellow()),
                 }
+            }
+            "break" | "breaks" => {
+                if breakpoints.is_empty() {
+                    println!("{}", "no breakpoints".dimmed());
+                } else {
+                    for (i, pc) in breakpoints.iter().enumerate() {
+                        println!("  {i}: {pc:#010x}");
+                    }
+                }
+            }
+            c if c.starts_with("delete ") => match parse_u32(c[7..].trim()) {
+                Ok(a) => {
+                    if let Some(pos) = breakpoints.iter().position(|pc| *pc == a) {
+                        breakpoints.remove(pos);
+                        println!("{} break at {a:#010x} cleared", "delete".dimmed());
+                    } else {
+                        println!("{} no break at {a:#010x}", "delete".yellow());
+                    }
+                }
+                Err(_) => println!("{} delete <hex pc>", "usage:".yellow()),
+            },
+            "clear" => {
+                breakpoints.clear();
+                println!("{}", "breakpoints cleared".dimmed());
             }
             c if c.starts_with("budget ") => {
                 if let Ok(n) = c[7..].trim().parse::<u64>() {
-                    match m.run(n) {
-                        Err(HaltCause::CycleBudgetExhausted) => {
+                    match run_until_break(&mut m, &breakpoints, n) {
+                        ReplStop::Exhausted => {
                             println!("{}", "budget exhausted".yellow())
                         }
-                        Err(e) => {
+                        ReplStop::Hit(pc) => {
+                            println!("{} break at {pc:#010x}", "hit".green())
+                        }
+                        ReplStop::Halt(e) => {
                             println!("{} {e}", "halted:".green());
                             print_backtrace(&mut m, 32);
                         }
-                        Ok(()) => {}
                     }
                 }
             }
-            "continue" | "c" | "run" => match m.run(1_000_000) {
-                Err(HaltCause::CycleBudgetExhausted) => {
+            "continue" | "c" | "run" => match run_until_break(&mut m, &breakpoints, 1_000_000) {
+                ReplStop::Exhausted => {
                     println!("{}", "budget exhausted — 1M".yellow())
                 }
-                Err(e) => {
+                ReplStop::Hit(pc) => {
+                    println!("{} break at {pc:#010x}", "hit".green())
+                }
+                ReplStop::Halt(e) => {
                     println!("{} {e}", "halted:".green());
                     print_backtrace(&mut m, 32);
                 }
-                Ok(()) => {}
             },
             c if c == "history"
                 || c == "hist"
@@ -3176,6 +3324,7 @@ mod pin_spec_tests {
 
 #[cfg(test)]
 mod pin_catalog_tests {
+
     use super::render_pin_tables;
 
     #[test]
@@ -3211,6 +3360,79 @@ mod pin_catalog_tests {
         assert!(err.contains("stm32f999"), "{err}");
         assert!(err.contains("stm32f103"), "{err}");
         assert!(err.contains("stm32h743"), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod repl_tests {
+    use super::{parse_reg_name, run_until_break, ReplStop};
+    use vioarm_core::loader::load_flat;
+    use vioarm_core::machine::Machine;
+
+    const ENTRY: u32 = 0x0000_0100;
+
+    fn boot(code: &[u8]) -> Machine<vioarm_core::board::BoardMemory> {
+        let mut m = Machine::new(vioarm_core::board::virtual_board());
+        m.load_image(&load_flat(ENTRY, code));
+        m.core.regs.pc = ENTRY;
+        m.core.xpsr.set(0x0100_0000);
+        m
+    }
+
+    #[test]
+    fn reg_names_cover_aliases() {
+        assert_eq!(parse_reg_name("r0"), Some(0));
+        assert_eq!(parse_reg_name("R12"), Some(12));
+        assert_eq!(parse_reg_name("sp"), Some(13));
+        assert_eq!(parse_reg_name("r13"), Some(13));
+        assert_eq!(parse_reg_name("LR"), Some(14));
+        assert_eq!(parse_reg_name("pc"), Some(15));
+        assert_eq!(parse_reg_name("r15"), Some(15));
+        assert_eq!(parse_reg_name("r16"), None);
+        assert_eq!(parse_reg_name("xpsr"), None);
+        assert_eq!(parse_reg_name(""), None);
+    }
+
+    #[test]
+    fn break_hits_and_steps_over_parked() {
+        // `movs r0, #1; movs r1, #2; b .` — breakpoint on the loop parks
+        // after retiring the two moves.
+        let code = [0x01, 0x20, 0x02, 0x21, 0xFE, 0xE7];
+        let mut m = boot(&code);
+        match run_until_break(&mut m, &[ENTRY + 4], 16) {
+            ReplStop::Hit(pc) => assert_eq!(pc, ENTRY + 4),
+            other => panic!("expected a hit, got {other:?}"),
+        }
+        assert_eq!(m.core.regs.r[0], 1);
+        assert_eq!(m.core.regs.r[1], 2);
+        // Parked on the breakpoint: `continue` steps over once, then
+        // re-stops (the spin never leaves).
+        match run_until_break(&mut m, &[ENTRY + 4], 16) {
+            ReplStop::Hit(pc) => assert_eq!(pc, ENTRY + 4),
+            other => panic!("expected a re-hit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn empty_breakpoints_exhausts_budget() {
+        let code = [0xFE, 0xE7];
+        let mut m = boot(&code);
+        match run_until_break(&mut m, &[], 4) {
+            ReplStop::Exhausted => {}
+            other => panic!("expected exhaustion, got {other:?}"),
+        }
+        assert_eq!(m.core.regs.pc, ENTRY);
+    }
+
+    #[test]
+    fn faulting_code_halts_with_cause() {
+        // Bare `BKPT` faults without a debugger attached.
+        let code = [0x00, 0xBE];
+        let mut m = boot(&code);
+        match run_until_break(&mut m, &[0xDEAD_BEEF], 4) {
+            ReplStop::Halt(_) => {}
+            other => panic!("expected a halt, got {other:?}"),
+        }
     }
 }
 

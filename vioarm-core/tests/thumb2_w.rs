@@ -17,6 +17,7 @@ use vioarm_core::error::HaltCause;
 use vioarm_core::loader::load_flat;
 use vioarm_core::machine::Machine;
 use vioarm_core::mem::flat::FlatMemory;
+use vioarm_core::mem::Bus;
 
 const FLASH: u32 = 0x0000_0000;
 const RAM: u32 = 0x2000_0000;
@@ -150,4 +151,36 @@ fn vector_overlap_with_even_hardfault_vector_stops_at_once() {
     assert!(matches!(m.step(), Err(HaltCause::NonThumbTarget)));
     assert_eq!(m.core.regs.pc, 0x8);
     assert_eq!(m.core.regs.sp, 0x2000_1000);
+}
+
+/// T3 `B<cond>.W` reads I1/I2 directly (no J inversion — unlike T4).
+/// Gas proof: `beq.w .+8` is `F000 8004`, `beq.w back` is `F43F AFFE`;
+/// live QEMU execution takes the branch. The old inversion read `F000
+/// 8002` as +0xC0004 and jumped to unmapped memory.
+#[test]
+fn bcc_w_taken_path_executes() {
+    // 0x08: movs r0, #0; 0x0A: cmp r0, #0 (Z=1); 0x0C: beq.w taken@0x14;
+    // 0x10: movs r1, #0x46 (skipped); 0x12: b done (skipped);
+    // 0x14: movs r1, #0x54; 0x16: str r1, [r3] (r3 preset to RAM);
+    // 0x18: b . (spin).
+    let img: [u8; 26] = [
+        0x00, 0x10, 0x00, 0x20, // 0x00: SP
+        0x09, 0x00, 0x00, 0x00, // 0x04: reset -> 0x8
+        0x00, 0x20, // 0x08: movs r0, #0
+        0x00, 0x28, // 0x0A: cmp r0, #0
+        0x00, 0xF0, 0x02, 0x80, // 0x0C: beq.w 0x14 (F000 8002)
+        0x46, 0x21, // 0x10: movs r1, #0x46 (skipped)
+        0x00, 0xE0, // 0x12: b 0x16 (skipped)
+        0x54, 0x21, // 0x14: movs r1, #0x54
+        0x19, 0x60, // 0x16: str r1, [r3]
+        0xFE, 0xE7, // 0x18: b .
+    ];
+    let mut m = boot_v7m(&[]);
+    m.load_image(&load_flat(0x0000_0000, &img));
+    m.reset().expect("reset vector is odd and executable");
+    m.core.regs.r[3] = RAM;
+    let _ = m.run(16);
+    assert_eq!(m.core.regs.r[1], 0x54, "taken path stores 0x54, not 0x46");
+    let word = m.core.mem().read_word(RAM).expect("RAM readable");
+    assert_eq!(word & 0xFF, 0x54, "branch skipped the fallthrough store");
 }

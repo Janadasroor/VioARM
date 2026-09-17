@@ -1241,7 +1241,8 @@ mod tests {
                 mask: 0x1
             })
         );
-        // itet ge -> 0xBFA9 (GE=1010, mask 1001).
+        // itett ge -> 0xBFA9 (mask 1001, 4 instructions; gas-verified
+        // `itett eq` is 0xBF09 — was mislabeled itet).
         assert_eq!(
             decode16_v7m(0xBFA9),
             Ok(Inst16::It {

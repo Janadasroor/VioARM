@@ -11,6 +11,7 @@ pub mod board;
 pub mod couple;
 pub mod cpu;
 pub mod device;
+pub mod disas;
 pub mod error;
 pub mod fabric;
 pub mod hooks;

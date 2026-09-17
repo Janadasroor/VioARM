@@ -1436,13 +1436,20 @@ fn decode_branch(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
             );
             Some(Ok(Inst32::BlxImm { off }))
         }
-        // B<c>.W (T3): 11110 S cond imm6 / 10 J1 0 J2 imm11. The `cond == 1111`
-        // encoding is UNPREDICTABLE.
+        // B<c>.W (T3): 11110 S cond imm6 / 10 I1 0 I2 imm11. Unlike T4
+        // (whose second halfword carries J1/J2, inverted by the encoder),
+        // T3 carries the I1/I2 bits directly — no inversion. Proven by
+        // assembler output (`beq.w .+8` is F000 8004, `beq.w back` is
+        // F43F AFFE) and live QEMU execution; inverting here sends every
+        // small forward conditional wide branch to unmapped memory.
+        // The `cond == 1111` encoding is UNPREDICTABLE.
         0x8000 => {
             let cond = ((hi >> 6) & 0xF) as u8;
             if cond == 0xF {
                 return Some(Err(err_for(hi)));
             }
+            let i1 = i32::from((lo >> 13) & 1);
+            let i2 = i32::from((lo >> 11) & 1);
             let off = branch_off21(s, i1, i2, i32::from(hi & 0x3F), i32::from(lo & 0x7FF));
             Some(Ok(Inst32::BranchCondWide { cond, off }))
         }
@@ -4176,10 +4183,21 @@ mod tests {
 
     #[test]
     fn bcc_wide_offsets() {
-        // beq.w +8 from 0x6 (f000 a804) -> cond EQ, off 8.
+        // beq.w +8 from 0x6 is F000 8004 (gas-verified): T3 carries I1/I2
+        // directly, so J-style inversion must NOT apply here.
+        assert_eq!(
+            v7m_bytes([0x00, 0xf0, 0x04, 0x80]),
+            Ok(Inst32::BranchCondWide { cond: 0, off: 8 })
+        );
+        // F000 A804 sets both I bits: off 0xC0008, not 8 (the old
+        // inversion read this as +8 and sent small forward wide branches
+        // to unmapped memory — live QEMU probe proved the direct read).
         assert_eq!(
             v7m_bytes([0x00, 0xf0, 0x04, 0xa8]),
-            Ok(Inst32::BranchCondWide { cond: 0, off: 8 })
+            Ok(Inst32::BranchCondWide {
+                cond: 0,
+                off: 0xC_0008
+            })
         );
         // bmi.w -183396 (f513 a9ce) -> cond MI, off -183396.
         assert_eq!(

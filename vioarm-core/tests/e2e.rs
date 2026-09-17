@@ -895,13 +895,14 @@ fn t32_bw_backward_loop_backedge() {
 
 /// ARMv7-M `B<c>.W` (Thumb-2 T3): not taken falls through, taken skips an
 /// instruction. The first `beq.w` runs with Z=0 (not taken), the second with
-/// Z=1 (taken, skipping `movs r2,#2`).
+/// Z=1 (taken, skipping `movs r2,#2`). T3 carries I1/I2 directly (F000
+/// 8003, not the J-inverted A803 — see the T3 fix note in `decode32`).
 #[test]
 fn t32_bcc_wide_taken_and_fallthrough() {
     // movs r0, #5 ; beq.w 0x1c ; movs r1, #1 ; movs r0, #0
     // beq.w 0x20 ; movs r2, #2 (skipped) ; movs r3, #3 ; bkpt
     let mut m = boot_v7m(&[
-        0x05, 0x20, 0x00, 0xf0, 0x03, 0xa8, 0x01, 0x21, 0x00, 0x20, 0x00, 0xf0, 0x01, 0xa8, 0x02,
+        0x05, 0x20, 0x00, 0xf0, 0x03, 0x80, 0x01, 0x21, 0x00, 0x20, 0x00, 0xf0, 0x01, 0x80, 0x02,
         0x22, 0x03, 0x23, 0x00, 0xbe,
     ]);
     let err = m.run(10);
