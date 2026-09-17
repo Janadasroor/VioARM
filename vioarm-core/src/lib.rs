@@ -19,5 +19,6 @@ pub mod jit;
 pub mod loader;
 pub mod machine;
 pub mod mem;
+pub mod pins;
 pub mod replay;
 pub mod semihost;

@@ -1722,7 +1722,13 @@ enum Commands {
     /// Show image layout (segments, entry)
     Info { image: PathBuf },
     /// List all boards (21 SVD tables + 500 Dnames)
-    Boards,
+    Boards {
+        /// Print the pin-label catalog instead (one board, or every table
+        /// with `--pins all`): `PA9: USART1_TX` default-AF labels for HIL
+        /// wiring. Unknown boards error with the valid list.
+        #[arg(long, value_name = "BOARD", num_args = 0..=1, default_missing_value = "all")]
+        pins: Option<String>,
+    },
     /// Instant terminal docs
     Docs {
         /// Topic: boards, periphs, arch, dma, tim, adc, etc.
@@ -1833,6 +1839,36 @@ fn print_info(img: &LoadedImage) {
     if let Some(entry) = img.entry {
         println!("{} {entry:#010x}", "entry:".bright_green().bold());
     }
+}
+
+/// Render the pin-label catalog for `which` (one board short name,
+/// case-insensitive, or `"all"` for every table): one `PIN: FUNCTION` row
+/// per line under a `board <name>` header. Unknown boards fail closed with
+/// the valid list so lab setups never wire to a typo.
+fn render_pin_tables(which: &str) -> Result<String, String> {
+    use vioarm_core::pins::{pin_labels, PIN_BOARDS};
+    let mut out = String::new();
+    if which.eq_ignore_ascii_case("all") {
+        for board in PIN_BOARDS {
+            let table = pin_labels(board).expect("catalog board resolves");
+            out.push_str(&format!("board {board}\n"));
+            for (pin, function) in table {
+                out.push_str(&format!("  {pin:5} {function}\n"));
+            }
+        }
+        return Ok(out);
+    }
+    let Some(table) = pin_labels(which) else {
+        return Err(format!(
+            "unknown board '{which}' — valid: {}",
+            PIN_BOARDS.join(", ")
+        ));
+    };
+    out.push_str(&format!("board {}\n", which.to_ascii_lowercase()));
+    for (pin, function) in table {
+        out.push_str(&format!("  {pin:5} {function}\n"));
+    }
+    Ok(out)
 }
 
 fn machine_for(
@@ -2542,6 +2578,7 @@ fn docs_topic(topic: Option<String>) {
                 let len = peris.len();
                 println!("  {:12} {:3} periphs {}", name.bright_green(), len.to_string().dimmed(), format!("0x{:08x}", peris[0].base).dimmed());
             }
+            println!("{}", "pins: vioarm boards --pins stm32f103 (13 tables, default-AF labels; see docs/src/boards.md)".dimmed());
         }
         "dma" => println!("{}", "DMA — F1 7ch MEM2MEM 1/tick PL arbitrate, F4 8 streams MBURST/PBURST INCR4/8/16 FTH quarter/half/3q/full (dma_f4.rs:196) — per-request USART1 ch4/5".bright_green()),
         "tim" => println!("{}", "TIM — 16/32b PSC→PCLK, ARR, UIF, OCxM 000-111 PWM1/2 OPM, BDTR MOE/BKIN DTG, encoder SMS 011 Hall 100 (timer.rs:112)".bright_green()),
@@ -2951,7 +2988,17 @@ fn main() {
                 let (img, _) = load_image_auto(&image, 0);
                 print_info(&img);
             }
-            Commands::Boards => {
+            Commands::Boards { pins } => {
+                if let Some(which) = pins {
+                    match render_pin_tables(&which) {
+                        Ok(text) => print!("{text}"),
+                        Err(message) => {
+                            eprintln!("{} {message}", "error:".red().bold());
+                            std::process::exit(2);
+                        }
+                    }
+                    return;
+                }
                 banner();
                 println!(
                     "{}",
@@ -3122,6 +3169,46 @@ mod pin_spec_tests {
         for bad in ["", "13", "c", "c32", "z0", "c-1", "cc1", "c1x"] {
             assert!(parse_pin_spec(bad).is_err(), "{bad}");
         }
+    }
+}
+
+#[cfg(test)]
+mod pin_catalog_tests {
+    use super::render_pin_tables;
+
+    #[test]
+    fn single_board_renders_default_af_rows() {
+        let text = render_pin_tables("stm32f103").expect("known board");
+        assert!(text.contains("board stm32f103"), "{text}");
+        assert!(text.contains("PA9"), "{text}");
+        assert!(text.contains("USART1_TX"), "{text}");
+        assert!(text.contains("PA10"), "{text}");
+        assert!(text.contains("USART1_RX"), "{text}");
+        assert!(text.contains("SWDIO"), "{text}");
+        assert!(text.contains("SWCLK"), "{text}");
+        assert!(text.contains("PC13"), "{text}");
+    }
+
+    #[test]
+    fn all_renders_thirteen_tables() {
+        let text = render_pin_tables("all").expect("all tables");
+        for board in vioarm_core::pins::PIN_BOARDS {
+            assert!(text.contains(&format!("board {board}")), "{board}");
+        }
+        assert_eq!(
+            text.lines()
+                .filter(|line| line.starts_with("board "))
+                .count(),
+            13
+        );
+    }
+
+    #[test]
+    fn unknown_board_errors_with_valid_list() {
+        let err = render_pin_tables("stm32f999").expect_err("unknown fails");
+        assert!(err.contains("stm32f999"), "{err}");
+        assert!(err.contains("stm32f103"), "{err}");
+        assert!(err.contains("stm32h743"), "{err}");
     }
 }
 

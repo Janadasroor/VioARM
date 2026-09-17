@@ -14,3 +14,21 @@
 | stm32h503/h533/h563 | M33 | 128K–2M | 32–640K | same set, `H533` own donor (`_S` aliases) |
 | stm32wba55 | M33 | 512K–1M | 128–512K | same set, radio permanently latch-only |
 | stm32l552/l562 | M33 | 256–512K | 128–256K | same set + `ADC` (plain names) |
+
+## Pin labels (`vioarm boards --pins`)
+
+HIL wiring needs human pin names, not SVD windows:
+
+```sh
+vioarm boards --pins stm32f103   # one board
+vioarm boards --pins all         # all 13 tables
+```
+
+Tables live in `vioarm-core/src/pins.rs` (`pin_labels`, `PIN_BOARDS`):
+`stm32f103`, `stm32f107`, `stm32f407`, `stm32f401`, `stm32f072`,
+`stm32f030`, `stm32f303xe`, `stm32l476`, `stm32g474xx`, `stm32h743`,
+`stm32u575`, `stm32wba55`, `stm32l552`. Each row is `PIN: FUNCTION` in
+the default alternate-function mapping firmware actually uses
+(`PA9: USART1_TX`, `PC13: GPIO_O`, …); the full AF matrix is explicitly
+out of scope. Unknown boards error with the valid list. `vioarm docs
+boards` points here.
