@@ -2622,32 +2622,112 @@ fn run_until_break(
     ReplStop::Exhausted
 }
 
+/// Advertised `docs` topics: the help line and the regression test share
+/// this list so no topic rots into "unknown topic" again.
+const DOC_TOPICS: &[&str] = &[
+    "boards",
+    "periphs",
+    "arch",
+    "core",
+    "dma",
+    "tim",
+    "adc",
+    "usart",
+    "spi",
+    "i2c",
+    "can",
+    "usb",
+    "eth",
+    "sdio",
+    "fmc",
+    "h7",
+    "run",
+    "trace",
+    "record",
+    "benchmark",
+    "gdb",
+    "debug",
+    "embedding",
+];
+
+/// One-line topic text (`None` for unknown topics).
+fn docs_text(topic: &str) -> Option<String> {
+    match topic {
+        "dma" => Some(format!("{}", "DMA — F1 7ch MEM2MEM 1/tick PL arbitrate, F4 8 streams MBURST/PBURST INCR4/8/16 FTH quarter/half/3q/full (dma_f4.rs:196) — per-request USART1 ch4/5".bright_green())),
+        "tim" => Some(format!("{}", "TIM — 16/32b PSC→PCLK, ARR, UIF, OCxM 000-111 PWM1/2 OPM, BDTR MOE/BKIN DTG, encoder SMS 011 Hall 100 (timer.rs:112)".bright_green())),
+        "adc" => Some(format!("{}", "ADC — F1 CR2 SWSTART, F4 dual C_ADC CDR combine, F0/H7/F3 ISR ADRDY ADEN ADSTART, JSQR/JDR JEOC, HTR/LTR AWD (adc.rs:113)".bright_green())),
+        "periphs" => Some(format!("{}", "Periphs — GPIO F1 BSRR F4 MODER, RCC HSIRDY SWS→SW, PWR WUF, RTC WPR INIT, CAN 28-bank filter, USB OTG HS FS double-buffer, ETH H7 MAC, SDIO CRC16".bright_green())),
+        "arch" => Some(format!("{}", "Arch — ARMv6-M (M0/M0+) / v7-M (M3/M4) / v7E-M (M7) / v8M-baseline (M23) / v8M-mainline (M33+DSP+FPv5-SP); DWT CYCCNT TRM CPI vs 1c/insn cycles; MPU regions; Thumb-2 .w needs M3+ (cpu/mod.rs:44)".bright_green())),
+        "core" => Some(format!("{}", "Core — NVIC + SysTick + DWT per machine; semihosting BKPT 0xAB (WRITEC/WRITE0/READC/CLOCK/ISTTY/EXIT); ITM stimulus + RTT channel 0; backtrace ring 256, history on halt (machine.rs, semihost.rs)".bright_green())),
+        "usart" => Some(format!("{}", "USART — SR/DR/BRR/CR1..3 (F1 SR@0x00 UE13, F0 ISR/RDR/TDR UE0); TXE/TC/RXNE read-to-clear; RXNEIE+UE level IRQ; LIN break LBD; DMA1 TX ch4/RX ch5 routing (usart.rs:1)".bright_green())),
+        "spi" => Some(format!("{}", "SPI — CR1 SPE/MSTR/BR/DFF/CRCEN/SSM+NSS, SR TXE/RXNE/BSY/MODF, TXCRCR/RXCRCR, I2S gate; master/slave pairs over the fabric, MOSI drain + MISO inject (spi.rs:1)".bright_green())),
+        "i2c" => Some(format!("{}", "I2C — master state machine; CR1 START/STOP/ACK, SR1 SB/ADDR/BTF/TXE/RXNE, 7-bit addr via DR, CCR/TRISE timing (i2c.rs:1)".bright_green())),
+        "can" => Some(format!("{}", "CAN — bxCAN INRQ/INAK handshake, TX mailboxes TXRQ/RQCP/TXOK, RX FIFOs FMP/FULL/FOVR+RFOM, 28-bank mask/list filters, TX/RX0/RX1/SCE lines; FDCAN full/cut/stub tiers on H7/G0/M33 (can.rs:1, fdcan.rs)".bright_green())),
+        "usb" => Some(format!("{}", "USB — OTG FS/HS reunited (GLOBAL/HOST/DEVICE/PWRCLK + FIFO RAM); device ENUMDNE/SETUP/bulk; host HPRT/SOF scheduler + virtual CDC-ACM (usb.rs:1)".bright_green())),
+        "eth" => Some(format!("{}", "ETH — F1/F4 MAC+DMA descriptor rings with host inject/drain; H7 EthH7 enhanced descriptors, MACPFR filter, MDIO link-up PHY, static-IP ARP/ICMP echo (eth.rs:1)".bright_green())),
+        "sdio" => Some(format!("{}", "SDIO — CMD/ARG/RESPCMD/RESP1, CMDSENT/CMDREND/DATAEND/DBCKEND, DCTRL/DLEN blocks, real CRC-16, ICR W1C, IRQ 49 (sdio.rs:1)".bright_green())),
+        "fmc" => Some(format!("{}", "FMC — LTDC VSYNC, DMA2D blit TC, BDMA/MDMA channels, QSPI/OCTOSPI gates, SAI/DFSDM/HRTIM ticks; external RAM at 0xC0000000/0x90000000 (fmc.rs:1)".bright_green())),
+        "h7" => Some(format!("{}", "H7 — stm32h743 2M flash/512K RAM (DTCM+AXI), FDCAN1 full M_CAN, LPTIM1-5, PLL1 + TIMPRE x4 timer ratios, FMC/QSPI (boards.md)".bright_green())),
+        "run" => Some(format!("{}", "Run — .bin/.elf/.hex auto-detected; --board (family core) --base --budget (default 1M) --semihost --fast K/--jit --pin-log c13 --pin-sample N; reruns byte-identical".bright_green())),
+        "trace" => Some(format!("{}", "Trace — text per-cycle snapshot, jsonl per-retire stream, vcd waveform (32-bit pc + --pin-log pins, board-clock #ns, change-only, fixed $date); --output file, stdout stays text/jsonl".bright_green())),
+        "record" => Some(format!("{}", "Record — golden vioarm-golden-v1 (image digest, halt, cycles/cyccnt, channels, RAM snaps; --snap BASE:LEN default 0x20000000:0x1000); replay diffs field-by-field, --patch ADDR=VAL, exit 1 on any diff".bright_green())),
+        "benchmark" => Some(format!("{}", "Benchmark — bare-nop/board-boot/usart-tx kernels on the release Machine; --cycles N --board B --fail-under <mips> exits 1; plain kernel mips wall-ms rows (docs/src/benchmark.md)".bright_green())),
+        "gdb" => Some(format!("{}", "GDB — RSP g/G regs, m/M mem, c/s continue/step, Z0 sw breakpoints (bkpt swap + step-over re-arm), H faked, D/k quit, W exit on semihosting; no watchpoints; --jit TB stops + quanta continue (vioarm-gdb/src/lib.rs:296)".bright_green())),
+        "embedding" => Some(format!("{}", "Embedding — C ABI: vioarm_cosim_api_version, snapshot_save/restore (CPU+0x20000000:0x1000), get_pc/get_sp/get_cycles/get_instructions, read_data/write_data (VIOARM_ERR_BUS on unmapped), device_* / board_* catalog incl. board_pin (see docs/src/embedding.md)".bright_green())),
+        "debug" => Some(format!("{}", "Debug — REPL: step(s)/next(n) continue(c) regs(r) set <reg> <val> mem <addr> [val] disas [addr] [N] break <pc> breaks delete <pc> clear budget <n> history [N] quit(q); halts auto-print the 32-deep backtrace. GDB: vioarm gdb image --port 3333, then target remote :3333 (breakpoints, single-step, quanta continue, semihosting W exit)".bright_green())),
+        _ => None,
+    }
+}
+
 fn docs_topic(topic: Option<String>) {
     let t = topic.as_deref().unwrap_or("").to_ascii_lowercase();
     match t.as_str() {
         "" | "help" => {
-            println!("{}", "VioARM docs — instant terminal docs".bright_cyan().bold());
-            println!("{}", "topics: boards periphs arch dma tim adc usart spi i2c can usb eth sdio fmc h7 core embedding".dimmed());
-            println!("  {} — 21 SVD → 500 Dnames, 197 union periphs", "boards".bright_green());
-            println!("  {} — GPIO/RCC/USART/TIM/ADC/SPI/I2C/CAN/DMA/USB/ETH/SDIO/FMC/H7", "periphs".bright_green());
-            println!("  {} — ARMv6-M/7-M/7E-M/8M-baseline M4F M7 FPv5-D16, DWT cyccnt, MPU", "arch".bright_green());
+            println!(
+                "{}",
+                "VioARM docs — instant terminal docs".bright_cyan().bold()
+            );
+            println!("{}", format!("topics: {}", DOC_TOPICS.join(" ")).dimmed());
+            println!(
+                "  {} — 21 SVD → 500 Dnames, 197 union periphs",
+                "boards".bright_green()
+            );
+            println!(
+                "  {} — GPIO/RCC/USART/TIM/ADC/SPI/I2C/CAN/DMA/USB/ETH/SDIO/FMC/H7",
+                "periphs".bright_green()
+            );
+            println!(
+                "  {} — ARMv6-M/7-M/7E-M/8M-baseline M4F M7 FPv5-D16, DWT cyccnt, MPU",
+                "arch".bright_green()
+            );
             println!("  {} — C ABI version/snapshots/introspection/memory/catalog (see docs/src/embedding.md)", "embedding".bright_green());
-            println!("  {} — run `vioarm boards` for 21 tables, `vioarm run <hex> --board stm32h743`", "quick".bright_yellow());
+            println!(
+                "  {} — run `vioarm boards` for 21 tables, `vioarm run <hex> --board stm32h743`",
+                "quick".bright_yellow()
+            );
         }
         "boards" => {
-            println!("{}", "Boards — 21 SVD tables → 500 Dnames (vioarm-core/src/board.rs:2119)".bright_cyan().bold());
+            println!(
+                "{}",
+                "Boards — 21 SVD tables → 500 Dnames (vioarm-core/src/board.rs:2119)"
+                    .bright_cyan()
+                    .bold()
+            );
             for (name, peris) in board::all_chip_tables() {
                 let len = peris.len();
-                println!("  {:12} {:3} periphs {}", name.bright_green(), len.to_string().dimmed(), format!("0x{:08x}", peris[0].base).dimmed());
+                println!(
+                    "  {:12} {:3} periphs {}",
+                    name.bright_green(),
+                    len.to_string().dimmed(),
+                    format!("0x{:08x}", peris[0].base).dimmed()
+                );
             }
             println!("{}", "pins: vioarm boards --pins stm32f103 (13 tables, default-AF labels; see docs/src/boards.md)".dimmed());
         }
-        "dma" => println!("{}", "DMA — F1 7ch MEM2MEM 1/tick PL arbitrate, F4 8 streams MBURST/PBURST INCR4/8/16 FTH quarter/half/3q/full (dma_f4.rs:196) — per-request USART1 ch4/5".bright_green()),
-        "tim" => println!("{}", "TIM — 16/32b PSC→PCLK, ARR, UIF, OCxM 000-111 PWM1/2 OPM, BDTR MOE/BKIN DTG, encoder SMS 011 Hall 100 (timer.rs:112)".bright_green()),
-        "adc" => println!("{}", "ADC — F1 CR2 SWSTART, F4 dual C_ADC CDR combine, F0/H7/F3 ISR ADRDY ADEN ADSTART, JSQR/JDR JEOC, HTR/LTR AWD (adc.rs:113)".bright_green()),
-        "periphs" => println!("{}", "Periphs — GPIO F1 BSRR F4 MODER, RCC HSIRDY SWS→SW, PWR WUF, RTC WPR INIT, CAN 28-bank filter, USB OTG HS FS double-buffer, ETH H7 MAC, SDIO CRC16".bright_green()),
-        "embedding" => println!("{}", "Embedding — C ABI: vioarm_cosim_api_version, snapshot_save/restore (CPU+0x20000000:0x1000), get_pc/get_sp/get_cycles/get_instructions, read_data/write_data (VIOARM_ERR_BUS on unmapped), device_* / board_* catalog incl. board_pin (see docs/src/embedding.md)".bright_green()),
-        _ => println!("{} '{}' — try `vioarm docs help`", "unknown topic".red(), t),
+        _ => match docs_text(t.as_str()) {
+            Some(text) => println!("{text}"),
+            None => println!("{} '{t}' — try `vioarm docs help`", "unknown topic".red()),
+        },
     }
 }
 
@@ -3319,6 +3399,43 @@ mod pin_spec_tests {
         for bad in ["", "13", "c", "c32", "z0", "c-1", "cc1", "c1x"] {
             assert!(parse_pin_spec(bad).is_err(), "{bad}");
         }
+    }
+}
+
+#[cfg(test)]
+mod docs_tests {
+    use super::{docs_text, DOC_TOPICS};
+
+    #[test]
+    fn every_advertised_topic_resolves() {
+        // `boards` renders a table (not through `docs_text`); everything
+        // else advertised must resolve to a line.
+        assert!(DOC_TOPICS.contains(&"boards"));
+        for topic in DOC_TOPICS {
+            if *topic == "boards" {
+                continue;
+            }
+            let text = docs_text(topic).unwrap_or_else(|| panic!("dead topic: {topic}"));
+            assert!(!text.is_empty(), "{topic}");
+        }
+    }
+
+    #[test]
+    fn unknown_topics_stay_unknown() {
+        assert!(docs_text("nope").is_none());
+        assert!(docs_text("").is_none());
+        assert!(docs_text("BOARDs").is_none(), "lookup is lowercase-exact");
+    }
+
+    #[test]
+    fn topic_lines_name_their_subject() {
+        let gdb = docs_text("gdb").expect("gdb");
+        assert!(gdb.contains("Z0"), "{gdb}");
+        assert!(gdb.contains("watchpoint"), "{gdb}");
+        let run = docs_text("run").expect("run");
+        assert!(run.contains("--budget"), "{run}");
+        let record = docs_text("record").expect("record");
+        assert!(record.contains("--snap"), "{record}");
     }
 }
 
