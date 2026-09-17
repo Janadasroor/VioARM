@@ -617,6 +617,28 @@ pub fn fmt32(inst: &Inst32, pc: u32) -> String {
             let op = if high { "movt" } else { "movw" };
             format!("{op} {}, #{imm}", reg_name(rd))
         }
+        Inst32::ShiftReg32 {
+            shift,
+            rd,
+            rn,
+            rm,
+            set_flags,
+        } => {
+            let base = match shift {
+                ShiftType::Lsl => "lsl",
+                ShiftType::Lsr => "lsr",
+                ShiftType::Asr => "asr",
+                ShiftType::Ror => "ror",
+            };
+            let s = if set_flags { "s" } else { "" };
+            // `Rd = Rn <op> Rm`: source order, amount register last.
+            format!(
+                "{base}{s}.w {}, {}, {}",
+                reg_name(rd),
+                reg_name(rn),
+                reg_name(rm)
+            )
+        }
         Inst32::Mem {
             access,
             rt,
@@ -1328,5 +1350,22 @@ mod tests {
         assert_eq!(cond_name(0), "eq");
         assert_eq!(cond_name(0xC), "gt");
         assert_eq!(cond_name(0xE), "al");
+    }
+}
+
+#[cfg(test)]
+mod shift_reg_tests {
+    use super::disassemble;
+    use crate::cpu::Isa;
+
+    #[test]
+    fn shift_register_wide_renders_source_order() {
+        // Gas: `lsl.w r7, r8, r9` is FA08 F709; `lsls.w` sets hi bit 4.
+        let (text, width) = disassemble(Isa::Armv7M, 0x100, 0xFA08, Some(0xF709));
+        assert_eq!((text.as_str(), width), ("lsl.w r7, r8, r9", 4));
+        let (text, _) = disassemble(Isa::Armv7M, 0x100, 0xFA18, Some(0xF709));
+        assert_eq!(text, "lsls.w r7, r8, r9");
+        let (text, _) = disassemble(Isa::Armv7M, 0x100, 0xFA28, Some(0xF709));
+        assert_eq!(text, "lsr.w r7, r8, r9");
     }
 }

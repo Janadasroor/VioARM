@@ -382,6 +382,25 @@ pub enum Inst32 {
         /// Upper half (MOVT).
         high: bool,
     },
+    /// ARMv7-M shift (register): `LSL`/`LSR`/`ASR`/`ROR` with the amount in
+    /// `Rm<7:0>` (`Rd = Rn <op> Rm`, e.g. `lsl.w r7, r8, r9` is
+    /// `r8 << (r9 & 0xFF)` — live QEMU probe; same seats as the 16-bit
+    /// `ShiftReg`). Only the MOV family takes a register amount — every
+    /// other data-processing op requires an immediate shift (the assembler
+    /// rejects `add.w r0, r1, r2, lsl r3`). `set_flags` is the `S` bit
+    /// (`lsls.w`); without it no flags move.
+    ShiftReg32 {
+        /// Shift operation.
+        shift: ShiftType,
+        /// Destination register.
+        rd: u8,
+        /// Shifted register (first source).
+        rn: u8,
+        /// Amount register (bottom byte used).
+        rm: u8,
+        /// Whether condition flags update.
+        set_flags: bool,
+    },
     /// ARMv7-M single-data-transfer with an immediate or register offset:
     /// `LDR`/`STR` word, byte, halfword, and the sign-extending loads. `off`
     /// is the immediate offset magnitude (0-4095 imm12 or 0-255 imm8) when
@@ -1235,6 +1254,7 @@ pub fn decode32_v7m(hi: u16, lo: u16) -> Result<Inst32, DecodeError> {
         .or_else(|| decode_dp_plain(hi, lo))
         .or_else(|| decode_dp_modified(hi, lo))
         .or_else(|| decode_dp_reg(hi, lo))
+        .or_else(|| decode_shift_reg(hi, lo))
         .or_else(|| decode_div(hi, lo))
         .or_else(|| decode_mul(hi, lo))
         .or_else(|| decode_dsp_mul(hi, lo))
@@ -1265,6 +1285,7 @@ pub fn decode32_v7em(hi: u16, lo: u16) -> Result<Inst32, DecodeError> {
         .or_else(|| decode_dp_plain(hi, lo))
         .or_else(|| decode_dp_modified(hi, lo))
         .or_else(|| decode_dp_reg(hi, lo))
+        .or_else(|| decode_shift_reg(hi, lo))
         .or_else(|| decode_div(hi, lo))
         .or_else(|| decode_mul(hi, lo))
         .or_else(|| decode_dsp_mul(hi, lo))
@@ -2049,6 +2070,34 @@ const fn decode_ldrd_strd(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError
         add,
         index,
         writeback,
+    }))
+}
+
+/// Decode the ARMv7-M shift (register) family: `LSL`/`LSR`/`ASR`/`ROR`
+/// with the amount in `Rm<7:0>` (`1111 1010 st S Rn / 1111 Rd 0000 Rm`,
+/// so `lsl.w r7, r8, r9` is `FA08 F709` with `Rn = r8` shifted by `r9`).
+/// Only the MOV family takes a register amount; the `lo` top nibble is
+/// fixed `1111` and bits `7:4` are `0000`, which keeps this disjoint from
+/// the `ExtendAdd` family (`10 rot`) sharing the `FA00` first halfwords.
+fn decode_shift_reg(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
+    if hi & 0xFF80 != 0xFA00 {
+        return None;
+    }
+    if lo & 0xF0F0 != 0xF000 {
+        return None;
+    }
+    let shift = match (hi >> 5) & 0x3 {
+        0 => ShiftType::Lsl,
+        1 => ShiftType::Lsr,
+        2 => ShiftType::Asr,
+        _ => ShiftType::Ror,
+    };
+    Some(Ok(Inst32::ShiftReg32 {
+        shift,
+        rd: ((lo >> 8) & 0xF) as u8,
+        rn: (hi & 0xF) as u8,
+        rm: (lo & 0xF) as u8,
+        set_flags: hi & 0x10 != 0,
     }))
 }
 
@@ -3185,6 +3234,39 @@ mod tests {
         let hi = u16::from_le_bytes([bytes[0], bytes[1]]);
         let lo = u16::from_le_bytes([bytes[2], bytes[3]]);
         decode32_v7m(hi, lo)
+    }
+
+    #[test]
+    fn shift_register_forms_decode_with_amount_in_rm() {
+        use ShiftType::{Asr, Lsl, Lsr, Ror};
+        // Gas-verified: `lsl.w r7, r8, r9` is FA08 F709 (`Rd = Rn << Rm`).
+        for (bytes, shift, s) in [
+            ([0x08, 0xfa, 0x09, 0xf7], Lsl, false),
+            ([0x18, 0xfa, 0x09, 0xf7], Lsl, true),
+            ([0x28, 0xfa, 0x09, 0xf7], Lsr, false),
+            ([0x48, 0xfa, 0x09, 0xf7], Asr, false),
+            ([0x68, 0xfa, 0x09, 0xf7], Ror, false),
+        ] {
+            assert_eq!(
+                v7m_bytes(bytes),
+                Ok(Inst32::ShiftReg32 {
+                    shift,
+                    rd: 7,
+                    rn: 8,
+                    rm: 9,
+                    set_flags: s,
+                }),
+                "{bytes:02x?}"
+            );
+        }
+        // v7EM accepts the same forms; v6M rejects them (no Thumb-2).
+        assert!(v7em_bytes([0x08, 0xfa, 0x09, 0xf7]).is_ok());
+        assert!(decode32_bytes([0x08, 0xfa, 0x09, 0xf7]).is_err());
+        // The `ExtendAdd` neighbor (lo bits 7:6 set) still decodes there.
+        assert!(matches!(
+            v7m_bytes([0x00, 0xfa, 0x80, 0xf0]),
+            Ok(Inst32::ExtendAdd { .. })
+        ));
     }
 
     /// Decode a byte quadruple as an ARMv7E-M (M7) 32-bit instruction (FPv5-D16).

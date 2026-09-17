@@ -492,6 +492,7 @@ fn op_timing(op: &TbOp) -> (u64, Option<u8>, [Option<u8>; 3]) {
         TbOp::V32(inst) => {
             let reads = match inst {
                 Inst32::DpReg { rn, rm, .. } => [Some(*rn), Some(*rm), None],
+                Inst32::ShiftReg32 { rn, rm, .. } => [Some(*rn), Some(*rm), None],
                 Inst32::DpImm { rn, .. } | Inst32::Sat { rn, .. } | Inst32::Bitfield { rn, .. } => {
                     [Some(*rn), None, None]
                 }

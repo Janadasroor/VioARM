@@ -184,3 +184,37 @@ fn bcc_w_taken_path_executes() {
     let word = m.core.mem().read_word(RAM).expect("RAM readable");
     assert_eq!(word & 0xFF, 0x54, "branch skipped the fallthrough store");
 }
+
+/// 32-bit shift (register): `Rd = Rn <op> (Rm & 0xFF)` (gas-verified
+/// `lsl.w r7, r8, r9` = FA08 F709; live QEMU probe agrees on seats and
+/// results). Asymmetric operands prove the seats: `r8 << r9 = 96`, and the
+/// `lsls.w` form sets no flags on a clean shift.
+#[test]
+fn shift_reg_wide_shifts_by_rm_byte() {
+    // movs r0, #3 ; movs r1, #5 ; mov r8, r0 ; mov r9, r1 ;
+    // lsl.w r7, r8, r9 ; lsls.w r6, r8, r9 ; b .
+    // (`movs` cannot target high regs, hence the `mov` bridges.)
+    let img: [u8; 26] = [
+        0x00, 0x10, 0x00, 0x20, // 0x00: SP
+        0x09, 0x00, 0x00, 0x00, // 0x04: reset -> 0x8
+        0x03, 0x20, // 0x08: movs r0, #3
+        0x05, 0x21, // 0x0A: movs r1, #5
+        0x80, 0x46, // 0x0C: mov r8, r0
+        0x89, 0x46, // 0x0E: mov r9, r1
+        0x08, 0xFA, 0x09, 0xF7, // 0x10: lsl.w r7, r8, r9
+        0x18, 0xFA, 0x09, 0xF6, // 0x14: lsls.w r6, r8, r9
+        0xFE, 0xE7, // 0x18: b .
+    ];
+    let mut m = boot_v7m(&[]);
+    m.load_image(&load_flat(0x0000_0000, &img));
+    m.reset().expect("reset vector is odd and executable");
+    let _ = m.run(8);
+    // Seats per live QEMU probe: `lsl.w r7, r8, r9` is `r8 << r9`
+    // (shifted = first source = hi nibble, amount = second = lo nibble).
+    assert_eq!(m.core.regs.r[7], 96, "r8 << r9, not r9 << r8");
+    assert_eq!(m.core.regs.r[6], 96);
+    assert!(
+        !m.core.xpsr.n() && !m.core.xpsr.z(),
+        "clean shift sets no N/Z"
+    );
+}

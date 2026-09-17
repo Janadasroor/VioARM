@@ -776,6 +776,7 @@ impl<B: PeripheralBus> Core<B> {
             // Source registers this instruction reads (conservative subset).
             let reads = match i {
                 Inst32::DpReg { rn, rm, .. } => [Some(rn), Some(rm), None],
+                Inst32::ShiftReg32 { rn, rm, .. } => [Some(rn), Some(rm), None],
                 Inst32::DpImm { rn, .. } | Inst32::Sat { rn, .. } | Inst32::Bitfield { rn, .. } => {
                     [Some(rn), None, None]
                 }
@@ -2830,6 +2831,33 @@ impl<B: PeripheralBus> Core<B> {
                     }
                 };
                 self.exec_dp32(op, rd, rn, op2, set_flags, shift_carry)?;
+                Ok(Next::Advance(pc + 4))
+            }
+            I::ShiftReg32 {
+                shift,
+                rd,
+                rn,
+                rm,
+                set_flags,
+            } => {
+                if rd == 15 {
+                    return Err(HaltCause::NotImplemented {
+                        what: "shift-register writes to pc",
+                    });
+                }
+                // `Rd = Rn <op> (Rm & 0xFF)`, same seats as the 16-bit
+                // `ShiftReg`: the value is `Rn`, the amount `Rm`.
+                let kind = match shift {
+                    ShiftType::Lsl => Shift::Lsl,
+                    ShiftType::Lsr => Shift::Lsr,
+                    ShiftType::Asr => Shift::Asr,
+                    ShiftType::Ror => Shift::Ror,
+                };
+                let (res, c) = shift_reg(kind, self.regs.read(rn), self.regs.read(rm) & 0xFF);
+                if set_flags {
+                    self.write_shift_flags_it(res, c);
+                }
+                self.regs.write(rd, res);
                 Ok(Next::Advance(pc + 4))
             }
             I::DpImm {
