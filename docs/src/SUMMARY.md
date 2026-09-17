@@ -8,4 +8,5 @@
 [Architecture](./arch.md)
 [Translated-block engine](./jit.md)
 [Co-simulation](./cosim.md)
+[Coupling contract](./coupling-contract.md)
 [Field benchmark](./benchmark.md)

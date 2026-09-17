@@ -40,6 +40,10 @@
 //!    ngspice's `d_cosim` steps a single instance on one thread.
 //! 5. Out-pointer writes (`pin_get`, `get_dac_voltage`): each pointer is
 //!    null-checked first, written exactly once, and never retained.
+//! 6. Event-buffer writes (`run_quantum`): `out` is null-checked whenever
+//!    `cap > 0`, elements are written with `ptr::addr_of_mut!`‑free plain
+//!    `add(i).write` inside the buffer the caller sized, `out_len` is
+//!    null-checked always and written exactly once; nothing is retained.
 //!
 //! Panics never cross the boundary: every entry wraps its body in
 //! `catch_unwind` and fails closed (null / negative status, message in
@@ -103,6 +107,10 @@ pub const VIOARM_MODE_OUTPUT_OPEN_DRAIN: u32 = 5;
 pub const VIOARM_MODE_ALTERNATE_PUSH_PULL: u32 = 6;
 /// Pin modes for [`vioarm_cosim_pin_get`] (`mode_out`): alternate-function open-drain.
 pub const VIOARM_MODE_ALTERNATE_OPEN_DRAIN: u32 = 7;
+/// Machine-driven quantum event kinds for [`VioArmEvent::kind`]: pin change.
+pub const VIOARM_EVENT_PIN: u32 = 0;
+/// Machine-driven quantum event kinds for [`VioArmEvent::kind`]: analog word.
+pub const VIOARM_EVENT_ANALOG: u32 = 1;
 
 /// Process-global active handle for bridge `dlsym` (mirrors
 /// `vioavr_cosim_get_active_handle`): the most recently created live
@@ -307,6 +315,128 @@ pub extern "C" fn vioarm_cosim_step_duration(handle: *mut VioArmHandle, seconds:
                     VIOARM_STEP_HALTED
                 }
                 Ok(()) => VIOARM_STEP_OK,
+            }
+        })
+        .unwrap_or_else(|code| code)
+    })
+}
+
+/// One machine-driven quantum event (see `docs/src/coupling-contract.md`).
+///
+/// `kind` is [`VIOARM_EVENT_PIN`] (pin fields valid) or
+/// [`VIOARM_EVENT_ANALOG`] (`mv` valid). `cyccnt` is the exact stamp after
+/// the retiring step; convert to seconds with `cyccnt / cpu_hz`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C)]
+pub struct VioArmEvent {
+    /// `DWT CYCCNT` after the retiring step.
+    pub cyccnt: u64,
+    /// [`VIOARM_EVENT_PIN`] or [`VIOARM_EVENT_ANALOG`].
+    pub kind: u32,
+    /// GPIO port (0 = A; pin events only).
+    pub port: u32,
+    /// Pin index (pin events only).
+    pub pin: u32,
+    /// Sampled level (pin events only, 0/1).
+    pub level: u32,
+    /// Firmware drives the pin (pin events only, 0/1).
+    pub driving: u32,
+    /// Millivolts of the staged word (analog events only).
+    pub mv: u32,
+}
+
+/// Machine-driven bounded run: retire at most `seconds` of true core
+/// cycles at the live CPU clock, buffering change-only pin events (ports
+/// A–D, absent ports never emit) plus every staged `apin` word into the
+/// caller-sized `out[cap]` buffer.
+///
+/// `out_len` (always required) reports the total event count even when it
+/// exceeds `cap` — the buffer holds the first `cap` in retire order, so
+/// `*out_len > cap` means truncation (drain with a bigger buffer next
+/// quantum; the machine already retired, events are not replayed). `out`
+/// is required when `cap > 0`. Returns [`VIOARM_STEP_OK`] on a full
+/// quantum, [`VIOARM_STEP_HALTED`] on an early halt, or a negative error
+/// code. The SPICE-master [`vioarm_cosim_step_duration`] path is
+/// untouched.
+///
+/// `clippy::not_unsafe_ptr_arg_deref` is allowed here deliberately, same
+/// as [`vioarm_cosim_destroy`]: unsafety is unenforceable across a C ABI
+/// and the null checks make this entry total.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[no_mangle]
+pub extern "C" fn vioarm_cosim_run_quantum(
+    handle: *mut VioArmHandle,
+    seconds: c_double,
+    out: *mut VioArmEvent,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
+    guard(|| {
+        if out_len.is_null() || (out.is_null() && cap > 0) {
+            set_error("null out-pointer".to_owned());
+            return VIOARM_ERR_BAD_ARG;
+        }
+        if !seconds.is_finite() || seconds < 0.0 {
+            set_error(format!("bad quantum duration {seconds}"));
+            return VIOARM_ERR_BAD_ARG;
+        }
+        with_handle(handle, |harness| {
+            let machine = harness.machine_mut();
+            let mut watch = Vec::with_capacity(64);
+            for port in 0..4u8 {
+                for pin in 0..16u8 {
+                    watch.push((port, pin));
+                }
+            }
+            let Some(outcome) = machine.run_quantum_seconds(seconds, &watch) else {
+                set_error(format!("bad quantum duration {seconds}"));
+                return VIOARM_ERR_BAD_ARG;
+            };
+            let total = outcome.events.len();
+            let stored = total.min(cap);
+            // SAFETY CASE leg 6: `out` validated for `cap` elements above,
+            // written in-bounds only, never retained.
+            unsafe {
+                for (i, event) in outcome.events.iter().take(stored).enumerate() {
+                    let (kind, port, pin, level, driving, mv) = match event.kind {
+                        vioarm_core::couple::CoupledEventKind::Pin {
+                            port,
+                            pin,
+                            level,
+                            driving,
+                        } => (
+                            VIOARM_EVENT_PIN,
+                            u32::from(port),
+                            u32::from(pin),
+                            u32::from(level),
+                            u32::from(driving),
+                            0,
+                        ),
+                        vioarm_core::couple::CoupledEventKind::Analog { mv } => {
+                            (VIOARM_EVENT_ANALOG, 0, 0, 0, 0, mv)
+                        }
+                    };
+                    out.add(i).write(VioArmEvent {
+                        cyccnt: event.cyccnt,
+                        kind,
+                        port,
+                        pin,
+                        level,
+                        driving,
+                        mv,
+                    });
+                }
+                out_len.write(total);
+            }
+            if total > cap {
+                set_error(format!("event buffer truncated ({total} > {cap})"));
+            }
+            match outcome.halt {
+                None => VIOARM_STEP_OK,
+                Some(cause) => {
+                    set_error(format!("halted: {cause}"));
+                    VIOARM_STEP_HALTED
+                }
             }
         })
         .unwrap_or_else(|code| code)

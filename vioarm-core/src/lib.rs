@@ -8,6 +8,7 @@
 #![warn(missing_docs)]
 
 pub mod board;
+pub mod couple;
 pub mod cpu;
 pub mod device;
 pub mod error;
