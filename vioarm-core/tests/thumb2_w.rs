@@ -185,6 +185,28 @@ fn bcc_w_taken_path_executes() {
     assert_eq!(word & 0xFF, 0x54, "branch skipped the fallthrough store");
 }
 
+/// Far `bl` (+0x1004, bytes `01 F0 02 F8`, gas: `bl 0x1108` from 0x100):
+/// the non-uniform `imm10` (= 1) distinguishes the 25-bit layout — the old
+/// shift read this encoding as +0x4004 and jumped into unmapped memory
+/// (found via a real CoreMark binary whose `bl main` decoded -6638 as
+/// -18926). Asserts the landing PC, the link register, and execution at
+/// the target.
+#[test]
+fn bl_far_forward_taken_path_executes() {
+    const TARGET: u32 = ENTRY + 4 + 0x1004;
+    let mut img = vec![0u8; (TARGET - ENTRY) as usize + 4];
+    img[0..4].copy_from_slice(&[0x01, 0xF0, 0x02, 0xF8]); // ENTRY: bl TARGET
+    let t = (TARGET - ENTRY) as usize;
+    img[t..t + 2].copy_from_slice(&[0x2A, 0x20]); // TARGET: movs r0, #0x2A
+    img[t + 2..t + 4].copy_from_slice(&[0xFE, 0xE7]); // b .
+    let mut m = boot_v7m(&img);
+    m.step().expect("far bl must retire");
+    assert_eq!(m.core.regs.pc, TARGET);
+    assert_eq!(m.core.regs.lr, ENTRY + 4 + 1);
+    m.step().expect("movs at the target retires");
+    assert_eq!(m.core.regs.r[0], 0x2A);
+}
+
 /// 32-bit shift (register): `Rd = Rn <op> (Rm & 0xFF)` (gas-verified
 /// `lsl.w r7, r8, r9` = FA08 F709; live QEMU probe agrees on seats and
 /// results). Asymmetric operands prove the seats: `r8 << r9 = 96`, and the

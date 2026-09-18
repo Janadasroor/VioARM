@@ -959,31 +959,24 @@ fn t32_blx_immediate_faults_nonthumb() {
     assert_eq!(regs.r[4], 0);
 }
 
-/// ARMv7-M `BL` with a large positive offset and a `J2 = 0` second halfword
-/// (only accepted since the decoder mask was widened from `0xf800` to
-/// `0xd000`). LR is set and control returns after the branch target.
+/// ARMv7-M `BL` with a `J2 = 0` second halfword (only accepted since the
+/// decoder mask was widened from `0xf800` to `0xd000`). `00 f0 00 f0` is
+/// `bl +0x400000` — I2 is bit 22, not bit 12 (gas) — so from `0x12` it
+/// targets unmapped `0x400016` and the fetch aborts. LR is still set to the
+/// return address before the fault, so the caller could be resumed.
 #[test]
 fn t32_bl_far_with_j2_zero() {
-    // movs r0, #5 ; bl 0x1016 ; movs r1, #1 ; movs r2, #2 ; bkpt
-    // (0x1016) movs r3, #3 ; bkpt
+    // movs r0, #5 ; bl 0x400016 ; movs r1, #1 ; movs r2, #2 ; bkpt
     let mut m = boot_v7m(&[
         0x05, 0x20, 0x00, 0xf0, 0x00, 0xf0, 0x01, 0x21, 0x02, 0x22, 0x00, 0xbe,
     ]);
-    {
-        let mem = m.core.mem();
-        mem.write(0x1016, 0x03).unwrap();
-        mem.write(0x1017, 0x23).unwrap();
-        mem.write(0x1018, 0x00).unwrap();
-        mem.write(0x1019, 0xbe).unwrap();
-    }
     let err = m.run(10);
-    assert_eq!(err, Err(HaltCause::NonThumbTarget));
-    let (regs, _, cycles) = m.core.snapshot();
-    assert_eq!(cycles, 3);
+    assert_eq!(err, Err(HaltCause::FetchAbort));
+    let (regs, _, _) = m.core.snapshot();
+    assert_eq!(regs.pc, 0x400016);
     assert_eq!(regs.r[0], 5);
     assert_eq!(regs.r[1], 0);
     assert_eq!(regs.r[2], 0);
-    assert_eq!(regs.r[3], 3);
     assert_eq!(regs.lr, 0x17);
 }
 

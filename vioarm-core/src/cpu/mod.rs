@@ -3048,8 +3048,9 @@ impl<B: PeripheralBus> Core<B> {
                     }
                 }
                 if is_load {
-                    // The low word lands in `rt`, the high word in `rt2`;
-                    // the decoder guarantees they are distinct registers.
+                    // The low word lands in `rt`, the high word in `rt2`; a
+                    // doubled pair (accepted per silicon/QEMU parity) resolves
+                    // last-wins through this order.
                     let first = self.read_word_halt(address)?;
                     let second = self.read_word_halt(address.wrapping_add(4))?;
                     self.regs.write(rt, first);

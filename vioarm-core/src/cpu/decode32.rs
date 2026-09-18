@@ -1485,12 +1485,16 @@ fn branch_i(lo: u16, bit: u8, s: i32) -> i32 {
     1 - ((i32::from((lo >> bit) & 1)) ^ s)
 }
 
-/// Reconstruct the 25-bit signed byte offset `S:imm10:I1:I2:imm11:0`,
+/// Reconstruct the 25-bit signed byte offset `S:I1:I2:imm10:imm11:0`,
 /// shift-sign-extended from bit 24 (shifts wrap, so this is well-defined for
-/// the whole range).
+/// the whole range). `imm10` sits at bits 21:12 — one past `I2`, not two:
+/// shifting it to 23:14 accidentally agrees with the truth whenever its bit
+/// pairs are uniform (every offset magnitude under `0x1000`, which is why
+/// the small-branch corpus never noticed), and misroutes everything else
+/// (a real `bl main` backwards `-6638` decoded `-18926` and fetched abort).
 #[inline]
 const fn branch_off25(s: i32, imm10: i32, i1: i32, i2: i32, imm11: i32) -> i32 {
-    ((s << 24) | (imm10 << 14) | (i1 << 13) | (i2 << 12) | (imm11 << 1)) << 7 >> 7
+    ((s << 24) | (i1 << 23) | (i2 << 22) | (imm10 << 12) | (imm11 << 1)) << 7 >> 7
 }
 
 /// Reconstruct the 21-bit signed byte offset `S:I1:I2:imm6:imm11:0`,
@@ -2028,9 +2032,13 @@ const fn decode_tbranch(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>>
 /// packs `Rt Rt2 imm8`, where the byte offset is `imm8 << 2`. `LDRD` with
 /// `Rn == 15` is the PC-relative literal form. The `(P, W) == (0, 0)`
 /// combos of this space belong to `TBB`/`TBH` (consulted first) or are
-/// UNDEFINED; register pairs touching the PC, a doubled register, a
-/// writeback base that overlaps the pair, a `STRD` PC base, or writeback to
-/// the PC are all UNPREDICTABLE and decode as UNDEFINED.
+/// UNDEFINED; register pairs touching the PC, a writeback base that
+/// overlaps the pair, a `STRD` PC base, or writeback to the PC are all
+/// UNPREDICTABLE and decode as UNDEFINED. A doubled pair (`Rt == Rt2`,
+/// which GCC emits for adjacent zero stores) is UNPREDICTABLE on paper
+/// but executes the obvious thing on silicon and under QEMU (stores land
+/// twice, loads resolve last-wins through the sequential executor), so it
+/// decodes instead of faulting — proven by live QEMU probes.
 const fn decode_ldrd_strd(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError>> {
     if hi & 0xFE40 != 0xE840 {
         return None;
@@ -2047,7 +2055,7 @@ const fn decode_ldrd_strd(hi: u16, lo: u16) -> Option<Result<Inst32, DecodeError
         // The post-indexed forms always write back.
         return err;
     }
-    if rt == 15 || rt2 == 15 || rt == rt2 {
+    if rt == 15 || rt2 == 15 {
         return err;
     }
     if !is_load && rn == 15 {
@@ -4237,6 +4245,13 @@ mod tests {
             decode32_bytes([0xff, 0xf7, 0xfe, 0xff]),
             Ok(Inst32::Bl { off: -4 })
         );
+        // bl -6638 (f7fe fb09, the exact encoding from a real CoreMark
+        // binary whose `bl main` misdecoded to -18926 and fetched abort):
+        // non-uniform imm10 (0x3fe) distinguishes the bit layout.
+        assert_eq!(
+            decode32_bytes([0xfe, 0xf7, 0x09, 0xfb]),
+            Ok(Inst32::Bl { off: -6638 })
+        );
     }
 
     #[test]
@@ -4251,15 +4266,17 @@ mod tests {
             v7m_bytes([0xff, 0xf7, 0xfa, 0xbf]),
             Ok(Inst32::BranchWide { off: -12 })
         );
-        // b.w +16384 with a nonzero imm10 (f001 b800) -> off 0x4000.
+        // b.w +4096 with a nonzero imm10 (f001 b800, gas: `b.w 0x1104`
+        // from 0x100) -> off 0x1000. imm10 sits at bits 21:12.
         assert_eq!(
             v7m_bytes([0x01, 0xf0, 0x00, 0xb8]),
-            Ok(Inst32::BranchWide { off: 0x4000 })
+            Ok(Inst32::BranchWide { off: 0x1000 })
         );
-        // b.w +16380 with imm11 = 0x7fe (f000 97fe) -> off 0x3ffc.
+        // b.w +0xC00FFC (f000 97fe, gas: `b.w 0xc01100` from 0x100):
+        // I1 = 1 with imm10 = 0 pins the top-bit layout.
         assert_eq!(
             v7m_bytes([0x00, 0xf0, 0xfe, 0x97]),
-            Ok(Inst32::BranchWide { off: 0x3ffc })
+            Ok(Inst32::BranchWide { off: 0xC_00FFC })
         );
     }
 
@@ -4311,10 +4328,11 @@ mod tests {
             v7m_bytes([0x00, 0xf0, 0x04, 0xe8]),
             Ok(Inst32::BlxImm { off: 8 })
         );
-        // blx +8192 with I1 = 1 (f000 c800) -> off 0x2000.
+        // blx +0x800000 with I1 = 1 (f000 c800, gas: `blx 0x800104`
+        // from 0x100) -> off 0x800000. I1 is bit 23, not bit 13.
         assert_eq!(
             v7m_bytes([0x00, 0xf0, 0x00, 0xc8]),
-            Ok(Inst32::BlxImm { off: 0x2000 })
+            Ok(Inst32::BlxImm { off: 0x800000 })
         );
         // blx -4 (f7ff efff) -> off -4.
         assert_eq!(
@@ -4325,11 +4343,12 @@ mod tests {
 
     #[test]
     fn bl_accepts_j1_j2_ne_one() {
-        // bl +4104 with J2 = 0 (f000 f004) -> off 4104. The old `0xf800`
-        // second-halfword mask rejected this; the `0xd000` mask accepts it.
+        // bl +0x400008 with J1 = 1, J2 = 0 (f000 f004, gas: `bl 0x40010c`
+        // from 0x100) -> off 0x400008. The old `0xf800` second-halfword
+        // mask rejected this; the `0xd000` mask accepts it.
         assert_eq!(
             v7m_bytes([0x00, 0xf0, 0x04, 0xf0]),
-            Ok(Inst32::Bl { off: 4104 })
+            Ok(Inst32::Bl { off: 0x400008 })
         );
     }
 
@@ -5561,11 +5580,26 @@ mod tests {
                 writeback: false,
             })
         );
-        // A doubled or PC destination register, a `STRD` PC base, writeback
-        // onto a loaded register, and the `TBB`-adjacent `(P, W) == (0, 0)`
-        // space are all UNPREDICTABLE and decode as UNDEFINED; the ARMv6-M
+        // A doubled pair decodes (GCC emits `strd r5, r5` for adjacent
+        // zero stores; silicon and QEMU both execute it — live QEMU probes:
+        // stores land twice, doubled loads resolve last-wins): e9c0 550e.
+        assert_eq!(
+            v7m_bytes([0xc0, 0xe9, 0x0e, 0x55]),
+            Ok(Inst32::LdrdStrd {
+                is_load: false,
+                rt: 5,
+                rt2: 5,
+                rn: 0,
+                imm: 56,
+                add: true,
+                index: true,
+                writeback: false,
+            })
+        );
+        // A PC destination register, a `STRD` PC base, writeback onto a
+        // loaded register, and the `TBB`-adjacent `(P, W) == (0, 0)` space
+        // are all UNPREDICTABLE and decode as UNDEFINED; the ARMv6-M
         // decoder rejects the whole `1110 100P U1WL` dual space.
-        assert!(v7m_bytes([0xd1, 0xe9, 0x01, 0x00]).is_err()); // rt == rt2
         assert!(v7m_bytes([0xd0, 0xe9, 0x01, 0x1f]).is_err()); // rt == 15
         assert!(v7m_bytes([0x4f, 0xe9, 0x01, 0x01]).is_err()); // STRD [pc]
         assert!(v7m_bytes([0xf0, 0xe9, 0x01, 0x01]).is_err()); // wb over r0

@@ -767,7 +767,16 @@ impl<M: Bus> SystemMemory<M> {
         // Only a strictly higher-priority (numerically lower) group preempts
         // the one running; an equal group never preempts, even with a higher
         // subpriority. HardFault runs at priority -1 (group 0), so nothing
-        // preempts it.
+        // preempts it. Thread mode (IPSR 0) has no priority at all — it sits
+        // below every group, including 255 — so anything that survived the
+        // BASEPRI mask above preempts it. (Comparing groups numerically
+        // alone would read thread mode as group 255 via `current_priority`
+        // and wrongly refuse priority-255 SysTick/PendSV, the level every
+        // RTOS parks its kernel interrupts at: found via FreeRTOS, whose
+        // tick never fired.)
+        if current_ipsr == 0 {
+            return Some(n);
+        }
         let (cur_group, _) = self.split_priority(self.current_priority(current_ipsr));
         if group < cur_group {
             Some(n)
