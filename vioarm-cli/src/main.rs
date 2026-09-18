@@ -2585,38 +2585,205 @@ fn parse_reg_name(name: &str) -> Option<u8> {
     }
 }
 
+/// A REPL watchpoint: four bytes at `addr`, tripping on reads and/or
+/// writes through the hook registry (observe-only; the machine runs
+/// untouched — reads are real bus reads, so MMIO side effects apply).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Watch {
+    /// First watched byte (covers `addr..addr+4`).
+    addr: u32,
+    /// Trip on reads.
+    read: bool,
+    /// Trip on writes.
+    write: bool,
+}
+
+/// Arm one hook direction for `addr..addr+4`, recording into `tripped`
+/// only while the watch is still in `watches` — stale closures no-op, so
+/// `unwatch` needs no registry removal. Returns whether the board
+/// carries a hook registry at all.
+fn add_watch(
+    m: &mut Machine<board::BoardMemory>,
+    watches: std::rc::Rc<std::cell::RefCell<Vec<Watch>>>,
+    tripped: std::rc::Rc<std::cell::RefCell<Option<(u32, bool)>>>,
+    addr: u32,
+    read: bool,
+    write: bool,
+) -> bool {
+    let end = addr.wrapping_add(4);
+    // Record the watch once (idempotent on re-arm).
+    {
+        let mut set = watches.borrow_mut();
+        if !set
+            .iter()
+            .any(|w| w.addr == addr && w.read == read && w.write == write)
+        {
+            set.push(Watch { addr, read, write });
+        }
+    }
+    let mut armed = false;
+    if read {
+        let watches = watches.clone();
+        let tripped = tripped.clone();
+        armed |= m.on_read(addr, end, move |event| {
+            if let HookEvent::MemRead { addr: at, .. } = *event {
+                let watched = watches
+                    .borrow()
+                    .iter()
+                    .any(|w| w.read && at.wrapping_sub(w.addr) < 4);
+                if watched {
+                    *tripped.borrow_mut() = Some((at, true));
+                }
+            }
+        });
+    }
+    if write {
+        let watches = watches.clone();
+        let tripped = tripped.clone();
+        armed |= m.on_write(addr, end, move |event| {
+            if let HookEvent::MemWrite { addr: at, .. } = *event {
+                let watched = watches
+                    .borrow()
+                    .iter()
+                    .any(|w| w.write && at.wrapping_sub(w.addr) < 4);
+                if watched {
+                    *tripped.borrow_mut() = Some((at, false));
+                }
+            }
+        });
+    }
+    armed
+}
+
+/// Resolve `<hex pc|name>` for `delete` (no conditions).
+fn resolve_addr(args: &str, symbols: &[vioarm_core::loader::Symbol]) -> Option<u32> {
+    parse_u32(args.trim())
+        .ok()
+        .or_else(|| find_symbol(symbols, args.trim()))
+}
+
 /// Where a breakpoint-aware REPL run stopped.
 #[derive(Debug)]
 enum ReplStop {
     /// Parked on a persistent breakpoint.
     Hit(u32),
+    /// A watchpoint tripped: the data address plus whether it was a read.
+    Watch { addr: u32, read: bool },
     /// The machine halted (fault, BKPT, WFI, ...).
     Halt(HaltCause),
     /// The step budget ran out.
     Exhausted,
 }
 
-/// Step until a persistent breakpoint, a halt, or `budget` steps. A
-/// breakpoint at the entry pc is stepped over once so `continue` resumes
-/// instead of re-stopping where it already sits.
+/// A conditional breakpoint: `break <pc> [if <reg> ==|!= <val>]`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Breakpoint {
+    /// Stop address.
+    pc: u32,
+    /// Optional register-equality gate.
+    cond: Option<BreakCond>,
+}
+
+/// A register-equality gate for [`Breakpoint`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BreakCond {
+    /// Register number (as [`parse_reg_name`]).
+    reg: u8,
+    /// `true` for `!=`, `false` for `==`.
+    invert: bool,
+    /// Compared value.
+    val: u32,
+}
+
+/// Parse `break` arguments: `<pc|name> [if <reg> ==|!= <val>]`. Names
+/// resolve through `symbols` (exact match); anything else must parse as a
+/// number. Returns the address plus the optional condition.
+fn parse_break_args(
+    args: &str,
+    symbols: &[vioarm_core::loader::Symbol],
+) -> Option<(u32, Option<BreakCond>)> {
+    let (target, cond) = match args.split_once(" if ") {
+        Some((t, c)) => (t.trim(), Some(c.trim())),
+        None => (args.trim(), None),
+    };
+    let pc = parse_u32(target)
+        .ok()
+        .or_else(|| find_symbol(symbols, target))?;
+    let cond = match cond {
+        None => None,
+        Some(spec) => {
+            let (reg, val, invert) = match spec.split_once("==") {
+                Some((r, v)) => (r, v, false),
+                None => match spec.split_once("!=") {
+                    Some((r, v)) => (r, v, true),
+                    None => return None,
+                },
+            };
+            Some(BreakCond {
+                reg: parse_reg_name(reg.trim())?,
+                invert,
+                val: parse_u32(val.trim()).ok()?,
+            })
+        }
+    };
+    Some((pc, cond))
+}
+
+/// Whether `bp` stops the machine in its current state.
+fn break_hits(m: &Machine<board::BoardMemory>, bp: &Breakpoint) -> bool {
+    if m.core.regs.pc != bp.pc {
+        return false;
+    }
+    match bp.cond {
+        None => true,
+        Some(cond) => {
+            let val = m.core.regs.read(cond.reg);
+            (val == cond.val) != cond.invert
+        }
+    }
+}
+
+/// Exact symbol lookup by name.
+fn find_symbol(symbols: &[vioarm_core::loader::Symbol], name: &str) -> Option<u32> {
+    symbols.iter().find(|s| s.name == name).map(|s| s.addr)
+}
+
+/// Nearest symbol at or below `addr` plus the offset (`None` with no
+/// symbols, or when `addr` precedes every symbol).
+fn symbolize(symbols: &[vioarm_core::loader::Symbol], addr: u32) -> Option<(&str, u32)> {
+    symbols
+        .iter()
+        .filter(|s| s.addr <= addr)
+        .max_by_key(|s| s.addr)
+        .map(|s| (s.name.as_str(), addr.wrapping_sub(s.addr)))
+}
+
+/// Step until a persistent breakpoint, a watchpoint trip, a halt, or
+/// `budget` steps. A breakpoint at the entry pc is stepped over once so
+/// `continue` resumes instead of re-stopping where it already sits.
+/// `tripped` carries hook watchpoint hits out of the stepping loop.
 fn run_until_break(
     m: &mut Machine<board::BoardMemory>,
-    breakpoints: &[u32],
+    breakpoints: &[Breakpoint],
+    tripped: &std::cell::RefCell<Option<(u32, bool)>>,
     mut budget: u64,
 ) -> ReplStop {
-    if breakpoints.contains(&m.core.regs.pc) {
+    if breakpoints.iter().any(|bp| break_hits(m, bp)) {
         match m.step() {
             Err(cause) => return ReplStop::Halt(cause),
             Ok(()) => budget = budget.saturating_sub(1),
         }
     }
     while budget > 0 {
-        if breakpoints.contains(&m.core.regs.pc) {
+        if breakpoints.iter().any(|bp| break_hits(m, bp)) {
             return ReplStop::Hit(m.core.regs.pc);
         }
         match m.step() {
             Err(cause) => return ReplStop::Halt(cause),
             Ok(()) => budget -= 1,
+        }
+        if let Some((addr, read)) = tripped.borrow_mut().take() {
+            return ReplStop::Watch { addr, read };
         }
     }
     ReplStop::Exhausted
@@ -2674,7 +2841,7 @@ fn docs_text(topic: &str) -> Option<String> {
         "benchmark" => Some(format!("{}", "Benchmark — bare-nop/board-boot/usart-tx kernels on the release Machine; --cycles N --board B --fail-under <mips> exits 1; plain kernel mips wall-ms rows (docs/src/benchmark.md)".bright_green())),
         "gdb" => Some(format!("{}", "GDB — RSP g/G regs, m/M mem, c/s continue/step, Z0 sw breakpoints (bkpt swap + step-over re-arm), H faked, D/k quit, W exit on semihosting; no watchpoints; --jit TB stops + quanta continue (vioarm-gdb/src/lib.rs:296)".bright_green())),
         "embedding" => Some(format!("{}", "Embedding — C ABI: vioarm_cosim_api_version, snapshot_save/restore (CPU+0x20000000:0x1000), get_pc/get_sp/get_cycles/get_instructions, read_data/write_data (VIOARM_ERR_BUS on unmapped), device_* / board_* catalog incl. board_pin (see docs/src/embedding.md)".bright_green())),
-        "debug" => Some(format!("{}", "Debug — REPL: step(s)/next(n) continue(c) regs(r) set <reg> <val> mem <addr> [val] disas [addr] [N] break <pc> breaks delete <pc> clear budget <n> history [N] quit(q); halts auto-print the 32-deep backtrace. GDB: vioarm gdb image --port 3333, then target remote :3333 (breakpoints, single-step, quanta continue, semihosting W exit)".bright_green())),
+        "debug" => Some(format!("{}", "Debug — REPL: step(s)/next(n) continue(c) regs(r) set <reg> <val> mem <addr> [val] disas [addr] [N] break <pc|name> [if <reg> ==|!= <val>] breaks delete clear watch|rwatch|awatch <addr> unwatch snapshot restore budget history quit; ELF symbols label disas + resolve break names; halts print the 32-deep backtrace. GDB: vioarm gdb image --port 3333, then target remote :3333 (breakpoints, single-step, quanta continue, semihosting W exit)".bright_green())),
         _ => None,
     }
 }
@@ -2733,6 +2900,10 @@ fn docs_topic(topic: Option<String>) {
 
 fn debug_repl(image: PathBuf, board: Board, base: u32) {
     let (img, kind) = load_image_auto(&image, base);
+    let symbols = img.symbols.clone();
+    if !symbols.is_empty() {
+        println!("{} {} symbols", "symbols:".dimmed(), symbols.len());
+    }
     let mut m = machine_for(board, &img, (kind == "bin").then_some(base));
     println!(
         "{} {} — type {} for help",
@@ -2749,9 +2920,13 @@ fn debug_repl(image: PathBuf, board: Board, base: u32) {
         xpsr.get()
     );
     let mut rl = String::new();
-    // Persistent breakpoints for this session (`break` adds, `continue`
-    // and `budget` stop at them; `delete`/`clear` manage the set).
-    let mut breakpoints: Vec<u32> = Vec::new();
+    // Session state: persistent breakpoints (`break`, honored by
+    // `continue`/`budget`), hook watchpoints (`watch`, tripping through
+    // `tripped`), and one snapshot slot (`snapshot`/`restore`).
+    let mut breakpoints: Vec<Breakpoint> = Vec::new();
+    let watches: std::rc::Rc<std::cell::RefCell<Vec<Watch>>> = Default::default();
+    let tripped: std::rc::Rc<std::cell::RefCell<Option<(u32, bool)>>> = Default::default();
+    let mut snapshot: Option<Vec<u8>> = None;
     loop {
         print!("{}", "(vioarm) ".bright_magenta().bold());
         use std::io::Write;
@@ -2763,7 +2938,7 @@ fn debug_repl(image: PathBuf, board: Board, base: u32) {
         let cmd = rl.trim();
         match cmd {
             "help" | "h" | "?" => {
-                println!("{}: step(s)/next(n) continue(c) regs(r) set <reg> <val> mem <addr> [val] disas [addr] [N] break <pc> breaks delete <pc> clear budget <n> history [N] quit(q)", "commands".bright_green());
+                println!("{}: step(s)/next(n) continue(c) regs(r) set <reg> <val> mem <addr> [val] disas [addr] [N] break <pc|name> [if <reg> ==|!= <val>] breaks delete <pc|name> clear watch|rw|aw <addr> unwatch <addr> snapshot restore budget <n> history [N] quit(q)", "commands".bright_green());
             }
             "step" | "s" | "n" | "next" => match m.step() {
                 Ok(_) => {
@@ -2848,13 +3023,22 @@ fn debug_repl(image: PathBuf, board: Board, base: u32) {
                         Ok(h0) => {
                             let h1 = m.core.mem().read_half(at.wrapping_add(2)).ok();
                             let (text, width) = vioarm_core::disas::disassemble(isa, at, h0, h1);
+                            let sym = symbolize(&symbols, at)
+                                .map(|(name, off)| {
+                                    if off == 0 {
+                                        format!(" <{name}>")
+                                    } else {
+                                        format!(" <{name}+{off:#x}>")
+                                    }
+                                })
+                                .unwrap_or_default();
                             if h1.is_some_and(|h| width == 4) {
                                 println!(
-                                    "{at:#010x}: {h0:04x} {h:04x}  {text}",
+                                    "{at:#010x}: {h0:04x} {h:04x}  {text}{sym}",
                                     h = h1.expect("checked")
                                 );
                             } else {
-                                println!("{at:#010x}: {h0:04x}       {text}");
+                                println!("{at:#010x}: {h0:04x}       {text}{sym}");
                             }
                             at = at.wrapping_add(width);
                         }
@@ -2866,54 +3050,186 @@ fn debug_repl(image: PathBuf, board: Board, base: u32) {
                 }
             }
             c if c.starts_with("break ") => {
-                // `break <pc>` arms a persistent breakpoint (listed by
-                // `breaks`, honored by `continue`/`budget`, dropped by
+                // `break <pc|name> [if <reg> ==|!= <val>]`: arms a
+                // persistent conditional breakpoint (listed by `breaks`,
+                // honored by `continue`/`budget`, dropped by
                 // `delete`/`clear`).
-                match parse_u32(c[6..].trim()) {
-                    Ok(a) => {
-                        if breakpoints.contains(&a) {
+                match parse_break_args(c[6..].trim(), &symbols) {
+                    Some((a, cond)) => {
+                        if breakpoints.iter().any(|bp| bp.pc == a) {
                             println!("{} break at {a:#010x} already armed", "break".yellow());
                         } else {
-                            breakpoints.push(a);
-                            breakpoints.sort_unstable();
-                            println!("{} break at {a:#010x}", "break".bright_green());
+                            breakpoints.push(Breakpoint { pc: a, cond });
+                            breakpoints.sort_by_key(|bp| bp.pc);
+                            match cond {
+                                None => println!("{} break at {a:#010x}", "break".bright_green()),
+                                Some(gate) => println!(
+                                    "{} break at {a:#010x} if {} {} {:#010x}",
+                                    "break".bright_green(),
+                                    vioarm_core::disas::reg_name(gate.reg),
+                                    if gate.invert { "!=" } else { "==" },
+                                    gate.val
+                                ),
+                            }
                         }
                     }
-                    Err(_) => println!("{} break <hex pc>", "usage:".yellow()),
+                    None => println!(
+                        "{} break <hex pc|name> [if <reg> ==|!= <hex val>]",
+                        "usage:".yellow()
+                    ),
                 }
             }
             "break" | "breaks" => {
                 if breakpoints.is_empty() {
                     println!("{}", "no breakpoints".dimmed());
                 } else {
-                    for (i, pc) in breakpoints.iter().enumerate() {
-                        println!("  {i}: {pc:#010x}");
+                    for (i, bp) in breakpoints.iter().enumerate() {
+                        match bp.cond {
+                            None => println!("  {i}: {:#010x}", bp.pc),
+                            Some(gate) => println!(
+                                "  {i}: {:#010x} if {} {} {:#010x}",
+                                bp.pc,
+                                vioarm_core::disas::reg_name(gate.reg),
+                                if gate.invert { "!=" } else { "==" },
+                                gate.val
+                            ),
+                        }
+                    }
+                }
+                let set = watches.borrow();
+                if !set.is_empty() {
+                    for w in set.iter() {
+                        let kind = match (w.read, w.write) {
+                            (true, true) => "awatch",
+                            (true, false) => "rwatch",
+                            _ => "watch",
+                        };
+                        println!("  {kind} {:#010x}", w.addr);
                     }
                 }
             }
-            c if c.starts_with("delete ") => match parse_u32(c[7..].trim()) {
-                Ok(a) => {
-                    if let Some(pos) = breakpoints.iter().position(|pc| *pc == a) {
+            c if c.starts_with("delete ") => match resolve_addr(c[7..].trim(), &symbols) {
+                Some(a) => {
+                    if let Some(pos) = breakpoints.iter().position(|bp| bp.pc == a) {
                         breakpoints.remove(pos);
                         println!("{} break at {a:#010x} cleared", "delete".dimmed());
                     } else {
                         println!("{} no break at {a:#010x}", "delete".yellow());
                     }
                 }
-                Err(_) => println!("{} delete <hex pc>", "usage:".yellow()),
+                None => println!("{} delete <hex pc|name>", "usage:".yellow()),
             },
             "clear" => {
                 breakpoints.clear();
-                println!("{}", "breakpoints cleared".dimmed());
+                watches.borrow_mut().clear();
+                tripped.borrow_mut().take();
+                println!("{}", "breakpoints and watches cleared".dimmed());
+            }
+            c if c == "watch" || c.starts_with("watch ") => {
+                // `watch <addr>`: stop after a step that writes the word.
+                match c.split_whitespace().nth(1) {
+                    None => {
+                        let set = watches.borrow();
+                        if set.iter().any(|w| w.write) {
+                            for w in set.iter().filter(|w| w.write) {
+                                println!("  watch {:#010x}", w.addr);
+                            }
+                        } else {
+                            println!("{}", "no write watches".dimmed());
+                        }
+                    }
+                    Some(arg) => match parse_u32(arg) {
+                        Ok(a) => {
+                            if add_watch(&mut m, watches.clone(), tripped.clone(), a, false, true) {
+                                println!("{} watch {:#010x} (writes)", "watch".bright_green(), a);
+                            } else {
+                                println!("{} watchpoints need a hook registry", "watch".yellow());
+                            }
+                        }
+                        Err(_) => println!("{} watch <hex addr>", "usage:".yellow()),
+                    },
+                }
+            }
+            c if c.starts_with("rwatch ") => {
+                // `rwatch <addr>`: stop after a step that reads the word.
+                match parse_u32(c[7..].trim()) {
+                    Ok(a) => {
+                        if add_watch(&mut m, watches.clone(), tripped.clone(), a, true, false) {
+                            println!("{} watch {:#010x} (reads)", "rwatch".bright_green(), a);
+                        } else {
+                            println!("{} watchpoints need a hook registry", "rwatch".yellow());
+                        }
+                    }
+                    Err(_) => println!("{} rwatch <hex addr>", "usage:".yellow()),
+                }
+            }
+            c if c.starts_with("awatch ") => {
+                // `awatch <addr>`: stop after a step that reads or writes.
+                match parse_u32(c[7..].trim()) {
+                    Ok(a) => {
+                        if add_watch(&mut m, watches.clone(), tripped.clone(), a, true, true) {
+                            println!("{} watch {:#010x} (access)", "awatch".bright_green(), a);
+                        } else {
+                            println!("{} watchpoints need a hook registry", "awatch".yellow());
+                        }
+                    }
+                    Err(_) => println!("{} awatch <hex addr>", "usage:".yellow()),
+                }
+            }
+            c if c.starts_with("unwatch ") => match parse_u32(c[8..].trim()) {
+                Ok(a) => {
+                    let mut set = watches.borrow_mut();
+                    let before = set.len();
+                    set.retain(|w| w.addr != a);
+                    if set.len() < before {
+                        println!("{} watch {:#010x} cleared", "unwatch".dimmed(), a);
+                    } else {
+                        println!("{} no watch at {a:#010x}", "unwatch".yellow());
+                    }
+                }
+                Err(_) => println!("{} unwatch <hex addr>", "usage:".yellow()),
+            },
+            "snapshot" => {
+                // Freeze CPU + the snapshot RAM span into the session slot.
+                let mut buf = vec![0u8; m.snapshot_len()];
+                match m.snapshot_save(&mut buf) {
+                    Ok(len) => {
+                        buf.truncate(len);
+                        snapshot = Some(buf);
+                        println!("{} snapshot {len} bytes", "snapshot".bright_green());
+                    }
+                    Err(e) => println!("{} snapshot failed: {e}", "error:".red().bold()),
+                }
+            }
+            "restore" => {
+                // Rewind to the session snapshot (kept for repeated rewinds).
+                match &snapshot {
+                    None => println!("{} no snapshot — run `snapshot` first", "restore".yellow()),
+                    Some(buf) => match m.snapshot_restore(buf) {
+                        Ok(()) => println!(
+                            "{} rewound to pc={:#010x}",
+                            "restore".bright_green(),
+                            m.core.regs.pc
+                        ),
+                        Err(e) => println!("{} restore failed: {e}", "error:".red().bold()),
+                    },
+                }
             }
             c if c.starts_with("budget ") => {
                 if let Ok(n) = c[7..].trim().parse::<u64>() {
-                    match run_until_break(&mut m, &breakpoints, n) {
+                    match run_until_break(&mut m, &breakpoints, &tripped, n) {
                         ReplStop::Exhausted => {
                             println!("{}", "budget exhausted".yellow())
                         }
                         ReplStop::Hit(pc) => {
                             println!("{} break at {pc:#010x}", "hit".green())
+                        }
+                        ReplStop::Watch { addr, read } => {
+                            println!(
+                                "{} {} at {addr:#010x}",
+                                "watchpoint".green(),
+                                if read { "read" } else { "write" }
+                            );
                         }
                         ReplStop::Halt(e) => {
                             println!("{} {e}", "halted:".green());
@@ -2922,18 +3238,27 @@ fn debug_repl(image: PathBuf, board: Board, base: u32) {
                     }
                 }
             }
-            "continue" | "c" | "run" => match run_until_break(&mut m, &breakpoints, 1_000_000) {
-                ReplStop::Exhausted => {
-                    println!("{}", "budget exhausted — 1M".yellow())
+            "continue" | "c" | "run" => {
+                match run_until_break(&mut m, &breakpoints, &tripped, 1_000_000) {
+                    ReplStop::Exhausted => {
+                        println!("{}", "budget exhausted — 1M".yellow())
+                    }
+                    ReplStop::Hit(pc) => {
+                        println!("{} break at {pc:#010x}", "hit".green())
+                    }
+                    ReplStop::Watch { addr, read } => {
+                        println!(
+                            "{} {} at {addr:#010x}",
+                            "watchpoint".green(),
+                            if read { "read" } else { "write" }
+                        );
+                    }
+                    ReplStop::Halt(e) => {
+                        println!("{} {e}", "halted:".green());
+                        print_backtrace(&mut m, 32);
+                    }
                 }
-                ReplStop::Hit(pc) => {
-                    println!("{} break at {pc:#010x}", "hit".green())
-                }
-                ReplStop::Halt(e) => {
-                    println!("{} {e}", "halted:".green());
-                    print_backtrace(&mut m, 32);
-                }
-            },
+            }
             c if c == "history"
                 || c == "hist"
                 || c.starts_with("history ")
@@ -3482,8 +3807,11 @@ mod pin_catalog_tests {
 
 #[cfg(test)]
 mod repl_tests {
-    use super::{parse_reg_name, run_until_break, ReplStop};
-    use vioarm_core::loader::load_flat;
+    use super::{
+        add_watch, break_hits, find_symbol, parse_break_args, parse_reg_name, resolve_addr,
+        run_until_break, symbolize, Breakpoint, ReplStop, Watch,
+    };
+    use vioarm_core::loader::{load_flat, Symbol};
     use vioarm_core::machine::Machine;
 
     const ENTRY: u32 = 0x0000_0100;
@@ -3494,6 +3822,14 @@ mod repl_tests {
         m.core.regs.pc = ENTRY;
         m.core.xpsr.set(0x0100_0000);
         m
+    }
+
+    fn no_watch() -> std::rc::Rc<std::cell::RefCell<Option<(u32, bool)>>> {
+        std::rc::Rc::new(std::cell::RefCell::new(None))
+    }
+
+    fn bp(pc: u32) -> Breakpoint {
+        Breakpoint { pc, cond: None }
     }
 
     #[test]
@@ -3516,7 +3852,7 @@ mod repl_tests {
         // after retiring the two moves.
         let code = [0x01, 0x20, 0x02, 0x21, 0xFE, 0xE7];
         let mut m = boot(&code);
-        match run_until_break(&mut m, &[ENTRY + 4], 16) {
+        match run_until_break(&mut m, &[bp(ENTRY + 4)], &no_watch(), 16) {
             ReplStop::Hit(pc) => assert_eq!(pc, ENTRY + 4),
             other => panic!("expected a hit, got {other:?}"),
         }
@@ -3524,7 +3860,7 @@ mod repl_tests {
         assert_eq!(m.core.regs.r[1], 2);
         // Parked on the breakpoint: `continue` steps over once, then
         // re-stops (the spin never leaves).
-        match run_until_break(&mut m, &[ENTRY + 4], 16) {
+        match run_until_break(&mut m, &[bp(ENTRY + 4)], &no_watch(), 16) {
             ReplStop::Hit(pc) => assert_eq!(pc, ENTRY + 4),
             other => panic!("expected a re-hit, got {other:?}"),
         }
@@ -3534,7 +3870,7 @@ mod repl_tests {
     fn empty_breakpoints_exhausts_budget() {
         let code = [0xFE, 0xE7];
         let mut m = boot(&code);
-        match run_until_break(&mut m, &[], 4) {
+        match run_until_break(&mut m, &[], &no_watch(), 4) {
             ReplStop::Exhausted => {}
             other => panic!("expected exhaustion, got {other:?}"),
         }
@@ -3546,9 +3882,163 @@ mod repl_tests {
         // Bare `BKPT` faults without a debugger attached.
         let code = [0x00, 0xBE];
         let mut m = boot(&code);
-        match run_until_break(&mut m, &[0xDEAD_BEEF], 4) {
+        match run_until_break(&mut m, &[bp(0xDEAD_BEEF)], &no_watch(), 4) {
             ReplStop::Halt(_) => {}
             other => panic!("expected a halt, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn conditional_break_fires_only_on_match() {
+        // `movs r0, #1; b .`: the gate sees r0 == 1 only after the move.
+        let code = [0x01, 0x20, 0xFE, 0xE7];
+        let gate = super::BreakCond {
+            reg: 0,
+            invert: false,
+            val: 1,
+        };
+        let mut m = boot(&code);
+        // At ENTRY with r0 == 0 the gate is closed: steps over, exhausts.
+        let closed = [Breakpoint {
+            pc: ENTRY,
+            cond: Some(gate),
+        }];
+        match run_until_break(&mut m, &closed, &no_watch(), 1) {
+            ReplStop::Exhausted => {}
+            other => panic!("gate closed, expected exhaustion, got {other:?}"),
+        }
+        // Spinning at ENTRY+2 with r0 == 1: the same gate fires.
+        let open = [Breakpoint {
+            pc: ENTRY + 2,
+            cond: Some(gate),
+        }];
+        match run_until_break(&mut m, &open, &no_watch(), 4) {
+            ReplStop::Hit(pc) => assert_eq!(pc, ENTRY + 2),
+            other => panic!("gate open, expected a hit, got {other:?}"),
+        }
+        // Inverted gate never fires here.
+        let never = [Breakpoint {
+            pc: ENTRY + 2,
+            cond: Some(super::BreakCond {
+                reg: 0,
+                invert: true,
+                val: 1,
+            }),
+        }];
+        match run_until_break(&mut m, &never, &no_watch(), 2) {
+            ReplStop::Exhausted => {}
+            other => panic!("inverted gate, expected exhaustion, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn break_args_parse_conditions_and_names() {
+        let syms = [Symbol {
+            addr: 0x100,
+            name: "main".to_owned(),
+        }];
+        assert_eq!(parse_break_args("0x10", &[]), Some((0x10, None)));
+        assert_eq!(parse_break_args("main", &syms), Some((0x100, None)));
+        assert_eq!(
+            parse_break_args("0x10 if r0 == 0x5a", &[]),
+            Some((
+                0x10,
+                Some(super::BreakCond {
+                    reg: 0,
+                    invert: false,
+                    val: 0x5a
+                })
+            ))
+        );
+        assert_eq!(
+            parse_break_args("main if SP != 0x2000", &syms),
+            Some((
+                0x100,
+                Some(super::BreakCond {
+                    reg: 13,
+                    invert: true,
+                    val: 0x2000
+                })
+            ))
+        );
+        assert_eq!(parse_break_args("nope", &syms), None);
+        assert_eq!(parse_break_args("0x10 if r99 == 1", &[]), None);
+        assert_eq!(parse_break_args("0x10 if r0 = 1", &[]), None);
+        assert_eq!(resolve_addr("main", &syms), Some(0x100));
+        assert_eq!(resolve_addr("0x20", &syms), Some(0x20));
+        assert_eq!(resolve_addr("nope", &syms), None);
+    }
+
+    #[test]
+    fn symbols_resolve_nearest_below() {
+        let syms = [
+            Symbol {
+                addr: 0x100,
+                name: "reset".to_owned(),
+            },
+            Symbol {
+                addr: 0x200,
+                name: "main".to_owned(),
+            },
+        ];
+        assert_eq!(find_symbol(&syms, "main"), Some(0x200));
+        assert_eq!(find_symbol(&syms, "missing"), None);
+        assert_eq!(symbolize(&syms, 0x100), Some(("reset", 0)));
+        assert_eq!(symbolize(&syms, 0x204), Some(("main", 4)));
+        assert_eq!(symbolize(&syms, 0x80), None);
+        assert_eq!(symbolize(&[], 0x100), None);
+    }
+
+    #[test]
+    fn break_hits_helper_respects_gates() {
+        let code = [0x01, 0x20, 0xFE, 0xE7];
+        let m = boot(&code);
+        assert!(break_hits(&m, &bp(ENTRY)));
+        let gated = Breakpoint {
+            pc: ENTRY,
+            cond: Some(super::BreakCond {
+                reg: 0,
+                invert: false,
+                val: 1,
+            }),
+        };
+        assert!(!break_hits(&m, &gated), "r0 is still 0");
+        assert!(!break_hits(&m, &bp(ENTRY + 2)));
+    }
+
+    #[test]
+    fn write_watch_trips_through_run_until_break() {
+        // `movs r0, #0x5A; str r0, [r1]` with r1 preset to RAM: the store
+        // trips a write watch on the word.
+        const RAM: u32 = 0x2000_0000;
+        let code = [0x5A, 0x20, 0x08, 0x60, 0xFE, 0xE7];
+        let mut m = boot(&code);
+        m.core.regs.r[1] = RAM;
+        let watches: std::rc::Rc<std::cell::RefCell<Vec<Watch>>> = Default::default();
+        let tripped = no_watch();
+        assert!(add_watch(
+            &mut m,
+            watches,
+            tripped.clone(),
+            RAM,
+            false,
+            true
+        ));
+        match run_until_break(&mut m, &[], &tripped, 8) {
+            ReplStop::Watch { addr, read } => {
+                // Hooks fire per byte; the word store trips inside the
+                // watched word (last byte wins).
+                assert!(addr.wrapping_sub(RAM) < 4, "{addr:#010x}");
+                assert!(!read);
+            }
+            other => panic!("expected a watch trip, got {other:?}"),
+        }
+        // Unwatched runs exhaust instead.
+        let mut m = boot(&code);
+        m.core.regs.r[1] = RAM;
+        match run_until_break(&mut m, &[], &no_watch(), 8) {
+            ReplStop::Exhausted => {}
+            other => panic!("expected exhaustion, got {other:?}"),
         }
     }
 }
