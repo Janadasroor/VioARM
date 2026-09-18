@@ -6,6 +6,7 @@
 //! co-simulation path cannot diverge.
 
 use std::os::raw::c_void;
+use std::sync::atomic::AtomicBool;
 
 use vioarm_core::board::BoardMemory;
 use vioarm_core::machine::Machine;
@@ -41,6 +42,12 @@ pub struct VioArmHandle {
     callback: (VioArmEventCallback, *mut c_void),
     /// Set while a host callback runs: reentrant entries fail closed.
     in_callback: bool,
+    /// Set while any entry runs on this handle: a second *concurrent*
+    /// entry (a host race — sequential cross-thread handoffs, e.g. under
+    /// an external mutex, never trip it) panics loudly instead of
+    /// aliasing the machine. Always on: races are memory-unsafe, and one
+    /// atomic swap per entry is unmeasurable next to a simulation step.
+    busy: AtomicBool,
 }
 
 impl VioArmHandle {
@@ -55,6 +62,7 @@ impl VioArmHandle {
             last_halt: HaltOutcome::Completed,
             callback: (None, std::ptr::null_mut()),
             in_callback: false,
+            busy: AtomicBool::new(false),
         }
     }
 
@@ -137,5 +145,42 @@ impl VioArmHandle {
     /// Mark callback entry/exit (always paired, never observed by hosts).
     pub fn set_in_callback(&mut self, active: bool) {
         self.in_callback = active;
+    }
+
+    /// Try to claim the handle for one entry: `true` when free (now
+    /// held until [`VioArmHandle::release_claim`]), `false` when another
+    /// thread is already inside — the caller panics loudly instead of
+    /// aliasing the machine. Interior mutability (`AtomicBool`) so the
+    /// claim never borrows the handle it guards.
+    pub fn try_claim(&self) -> bool {
+        !self.busy.swap(true, std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Release a [`VioArmHandle::try_claim`] (always paired, including on
+    /// unwind — see `with_handle`, which releases before re-panicking).
+    pub fn release_claim(&self) {
+        self.busy.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[cfg(test)]
+mod busy_tests {
+    use super::VioArmHandle;
+    use vioarm_core::board;
+    use vioarm_core::machine::Machine;
+
+    fn handle() -> VioArmHandle {
+        let mem = board::virtual_board();
+        VioArmHandle::new(Machine::new(mem), "virtual".to_owned())
+    }
+
+    #[test]
+    fn claim_release_cycles_cleanly() {
+        let harness = handle();
+        assert!(harness.try_claim(), "free handle claims");
+        assert!(!harness.try_claim(), "second claim refuses");
+        harness.release_claim();
+        assert!(harness.try_claim(), "release frees it again");
+        harness.release_claim();
     }
 }

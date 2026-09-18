@@ -38,7 +38,10 @@
 //! 4. `&mut *handle` (entry guard): the pointer is non-null (checked) and
 //!    designates a live `Box<VioArmHandle>` by leg 3. Aliasing across
 //!    threads is the caller's responsibility, documented on each entry:
-//!    ngspice's `d_cosim` steps a single instance on one thread.
+//!    ngspice's `d_cosim` steps a single instance on one thread. An
+//!    atomic busy flag trips first anyway: a second *concurrent* entry
+//!    panics loudly (sequential cross-thread handoffs, e.g. under an
+//!    external mutex, never trip it) instead of aliasing the machine.
 //! 5. Out-pointer writes (`pin_get`, `get_dac_voltage`): each pointer is
 //!    null-checked first, written exactly once, and never retained.
 //! 6. Event-buffer writes (`run_quantum`): `out` is null-checked whenever
@@ -205,6 +208,9 @@ pub extern "C" fn vioarm_cosim_last_error() -> *const c_char {
 /// Look up a live handle or fail closed with [`VIOARM_ERR_NULL_HANDLE`].
 /// A call that arrives while the handle's own event callback runs fails
 /// with [`VIOARM_ERR_REENTRY`] instead: callbacks are observe-only.
+/// A call that arrives while *another thread* runs on the handle panics
+/// loudly (caught below, never silent corruption) — handles are
+/// single-threaded; guard sharing with an external mutex.
 fn with_handle<T>(
     raw: *mut VioArmHandle,
     body: impl FnOnce(&mut VioArmHandle) -> T,
@@ -220,15 +226,42 @@ fn with_handle<T>(
         set_error("reentrant call from a host event callback".to_owned());
         return Err(VIOARM_ERR_REENTRY);
     }
-    Ok(body(harness))
+    if !harness.try_claim() {
+        panic!(
+            "concurrent use of one VioArmHandle from two threads (handles are single-threaded; guard sharing with an external mutex)"
+        );
+    }
+    // Released on both paths below — including on unwind, before the
+    // panic resumes to the FFI guard, so a panicking entry never wedges
+    // the handle shut.
+    let outcome = catch_unwind(AssertUnwindSafe(|| body(&mut *harness)));
+    harness.release_claim();
+    match outcome {
+        Ok(result) => Ok(result),
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
+}
+
+/// Detail string for a caught panic: the payload when it carries one,
+/// else the generic boundary message.
+fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    payload
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| {
+            payload
+                .downcast_ref::<&str>()
+                .map(|message| (*message).to_owned())
+        })
+        .unwrap_or_else(|| "internal error (panic caught at the FFI boundary)".to_owned())
 }
 
 /// Run `body` without letting panics cross the FFI boundary.
 fn guard(body: impl FnOnce() -> i32) -> i32 {
     match catch_unwind(AssertUnwindSafe(body)) {
         Ok(code) => code,
-        Err(_) => {
-            set_error("internal error (panic caught at the FFI boundary)".to_owned());
+        Err(payload) => {
+            set_error(panic_message(payload));
             VIOARM_ERR_PANIC
         }
     }
@@ -260,8 +293,8 @@ pub extern "C" fn vioarm_cosim_create(
     })) {
         Ok(Ok(raw)) => raw,
         Ok(Err(_)) => ptr::null_mut(),
-        Err(_) => {
-            set_error("internal error (panic caught at the FFI boundary)".to_owned());
+        Err(payload) => {
+            set_error(panic_message(payload));
             ptr::null_mut()
         }
     }

@@ -162,3 +162,27 @@ armed-never-hit identity proof).
   `pytest/test_packaging.py`, which also configures the CMake example
   against a staged install to prove `find_package` end to end.
 - Install recipe: `packaging/README.md`.
+
+## Threading and time (E3)
+
+- **One rule: a handle is single-threaded; the host owns locking.**
+  Independent handles run race-free on any threads. One handle shared
+  under an external mutex behaves exactly like the same quanta run
+  serially (regression-pinned). Unguarded concurrent entry trips an
+  atomic busy guard and panics loudly — caught at the boundary with the
+  offending message in the last error — instead of aliasing the machine.
+  (Sequential cross-thread handoffs never trip it; only true overlap
+  does.) Callbacks observe the same rule one level down: reentrant
+  entries fail with `VIOARM_ERR_REENTRY`.
+- **Time model.** Virtual time advances only through stepping calls;
+  the library reads no clock and does no networking, ever. A quantum is
+  the unit: at most one step's overshoot past its end, exact post-retire
+  stamps, monotone within and across quanta. Same image + same input
+  quanta (pin drives, injects, voltages) = bit-identical output — across
+  threads, processes, and runs.
+- **Real-time pacing is host-side.** `packaging/examples/rate_limited.py`
+  steps fixed quanta and sleeps the remainder to hold a wall-clock scale;
+  when the sim outruns the budget it reports lag instead of spiraling
+  (never sleeps negative, never steps extra). `pytest/test_packaging.py`
+  pins both regimes: a holdable cadence stays within ±250 ms drift, an
+  unholdable one still completes with honest lag.

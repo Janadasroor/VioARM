@@ -99,3 +99,34 @@ def test_cmake_find_module_configures(tmp_path):
     run = subprocess.run([str(exe)], capture_output=True, text=True, env=env)
     assert run.returncode == 0, run.stderr
     assert "pin0=0" in run.stdout, run.stdout
+
+
+def _rate_env():
+    lib = _need_cdylib()
+    return dict(os.environ, VIOARM_LIB=str(lib),
+                PYTHONPATH=str(REPO / "bindings" / "python"))
+
+
+def _rate_summary(args):
+    run = subprocess.run(
+        ["python3", str(EXAMPLES / "rate_limited.py")] + args,
+        capture_output=True, text=True, env=_rate_env())
+    assert run.returncode == 0, run.stderr
+    summary = next(line for line in run.stdout.splitlines()
+                   if line.startswith("SUMMARY"))
+    fields = dict(part.split("=") for part in summary.split()[1:])
+    return {key: float(value) for key, value in fields.items()}
+
+
+def test_rate_limiter_holds_a_holdable_cadence():
+    summary = _rate_summary(["--scale", "0.01", "--quanta", "20",
+                             "--quantum-us", "100"])
+    assert summary["max_abs_drift_ms"] < 250.0, summary
+    assert abs(summary["lag_ms"]) < 250.0, summary
+
+
+def test_rate_limiter_reports_lag_without_spiraling():
+    summary = _rate_summary(["--scale", "1.0", "--quanta", "10",
+                             "--quantum-us", "100"])
+    assert summary["lag_ms"] > 0, summary
+    assert summary["quanta"] == 10
