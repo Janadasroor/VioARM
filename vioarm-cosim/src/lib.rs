@@ -1864,3 +1864,91 @@ fn write_str_out(text: &str, out: *mut c_char, cap: usize) -> i32 {
     }
     0
 }
+
+#[cfg(test)]
+mod header_sync_tests {
+    //! E2 packaging: the checked-in C header (`include/vioarm_cosim.h`,
+    //! what packagers ship) must be byte-identical to what `build.rs`
+    //! regenerates from `src/lib.rs` right now. Any ABI surface change
+    //! without a regenerated header fails here — fix by rebuilding (the
+    //! build script always emits the fresh copy to `OUT_DIR`).
+
+    #[test]
+    fn checked_in_header_matches_cbindgen_output() {
+        let fresh = include_str!(concat!(env!("OUT_DIR"), "/vioarm_cosim.h"));
+        let checked_in = include_str!("../include/vioarm_cosim.h");
+        assert_eq!(
+            fresh, checked_in,
+            "include/vioarm_cosim.h drifted from src/lib.rs \
+             (rebuild to regenerate, then copy OUT_DIR/vioarm_cosim.h over it)"
+        );
+    }
+
+    #[test]
+    fn header_covers_every_extern_symbol() {
+        let header = include_str!("../include/vioarm_cosim.h");
+        for symbol in [
+            "vioarm_cosim_create",
+            "vioarm_cosim_destroy",
+            "vioarm_cosim_get_active_handle",
+            "vioarm_cosim_step_duration",
+            "vioarm_cosim_run_quantum",
+            "vioarm_cosim_cpu_hz",
+            "vioarm_cosim_pin_get",
+            "vioarm_cosim_pin_set",
+            "vioarm_cosim_set_external_voltage",
+            "vioarm_cosim_set_operating_voltage",
+            "vioarm_cosim_get_dac_voltage",
+            "vioarm_cosim_last_error",
+            "vioarm_cosim_api_version",
+            "vioarm_cosim_snapshot_size",
+            "vioarm_cosim_snapshot_save",
+            "vioarm_cosim_snapshot_restore",
+            "vioarm_cosim_get_pc",
+            "vioarm_cosim_get_sp",
+            "vioarm_cosim_get_cycles",
+            "vioarm_cosim_get_instructions",
+            "vioarm_cosim_read_data",
+            "vioarm_cosim_write_data",
+            "vioarm_cosim_device_count",
+            "vioarm_cosim_device_name",
+            "vioarm_cosim_board_count",
+            "vioarm_cosim_board_name",
+            "vioarm_cosim_board_clock",
+            "vioarm_cosim_board_pin",
+            "vioarm_cosim_reset",
+            "vioarm_cosim_load",
+            "vioarm_cosim_break_set",
+            "vioarm_cosim_break_clear",
+            "vioarm_cosim_break_list",
+            "vioarm_cosim_halt_reason",
+            "vioarm_cosim_reg_read",
+            "vioarm_cosim_reg_write",
+            "vioarm_cosim_backtrace",
+            "vioarm_cosim_drain",
+            "vioarm_cosim_inject",
+            "vioarm_cosim_set_event_callback",
+            "VIOARM_STEP_OK",
+            "VIOARM_STEP_HALTED",
+            "VIOARM_STEP_BREAKPOINT",
+            "VIOARM_ERR_NULL_HANDLE",
+            "VIOARM_ERR_PANIC",
+            "VIOARM_ERR_BAD_ARG",
+            "VIOARM_ERR_BUS",
+            "VIOARM_ERR_VERSION",
+            "VIOARM_ERR_REENTRY",
+            "VIOARM_HALT_COMPLETED",
+            "VIOARM_HALT_BREAKPOINT",
+            "VIOARM_HALT_FAULT",
+            "VioArmEvent",
+            "VioArmEventCallback",
+            "VioArmBacktraceEntry",
+            "VioArmApiVersion",
+        ] {
+            assert!(
+                header.contains(symbol),
+                "generated header is missing {symbol}"
+            );
+        }
+    }
+}

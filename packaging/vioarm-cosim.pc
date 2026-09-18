@@ -1,0 +1,11 @@
+prefix=/usr/local
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: vioarm-cosim
+Description: VioARM Cortex-M simulator embedding ABI (E2 packaging)
+Version: 1.10.0
+Libs: -L${libdir} -lvioarm_cosim
+Libs.private:
+Cflags: -I${includedir}

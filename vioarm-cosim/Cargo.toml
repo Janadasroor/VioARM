@@ -21,7 +21,7 @@ authors.workspace = true
 publish = false
 
 [lib]
-crate-type = ["cdylib", "rlib"]
+crate-type = ["cdylib", "staticlib", "rlib"]
 
 # Deliberately NOT `[lints] workspace = true`: the workspace table forbids
 # `unsafe_code` with no possible override, while a C ABI boundary is
@@ -49,3 +49,6 @@ manual_range_contains = "allow"
 
 [dependencies]
 vioarm-core = { path = "../vioarm-core" }
+
+[build-dependencies]
+cbindgen = "0.28"
