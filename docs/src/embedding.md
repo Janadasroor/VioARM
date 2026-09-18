@@ -27,7 +27,10 @@ major version bump:
 - **Caller-owned buffers.** Every out-pointer has an explicit `cap`; short
   buffers fail closed and report the need (`out_len`, or the last error
   for strings). A null `out` with `cap > 0` is always an error; `cap == 0`
-  with null `out` is legal size-probing.
+  with null `out` is legal size-probing. Exception: `drain` is a byte
+  stream, not a snapshot — it returns up to `cap` bytes with `out_len`
+  reporting this call's count and parks the rest, so small buffers lose
+  nothing (drain till empty).
 - **Status codes.** `VIOARM_STEP_OK` (0), `VIOARM_STEP_HALTED` (1),
   `VIOARM_STEP_BREAKPOINT` (2, parked before the step at the reported
   `pc`), `VIOARM_ERR_NULL_HANDLE` (-1), `VIOARM_ERR_PANIC` (-2),
@@ -125,11 +128,13 @@ Execution control, observation, channels, and callbacks — additive entries
   fault-triage ring (`pc`, opcode halfwords, post-retire `cyccnt`) most
   recent last, with the usual truncation discipline.
 - **Channels**: `vioarm_cosim_drain(handle, channel, out, cap, out_len)`
-  takes `"itm"`, `"semihost"`, or an attached device name from the
-  catalog (`"usart1"` drains its TX bytes); anything else fails closed.
-  `vioarm_cosim_inject(handle, channel, buf, len)` queues into
-  `"semihost"` (`READC`) or a device input channel (`"usart1"` feeds
-  RX); `len == 0` is a no-op.
+  (`"itm"`, `"semihost"`, or an attached device name like `"usart1"`)
+  returns up to `cap` bytes with `out_len` reporting this call's count:
+  channels are byte streams (POSIX-read semantics), so a small buffer
+  never loses data — the remainder parks for the next drain; drain till
+  `out_len == 0`. `vioarm_cosim_inject(handle, channel, buf, len)`
+  queues into `"semihost"` (`READC`) or a device input channel
+  (`"usart1"` feeds RX); `len == 0` is a no-op.
 - **Callbacks**: `vioarm_cosim_set_event_callback(handle, cb, ctx)`
   (`None` disables) fires once per observed event, in retire order, at
   the end of stepping calls — every event even when the fixed `run_quantum`
@@ -162,6 +167,31 @@ armed-never-hit identity proof).
   `pytest/test_packaging.py`, which also configures the CMake example
   against a staged install to prove `find_package` end to end.
 - Install recipe: `packaging/README.md`.
+
+## Validation (E4)
+
+Four suites, green on every push (the threads suite from E3 makes four
+with the three below):
+
+- **C conformance** (`pytest/abi_conformance.c`, driven by
+  `pytest/test_abi_conformance.py`): every function, every status code,
+  null probes, short buffers, version gates, snapshot round-trips — from
+  C, against the installed-style header + library. `_Static_assert`s pin
+  struct sizes, field offsets, and code values, catching the drift class
+  Rust-side tests cannot (it caught a wrong `sizeof` in its own first
+  draft).
+- **ABI fuzz** (`pytest/fuzz_abi.py`, driven by
+  `pytest/test_abi_fuzz.py`): seeded PRNG, random call sequences with
+  contract-honest arguments, run in a subprocess (a segfault fails the
+  suite instead of killing pytest) with a wall-time backstop and an RSS
+  tripwire. Deterministic seeds, so any failure reproduces exactly.
+- **Goldens** (`pytest/test_abi_golden.py`): CLI↔ABI parity on real
+  firmware — VCD pin-edge stamps vs `run_quantum` event stamps compared
+  cyccnt-for-cyccnt, UART drains compared byte-for-byte. Plus
+  `pytest/test_coremark_abi.py` (opt-in via `COREMARK_BIN`): a full
+  CoreMark through the ABI diffed against the CLI on CRC lines and total
+  ticks, with the published known-good asserted for 2K-performance
+  profiles.
 
 ## Threading and time (E3)
 

@@ -102,6 +102,23 @@ fn uart_tx_firmware() -> Vec<u8> {
     fw
 }
 
+/// Virtual-UART TX burst: stores `"Hi!"` byte by byte, then spins.
+fn uart_burst_firmware() -> Vec<u8> {
+    let mut fw = vec![
+        0x00, 0x10, 0x00, 0x20, 0x09, 0x00, 0x00, 0x00, // vector table
+        0x03, 0x48, // 0x08: ldr r0, [pc, #12]  (uart base at 0x18)
+        0x48, 0x21, // 0x0A: movs r1, #'H'
+        0x01, 0x70, // 0x0C: strb r1, [r0]
+        0x69, 0x21, // 0x0E: movs r1, #'i'
+        0x01, 0x70, // 0x10: strb r1, [r0]
+        0x21, 0x21, // 0x12: movs r1, #'!'
+        0x01, 0x70, // 0x14: strb r1, [r0]
+        0xFE, 0xE7, // 0x16: b .
+    ];
+    fw.extend_from_slice(&0x4000_1000u32.to_le_bytes());
+    fw
+}
+
 /// Unmapped load: `ldr r0, [r0]` with `r0 = 0x5000_0000` faults
 /// (BusFault escalates; the table has no HardFault vector, so the halt
 /// is a fault either way).
@@ -414,6 +431,48 @@ fn drain_moves_uart_bytes_and_rejects_unknown_channels() {
         ),
         VIOARM_ERR_BAD_ARG
     );
+    vioarm_cosim_destroy(handle);
+}
+
+#[test]
+fn drain_streams_without_loss_on_small_buffers() {
+    use vioarm_cosim::{vioarm_cosim_drain, vioarm_cosim_step_duration, VIOARM_STEP_OK};
+    let _serial = serial();
+    let handle = create("virtual", &uart_burst_firmware(), 0x0);
+    assert_eq!(vioarm_cosim_step_duration(handle, 0.000_01), VIOARM_STEP_OK);
+    let mut out_len = usize::MAX;
+    // Small buffers stream: nothing is ever lost to truncation.
+    let mut seen = Vec::new();
+    for _ in 0..8 {
+        let mut buf = vec![0u8; 2];
+        assert_eq!(
+            vioarm_cosim_drain(
+                handle,
+                cstring("uart").as_ptr(),
+                buf.as_mut_ptr(),
+                buf.len(),
+                &mut out_len
+            ),
+            0
+        );
+        seen.extend_from_slice(&buf[..out_len]);
+        if out_len == 0 {
+            break;
+        }
+    }
+    assert_eq!(seen, b"Hi!", "streamed bytes reassemble exactly");
+    // Drained dry: further drains report zero.
+    assert_eq!(
+        vioarm_cosim_drain(
+            handle,
+            cstring("uart").as_ptr(),
+            seen.as_mut_ptr(),
+            seen.len(),
+            &mut out_len
+        ),
+        0
+    );
+    assert_eq!(out_len, 0);
     vioarm_cosim_destroy(handle);
 }
 

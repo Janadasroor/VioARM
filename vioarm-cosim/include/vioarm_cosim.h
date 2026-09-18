@@ -652,9 +652,12 @@ int32_t vioarm_cosim_backtrace(struct VioArmHandle *handle,
                                size_t *out_len);
 
 /**
- * Drain a host-output channel since the last drain into caller-sized
- * `out[cap]` (`out_len` reports the total; truncation is noted, never an
- * error). `channel` is `"itm"`, `"semihost"` (firmware `printf`
+ * Drain a host-output channel into caller-sized `out[cap]`: `out_len`
+ * reports the bytes returned *this call* (at most `cap`). Channels are
+ * byte streams (POSIX-read semantics): when more is staged than fits,
+ * the call returns the oldest `cap` bytes and parks the remainder for
+ * the next drain — drain until `out_len == 0`, nothing is ever lost to
+ * a small buffer. `channel` is `"itm"`, `"semihost"` (firmware `printf`
  * retargeting), or an attached device name from
  * [`vioarm_cosim_device_name`] (`"usart1"` drains its TX bytes, ...);
  * anything else is [`VIOARM_ERR_BAD_ARG`]. `out` is required when

@@ -127,7 +127,7 @@ _c_drain = _fn("vioarm_cosim_drain", ctypes.c_int32, ctypes.c_void_p, ctypes.c_c
 _c_inject = _fn("vioarm_cosim_inject", ctypes.c_int32, ctypes.c_void_p, ctypes.c_char_p,
                 ctypes.c_char_p, ctypes.c_size_t)
 _c_set_callback = _fn("vioarm_cosim_set_event_callback", ctypes.c_int32, ctypes.c_void_p,
-                      _EVENT_CB, ctypes.c_void_p)
+                      ctypes.c_void_p, ctypes.c_void_p)
 _c_device_count = _fn("vioarm_cosim_device_count", ctypes.c_size_t, ctypes.c_void_p)
 _c_board_count = _fn("vioarm_cosim_board_count", ctypes.c_size_t)
 
@@ -248,11 +248,12 @@ class Machine:
         _check(_c_snapshot_restore(self._h, blob, len(blob)))
 
     def drain(self, channel, cap=256):
-        """Drain a channel; returns (bytes, total)."""
+        """Drain a channel; returns up to `cap` bytes (streaming: call
+        until empty, nothing is lost to a small buffer)."""
         buf = ctypes.create_string_buffer(cap)
-        total = ctypes.c_size_t(0)
-        _check(_c_drain(self._h, channel.encode(), buf, cap, ctypes.byref(total)))
-        return bytes(buf.raw[:min(total.value, cap)]), total.value
+        out_len = ctypes.c_size_t(0)
+        _check(_c_drain(self._h, channel.encode(), buf, cap, ctypes.byref(out_len)))
+        return bytes(buf.raw[:out_len.value])
 
     def inject(self, channel, data):
         _check(_c_inject(self._h, channel.encode(), data, len(data)))

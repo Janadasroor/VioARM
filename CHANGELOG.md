@@ -100,6 +100,23 @@ new `tests/threads.rs` suites (parallel convergence, mutex-sharing
 identity, race survival with loud refusals observed) + unit
 tests for the claim discipline + `pytest` cadence tests for both pacing
 regimes.
+- **Embedder-grade validation (E4)**: C conformance suite
+(`pytest/abi_conformance.c`, ~94 checks: every function, every code,
+null/short/version/snapshot matrices, `_Static_assert` struct layouts),
+seeded ABI fuzzer (`pytest/fuzz_abi.py`: random call sequences in a
+crash-isolated subprocess with wall-time backstop and RSS tripwire),
+CLI↔ABI goldens (`pytest/test_abi_golden.py`: VCD pin-edge stamps vs
+`run_quantum` stamps cyccnt-for-cyccnt, UART drains byte-for-byte), and
+opt-in CoreMark-via-ABI (`pytest/test_coremark_abi.py`: full benchmark
+through the ABI diffed against the CLI on CRC lines and total ticks,
+published known-good asserted for 2K profiles). E4 validation also fixed
+two real defects it exposed: `drain` silently dropped bytes past `cap`
+(now POSIX-read streaming — returns up to `cap`, parks the rest, drain
+till empty), and a release-only missed-reentry bug (plain-`bool` guard
+store deleted as dead across the opaque host call — now atomic). Also fixed along the
+way: a release-only missed-reentry bug (plain-`bool` guard store deleted
+as dead across the opaque host call — now atomic), caught because the
+conformance suite runs the release library.
 - **RCC clock tree drives APB timer ratios** (`rcc.rs` `ClockState`, `mem/system.rs` tick scaling, all 35 boards wired): `CFGR` (F1/F4) and `D1CFGR`/`D2CFGR` (H7) prescaler writes decode into a shared handle; general timers advance by the timer-kernel/core ratio with the ×2 rule and exact fractional carry. `FLASH_ACR` wait states and H7 `AXI`/`FMC` latency stay in `Core::step` (an early revision double-counted them and was reverted). Full suite 861 green.
 ### Changed
 - `QspiGate` now gated at reset, `RCC` `HSIRDY` per-family, `CAN` dead code removed.

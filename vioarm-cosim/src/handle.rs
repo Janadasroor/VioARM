@@ -5,8 +5,9 @@
 //! `vioarm_core::machine::Machine::for_name`, so the CLI and the
 //! co-simulation path cannot diverge.
 
+use std::collections::HashMap;
 use std::os::raw::c_void;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use vioarm_core::board::BoardMemory;
 use vioarm_core::machine::Machine;
@@ -41,13 +42,23 @@ pub struct VioArmHandle {
     /// Host event callback + context (E1.5; `None` disables).
     callback: (VioArmEventCallback, *mut c_void),
     /// Set while a host callback runs: reentrant entries fail closed.
-    in_callback: bool,
+    /// Atomic (not a plain `bool`): the flag is set before an opaque host
+    /// call and read back through a fresh reference inside it, and a
+    /// release build once deleted the plain store as dead and missed
+    /// reentrant calls. Atomics are never reasoned away.
+    in_callback: AtomicBool,
     /// Set while any entry runs on this handle: a second *concurrent*
     /// entry (a host race — sequential cross-thread handoffs, e.g. under
     /// an external mutex, never trip it) panics loudly instead of
     /// aliasing the machine. Always on: races are memory-unsafe, and one
     /// atomic swap per entry is unmeasurable next to a simulation step.
     busy: AtomicBool,
+    /// Staged-but-undelivered channel bytes, by channel name: `drain`
+    /// returns at most `cap` bytes per call (POSIX-read semantics) and
+    /// parks the remainder here for the next drain, so a small buffer
+    /// never loses stream data. Empty most of the time; hosts that
+    /// drain till empty keep it empty.
+    drain_stash: HashMap<String, Vec<u8>>,
 }
 
 impl VioArmHandle {
@@ -61,8 +72,9 @@ impl VioArmHandle {
             breakpoints: Vec::new(),
             last_halt: HaltOutcome::Completed,
             callback: (None, std::ptr::null_mut()),
-            in_callback: false,
+            in_callback: AtomicBool::new(false),
             busy: AtomicBool::new(false),
+            drain_stash: HashMap::new(),
         }
     }
 
@@ -139,12 +151,24 @@ impl VioArmHandle {
     /// Whether a host callback is currently running (reentrancy guard).
     #[must_use]
     pub fn in_callback(&self) -> bool {
-        self.in_callback
+        self.in_callback.load(Ordering::SeqCst)
+    }
+
+    /// Take staged-but-undelivered channel bytes (see `drain_stash_back`).
+    pub fn drain_take_stash(&mut self, channel: &str) -> Vec<u8> {
+        self.drain_stash.remove(channel).unwrap_or_default()
+    }
+
+    /// Park undelivered channel bytes (served first by the next drain).
+    pub fn drain_stash_back(&mut self, channel: String, bytes: Vec<u8>) {
+        if !bytes.is_empty() {
+            self.drain_stash.insert(channel, bytes);
+        }
     }
 
     /// Mark callback entry/exit (always paired, never observed by hosts).
-    pub fn set_in_callback(&mut self, active: bool) {
-        self.in_callback = active;
+    pub fn set_in_callback(&self, active: bool) {
+        self.in_callback.store(active, Ordering::SeqCst);
     }
 
     /// Try to claim the handle for one entry: `true` when free (now

@@ -1733,9 +1733,12 @@ pub extern "C" fn vioarm_cosim_backtrace(
     })
 }
 
-/// Drain a host-output channel since the last drain into caller-sized
-/// `out[cap]` (`out_len` reports the total; truncation is noted, never an
-/// error). `channel` is `"itm"`, `"semihost"` (firmware `printf`
+/// Drain a host-output channel into caller-sized `out[cap]`: `out_len`
+/// reports the bytes returned *this call* (at most `cap`). Channels are
+/// byte streams (POSIX-read semantics): when more is staged than fits,
+/// the call returns the oldest `cap` bytes and parks the remainder for
+/// the next drain — drain until `out_len == 0`, nothing is ever lost to
+/// a small buffer. `channel` is `"itm"`, `"semihost"` (firmware `printf`
 /// retargeting), or an attached device name from
 /// [`vioarm_cosim_device_name`] (`"usart1"` drains its TX bytes, ...);
 /// anything else is [`VIOARM_ERR_BAD_ARG`]. `out` is required when
@@ -1763,40 +1766,43 @@ pub extern "C" fn vioarm_cosim_drain(
             .unwrap_or_default()
             .to_owned();
         with_handle(handle, |harness| {
-            let machine = harness.machine_mut();
-            let bytes = if name == "semihost" {
-                machine.semihost_output()
-            } else if name == "itm" {
-                machine.drain_channel("itm")
-            } else {
-                let known = machine
-                    .core
-                    .mem()
-                    .devices_mut()
-                    .iter()
-                    .any(|d| d.name() == name);
-                if !known {
-                    set_error(format!("unknown channel '{name}'"));
-                    return VIOARM_ERR_BAD_ARG;
+            let mut pending = harness.drain_take_stash(&name);
+            let fresh = {
+                let machine = harness.machine_mut();
+                if name == "semihost" {
+                    machine.semihost_output()
+                } else if name == "itm" {
+                    machine.drain_channel("itm")
+                } else {
+                    let known = machine
+                        .core
+                        .mem()
+                        .devices_mut()
+                        .iter()
+                        .any(|d| d.name() == name);
+                    if !known {
+                        set_error(format!("unknown channel '{name}'"));
+                        return VIOARM_ERR_BAD_ARG;
+                    }
+                    machine.drain_device(&name)
                 }
-                machine.drain_device(&name)
             };
-            let total = bytes.len();
-            let stored = total.min(cap);
+            pending.extend(fresh);
+            let stored = pending.len().min(cap);
             if stored > 0 {
                 // Caller-sized for `stored` bytes (checked above).
                 unsafe {
-                    ptr::copy_nonoverlapping(bytes.as_ptr(), out, stored);
-                    out_len.write(total);
+                    ptr::copy_nonoverlapping(pending.as_ptr(), out, stored);
+                    out_len.write(stored);
                 }
             } else {
                 // SAFETY: `out_len` validated non-null above.
                 unsafe {
-                    out_len.write(total);
+                    out_len.write(0);
                 }
             }
-            if total > cap {
-                set_error(format!("drain truncated ({total} > {cap})"));
+            if pending.len() > stored {
+                harness.drain_stash_back(name, pending[stored..].to_vec());
             }
             0
         })
