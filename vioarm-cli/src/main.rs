@@ -1926,19 +1926,19 @@ fn parse_pin_spec(s: &str) -> Result<(u8, u8, String), String> {
 }
 
 /// Print one `--pin-log` sample line: `t=<seconds> <pin>=<0|1> ...`.
-/// Cycle counts are exact chunk multiples, so reruns print identical
-/// lines; an early halt prints the lines so far plus the usual halt
-/// report below.
+/// Stamps are true post-retire `cyccnt` (TRM cycle model, not retired-step
+/// counts), so `t=` is real board time; an early halt prints the lines so
+/// far plus the usual halt report below.
 fn sample_pins(
     m: &mut Machine<board::BoardMemory>,
     pins: &[(u8, u8, String)],
     hz: f64,
-    cycles: u64,
+    cyccnt: u64,
 ) {
     // Precision loss below one cycle at astronomical budgets; the
     // printed lines stay rerun-identical regardless.
     #[allow(clippy::cast_precision_loss)]
-    let seconds = cycles as f64 / hz;
+    let seconds = cyccnt as f64 / hz;
     let mut line = format!("t={seconds:.6}");
     for (port, pin, name) in pins {
         let level = m
@@ -1997,13 +1997,12 @@ fn run_quiet(
     // retired instructions.
     let hz = f64::from(m.cpu_hz());
     let mut remaining = budget;
-    let mut cycles = 0u64;
     if !pins.is_empty() {
         if sample == 0 {
             eprintln!("{} --pin-sample must be at least 1", "error:".red().bold());
             std::process::exit(2);
         }
-        sample_pins(m, pins, hz, 0);
+        sample_pins(m, pins, hz, m.core.cyccnt);
     }
     let mut runner = jit.then(vioarm_core::jit::TbRunner::new);
     let outcome = loop {
@@ -2021,10 +2020,9 @@ fn run_quiet(
         };
         match step {
             Err(HaltCause::CycleBudgetExhausted) => {
-                cycles += chunk;
                 remaining -= chunk;
                 if !pins.is_empty() {
-                    sample_pins(m, pins, hz, cycles);
+                    sample_pins(m, pins, hz, m.core.cyccnt);
                 }
             }
             other => break other,
@@ -2226,7 +2224,7 @@ fn run_traced_vcd(
     signals.push(("pc".to_owned(), 32));
     let mut vcd = VcdWriter::new(sink, &signals).unwrap_or_else(|e| panic!("trace output: {e}"));
     let dump = |m: &mut Machine<board::BoardMemory>, vcd: &mut VcdWriter<Box<dyn Write + Send>>| {
-        let (regs, _, cycles) = m.core.snapshot();
+        let (regs, _, _) = m.core.snapshot();
         let mut values: Vec<u64> = pins
             .iter()
             .map(|(port, pin, _)| {
@@ -2237,7 +2235,7 @@ fn run_traced_vcd(
             })
             .collect();
         values.push(u64::from(regs.pc));
-        vcd.sample(cycles, hz, &values).ok();
+        vcd.sample(m.core.cyccnt, hz, &values).ok();
     };
     dump(m, &mut vcd);
     for i in 1..=budget {
@@ -2942,9 +2940,10 @@ fn debug_repl(image: PathBuf, board: Board, base: u32) {
             }
             "step" | "s" | "n" | "next" => match m.step() {
                 Ok(_) => {
-                    let (regs, xpsr, cycles) = m.core.snapshot();
+                    let (regs, xpsr, _) = m.core.snapshot();
+                    let cyccnt = m.core.cyccnt;
                     println!(
-                        "{} pc={:#010x} r0={:#010x} xpsr={:#010x} cycles={cycles}",
+                        "{} pc={:#010x} r0={:#010x} xpsr={:#010x} cyccnt={cyccnt}",
                         "step".dimmed(),
                         regs.pc,
                         regs.r[0],
@@ -2957,8 +2956,9 @@ fn debug_repl(image: PathBuf, board: Board, base: u32) {
                 }
             },
             "regs" | "r" => {
-                let (regs, xpsr, cycles) = m.core.snapshot();
-                println!("pc={:#010x} sp={:#010x} lr={:#010x} r0={:#010x} r1={:#010x} r2={:#010x} r3={:#010x} xpsr={:#010x} cycles={cycles}",
+                let (regs, xpsr, _) = m.core.snapshot();
+                let cyccnt = m.core.cyccnt;
+                println!("pc={:#010x} sp={:#010x} lr={:#010x} r0={:#010x} r1={:#010x} r2={:#010x} r3={:#010x} xpsr={:#010x} cyccnt={cyccnt}",
                     regs.pc, regs.sp, regs.lr, regs.r[0], regs.r[1], regs.r[2], regs.r[3], xpsr.get());
             }
             c if c.starts_with("set ") => {

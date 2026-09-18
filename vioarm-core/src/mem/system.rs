@@ -64,6 +64,17 @@ pub struct SystemMemory<M: Bus> {
     /// Per-device APB timer domain (`tim_apb` of the device name), built
     /// with the window index. Saves a string match per device per tick.
     dev_apb: Vec<Option<u8>>,
+    /// NVIC lines currently inside their handler (consumed, not yet
+    /// returned). While a line is active its source flag may legitimately
+    /// stay set — firmware clears it inside the handler, which has not run
+    /// yet — so `latch_device_asserts` must not re-pend it: re-pending on
+    /// entry/prologue ticks is what used to fire every IRQ twice. On return
+    /// the core clears the line via `note_exception_return`; a line that is
+    /// still asserted then re-latches on the next pass, exactly like silicon
+    /// refiring on a held line. Transient across a handler flight, so
+    /// snapshots (which already skip NVIC pending) need not persist it;
+    /// resets clear it.
+    active: u128,
     nvic: Nvic,
     /// The ARMv7-M system control block: interrupt control/state, priority
     /// registers for the fixed exceptions, and the AIRCR reset bits.
@@ -142,6 +153,7 @@ impl<M: Bus + core::fmt::Debug> core::fmt::Debug for SystemMemory<M> {
         f.debug_struct("SystemMemory")
             .field("backing", &self.backing)
             .field("nvic", &self.nvic)
+            .field("active", &self.active)
             .field("scb", &self.scb)
             .field("flash", &self.flash)
             .field("qspi", &self.qspi)
@@ -173,6 +185,7 @@ impl<M: Bus> SystemMemory<M> {
             route_force_linear: false,
             dev_index_max_len: 0,
             dev_apb: Vec::new(),
+            active: 0,
             nvic: Nvic::new(),
             scb: Scb::new(),
             flash: None,
@@ -427,6 +440,7 @@ impl<M: Bus> SystemMemory<M> {
     /// Panics if the flash gate mutex is poisoned.
     pub fn reset_devices(&mut self) {
         self.nvic.reset();
+        self.active = 0;
         self.scb.reset();
         self.itm.reset();
         // Fractional timer phases are simulation bookkeeping, not silicon
@@ -781,6 +795,12 @@ impl<M: Bus> SystemMemory<M> {
             n if n >= 16 => {
                 let line = u32::from(n - 16);
                 self.nvic.take(line);
+                // The source flag is still set: firmware clears it inside the
+                // handler, which has not run yet. Mark the line active so the
+                // entry and prologue ticks do not re-pend it (the core clears
+                // the mark on exception return; a line still asserted then
+                // re-latches, like silicon refiring on a held line).
+                self.active |= 1u128 << line;
                 for device in &mut self.devices {
                     // Acknowledge whichever device line maps to exception `n`:
                     // a single-line device keeps line 0, a controller with
@@ -815,7 +835,14 @@ impl<M: Bus> SystemMemory<M> {
                 }
                 if let Some(n) = device.exception_for_line(line) {
                     if n >= 16 {
-                        self.nvic.latch(1u128 << u32::from(n - 16));
+                        let bit = u32::from(n - 16);
+                        // Never re-pend a line inside its own handler: the
+                        // source flag is legitimately still set until firmware
+                        // clears it (see `active`). Held lines refire after
+                        // the return clears the mark, like silicon.
+                        if self.active & (1u128 << bit) == 0 {
+                            self.nvic.latch(1u128 << bit);
+                        }
                     }
                 }
             }
@@ -1121,6 +1148,12 @@ impl<M: Bus> PeripheralBus for SystemMemory<M> {
 
     fn acknowledge_exception(&mut self, n: u8) {
         self.consume_exception(n);
+    }
+
+    fn note_exception_return(&mut self, n: u8) {
+        if n >= 16 {
+            self.active &= !(1u128 << u32::from(n - 16));
+        }
     }
 
     fn tick_cycle(&mut self) {

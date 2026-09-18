@@ -259,6 +259,11 @@ pub trait PeripheralBus: Bus {
     /// pending latch(es).
     fn acknowledge_exception(&mut self, n: u8);
 
+    /// Return: the core is leaving exception `n` via `EXC_RETURN`. A bus that
+    /// masks re-pending while a line is active clears the mark here, so a
+    /// still-asserted source may pend again. Default: untracked.
+    fn note_exception_return(&mut self, _n: u8) {}
+
     /// Advance all peripherals by one machine cycle.
     fn tick_cycle(&mut self) {}
 

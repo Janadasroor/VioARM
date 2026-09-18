@@ -1466,6 +1466,92 @@ fn tim1_update_dispatches_the_up_isr() {
     panic!("the TIM1 ISR did not return to the spin loop");
 }
 
+/// A peripheral flag the ISR clears must fire exactly once per event: entry
+/// acknowledges the NVIC line, and the entry tick must not re-latch it from
+/// the still-set flag (firmware can only clear `UIF` once the handler runs).
+/// The ISR clears `UIF`, counts entries in RAM, and returns; after the first
+/// return plus slack well short of the next wrap, the count must still be 1.
+/// A double-firing machine shows 2 here (the phantom entry lands immediately
+/// after the return, with `UIF` already clear).
+#[test]
+fn tim1_update_cleared_in_isr_fires_once_per_wrap() {
+    use vioarm_core::board;
+
+    const TIM1_CR1: u32 = 0x4001_2C00;
+    const TIM1_DIER: u32 = 0x4001_2C0C;
+    const TIM1_SR: u32 = 0x4001_2C10;
+    const TIM1_ARR: u32 = 0x4001_2C2C;
+    const NVIC_ISER0: u32 = 0xE000_E100;
+    const COUNTER: u32 = 0x2000_0000;
+    const ISR: u32 = ENTRY + 4;
+
+    // SP within the F103's 20 KiB RAM.
+    let mut m = Machine::new(board::stm32f103());
+    // Spin, then the ISR clears TIM1->SR.UIF, bumps COUNTER, and returns.
+    // 16-bit Thumb only (the F103 boots an ARMv6-M core, so no Thumb-2).
+    m.load_image(&load_flat(ENTRY, &[0xFE, 0xE7]));
+    m.load_image(&load_flat(
+        ISR,
+        &[
+            0x03, 0x48, // ldr r0,[pc,#12]  (TIM1_SR)
+            0x00, 0x21, // movs r1,#0
+            0x01, 0x60, // str r1,[r0]      (clear UIF)
+            0x03, 0x49, // ldr r1,[pc,#12]  (COUNTER)
+            0x0A, 0x68, // ldr r2,[r1]
+            0x01, 0x32, // adds r2,#1
+            0x0A, 0x60, // str r2,[r1]
+            0x70, 0x47, // bx lr
+            0x10, 0x2C, 0x01, 0x40, // .word TIM1_SR
+            0x00, 0x00, 0x00, 0x20, // .word COUNTER
+        ],
+    ));
+    {
+        let mem = m.core.mem();
+        mem.write_word(FLASH, 0x2000_4000).unwrap(); // SP
+        mem.write_word(FLASH + 4, ENTRY | 1).unwrap(); // reset vector
+                                                       // Vector 41 = TIM1_UP IRQ 25 at FLASH + 41 * 4.
+        mem.write_word(FLASH + 41 * 4, ISR | 1).unwrap();
+    }
+    m.reset().unwrap();
+    {
+        let mem = m.core.mem();
+        mem.write_word(NVIC_ISER0, 1 << 25).unwrap(); // enable TIM1_UP
+        mem.write_word(TIM1_ARR, 999).unwrap(); // wrap every 1000 counts
+        mem.write_word(TIM1_DIER, 1).unwrap(); // UIE
+        mem.write_word(TIM1_SR, 0).unwrap(); // no stale UIF
+        mem.write_word(TIM1_CR1, 1).unwrap(); // CEN
+    }
+    // First entry.
+    let mut entered = false;
+    for _ in 0..4000 {
+        m.step().unwrap();
+        if m.core.regs.pc & !1 == ISR {
+            entered = true;
+            break;
+        }
+    }
+    assert!(entered, "the TIM1_UP ISR was dispatched");
+    // Run past the return into the spin loop, then 60 true cycles of slack
+    // (far short of the 1000-count wrap period): no second wrap can happen
+    // here, so any second entry is the phantom re-fire of the already-
+    // serviced event.
+    for _ in 0..4000 {
+        m.step().unwrap();
+        if m.core.regs.pc & !1 == ENTRY && m.core.mem().read_word(COUNTER).unwrap() == 1 {
+            break;
+        }
+    }
+    let t0 = m.core.cyccnt;
+    while m.core.cyccnt.wrapping_sub(t0) < 60 {
+        m.step().unwrap();
+    }
+    assert_eq!(
+        m.core.mem().read_word(COUNTER).unwrap(),
+        1,
+        "one wrap must mean one ISR entry when the ISR clears UIF"
+    );
+}
+
 /// A level-sensitive interrupt line that stays asserted (the I2C EV line under
 /// `ITEVTEN`, with `SB` left set) must not starve the thread: after the
 /// handler's `EXC_RETURN`, the restored instruction executes before the

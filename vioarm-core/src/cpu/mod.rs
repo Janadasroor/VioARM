@@ -5512,6 +5512,11 @@ impl<B: PeripheralBus> Core<B> {
     /// reservation is simply abandoned.
     fn exception_return(&mut self, value: u32) -> Result<Next, HaltCause> {
         self.last_load_rd = None;
+        // The handler is exiting: its NVIC line stops being active, so a
+        // still-asserted source may pend again (a cleared source stays
+        // quiet). Notify before unstacking; a halted return never resumes,
+        // and resets clear the mark anyway.
+        self.mem.note_exception_return(self.ipsr);
         let to_handler = value == EXC_RETURN_HANDLER || value == EXC_RETURN_HANDLER_FP;
         let to_process = value == EXC_RETURN_THREAD_PSP || value == EXC_RETURN_THREAD_PSP_FP;
         let to_main = value == EXC_RETURN_THREAD_MSP || value == EXC_RETURN_THREAD_MSP_FP;
