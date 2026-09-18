@@ -1,7 +1,6 @@
 # Packaging (E2)
 
 Install layout for hosts embedding VioARM through the C ABI:
-
 ```
 <prefix>/include/vioarm_cosim.h
 <prefix>/lib/libvioarm_cosim.so.1.10.0   (cdylib; soname `libvioarm_cosim.so.1`)
@@ -36,3 +35,11 @@ generated copy — there is no second source of truth anymore.
 - **Python**: `bindings/python/vioarm.py` (ctypes, stdlib only):
   `VIOARM_LIB=/path/to/libvioarm_cosim.so PYTHONPATH=bindings/python
   python3 packaging/examples/host_minimal.py`.
+
+## Clean-room proof
+
+`packaging/Dockerfile` builds the ABI from a bare source tree (no
+caches, no host toolchains), installs the layout above, and runs both
+minimal hosts plus the rate limiter against the installed files — the
+build itself is the test (`docker build -f packaging/Dockerfile -t
+vioarm-packaging .`).
