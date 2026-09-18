@@ -29,12 +29,15 @@ major version bump:
   for strings). A null `out` with `cap > 0` is always an error; `cap == 0`
   with null `out` is legal size-probing.
 - **Status codes.** `VIOARM_STEP_OK` (0), `VIOARM_STEP_HALTED` (1),
-  `VIOARM_ERR_NULL_HANDLE` (-1), `VIOARM_ERR_PANIC` (-2),
+  `VIOARM_STEP_BREAKPOINT` (2, parked before the step at the reported
+  `pc`), `VIOARM_ERR_NULL_HANDLE` (-1), `VIOARM_ERR_PANIC` (-2),
   `VIOARM_ERR_BAD_ARG` (-3), `VIOARM_ERR_BUS` (-4, data-space access
   refused), `VIOARM_ERR_VERSION` (-5, snapshot layout/API-major
-  mismatch). There is no budget-exhausted code: stepping entries take
-  seconds and run to completion or halt. Value-returning getters
+  mismatch), `VIOARM_ERR_REENTRY` (-6, a host callback called back in).
+  There is no budget-exhausted code: stepping entries take seconds and
+  run to completion, halt, or breakpoint. Direct value getters
   (`get_pc`, `cpu_hz`, `*_count`, `*_size`) return `0` on a null handle;
+  status-returning entries report `VIOARM_ERR_NULL_HANDLE` instead;
   `destroy` on null is a no-op; `create` returns null with the reason in
   the last error.
 - **Version policy.** `vioarm_cosim_api_version()` tracks the crate
@@ -97,3 +100,45 @@ anything else malformed is `VIOARM_ERR_BAD_ARG`).
 Proven by `vioarm-cosim/tests/embedding.rs` (version match,
 snapshot/step/restore with `pc`+RAM equality, misuse probes, catalog
 spot-checks) plus `vioarm-core` snapshot unit tests.
+
+## Host control (E1)
+
+Execution control, observation, channels, and callbacks — additive entries
+(minor version 1.10.0), existing symbols untouched:
+
+- **Execution**: `vioarm_cosim_reset(handle)` reboots from the vector
+  table without reloading (image stays; host-driven pin levels are
+  forgotten); `vioarm_cosim_load(handle, fw, len, format, base)` swaps in
+  a new image on the same board and resets (breakpoints and the callback
+  survive; a rejected load keeps the old image running).
+- **Breakpoints**: `vioarm_cosim_break_set/clear/list` manage up to 256
+  `pc` stops (clear is idempotent). A stepping call parks *before* the
+  step at a hit and reports `VIOARM_STEP_BREAKPOINT`;
+  `vioarm_cosim_halt_reason(handle)` tells `COMPLETED` (0), `BREAKPOINT`
+  (1, `get_pc` names the stop), or `FAULT` (2, detail in the last
+  error) for the last stepping call. With nothing armed the stepping
+  paths are untouched single-call quanta; armed-but-never-hit runs are
+  bit-identical to them (regression-pinned).
+- **Observation**: `vioarm_cosim_reg_read/write` (`0..=12` = `r0`–`r12`,
+  `13` = `sp`, `14` = `lr`, `15` = `pc`, `16` = `xpsr` read-only);
+  `vioarm_cosim_backtrace(handle, out, cap, out_len)` copies the
+  fault-triage ring (`pc`, opcode halfwords, post-retire `cyccnt`) most
+  recent last, with the usual truncation discipline.
+- **Channels**: `vioarm_cosim_drain(handle, channel, out, cap, out_len)`
+  takes `"itm"`, `"semihost"`, or an attached device name from the
+  catalog (`"usart1"` drains its TX bytes); anything else fails closed.
+  `vioarm_cosim_inject(handle, channel, buf, len)` queues into
+  `"semihost"` (`READC`) or a device input channel (`"usart1"` feeds
+  RX); `len == 0` is a no-op.
+- **Callbacks**: `vioarm_cosim_set_event_callback(handle, cb, ctx)`
+  (`None` disables) fires once per observed event, in retire order, at
+  the end of stepping calls — every event even when the fixed `run_quantum`
+  buffer truncates. Callbacks are observe-only: reentrant entries fail
+  with `VIOARM_ERR_REENTRY`, and an unwinding (Rust) callback aborts the
+  call with `VIOARM_ERR_PANIC`.
+
+Proven by `vioarm-cosim/tests/host.rs` (reset/load round-trips, parked
+and listed breakpoints, fault halt reasons, register aliases incl.
+read-only `xpsr`, backtrace stamps, UART TX drain, semihost inject,
+per-event callback order vs the buffer, reentry refusal, and the
+armed-never-hit identity proof).

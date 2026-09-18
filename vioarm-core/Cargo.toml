@@ -33,4 +33,4 @@ harness = false
 [dependencies]
 dynasm = { version = "5.1", optional = true }
 dynasmrt = { version = "5.1", optional = true }
-vioarm-jit-call = { version = "1.9.1", path = "../vioarm-jit-call", optional = true }
+vioarm-jit-call = { version = "1.10.0", path = "../vioarm-jit-call", optional = true }
