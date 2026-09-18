@@ -83,6 +83,7 @@ use vioarm_core::error::HaltCause;
 use vioarm_core::loader;
 use vioarm_core::machine::Machine;
 use vioarm_core::mem::Bus;
+use vioarm_core::snapshot::SnapshotError;
 
 pub mod handle;
 pub use handle::VioArmHandle;
@@ -101,6 +102,12 @@ pub const VIOARM_ERR_BAD_ARG: i32 = -3;
 /// ([`vioarm_cosim_read_data`] / [`vioarm_cosim_write_data`]): the access
 /// was refused, nothing was touched.
 pub const VIOARM_ERR_BUS: i32 = -4;
+/// Snapshot frozen under an incompatible version
+/// ([`vioarm_cosim_snapshot_restore`]): layout version or API major
+/// mismatch — fails closed, the machine is untouched. Anything else about
+/// the buffer (short, bad magic, span mismatch) stays
+/// [`VIOARM_ERR_BAD_ARG`].
+pub const VIOARM_ERR_VERSION: i32 = -5;
 
 /// Firmware image formats for [`vioarm_cosim_create`]: ELF (`fw_format` 0).
 pub const VIOARM_FW_ELF: u32 = 0;
@@ -784,9 +791,11 @@ pub extern "C" fn vioarm_cosim_snapshot_save(
 }
 
 /// Restore state frozen by [`vioarm_cosim_snapshot_save`]: `buf[len]`
-/// must be exactly one snapshot image (magic, version, and length are
-/// validated before anything is touched — a rejected buffer leaves the
-/// machine exactly as it was). Returns 0 or a negative error code.
+/// must be exactly one snapshot image (magic, layout version, API major,
+/// and exact length are validated before anything is touched — a rejected
+/// buffer leaves the machine exactly as it was). Returns 0,
+/// [`VIOARM_ERR_VERSION`] on a layout/API-major mismatch, or another
+/// negative error code.
 ///
 /// `clippy::not_unsafe_ptr_arg_deref` is allowed here deliberately, same
 /// as [`vioarm_cosim_destroy`].
@@ -814,6 +823,12 @@ pub extern "C" fn vioarm_cosim_snapshot_restore(
             };
             match harness.machine_mut().snapshot_restore(image) {
                 Ok(()) => 0,
+                Err(
+                    cause @ (SnapshotError::BadVersion(_) | SnapshotError::BadApiVersion { .. }),
+                ) => {
+                    set_error(format!("snapshot restore failed: {cause}"));
+                    VIOARM_ERR_VERSION
+                }
                 Err(cause) => {
                     set_error(format!("snapshot restore failed: {cause}"));
                     VIOARM_ERR_BAD_ARG

@@ -24,10 +24,54 @@ pub const SNAPSHOT_RAM_LEN: usize = 0x1000;
 /// Snapshot format magic (`b"VASN"`, little-endian).
 pub const SNAPSHOT_MAGIC: u32 = 0x4E_53_41_56;
 /// Snapshot format version (bumped on any layout change).
-pub const SNAPSHOT_VERSION: u32 = 1;
+pub const SNAPSHOT_VERSION: u32 = 2;
+/// API major the snapshot was frozen under (stamped at save, gated at
+/// restore): the workspace versions every crate in lockstep, so this is
+/// both the core and the embedding-ABI major. Layout-compatible lines
+/// share it; a different major fails closed even when the layout version
+/// matches, because out-of-line semantics may have moved.
+pub const SNAPSHOT_API_MAJOR: u32 = crate_api_major();
+/// API minor at save time (diagnostic only — never gated: minor versions
+/// promise no layout change).
+pub const SNAPSHOT_API_MINOR: u32 = crate_api_minor();
+/// API patch at save time (diagnostic only, same promise as minor).
+pub const SNAPSHOT_API_PATCH: u32 = crate_api_patch();
+
+/// Crate version triple backing the API stamp above.
+const fn crate_api_major() -> u32 {
+    parse_version(env!("CARGO_PKG_VERSION_MAJOR"))
+}
+
+/// Crate version triple backing the API stamp above.
+const fn crate_api_minor() -> u32 {
+    parse_version(env!("CARGO_PKG_VERSION_MINOR"))
+}
+
+/// Crate version triple backing the API stamp above.
+const fn crate_api_patch() -> u32 {
+    parse_version(env!("CARGO_PKG_VERSION_PATCH"))
+}
+
+/// Parse a decimal `CARGO_PKG_VERSION_*` component at compile time (workspace
+/// versions are small integers; anything unparseable becomes 0 rather than
+/// failing the build).
+const fn parse_version(component: &str) -> u32 {
+    let bytes = component.as_bytes();
+    let mut value = 0u32;
+    let mut i = 0;
+    while i < bytes.len() {
+        let digit = bytes[i].wrapping_sub(b'0');
+        if digit > 9 {
+            return 0;
+        }
+        value = value * 10 + digit as u32;
+        i += 1;
+    }
+    value
+}
 /// Header bytes before the RAM image (magic + version + regs + xpsr +
-/// control block + counters + span descriptor).
-pub const SNAPSHOT_HEADER_LEN: usize = 140;
+/// control block + counters + span descriptor + API stamp).
+pub const SNAPSHOT_HEADER_LEN: usize = 152;
 /// Total snapshot bytes (header + RAM span).
 pub const SNAPSHOT_LEN: usize = SNAPSHOT_HEADER_LEN + SNAPSHOT_RAM_LEN;
 
@@ -43,6 +87,14 @@ pub enum SnapshotError {
     BadImage(String),
     /// Snapshot version newer than this build understands.
     BadVersion(u32),
+    /// Snapshot frozen under a different API major (layout may match, but
+    /// out-of-line semantics may have moved — fails closed).
+    BadApiVersion {
+        /// Stamped major.
+        got: u32,
+        /// This build's major.
+        want: u32,
+    },
     /// A RAM span byte is not serviced by this board's bus.
     MemoryOutOfRange {
         /// Faulting address.
@@ -58,6 +110,9 @@ impl std::fmt::Display for SnapshotError {
             }
             Self::BadImage(why) => write!(f, "bad snapshot image: {why}"),
             Self::BadVersion(v) => write!(f, "snapshot version {v} unsupported"),
+            Self::BadApiVersion { got, want } => {
+                write!(f, "snapshot api major {got} unsupported (want {want})")
+            }
             Self::MemoryOutOfRange { addr } => {
                 write!(f, "snapshot RAM {addr:#010x} not serviced by this board")
             }
@@ -143,17 +198,21 @@ impl Machine<BoardMemory> {
         put_u64(out, 124, self.core.cyccnt);
         put_u32(out, 132, SNAPSHOT_RAM_BASE);
         put_u32(out, 136, SNAPSHOT_RAM_LEN as u32);
+        put_u32(out, 140, SNAPSHOT_API_MAJOR);
+        put_u32(out, 144, SNAPSHOT_API_MINOR);
+        put_u32(out, 148, SNAPSHOT_API_PATCH);
         out[SNAPSHOT_HEADER_LEN..SNAPSHOT_LEN].copy_from_slice(&ram);
         Ok(SNAPSHOT_LEN)
     }
 
     /// Restore state frozen by [`Self::snapshot_save`]. Validation
-    /// (magic, version, exact length) runs before anything is touched, so a
-    /// rejected buffer leaves the machine exactly as it was.
+    /// (magic, version, API major, exact length) runs before anything is
+    /// touched, so a rejected buffer leaves the machine exactly as it was.
     ///
     /// # Errors
     ///
     /// [`SnapshotError::BadImage`] / [`SnapshotError::BadVersion`] /
+    /// [`SnapshotError::BadApiVersion`] /
     /// [`SnapshotError::MemoryOutOfRange`] (the last only after the CPU
     /// state is already restored — on serviced boards it cannot happen).
     pub fn snapshot_restore(&mut self, buf: &[u8]) -> Result<(), SnapshotError> {
@@ -169,6 +228,13 @@ impl Machine<BoardMemory> {
         let version = get_u32(buf, 4);
         if version != SNAPSHOT_VERSION {
             return Err(SnapshotError::BadVersion(version));
+        }
+        let api_major = get_u32(buf, 140);
+        if api_major != SNAPSHOT_API_MAJOR {
+            return Err(SnapshotError::BadApiVersion {
+                got: api_major,
+                want: SNAPSHOT_API_MAJOR,
+            });
         }
         if get_u32(buf, 132) != SNAPSHOT_RAM_BASE || get_u32(buf, 136) != SNAPSHOT_RAM_LEN as u32 {
             return Err(SnapshotError::BadImage("span mismatch".to_owned()));
@@ -212,7 +278,10 @@ impl Machine<BoardMemory> {
 
 #[cfg(test)]
 mod tests {
-    use super::{SNAPSHOT_LEN, SNAPSHOT_MAGIC, SNAPSHOT_RAM_BASE, SNAPSHOT_VERSION};
+    use super::{
+        SNAPSHOT_API_MAJOR, SNAPSHOT_API_MINOR, SNAPSHOT_API_PATCH, SNAPSHOT_LEN, SNAPSHOT_MAGIC,
+        SNAPSHOT_RAM_BASE, SNAPSHOT_VERSION,
+    };
     use crate::board::BoardMemory;
     use crate::loader::load_flat;
     use crate::machine::Machine;
@@ -250,6 +319,20 @@ mod tests {
             u32::from_le_bytes(buf[4..8].try_into().unwrap()),
             SNAPSHOT_VERSION
         );
+        // The API stamp rides at the header tail (diagnostic minor/patch,
+        // gated major).
+        assert_eq!(
+            u32::from_le_bytes(buf[140..144].try_into().unwrap()),
+            SNAPSHOT_API_MAJOR
+        );
+        assert_eq!(
+            u32::from_le_bytes(buf[144..148].try_into().unwrap()),
+            SNAPSHOT_API_MINOR
+        );
+        assert_eq!(
+            u32::from_le_bytes(buf[148..152].try_into().unwrap()),
+            SNAPSHOT_API_PATCH
+        );
         // Mutate past the snapshot, then rewind (the `b .` tail pins pc,
         // so the cycle counter proves forward motion, not pc).
         m.core.mem().write(SNAPSHOT_RAM_BASE, 0x00).unwrap();
@@ -282,5 +365,18 @@ mod tests {
         let mut bad_ver = buf.clone();
         bad_ver[4] = 0x7F;
         assert!(m.snapshot_restore(&bad_ver).is_err());
+        // A foreign API major fails closed too (layout may match, semantics
+        // may have moved) and touches nothing.
+        let mut bad_api = buf.clone();
+        let foreign = SNAPSHOT_API_MAJOR.wrapping_add(1);
+        bad_api[140..144].copy_from_slice(&foreign.to_le_bytes());
+        assert_eq!(
+            m.snapshot_restore(&bad_api),
+            Err(super::SnapshotError::BadApiVersion {
+                got: foreign,
+                want: SNAPSHOT_API_MAJOR,
+            })
+        );
+        assert_eq!(m.core.regs.pc, pc, "rejected buffer touches nothing");
     }
 }

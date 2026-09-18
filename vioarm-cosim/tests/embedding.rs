@@ -10,12 +10,15 @@ use std::ffi::{CStr, CString};
 use std::ptr;
 use vioarm_cosim::{
     vioarm_cosim_api_version, vioarm_cosim_board_clock, vioarm_cosim_board_count,
-    vioarm_cosim_board_name, vioarm_cosim_board_pin, vioarm_cosim_create, vioarm_cosim_destroy,
-    vioarm_cosim_device_count, vioarm_cosim_device_name, vioarm_cosim_get_cycles,
-    vioarm_cosim_get_instructions, vioarm_cosim_get_pc, vioarm_cosim_get_sp,
-    vioarm_cosim_read_data, vioarm_cosim_snapshot_restore, vioarm_cosim_snapshot_save,
+    vioarm_cosim_board_name, vioarm_cosim_board_pin, vioarm_cosim_cpu_hz, vioarm_cosim_create,
+    vioarm_cosim_destroy, vioarm_cosim_device_count, vioarm_cosim_device_name,
+    vioarm_cosim_get_cycles, vioarm_cosim_get_dac_voltage, vioarm_cosim_get_instructions,
+    vioarm_cosim_get_pc, vioarm_cosim_get_sp, vioarm_cosim_pin_get, vioarm_cosim_pin_set,
+    vioarm_cosim_read_data, vioarm_cosim_run_quantum, vioarm_cosim_set_external_voltage,
+    vioarm_cosim_set_operating_voltage, vioarm_cosim_snapshot_restore, vioarm_cosim_snapshot_save,
     vioarm_cosim_snapshot_size, vioarm_cosim_step_duration, vioarm_cosim_write_data,
-    VIOARM_ERR_BAD_ARG, VIOARM_ERR_BUS, VIOARM_ERR_NULL_HANDLE, VIOARM_FW_BIN, VIOARM_STEP_OK,
+    VIOARM_ERR_BAD_ARG, VIOARM_ERR_BUS, VIOARM_ERR_NULL_HANDLE, VIOARM_ERR_VERSION, VIOARM_FW_BIN,
+    VIOARM_STEP_OK,
 };
 
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -362,4 +365,182 @@ fn catalog_lists_boards_devices_clocks_and_pins() {
         )
     });
     assert_eq!(pa9_low, "SWDIO");
+}
+
+/// E0 exit: every handle-taking entry fails closed on a null handle (0 for
+/// value queries, `VIOARM_ERR_NULL_HANDLE` for actions), `destroy(null)`
+/// is a silent no-op, and bad `create` arguments return null with the
+/// reason in the last error.
+#[test]
+fn embedding_null_handles_fail_closed() {
+    let _serial = serial();
+    let null = ptr::null_mut();
+    // Value queries read 0.
+    assert_eq!(vioarm_cosim_snapshot_size(null), 0);
+    assert_eq!(vioarm_cosim_get_pc(null), 0);
+    assert_eq!(vioarm_cosim_get_sp(null), 0);
+    assert_eq!(vioarm_cosim_get_cycles(null), 0);
+    assert_eq!(vioarm_cosim_get_instructions(null), 0);
+    assert_eq!(vioarm_cosim_device_count(null), 0);
+    assert_eq!(vioarm_cosim_cpu_hz(null), 0);
+    // Actions report `VIOARM_ERR_NULL_HANDLE` (valid sibling args, so the
+    // null handle is what fails).
+    assert_eq!(
+        vioarm_cosim_step_duration(null, 0.001),
+        VIOARM_ERR_NULL_HANDLE
+    );
+    let mut out_len = 0usize;
+    assert_eq!(
+        vioarm_cosim_run_quantum(null, 0.001, ptr::null_mut(), 0, &mut out_len),
+        VIOARM_ERR_NULL_HANDLE
+    );
+    let (mut level, mut driving) = (0u8, 0u8);
+    let mut mode = 0u32;
+    assert_eq!(
+        vioarm_cosim_pin_get(null, 0, 0, &mut level, &mut driving, &mut mode),
+        VIOARM_ERR_NULL_HANDLE
+    );
+    assert_eq!(vioarm_cosim_pin_set(null, 0, 0, 1), VIOARM_ERR_NULL_HANDLE);
+    assert_eq!(
+        vioarm_cosim_set_external_voltage(null, 0, 1.0),
+        VIOARM_ERR_NULL_HANDLE
+    );
+    assert_eq!(
+        vioarm_cosim_set_operating_voltage(null, 1.0),
+        VIOARM_ERR_NULL_HANDLE
+    );
+    let mut volts = 0.0f64;
+    assert_eq!(
+        vioarm_cosim_get_dac_voltage(null, 0, &mut volts),
+        VIOARM_ERR_NULL_HANDLE
+    );
+    let mut buf = vec![0u8; 64];
+    assert_eq!(
+        vioarm_cosim_snapshot_save(null, buf.as_mut_ptr(), buf.len(), &mut out_len),
+        VIOARM_ERR_NULL_HANDLE
+    );
+    assert_eq!(
+        vioarm_cosim_snapshot_restore(null, buf.as_ptr(), buf.len()),
+        VIOARM_ERR_NULL_HANDLE
+    );
+    let mut val = 0u8;
+    assert_eq!(
+        vioarm_cosim_read_data(null, 0x2000_0000, &mut val),
+        VIOARM_ERR_NULL_HANDLE
+    );
+    assert_eq!(
+        vioarm_cosim_write_data(null, 0x2000_0000, 1),
+        VIOARM_ERR_NULL_HANDLE
+    );
+    let mut name = vec![0i8; 32];
+    assert_eq!(
+        vioarm_cosim_device_name(null, 0, name.as_mut_ptr(), name.len()),
+        VIOARM_ERR_NULL_HANDLE
+    );
+    // Destroying null is a silent no-op (no crash, no error latched).
+    vioarm_cosim_destroy(null);
+    // Bad creates return null with a reason.
+    assert!(vioarm_cosim_create(ptr::null(), buf.as_ptr(), buf.len(), VIOARM_FW_BIN, 0).is_null());
+    assert!(!last_error().is_empty(), "null board names the reason");
+    assert!(vioarm_cosim_create(
+        cstring("virtual").as_ptr(),
+        ptr::null(),
+        0,
+        VIOARM_FW_BIN,
+        0
+    )
+    .is_null());
+    assert!(vioarm_cosim_create(
+        cstring("stm32f999").as_ptr(),
+        buf.as_ptr(),
+        buf.len(),
+        VIOARM_FW_BIN,
+        0
+    )
+    .is_null());
+    assert!(
+        vioarm_cosim_create(cstring("virtual").as_ptr(), buf.as_ptr(), buf.len(), 99, 0).is_null()
+    );
+    // Null board/pin names fail closed.
+    assert_eq!(
+        vioarm_cosim_board_pin(
+            ptr::null(),
+            cstring("PA9").as_ptr(),
+            name.as_mut_ptr(),
+            name.len()
+        ),
+        VIOARM_ERR_BAD_ARG
+    );
+    assert_eq!(
+        vioarm_cosim_board_pin(
+            cstring("stm32f103").as_ptr(),
+            ptr::null(),
+            name.as_mut_ptr(),
+            name.len()
+        ),
+        VIOARM_ERR_BAD_ARG
+    );
+}
+
+/// E0 exit: snapshot version gates fail closed with `VIOARM_ERR_VERSION`
+/// (layout or API major), while content corruption stays
+/// `VIOARM_ERR_BAD_ARG` — and rejected buffers never touch the machine.
+#[test]
+fn embedding_snapshot_versions_fail_closed() {
+    let _serial = serial();
+    let fw = store_firmware();
+    let handle = create("virtual", &fw, 0x0);
+    assert_eq!(vioarm_cosim_step_duration(handle, 0.000_01), VIOARM_STEP_OK);
+    let pc = vioarm_cosim_get_pc(handle);
+    let need = vioarm_cosim_snapshot_size(handle);
+    let mut buf = vec![0u8; need];
+    let mut out_len = 0usize;
+    assert_eq!(
+        vioarm_cosim_snapshot_save(handle, buf.as_mut_ptr(), buf.len(), &mut out_len),
+        0,
+        "{}",
+        last_error()
+    );
+    // Bad magic: malformed buffer, not a version problem.
+    let mut bad_magic = buf.clone();
+    bad_magic[0] ^= 0xFF;
+    assert_eq!(
+        vioarm_cosim_snapshot_restore(handle, bad_magic.as_ptr(), bad_magic.len()),
+        VIOARM_ERR_BAD_ARG
+    );
+    // Bad layout version: `VIOARM_ERR_VERSION`.
+    let mut bad_ver = buf.clone();
+    let ver = u32::from_le_bytes(bad_ver[4..8].try_into().unwrap()).wrapping_add(1);
+    bad_ver[4..8].copy_from_slice(&ver.to_le_bytes());
+    assert_eq!(
+        vioarm_cosim_snapshot_restore(handle, bad_ver.as_ptr(), bad_ver.len()),
+        VIOARM_ERR_VERSION,
+        "{}",
+        last_error()
+    );
+    assert!(!last_error().is_empty(), "version failure names itself");
+    // Bad API major (header tail at 140..144): `VIOARM_ERR_VERSION`.
+    let mut bad_api = buf.clone();
+    let major = u32::from_le_bytes(bad_api[140..144].try_into().unwrap()).wrapping_add(1);
+    bad_api[140..144].copy_from_slice(&major.to_le_bytes());
+    assert_eq!(
+        vioarm_cosim_snapshot_restore(handle, bad_api.as_ptr(), bad_api.len()),
+        VIOARM_ERR_VERSION
+    );
+    assert_eq!(
+        vioarm_cosim_get_pc(handle),
+        pc,
+        "rejected restores touch nothing"
+    );
+    // A RAM-only corruption still restores (content, not version).
+    let mut dirty_ram = buf.clone();
+    dirty_ram[200] ^= 0xFF;
+    assert_eq!(
+        vioarm_cosim_snapshot_restore(handle, dirty_ram.as_ptr(), dirty_ram.len()),
+        0,
+        "{}",
+        last_error()
+    );
+    assert_eq!(read_byte(handle, 0x2000_0000 + 200 - 152), dirty_ram[200]);
+    vioarm_cosim_destroy(handle);
 }
