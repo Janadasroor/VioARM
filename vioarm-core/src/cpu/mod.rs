@@ -4477,7 +4477,7 @@ impl<B: PeripheralBus> Core<B> {
             }
             DpOp::Orn => {
                 let c = self.shift_carry_or_current(shift_carry);
-                (op2 | !rn_v, c, self.xpsr.v())
+                (rn_v | !op2, c, self.xpsr.v())
             }
             DpOp::Mov => {
                 let c = self.shift_carry_or_current(shift_carry);
@@ -5578,9 +5578,11 @@ impl<B: PeripheralBus> Core<B> {
         self.regs.write(3, r3);
         self.regs.write(12, r12);
         self.regs.lr = lr;
-        // The stacked PC is a plain address; Thumb state is restored from the
-        // stacked xPSR's T bit below, not from the PC's LSB.
-        self.regs.pc = pc_ret;
+        // The stacked PC keeps its Thumb bit (bit 0), exactly as hardware
+        // stacks it; the fetch address drops it (like `exception_return_v8m`).
+        // Thumb state is restored from the stacked xPSR's T bit below, not
+        // from the PC's LSB.
+        self.regs.pc = pc_ret & !1;
         self.xpsr.set(sxpsr & (APSR_QFLAGS | XPSR_T));
         // Restore ITSTATE from its xPSR[15:10] / [26:25] slots.
         self.itstate = ((sxpsr >> 8) & 0xFC) as u8 | ((sxpsr >> 25) & 0x03) as u8;
@@ -6645,6 +6647,45 @@ mod tests {
         assert_eq!(c.other_ss_msp, 0x2000_0900);
         assert_eq!(c.other_ss_psp, 0x2000_0B00, "SPSEL set selects the NS PSP");
         assert_eq!(c.other_ss_control, 0x3);
+    }
+
+    #[test]
+    fn v7m_exception_return_masks_stacked_thumb_bit() {
+        // ThreadX stacks the thread entry with its Thumb bit set (0x...01),
+        // exactly as hardware does; the return must fetch from the masked
+        // address, not abort on the odd PC. (FreeRTOS masks it in software
+        // with portSTART_ADDRESS_MASK, which is why only ThreadX tripped it.)
+        let mut c = armv7m_sys_core();
+        c.ipsr = 14; // running the PendSV handler
+        c.regs.msp = 0x2000_0100;
+        c.regs.sp = 0x2000_0100;
+        let frame = [0, 0, 0, 0, 0, 0xFFFF_FFF9, 0x2000_0001, 0x0100_0000];
+        for (i, w) in frame.iter().enumerate() {
+            c.mem()
+                .write_word(0x2000_0100 + (i as u32) * 4, *w)
+                .unwrap();
+        }
+        c.exception_return(EXC_RETURN_THREAD_MSP).unwrap();
+        assert_eq!(c.ipsr, 0);
+        assert_eq!(c.regs.pc, 0x2000_0000);
+        assert_eq!(c.regs.sp, 0x2000_0120, "frame consumed");
+    }
+
+    #[test]
+    fn v7m_orn_is_rn_or_not_op2() {
+        // `orn r2, r6, r5` is EA66 0205. The operands are deliberately
+        // asymmetric: the old code computed `op2 | !rn` (found via a wrong
+        // Embench md5sum digest) instead of `rn | !op2`.
+        let mut c = armv7m_sys_core();
+        const CODE: u32 = 0x2000_0100;
+        c.regs.sp = 0x2000_0800;
+        c.regs.msp = 0x2000_0800;
+        c.regs.pc = CODE;
+        c.regs.write(6, 0x72FB_A73C);
+        c.regs.write(5, 0x13E0_1256);
+        load_inst(&mut c, CODE, &[0x66, 0xEA, 0x05, 0x02]);
+        c.step().unwrap();
+        assert_eq!(c.regs.read(2), 0xFEFF_EFBD);
     }
 
     #[test]

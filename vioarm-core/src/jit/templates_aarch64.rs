@@ -2032,7 +2032,7 @@ fn exec_dp_op(
             }
         }
         O::Orn => {
-            dynasm!(ops ; .arch aarch64 ; orn w0, w1, w0);
+            dynasm!(ops ; .arch aarch64 ; orn w0, w0, w1);
             store(ops, rd);
             if set_flags {
                 merge_nzcv_carry(ops, carry);

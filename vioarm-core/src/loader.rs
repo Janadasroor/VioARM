@@ -41,9 +41,13 @@ pub fn load_flat(base: u32, bytes: &[u8]) -> LoadedImage {
     }
 }
 
-/// Parse a loadable ELF32 file into segments. Only `PT_LOAD` with
-/// `filesz == memsz` is supported for the first milestone; `.bss` zero-padding
-/// returns `ImageError::UnsupportedElfClass`... err, a distinct error below.
+/// Parse a loadable ELF32 file into segments. Every `PT_LOAD` is placed at
+/// its physical address (`p_paddr`, falling back to `p_vaddr` when zero):
+/// that is where the bytes live in the programmed flash image, and the
+/// firmware's own startup code copies `.data` to RAM and zeroes `.bss`
+/// from there — exactly like QEMU's `-kernel` loader and like silicon.
+/// A trailing `memsz - filesz` tail (standard `.bss` padding) is
+/// zero-filled. `filesz > memsz` is malformed.
 pub fn load_elf(bytes: &[u8]) -> Result<LoadedImage, ImageError> {
     if bytes.len() < 52 {
         return Err(ImageError::Truncated);
@@ -77,17 +81,21 @@ pub fn load_elf(bytes: &[u8]) -> Result<LoadedImage, ImageError> {
         }
         let p_offset = u32::from_le_bytes(bytes[off + 4..off + 8].try_into().unwrap()) as usize;
         let p_vaddr = u32::from_le_bytes(bytes[off + 8..off + 12].try_into().unwrap());
+        let p_paddr = u32::from_le_bytes(bytes[off + 12..off + 16].try_into().unwrap());
         let p_filesz = u32::from_le_bytes(bytes[off + 16..off + 20].try_into().unwrap()) as usize;
         let p_memsz = u32::from_le_bytes(bytes[off + 20..off + 24].try_into().unwrap()) as usize;
-        if p_filesz != p_memsz {
+        if p_filesz > p_memsz {
             return Err(ImageError::UnsupportedBss);
         }
         let data_end = p_offset.saturating_add(p_filesz);
         if data_end > bytes.len() {
             return Err(ImageError::Truncated);
         }
-        let data = bytes[p_offset..data_end].to_vec();
-        segments.push((p_vaddr, data));
+        let mut data = vec![0u8; p_memsz];
+        data[..p_filesz].copy_from_slice(&bytes[p_offset..data_end]);
+        // Physical placement: the `.data` image lives in flash at its LMA.
+        let place = if p_paddr != 0 { p_paddr } else { p_vaddr };
+        segments.push((place, data));
     }
     if segments.is_empty() {
         return Err(ImageError::NoLoadableSegments);
@@ -489,5 +497,52 @@ mod tests {
         let img = load_elf(&bytes).unwrap();
         assert!(!img.segments.is_empty());
         assert!(img.symbols.is_empty());
+    }
+
+    /// A `.data` `PT_LOAD` whose LMA (`p_paddr`, in flash) differs from its
+    /// VMA (`p_vaddr`, in RAM) must land at the LMA with a zero tail — that
+    /// is where the startup code copies it from. (Found running Dhrystone:
+    /// the old `p_vaddr` placement left `.data` uninitialized in flash and
+    /// newlib's `_impure_ptr` read NULL.)
+    #[test]
+    fn elf_data_segment_lands_at_lma_with_zero_tail() {
+        let mut img = vec![0u8; 52];
+        img[0..4].copy_from_slice(b"\x7fELF");
+        img[4] = 1;
+        img[18..20].copy_from_slice(&40u16.to_le_bytes()); // EM_ARM
+        img[24..28].copy_from_slice(&0x100u32.to_le_bytes()); // entry
+        img[28..32].copy_from_slice(&52u32.to_le_bytes()); // phoff
+        img[42..44].copy_from_slice(&32u16.to_le_bytes()); // phentsize
+        img[44..46].copy_from_slice(&2u16.to_le_bytes()); // phnum
+        let text_off = 52 + 64;
+        let data_off = text_off + 4;
+        // PHDR0: .text at 0x100 (LMA == VMA).
+        img.extend_from_slice(&1u32.to_le_bytes());
+        img.extend_from_slice(&(text_off as u32).to_le_bytes());
+        img.extend_from_slice(&0x100u32.to_le_bytes()); // vaddr
+        img.extend_from_slice(&0x100u32.to_le_bytes()); // paddr
+        img.extend_from_slice(&4u32.to_le_bytes()); // filesz
+        img.extend_from_slice(&4u32.to_le_bytes()); // memsz
+        img.extend_from_slice(&5u32.to_le_bytes()); // flags
+        img.extend_from_slice(&4u32.to_le_bytes()); // align
+                                                    // PHDR1: .data, 2 file bytes at LMA 0x200, VMA RAM, 6 mem bytes.
+        img.extend_from_slice(&1u32.to_le_bytes());
+        img.extend_from_slice(&(data_off as u32).to_le_bytes());
+        img.extend_from_slice(&0x2000_0000u32.to_le_bytes()); // vaddr
+        img.extend_from_slice(&0x200u32.to_le_bytes()); // paddr (LMA)
+        img.extend_from_slice(&2u32.to_le_bytes()); // filesz
+        img.extend_from_slice(&6u32.to_le_bytes()); // memsz (.bss tail)
+        img.extend_from_slice(&6u32.to_le_bytes()); // flags
+        img.extend_from_slice(&4u32.to_le_bytes()); // align
+        img.extend_from_slice(&[0xFE, 0xE7, 0x00, 0x00]); // .text
+        img.extend_from_slice(&[0xAA, 0xBB]); // .data image
+        let img = load_elf(&img).unwrap();
+        assert_eq!(
+            img.segments,
+            vec![
+                (0x100, vec![0xFE, 0xE7, 0x00, 0x00]),
+                (0x200, vec![0xAA, 0xBB, 0, 0, 0, 0]),
+            ]
+        );
     }
 }

@@ -10,3 +10,4 @@
 [Co-simulation](./cosim.md)
 [Coupling contract](./coupling-contract.md)
 [Field benchmark](./benchmark.md)
+[Third-party firmware scoreboard](./scoreboard.md)

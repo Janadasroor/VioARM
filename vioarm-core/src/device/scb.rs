@@ -63,6 +63,15 @@ const CPACR: u32 = 0xE000_ED88;
 const FPCCR: u32 = 0xE000_EF34;
 const FPCAR: u32 = 0xE000_EF38;
 const FPDSCR: u32 = 0xE000_EF3C;
+/// `DEMCR` (`0xE000_EDFC`): only `TRCENA` (bit 24) is latched. The DWT
+/// counters run on their own `CTRL.CYCCNTENA` (matching long-established
+/// VioARM behavior and every existing test), so `TRCENA` is storage that
+/// lets CMSIS-style `DEMCR |= TRCENA` sequences — and their read-backs —
+/// behave like silicon instead of faulting.
+const DEMCR: u32 = 0xE000_EDFC;
+/// `DEMCR` writable bits: `TRCENA` only. `MON_EN`/`MON_PEND`/`MON_STEP`
+/// belong to the unmodeled DebugMonitor exception and stay RAZ/WI.
+const DEMCR_WRITABLE: u32 = 1 << 24;
 
 /// `S_VTOR` (`0xE002_ED08`): the ARMv8-M Secure vector table offset register,
 /// Secure-only alias of `VTOR`. Firmware relocates the Secure table here when
@@ -303,7 +312,7 @@ struct MpuV8 {
 /// access-control register, and the FP context control.
 #[derive(Debug, Clone)]
 pub struct Scb {
-    ranges: [Region; 21],
+    ranges: [Region; 22],
     pendsv: bool,
     /// `SHPR1`: configurable priorities for the fault exceptions
     /// (`MemManage` byte 0, `BusFault` byte 1, `UsageFault` byte 2).
@@ -358,6 +367,8 @@ pub struct Scb {
     scr: u32,
     /// `CCR` (`STKALIGN`, `DIV_0_TRP`, ...), written by firmware.
     ccr: u32,
+    /// `DEMCR.TRACENA` latch (see `DEMCR`); reset-cleared.
+    demcr: u32,
     /// Latched by `AIRCR.SYSRESETREQ`; the machine performs the reset.
     reset_requested: bool,
     /// `SAU_CTRL` (`ENABLE`/`ALLNS`). Stored here and applied to the `TT`
@@ -401,6 +412,7 @@ impl Scb {
                 Region::new(FPDSCR, 4),
                 Region::new(S_VTOR, 4),
                 Region::new(SFSR, 4),
+                Region::new(DEMCR, 4),
             ],
             pendsv: false,
             shpr1: 0,
@@ -424,6 +436,7 @@ impl Scb {
             aircr: 0,
             scr: 0,
             ccr: CCR_RESET,
+            demcr: 0,
             reset_requested: false,
             sau_ctrl: 0,
             sau_rnr: 0,
@@ -1053,7 +1066,7 @@ impl Scb {
                 MMFAR => self.mmfar,
                 BFAR => self.bfar,
                 CPACR => self.cpacr,
-                // `S_VTOR`/`SFSR` live in the Secure system window: reads from
+                DEMCR => self.demcr, // `S_VTOR`/`SFSR` live in the Secure system window: reads from
                 // Non-secure state are RAZ.
                 S_VTOR => {
                     if self.secure {
@@ -1189,6 +1202,13 @@ impl Scb {
                 let shift = 8 * offset;
                 self.cpacr = (self.cpacr & !(0xFF << shift)) | (u32::from(val) << shift);
             }
+            DEMCR => {
+                // `TRCENA` latches; all other bits (unmodeled
+                // DebugMonitor controls) are RAZ/WI.
+                let shift = 8 * offset;
+                let cur = (self.demcr & !(0xFF << shift)) | (u32::from(val) << shift);
+                self.demcr = cur & DEMCR_WRITABLE;
+            }
             SAU => self.sau_write(offset, val),
             FPCCR => {
                 // Only the ASPEN (bit 7 of byte 3) and LSPEN (bit 6 of byte 3)
@@ -1272,6 +1292,7 @@ impl Peripheral for Scb {
         self.aircr = 0;
         self.scr = 0;
         self.ccr = CCR_RESET;
+        self.demcr = 0;
         self.reset_requested = false;
         self.sau_ctrl = 0;
         self.sau_rnr = 0;
@@ -1403,6 +1424,21 @@ mod tests {
         assert_eq!(read_word(&mut s, 0xE000_ED88), 0x00F0_0000);
         s.reset();
         assert_eq!(read_word(&mut s, 0xE000_ED88), 0);
+    }
+
+    #[test]
+    fn demcr_trcena_latches_and_resets() {
+        let mut s = Scb::new();
+        assert_eq!(read_word(&mut s, 0xE000_EDFC), 0);
+        // The CMSIS `DEMCR |= TRCENA` sequence plus a DebugMonitor bit.
+        write_word(&mut s, 0xE000_EDFC, 0x0101_0000);
+        assert_eq!(
+            read_word(&mut s, 0xE000_EDFC),
+            0x0100_0000,
+            "TRCENA latches, MON_EN stays RAZ/WI"
+        );
+        s.reset();
+        assert_eq!(read_word(&mut s, 0xE000_EDFC), 0);
     }
 
     #[test]

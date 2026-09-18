@@ -167,7 +167,7 @@ pub enum ImageError {
     NoLoadableSegments,
     /// Segment outside memory.
     SegmentOutOfMemory,
-    /// Unsupported BSS segment.
+    /// Malformed ELF segment (`filesz > memsz`).
     UnsupportedBss,
     /// A record that is not valid Intel HEX syntax (bad characters, missing
     /// `:`, wrong length).
@@ -189,7 +189,7 @@ impl fmt::Display for ImageError {
             Self::UnsupportedMachine => f.write_str("unsupported ELF machine"),
             Self::NoLoadableSegments => f.write_str("no loadable segments"),
             Self::SegmentOutOfMemory => f.write_str("segment does not fit in memory"),
-            Self::UnsupportedBss => f.write_str(".bss zero-padding not supported"),
+            Self::UnsupportedBss => f.write_str("malformed PT_LOAD (filesz exceeds memsz)"),
             Self::HexSyntax => f.write_str("malformed Intel HEX record"),
             Self::HexChecksum => f.write_str("Intel HEX checksum mismatch"),
             Self::HexAddressOverflow => f.write_str("Intel HEX address overflow"),

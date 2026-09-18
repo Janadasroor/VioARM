@@ -2101,7 +2101,7 @@ fn exec_dp_op(
             }
         }
         O::Orn => {
-            dynasm!(ops ; .arch x64 ; not eax ; or eax, ecx);
+            dynasm!(ops ; .arch x64 ; not ecx ; or eax, ecx);
             store(ops, rd);
             if set_flags {
                 logical_tail(ops, carry);
