@@ -73,8 +73,7 @@ board e2e with real firmware → `arch.md` + CHANGELOG.
 
 - [x] **USB host**: split start/complete sequencing via `HCSPLT` (`OTG_HS` only) + virtual HID boot-keyboard (descriptors, idle/protocol/report/LED, interrupt-IN reports); hub topology + hub-class stay documented non-goals. Proof: HID enumeration + key report + LED on `f407` `OTG_FS`, bulk OUT/IN split pairs on `OTG_HS` (`tests/usb_host_hid_split.rs`).
 - [x] **Ethernet full (H7)**: TX `FD`..`LD` chaining + RX scatter, checksum insertion (`TDES3.CIC`) + validation (`MACCR.IPC`, `IPCB`/`IPHE`/`IPCE`+`ES`), MMC TX-good/unicast-RX counters; VLAN/TSO, MTL, MMC control, PMT wakeup stay documented non-goals. Proof: 1400-byte UDP echo with wire-verified checksums + scatter + error-flag + MMC on `h743` (`tests/eth_h7_checksum_mmc.rs`).
-- [ ] **CAN/FDCAN timing**: loopback exists; add bit-timing, error
-      frames, TX-event FIFO, cancellation. Proof: error-injection e2e.
+- [x] **CAN/FDCAN timing**: bxCAN `TEC`/`REC` + `EWGF`/`EPVF`/`BOFF` + sticky `LEC` + `TERR` + bus-off freeze/recovery (timing stays `BTR`-derived, proven tick-exact); FDCAN `ECR`/`PSR` (destructive reads), error-destroyed RX, `DAR` abort/retry, TX event FIFO, `TXBCR` cancellation. Proof: error-injection suites in `can.rs`/`fdcan.rs` lib tests (escalation to bus-off and recovery both controllers).
 - [ ] **SDIO/SDMMC full speed paths**: card image exists; add 4-bit,
       high-speed, error paths. Proof: multi-block read/write compare.
 - [ ] **Crypto completion**: GCM/GMAC/CMAC, HMAC, suspend/resume banks

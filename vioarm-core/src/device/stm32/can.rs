@@ -15,6 +15,15 @@
 //! The controller raises four NVIC lines. The SVD lists them in order `TX`,
 //! `RX0`, `RX1`, `SCE`, so the device-local lines 0..3 map to exceptions
 //! `16 + irqs[line].number` through the register file.
+//!
+//! Error model: `TEC`/`REC` count in `ESR` (`+8` per injected error, `-1`
+//! per success) with `EWGF` at 96, `EPVF` at 128, `BOFF` at `TEC` 256;
+//! `LEC` latches the last injected code (1 stuff, 2 form, 3 ack, 4 bit
+//! recessive, 5 bit dominant, 6 CRC) and holds it until the next error.
+//! Errors arrive through [`Can::inject_error`] (TX errors hit the in-flight
+//! or next frame, RX errors apply at once); bus-off freezes TX and recovers
+//! after 128 accepted frames (each counts one 11-recessive-bit occurrence).
+//! `TEC`/`REC` hold across init like the counters they are.
 
 use crate::device::svd::{Behavior, Device, RegisterFile, Registers};
 use crate::device::{InterruptSource, Peripheral};
@@ -83,6 +92,14 @@ const EWGF: u32 = 1 << 0;
 const EPVF: u32 = 1 << 1;
 const BOFF: u32 = 1 << 2;
 const LEC: u32 = 0b111 << 4;
+const ESR_TEC_SHIFT: u32 = 24;
+const ESR_REC_SHIFT: u32 = 16;
+/// Error-passive and bus-off thresholds (RM0008 §24.6.7).
+const ERR_WARNING: u16 = 96;
+const ERR_PASSIVE: u16 = 128;
+const ERR_BUS_OFF: u16 = 256;
+/// Accepted frames that recover bus-off (11 recessive bits each).
+const BOFF_RECOVER_FRAMES: u8 = 128;
 const TXRQ: u32 = 1 << 0;
 const IDE: u32 = 1 << 2;
 const DLC: u32 = 0b1111;
@@ -168,6 +185,14 @@ const fn txok_bit(mb: u8) -> u32 {
     }
 }
 
+const fn terr_bit(mb: u8) -> u32 {
+    match mb {
+        0 => TERR0,
+        1 => TERR1,
+        _ => TERR2,
+    }
+}
+
 const fn abrq_bit(mb: u8) -> u32 {
     match mb {
         0 => ABRQ0,
@@ -214,6 +239,14 @@ struct CanBehavior {
     output: Vec<u8>,
     filter: Box<[u32; 0x80]>,
     is_can2: bool,
+    /// Transmit error counter (bus-off at 256; `ESR` shows it capped).
+    tec: u16,
+    /// Receive error counter.
+    rec: u16,
+    /// Accepted frames since bus-off (recovery at 128).
+    boff_rec: u8,
+    /// Error code armed for the next TX completion (`None` = healthy bus).
+    armed_tx_err: Option<u8>,
 }
 
 impl Default for CanBehavior {
@@ -229,6 +262,10 @@ impl Default for CanBehavior {
             output: Vec::new(),
             filter: Box::new([0u32; 0x80]),
             is_can2: false,
+            tec: 0,
+            rec: 0,
+            boff_rec: 0,
+            armed_tx_err: None,
         }
     }
 }
@@ -292,11 +329,45 @@ impl CanBehavior {
 
     fn complete_tx(&mut self, view: &mut Registers<&mut [u32]>, mb: u8, frame: Frame, ok: bool) {
         self.busy[usize::from(mb)] = false;
-        let status = rqcp_bit(mb) | if ok { txok_bit(mb) } else { 0 };
-        view.set(TSR, view.get(TSR) | status);
-        if ok {
+        if ok && self.armed_tx_err.is_none() {
+            if self.tec > 0 {
+                self.tec -= 1;
+            }
+            let status = rqcp_bit(mb) | txok_bit(mb);
+            view.set(TSR, view.get(TSR) | status);
             self.output.extend(frame.to_bytes());
+        } else if let Some(lec) = self.armed_tx_err.take() {
+            // An injected TX error: `TERR` without `TXOK`, nothing reaches
+            // the wire, the counter climbs.
+            self.tec = self.tec.saturating_add(8).min(511);
+            Self::latch_lec(view, lec);
+            view.set(TSR, view.get(TSR) | rqcp_bit(mb) | terr_bit(mb));
+        } else {
+            // An abort: request complete, never sent, no error flag.
+            view.set(TSR, view.get(TSR) | rqcp_bit(mb));
         }
+    }
+
+    /// Latch a last-error code into `ESR`, preserving counters and flags.
+    fn latch_lec(view: &mut Registers<&mut [u32]>, lec: u8) {
+        let esr = view.get(ESR) & !LEC;
+        view.set(ESR, esr | ((u32::from(lec) & 0x7) << 4));
+    }
+
+    /// The live `ESR`: latched `LEC` plus recomputed flags and counters.
+    fn esr_live(&self, lec_bits: u32) -> u32 {
+        let mut esr = lec_bits & LEC;
+        if self.tec >= ERR_WARNING || self.rec >= ERR_WARNING {
+            esr |= EWGF;
+        }
+        if self.tec >= ERR_PASSIVE || self.rec >= ERR_PASSIVE {
+            esr |= EPVF;
+        }
+        if self.tec >= ERR_BUS_OFF {
+            esr |= BOFF;
+        }
+        esr | (u32::from(self.rec.min(255)) << ESR_REC_SHIFT)
+            | (u32::from(self.tec.min(255)) << ESR_TEC_SHIFT)
     }
 
     fn abort_mailbox(&mut self, view: &mut Registers<&mut [u32]>, mb: u8) {
@@ -448,6 +519,13 @@ impl CanBehavior {
         }
         None
     }
+
+    /// Inject a receive error: `REC +8`, `LEC` latched, flags recomputed.
+    /// Codes 1-6 (stuff, form, ack, bit recessive, bit dominant, CRC).
+    fn inject_rx_error(&mut self, view: &mut Registers<&mut [u32]>, lec: u8) {
+        self.rec = self.rec.saturating_add(8).min(511);
+        Self::latch_lec(view, lec);
+    }
 }
 
 impl Behavior for CanBehavior {
@@ -525,6 +603,8 @@ impl Behavior for CanBehavior {
 
     fn on_read(&mut self, _view: &mut Registers<&mut [u32]>, offset: u32, value: u32) -> u32 {
         match offset {
+            // Counters and state flags recompute live; `LEC` sticks.
+            ESR => self.esr_live(value),
             TSR => {
                 // The transmit-empty bits are read-only; recompute them live
                 // from which mailboxes hold a frame.
@@ -552,6 +632,11 @@ impl Behavior for CanBehavior {
     }
 
     fn tick(&mut self, view: &mut Registers<&mut [u32]>, delta: u64) {
+        if self.tec >= ERR_BUS_OFF {
+            // Bus-off: the controller is off the wire; in-flight frames
+            // wait for the recovery sequence instead of completing.
+            return;
+        }
         if let Some((mb, frame)) = self.in_flight {
             self.tx_timer = self.tx_timer.saturating_sub(delta);
             if self.tx_timer == 0 {
@@ -588,7 +673,7 @@ impl Behavior for CanBehavior {
         {
             lines |= 1 << 2;
         }
-        let esr = view.get(ESR);
+        let esr = self.esr_live(view.get(ESR));
         if (esr & LEC != 0 && ier & LECIE != 0)
             || (esr & (BOFF | EPVF | EWGF) != 0 && ier & ERRIE != 0)
         {
@@ -615,7 +700,23 @@ impl Behavior for CanBehavior {
         if self.rx_buffer.len() == 16 {
             let frame = Frame::from_bytes(&self.rx_buffer);
             self.rx_buffer.clear();
+            if self.tec >= ERR_BUS_OFF {
+                // Bus-off: the controller is deaf; each accepted frame
+                // counts one 11-recessive-bit recovery occurrence.
+                if self.filter_fifo(&frame).is_some() {
+                    self.boff_rec = self.boff_rec.saturating_add(1);
+                    if self.boff_rec >= BOFF_RECOVER_FRAMES {
+                        self.tec = 0;
+                        self.rec = 0;
+                        self.boff_rec = 0;
+                    }
+                }
+                return;
+            }
             if let Some(fifo) = self.filter_fifo(&frame) {
+                if self.rec > 0 {
+                    self.rec -= 1;
+                }
                 self.enqueue(view, frame, fifo);
             }
         }
@@ -681,6 +782,23 @@ impl Can {
             inner: RegisterFile::new(def, beh),
             name,
         }
+    }
+
+    /// Inject a bus error: `lec` 1-6 (stuff, form, ack, bit recessive, bit
+    /// dominant, CRC); anything else is ignored. A TX error arms the next
+    /// TX completion (`TERR` without `TXOK`, `TEC +8`, nothing sent); an RX
+    /// error applies at once (`REC +8`). Both latch `LEC` in `ESR`.
+    pub fn inject_error(&mut self, lec: u8, tx: bool) {
+        if !(1..=6).contains(&lec) {
+            return;
+        }
+        self.inner.with_view(|view, beh| {
+            if tx {
+                beh.armed_tx_err = Some(lec);
+            } else {
+                beh.inject_rx_error(view, lec);
+            }
+        });
     }
 }
 
@@ -824,7 +942,10 @@ impl InterruptSource for CanFilter {
 
 #[cfg(test)]
 mod tests {
-    use super::{Can, DLC, FMPIE0, FMPIE1, INAK, INRQ, RQCP0, TMEIE, TXOK0, TXRQ};
+    use super::{
+        Can, BOFF, DLC, EPVF, ERRIE, EWGF, FMPIE0, FMPIE1, INAK, INRQ, LEC, LECIE, RQCP0, TERR0,
+        TMEIE, TXOK0, TXRQ,
+    };
     use crate::device::{InterruptSource, Peripheral};
     use crate::error::BusError;
 
@@ -1173,5 +1294,103 @@ mod tests {
             1,
             "bank7 belongs to CAN2"
         );
+    }
+
+    /// Transmit one mailbox-0 frame, waiting exactly `ticks` device ticks.
+    fn tx_wait(c: &mut Can, ticks: u64) {
+        for _ in 0..ticks {
+            c.tick(1);
+        }
+    }
+
+    #[test]
+    fn tx_timing_follows_btr_bit_time() {
+        let mut c = can();
+        // BRP=9, TS1=8, TS2=3: 10 * (1 + 9 + 3) = 130 ticks per bit.
+        write_word(&mut c, BASE + 0x1C, 9 | (8 << 16) | (3 << 20));
+        load_mailbox(&mut c, 0, 0x321, 0, &[]);
+        // A standard empty frame is 44 bits: 44 * 130 = 5720 ticks.
+        tx_wait(&mut c, 5719);
+        assert_eq!(read_word(&mut c, BASE + 0x08) & RQCP0, 0, "not yet");
+        assert_eq!(read_word(&mut c, BASE + 0x08) & (1 << 26), 0, "TME0 busy");
+        tx_wait(&mut c, 1);
+        let tsr = read_word(&mut c, BASE + 0x08);
+        assert_ne!(tsr & (RQCP0 | TXOK0), 0, "RQCP0+TXOK0 on time");
+        assert_ne!(tsr & (1 << 26), 0, "TME0 back");
+    }
+
+    #[test]
+    fn tx_error_latches_terr_and_counts() {
+        let mut c = can();
+        write_word(&mut c, BASE + 0x1C, 0); // BTR reset: 2 ticks per bit
+        write_word(&mut c, BASE + 0x14, LECIE | ERRIE);
+        load_mailbox(&mut c, 0, 0x321, 2, &[0xDE, 0xAD]);
+        c.inject_error(3, true); // ack error mid-flight
+        tx_wait(&mut c, 120); // (44 + 16) bits * 2
+        let tsr = read_word(&mut c, BASE + 0x08);
+        assert_ne!(tsr & RQCP0, 0, "RQCP0");
+        assert_ne!(tsr & TERR0, 0, "TERR0");
+        assert_eq!(tsr & TXOK0, 0, "no TXOK");
+        assert_eq!(c.drain_output().len(), 0, "nothing sent");
+        let esr = read_word(&mut c, BASE + 0x18);
+        assert_eq!(esr & LEC, 3 << 4, "LEC ack");
+        assert_eq!((esr >> 24) & 0xFF, 8, "TEC +8");
+        assert_ne!(c.pending() & (1 << 3), 0, "SCE line");
+        // A later success decrements the counter but keeps the last code.
+        write_word(&mut c, BASE + 0x08, RQCP0 | TERR0); // W1C
+        load_mailbox(&mut c, 0, 0x321, 2, &[0xDE, 0xAD]);
+        tx_wait(&mut c, 120);
+        let esr = read_word(&mut c, BASE + 0x18);
+        assert_eq!((esr >> 24) & 0xFF, 7, "TEC -1 on success");
+        assert_eq!(esr & LEC, 3 << 4, "LEC holds");
+    }
+
+    #[test]
+    fn error_escalation_reaches_bus_off_and_recovers() {
+        let mut c = can();
+        write_word(&mut c, BASE + 0x1C, 0);
+        write_word(&mut c, BASE + 0x14, ERRIE);
+        // 12 TX ack errors: TEC 96, warning flag.
+        for _ in 0..12 {
+            load_mailbox(&mut c, 0, 0x321, 0, &[]);
+            c.inject_error(3, true);
+            tx_wait(&mut c, 88); // 44 bits * 2
+            write_word(&mut c, BASE + 0x08, RQCP0 | TERR0);
+        }
+        let esr = read_word(&mut c, BASE + 0x18);
+        assert_eq!((esr >> 24) & 0xFF, 96, "TEC 96");
+        assert_ne!(esr & EWGF, 0, "warning flag");
+        assert_eq!(esr & (EPVF | BOFF), 0, "not passive yet");
+        assert_ne!(c.pending() & (1 << 3), 0, "SCE line");
+        // 16 RX form errors: REC 128, passive flag.
+        for _ in 0..16 {
+            c.inject_error(2, false);
+        }
+        let esr = read_word(&mut c, BASE + 0x18);
+        assert_eq!((esr >> 16) & 0xFF, 128, "REC 128");
+        assert_ne!(esr & EPVF, 0, "passive flag");
+        // 20 more TX errors: TEC 256, bus-off; TX freezes mid-flight.
+        load_mailbox(&mut c, 0, 0x321, 0, &[]);
+        for _ in 0..20 {
+            c.inject_error(3, true);
+            tx_wait(&mut c, 88);
+            write_word(&mut c, BASE + 0x08, RQCP0 | TERR0);
+            load_mailbox(&mut c, 0, 0x321, 0, &[]);
+        }
+        let esr = read_word(&mut c, BASE + 0x18);
+        assert_eq!((esr >> 24) & 0xFF, 255, "TEC capped");
+        assert_ne!(esr & BOFF, 0, "bus-off");
+        tx_wait(&mut c, 200);
+        assert_eq!(read_word(&mut c, BASE + 0x08) & RQCP0, 0, "TX frozen");
+        // 128 accepted frames recover the bus; the frozen frame goes out.
+        for i in 0..128u32 {
+            inject(&mut c, 0x100 + i, 0, &[]);
+        }
+        let esr = read_word(&mut c, BASE + 0x18);
+        assert_eq!(esr & (EWGF | EPVF | BOFF), 0, "flags clear");
+        assert_eq!((esr >> 24) & 0xFF, 0, "TEC reset");
+        assert_eq!((esr >> 16) & 0xFF, 0, "REC reset");
+        tx_wait(&mut c, 88);
+        assert_ne!(read_word(&mut c, BASE + 0x08) & TXOK0, 0, "TX resumes");
     }
 }

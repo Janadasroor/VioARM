@@ -21,10 +21,13 @@
 //! transmitted frames into the RX path so the whole chain is testable
 //! without a bus. Configuration registers honor the `INIT`+`CCE` gate.
 //!
-//! Deliberately unmodeled (documented): bit-timing enforcement and error
-//! frames (`ECR`/`PSR` latch), TX event FIFO (frames with `EFC` complete
-//! normally), cancellation (`TXBCR` consumed), timestamping, clock-stop and
-//! power-down. Without an installed mailbox (unit tests) TX cannot fetch
+//! Deliberately unmodeled (documented): bit-timing enforcement (`NBTP`/
+//! `DBTP` latch; TX completes on the mailbox round-trip, so frame pacing is
+//! bus latency, not bit time), data-phase errors (`DLEC` stays 0),
+//! timestamping (event elements carry timestamp 0), clock-stop and
+//! power-down. `PSR`/`ECR` reads are destructive (clear `LEC`/`CEL`) with
+//! the clear settling at the next tick, so multi-byte reads observe one
+//! coherent word. Without an installed mailbox (unit tests) TX cannot fetch
 //! elements and RX payloads are not written back; flags still update.
 
 use crate::device::svd::{Behavior, Device, NoBehavior, RegisterFile, Registers};
@@ -63,9 +66,21 @@ const TXBTO: u32 = 0xD8;
 /// `IR`/`IE` live at `0x50`/`0x54`.
 const IR: u32 = 0x50;
 const IE: u32 = 0x54;
+/// `ECR`/`PSR` live at `0x40`/`0x44` (Linux `M_CAN_ECR`/`M_CAN_PSR`).
+const ECR: u32 = 0x40;
+const PSR: u32 = 0x44;
+/// `TXBCR`/`TXBCF` live at `0xD4`/`0xDC`; `TXBTIE`/`TXBCIE` at `0xE0`/`0xE4`.
+const TXBCR: u32 = 0xD4;
+const TXBCF: u32 = 0xDC;
+/// `TXEFC`/`TXEFS`/`TXEFA` live at `0xF0`/`0xF4`/`0xF8`.
+const TXEFC: u32 = 0xF0;
+const TXEFS: u32 = 0xF4;
+const TXEFA: u32 = 0xF8;
 
 const CCCR_INIT: u32 = 1;
 const CCCR_CCE: u32 = 1 << 1;
+/// `CCCR.DAR` disables automatic retransmission (Bosch manual §2.3.7).
+const CCCR_DAR: u32 = 1 << 6;
 const TEST_LBCK: u32 = 1 << 4;
 
 /// Bosch-fixed `IR` bit numbers.
@@ -78,10 +93,47 @@ const IR_RF1W: u32 = 5;
 const IR_RF1F: u32 = 6;
 const IR_RF1L: u32 = 7;
 const IR_TC: u32 = 9;
+/// `IR.TCF` transmission cancellation finished (Bosch manual §2.3.20).
+const IR_TCF: u32 = 10;
+/// TX event FIFO `IR` bits: new entry, watermark, full, lost.
+const IR_TEFN: u32 = 12;
+const IR_TEFW: u32 = 13;
+const IR_TEFF: u32 = 14;
+const IR_TEFL: u32 = 15;
 
 /// `RxFnS` flag bits.
 const F0F: u32 = 1 << 24;
 const F0LOST: u32 = 1 << 25;
+
+/// `ECR` fields (Linux `ECR_*`): 8-bit `TEC`, 7-bit `REC` + `RP`, `CEL`.
+const ECR_TEC_MASK: u32 = 0xFF;
+const ECR_REC_SHIFT: u32 = 8;
+const ECR_REC_MASK: u32 = 0x7F;
+const ECR_RP: u32 = 1 << 15;
+const ECR_CEL_SHIFT: u32 = 16;
+/// `PSR` bits (Linux `PSR_*`): `LEC`, error-passive/warning, bus-off.
+const PSR_LEC_MASK: u32 = 0x7;
+const PSR_EP: u32 = 1 << 5;
+const PSR_EW: u32 = 1 << 6;
+const PSR_BO: u32 = 1 << 7;
+/// `TXEFC` fields: event size, watermark, start address (Linux `TXEFC_*`).
+const TXEFC_EFS_SHIFT: u32 = 16;
+const TXEFC_EFS_MASK: u32 = 0x3F;
+const TXEFC_EFWM_SHIFT: u32 = 24;
+/// `TXEFS` fields: fill level, get/put indexes, full, lost.
+const TXEFS_EFFL_MASK: u32 = 0x3F;
+const TXEFS_EFGI_SHIFT: u32 = 8;
+const TXEFS_EFPI_SHIFT: u32 = 16;
+const TXEFS_EFF: u32 = 1 << 24;
+const TXEFS_TEFL: u32 = 1 << 25;
+/// TX buffer element `T1.EFC` event-FIFO control (Linux `TX_BUF_EFC`).
+const TX_EFC: u32 = 1 << 23;
+/// Error thresholds shared with bxCAN (warning 96, passive 128, off 256).
+const ERR_WARNING: u16 = 96;
+const ERR_PASSIVE: u16 = 128;
+const ERR_BUS_OFF: u16 = 256;
+/// Accepted frames that recover bus-off (11 recessive bits each).
+const BOFF_RECOVER_FRAMES: u8 = 128;
 
 /// A message-RAM read the controller needs the bus to perform.
 #[derive(Clone, Copy, Debug)]
@@ -249,6 +301,26 @@ struct FdcanBehavior {
     fifo0: VecDeque<CanFrame>,
     fifo1: VecDeque<CanFrame>,
     mailbox: Option<Arc<Mutex<FdcanMailbox>>>,
+    /// Transmit error counter (bus-off at 256; `ECR` shows it capped).
+    tec: u16,
+    /// Receive error counter (7-bit; overflow sets `RP`).
+    rec: u8,
+    /// Sticky receive-passive: set when an error lands at `REC` 127.
+    rp: bool,
+    /// CAN error logging counter (cleared by reading `ECR`).
+    cel: u8,
+    /// Last error code (1-6 stuff/form/ack/bit1/bit0/CRC, Bosch manual
+    /// §2.3.14; reads arm a clear that settles at the next tick).
+    lec: u8,
+    /// `PSR`/`ECR` were read: arm the destructive-read clear for next tick
+    /// (deferred so multi-byte reads observe one coherent word).
+    lec_clear_armed: bool,
+    cel_clear_armed: bool,
+    /// Errors armed for the next TX completion / admitted RX frame.
+    tx_err: Option<u8>,
+    rx_err: Option<u8>,
+    /// Accepted frames since bus-off (recovery at 128).
+    boff_rec: u8,
 }
 
 impl FdcanBehavior {
@@ -463,6 +535,100 @@ impl FdcanBehavior {
         view.set(TXFQS, (view.get(TXFQS) & !0x3F) | free_count(total, used));
         view.set(TXBRP, self.tx_pending | self.tx_outstanding);
     }
+
+    /// Whether the node is bus-off (`TEC` overflowed).
+    fn bus_off(&self) -> bool {
+        self.tec >= ERR_BUS_OFF
+    }
+
+    /// Record one error against `TEC` (`tx`) or `REC`, with `CEL` and `LEC`.
+    fn count_error(&mut self, tx: bool, lec: u8) {
+        if tx {
+            self.tec = self.tec.saturating_add(8).min(511);
+        } else if self.rec >= 127 {
+            self.rp = true;
+        } else {
+            self.rec = self.rec.saturating_add(8).min(127);
+        }
+        self.cel = self.cel.saturating_add(1);
+        self.lec = lec;
+    }
+
+    /// Synthesize `ECR` from the counters.
+    fn ecr_word(&self) -> u32 {
+        (u32::from(self.tec.min(255)))
+            | (u32::from(self.rec & (ECR_REC_MASK as u8)) << ECR_REC_SHIFT)
+            | (u32::from(self.rp) << 15)
+            | (u32::from(self.cel) << ECR_CEL_SHIFT)
+    }
+
+    /// Synthesize `PSR` error bits from the counters plus the `LEC`.
+    fn psr_word(&self) -> u32 {
+        let mut psr = u32::from(self.lec & 0x7);
+        if self.tec >= ERR_PASSIVE || self.rec >= 127 || self.rp {
+            psr |= PSR_EP;
+        }
+        if self.tec >= ERR_WARNING || u16::from(self.rec) >= ERR_WARNING {
+            psr |= PSR_EW;
+        }
+        if self.bus_off() {
+            psr |= PSR_BO;
+        }
+        psr
+    }
+
+    /// Log a transmitted frame to the TX event FIFO when the element asked
+    /// (`T1.EFC`) and the FIFO is configured; watermark/full/lost flags and
+    /// `IR` follow. Timestamp field reads 0 (unmodeled).
+    fn log_tx_event(&mut self, view: &mut Registers<&mut [u32]>, frame: &CanFrame, t1: u32) {
+        if t1 & TX_EFC == 0 {
+            return;
+        }
+        let txefc = view.get(TXEFC);
+        let size = ((txefc >> TXEFC_EFS_SHIFT) & TXEFC_EFS_MASK) as usize;
+        if size == 0 {
+            return;
+        }
+        let txefs = view.get(TXEFS);
+        let fill = (txefs & TXEFS_EFFL_MASK) as usize;
+        if fill >= size {
+            view.set(TXEFS, txefs | TXEFS_TEFL);
+            Self::raise_ir(view, IR_TEFL);
+            return;
+        }
+        let put = ((txefs >> TXEFS_EFPI_SHIFT) & 0x3F) as usize % size;
+        let base = self.ram_addr(txefc) + (put as u32) * 8;
+        // Event ID field mirrors the TX element encoding the driver parses
+        // (standard IDs at `[28:18]`, extended across `[28:0]`).
+        let id_field = if frame.extended {
+            frame.id & 0x1FFF_FFFF
+        } else {
+            (frame.id & 0x7FF) << 18
+        };
+        let e0 = id_field | (u32::from(frame.remote) << 29) | (u32::from(frame.extended) << 30);
+        let e1 = (t1 & 0x00FF_0000) // DLC/BRS/FDF/EFC shape
+            | (((t1 >> 24) & 0xFF) << 24); // message marker
+        if let Some(mb) = &self.mailbox {
+            mb.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .writes
+                .push((base, [e0.to_le_bytes(), e1.to_le_bytes()].concat()));
+        }
+        let fill = fill + 1;
+        let mut status = (txefs & !(TXEFS_EFFL_MASK | (0x3F << TXEFS_EFPI_SHIFT)))
+            | (fill as u32 & TXEFS_EFFL_MASK)
+            | (((put + 1) % size) as u32) << TXEFS_EFPI_SHIFT;
+        if fill >= size {
+            status |= TXEFS_EFF;
+            Self::raise_ir(view, IR_TEFF);
+        }
+        view.set(TXEFS, status);
+        Self::raise_ir(view, IR_TEFN);
+        let mark = ((txefc >> TXEFC_EFWM_SHIFT) & 0x3F) as usize;
+        if mark != 0 && fill >= mark {
+            Self::raise_ir(view, IR_TEFW);
+        }
+    }
 }
 
 /// Free TX slots, capped at the 6-bit field.
@@ -488,8 +654,42 @@ impl Behavior for FdcanBehavior {
             TXBAR => {
                 // Request bits live in `tx_pending`/`TXBRP`; the register
                 // itself reads back zero so a later request cannot re-fire
-                // stale bits through the byte-lane merge.
+                // stale bits through the byte-lane merge. Re-requesting a
+                // buffer retires its cancellation-finished flag.
                 self.tx_pending |= word;
+                view.set(TXBCF, view.get(TXBCF) & !word);
+                0
+            }
+            TXBCR => {
+                // Cancellation wins only before the element fetch: pending
+                // bits drop with `TXBCF` + `TCF`, outstanding ones keep
+                // transmitting (late cancellation fails, like silicon).
+                let stoppable = word & self.tx_pending & !self.tx_outstanding;
+                self.tx_pending &= !stoppable;
+                if stoppable != 0 {
+                    view.set(TXBCF, view.get(TXBCF) | stoppable);
+                    Self::raise_ir(view, IR_TCF);
+                }
+                0
+            }
+            TXEFA => {
+                // Acknowledge events up to `EFAI`: the get index follows,
+                // the fill level recomputes, full/lost resolve. `EFAI`
+                // lives in the low byte: only that lane acts, so a 32-bit
+                // write acknowledges once instead of regressing per lane.
+                if shift == 0 {
+                    let txefc = view.get(TXEFC);
+                    let size = ((txefc >> TXEFC_EFS_SHIFT) & TXEFC_EFS_MASK).max(1);
+                    let txefs = view.get(TXEFS);
+                    let get = (word & 0x7) % size;
+                    let put = (txefs >> TXEFS_EFPI_SHIFT) & 0x3F;
+                    let fill = (put + size - get) % size;
+                    let status = (txefs
+                        & !(TXEFS_EFFL_MASK | (0x3F << TXEFS_EFGI_SHIFT) | TXEFS_EFF | TXEFS_TEFL))
+                        | (fill & TXEFS_EFFL_MASK)
+                        | ((get & 0x3F) << TXEFS_EFGI_SHIFT);
+                    view.set(TXEFS, status);
+                }
                 0
             }
             RXF0A => {
@@ -500,7 +700,7 @@ impl Behavior for FdcanBehavior {
                 self.acknowledge_fifo(view, 1, (word & 0x7) as usize);
                 0
             }
-            SIDFC | TXBC | RXF0C | RXF1C | TXESC | RXESC | GFC => {
+            SIDFC | TXBC | RXF0C | RXF1C | TXESC | RXESC | GFC | TXEFC => {
                 if !Self::config_mode(view) {
                     // Locked: configuration ignores writes outside INIT+CCE.
                     return view.get(offset);
@@ -514,14 +714,69 @@ impl Behavior for FdcanBehavior {
         }
     }
 
+    /// `ECR` reads report `CEL` and arm its clear; `PSR` reads report `LEC`
+    /// and arm its clear. Clears settle at the next tick (Bosch white paper
+    /// destructive reads, deferred so a multi-byte read observes the same
+    /// word on every lane); counters and flags themselves hold.
+    fn on_read(&mut self, _view: &mut Registers<&mut [u32]>, offset: u32, _value: u32) -> u32 {
+        match offset {
+            ECR => {
+                let word = self.ecr_word();
+                self.cel_clear_armed = true;
+                word
+            }
+            PSR => {
+                let word = self.psr_word();
+                self.lec_clear_armed = true;
+                word
+            }
+            _ => _value,
+        }
+    }
+
     fn tick(&mut self, view: &mut Registers<&mut [u32]>, _delta: u64) {
+        // Settle pending destructive-read clears first: errors counted by
+        // this tick stay visible until the next one.
+        if self.lec_clear_armed {
+            self.lec = 0;
+            self.lec_clear_armed = false;
+        }
+        if self.cel_clear_armed {
+            self.cel = 0;
+            self.cel_clear_armed = false;
+        }
         // Admit queued frames whose filters are ready; defer the rest.
         self.refresh_filters(view);
         let mut deferred = VecDeque::new();
         while let Some(frame) = self.rx_queue.pop_front() {
+            if self.bus_off() {
+                // Bus-off: deaf on the wire; each frame counts one
+                // 11-recessive-bit recovery occurrence.
+                self.boff_rec = self.boff_rec.saturating_add(1);
+                if self.boff_rec >= BOFF_RECOVER_FRAMES {
+                    self.tec = 0;
+                    self.rec = 0;
+                    self.rp = false;
+                    self.boff_rec = 0;
+                }
+                continue;
+            }
+            if let Some(lec) = self.rx_err.take() {
+                // An error frame destroys the frame on the wire: counted,
+                // flagged, never inserted.
+                self.count_error(false, lec);
+                continue;
+            }
             match self.classify(view, &frame) {
                 Some(RxTarget::Reject) => {}
-                Some(target) => self.insert(view, u32::from(target == RxTarget::Fifo1), frame),
+                Some(target) => {
+                    self.insert(view, u32::from(target == RxTarget::Fifo1), frame);
+                    if self.rp {
+                        self.rp = false;
+                    } else if self.rec > 0 {
+                        self.rec -= 1;
+                    }
+                }
                 None => deferred.push_back(frame),
             }
         }
@@ -578,17 +833,33 @@ impl Behavior for FdcanBehavior {
                         brs: t1 & (1 << 20) != 0,
                         data: r.bytes[8..8 + n].to_vec(),
                     },
+                    t1,
                 ));
                 false
             });
             drop(mb);
-            for (idx, frame) in done {
+            for (idx, frame, t1) in done {
                 if idx < 32 {
+                    if let Some(lec) = self.tx_err.take() {
+                        // An injected TX error: counted and flagged; with
+                        // `DAR` the request dies quietly (no `TXBTO`, no
+                        // `TC`, no loopback, no event), otherwise one error
+                        // then the retransmission succeeds.
+                        self.count_error(true, lec);
+                        if view.get(CCCR) & CCCR_DAR != 0 {
+                            self.tx_pending &= !(1 << idx);
+                            self.tx_outstanding &= !(1 << idx);
+                            continue;
+                        }
+                    } else if self.tec > 0 {
+                        self.tec -= 1;
+                    }
                     self.tx_pending &= !(1 << idx);
                     self.tx_outstanding &= !(1 << idx);
                     view.set(TXBTO, view.get(TXBTO) | (1 << idx));
                 }
                 Self::raise_ir(view, IR_TC);
+                self.log_tx_event(view, &frame, t1);
                 if view.get(TEST) & TEST_LBCK != 0 {
                     self.rx_queue.push_back(frame);
                 }
@@ -609,6 +880,16 @@ impl Behavior for FdcanBehavior {
         self.fifo1.clear();
         self.filters.clear();
         self.filters_outstanding = false;
+        self.tec = 0;
+        self.rec = 0;
+        self.rp = false;
+        self.cel = 0;
+        self.lec = 0;
+        self.lec_clear_armed = false;
+        self.cel_clear_armed = false;
+        self.tx_err = None;
+        self.rx_err = None;
+        self.boff_rec = 0;
     }
 }
 
@@ -807,6 +1088,23 @@ impl Fdcan {
     /// Queue a host-side received frame (tests, debugger inject).
     pub fn inject_frame(&mut self, frame: CanFrame) {
         self.inner.behavior_mut().rx_queue.push_back(frame);
+    }
+
+    /// Inject a bus error: `lec` 1-6 (stuff, form, ack, bit1, bit0, CRC);
+    /// anything else is ignored. A TX error applies to the next TX
+    /// completion (counted, flagged, then `DAR` decides abort vs retry);
+    /// an RX error destroys the next admitted frame (counted, flagged,
+    /// never inserted).
+    pub fn inject_error(&mut self, lec: u8, tx: bool) {
+        if !(1..=6).contains(&lec) {
+            return;
+        }
+        let beh = self.inner.behavior_mut();
+        if tx {
+            beh.tx_err = Some(lec);
+        } else {
+            beh.rx_err = Some(lec);
+        }
     }
 }
 
@@ -1697,5 +1995,193 @@ mod tests {
         write_word(&mut f, IR, 0xFFFF_FFFF);
         assert_eq!(word(&mut f, IR), 0);
         assert_eq!(f.pending(), 0);
+    }
+
+    /// FDCAN under test: 2 TX buffers at `0x100`, a 4-deep event FIFO at
+    /// `0x300`, RX FIFO0 of 4 at `0x200`, loopback on, `DAR` off.
+    fn errig() -> (Fdcan, Arc<Mutex<FdcanMailbox>>, Vec<u8>) {
+        let (mut f, mb) = with_mailbox();
+        let ram = vec![0u8; 0x1000];
+        write_word(&mut f, CCCR, CCCR_INIT | CCCR_CCE | (1 << 7));
+        write_word(&mut f, TXBC, 0x0100 | (2 << 16));
+        write_word(&mut f, TXESC, 0);
+        write_word(&mut f, TXEFC, 0x0300 | (4 << 16) | (1 << 24)); // EFSA EFS=4 EFWM=1
+        write_word(&mut f, RXF0C, (4 << 16) | 0x0200);
+        write_word(&mut f, SIDFC, 0x0300);
+        write_word(&mut f, TEST, TEST_LBCK);
+        (f, mb, ram)
+    }
+
+    /// TX element 0: standard ID `0x123`, DLC 8, `EFC` set.
+    fn tx_el0(ram: &mut [u8]) {
+        let mut el = vec![0x00, 0x00, 0x8C, 0x04, 0x00, 0x00, 0x88, 0x00];
+        el.extend_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD, 0x11, 0x22, 0x33, 0x44]);
+        ram[0x100..0x110].copy_from_slice(&el);
+    }
+
+    /// Request buffer 0 and run it to completion through `drain`.
+    fn tx_round(f: &mut Fdcan, mb: &Arc<Mutex<FdcanMailbox>>, ram: &mut [u8]) {
+        write_word(f, TXBAR, 1);
+        f.tick(1);
+        drain(mb, ram, 0x2000_0000);
+        f.tick(1);
+    }
+
+    fn good_frame() -> CanFrame {
+        CanFrame {
+            id: 0x123,
+            extended: false,
+            remote: false,
+            fd: false,
+            brs: false,
+            data: vec![1, 2, 3],
+        }
+    }
+
+    #[test]
+    fn tx_event_fifo_logs_efc_frames() {
+        let (mut f, mb, mut ram) = errig();
+        tx_el0(&mut ram);
+        tx_round(&mut f, &mb, &mut ram);
+        assert_ne!(word(&mut f, TXBTO) & 1, 0);
+        assert_ne!(word(&mut f, IR) & (1 << IR_TC), 0);
+        // The event write lands on the next drain.
+        drain(&mb, &mut ram, 0x2000_0000);
+        // Event element at EFSA: ID field mirrors the TX element encoding.
+        assert_eq!(&ram[0x300..0x304], &[0x00, 0x00, 0x8C, 0x04], "E0 ID");
+        assert_eq!(&ram[0x304..0x308], &[0x00, 0x00, 0x88, 0x00], "E1 DLC+EFC");
+        let txefs = word(&mut f, TXEFS);
+        assert_eq!(txefs & 0x3F, 1, "EFFL");
+        assert_eq!((txefs >> 16) & 0x3F, 1, "EFPI");
+        let ir = word(&mut f, IR);
+        assert_ne!(ir & (1 << IR_TEFN), 0, "new entry");
+        assert_ne!(ir & (1 << IR_TEFW), 0, "watermark at 1");
+        // Acknowledge: get index follows, fill drops, full clears.
+        write_word(&mut f, TXEFA, 1);
+        let txefs = word(&mut f, TXEFS);
+        assert_eq!(txefs & 0x3F, 0, "EFFL drained");
+        assert_eq!((txefs >> 8) & 0x3F, 1, "EFGI");
+    }
+
+    #[test]
+    fn txbcr_cancels_pending_buffer() {
+        let (mut f, mb, mut ram) = errig();
+        tx_el0(&mut ram);
+        let el1 = ram[0x100..0x110].to_vec();
+        ram[0x110..0x120].copy_from_slice(&el1);
+        write_word(&mut f, TXBAR, 0b11);
+        // Cancel buffer 1 before any tick fetches it.
+        write_word(&mut f, TXBCR, 0b10);
+        assert_eq!(word(&mut f, TXBCF) & 0b10, 0b10, "cancelled");
+        assert_ne!(word(&mut f, IR) & (1 << IR_TCF), 0, "TCF");
+        assert_eq!(word(&mut f, TXBCR), 0, "request consumed");
+        f.tick(1);
+        drain(&mb, &mut ram, 0x2000_0000);
+        f.tick(1);
+        assert_eq!(word(&mut f, TXBTO) & 0b11, 0b01, "only buffer 0 sent");
+        assert_eq!(word(&mut f, TXBRP), 0, "nothing pending");
+        // Re-requesting the buffer retires its cancel flag and sends it.
+        write_word(&mut f, TXBAR, 0b10);
+        assert_eq!(word(&mut f, TXBCF), 0, "TXBCF retired");
+        f.tick(1);
+        drain(&mb, &mut ram, 0x2000_0000);
+        f.tick(1);
+        assert_eq!(word(&mut f, TXBTO) & 0b11, 0b11, "buffer 1 sent");
+    }
+
+    #[test]
+    fn tx_error_with_dar_aborts_quietly() {
+        let (mut f, mb, mut ram) = errig();
+        write_word(&mut f, CCCR, CCCR_INIT | CCCR_CCE | (1 << 7) | CCCR_DAR);
+        tx_el0(&mut ram);
+        f.inject_error(3, true); // ack error on the next completion
+        tx_round(&mut f, &mb, &mut ram);
+        assert_eq!(word(&mut f, TXBTO), 0, "no transmission");
+        assert_eq!(word(&mut f, IR) & (1 << IR_TC), 0, "no complete");
+        assert_eq!(word(&mut f, TXBRP), 0, "request dropped");
+        assert_eq!(word(&mut f, RXF0S) & 0x7F, 0, "no loopback");
+        let ecr = word(&mut f, ECR);
+        assert_eq!(ecr & 0xFF, 8, "TEC +8");
+        assert_eq!((ecr >> 16) & 0xFF, 1, "CEL");
+        assert_eq!(word(&mut f, PSR) & 0x7, 3, "LEC ack");
+        // Destructive reads settle at the next tick.
+        f.tick(1);
+        assert_eq!((word(&mut f, ECR) >> 16) & 0xFF, 0, "CEL cleared");
+        assert_eq!(word(&mut f, PSR) & 0x7, 0, "LEC cleared");
+        assert_eq!(word(&mut f, ECR) & 0xFF, 8, "TEC holds");
+    }
+
+    #[test]
+    fn tx_error_without_dar_retries_to_success() {
+        let (mut f, mb, mut ram) = errig();
+        tx_el0(&mut ram);
+        f.inject_error(5, true); // bit0 error, retransmission allowed
+        tx_round(&mut f, &mb, &mut ram);
+        assert_ne!(word(&mut f, TXBTO) & 1, 0, "retry sent");
+        assert_ne!(word(&mut f, IR) & (1 << IR_TC), 0, "complete");
+        assert_eq!(word(&mut f, ECR) & 0xFF, 8, "one error counted");
+        assert_eq!(word(&mut f, PSR) & 0x7, 5, "LEC bit0");
+        // The loopback frame admits on the next tick.
+        f.tick(1);
+        assert_eq!(word(&mut f, RXF0S) & 0x7F, 1, "loopback landed");
+    }
+
+    #[test]
+    fn rx_error_destroys_frame_and_counts() {
+        let (mut f, mb, mut ram) = errig();
+        f.inject_frame(good_frame());
+        f.inject_error(2, false); // form error on the next admission
+        f.tick(1);
+        drain(&mb, &mut ram, 0x2000_0000);
+        f.tick(1);
+        assert_eq!(word(&mut f, RXF0S) & 0x7F, 0, "frame destroyed");
+        let ecr = word(&mut f, ECR);
+        assert_eq!((ecr >> 8) & 0x7F, 8, "REC +8");
+        assert_eq!(word(&mut f, PSR) & 0x7, 2, "LEC form");
+        // A good frame lands and decrements the counter.
+        f.inject_frame(good_frame());
+        f.tick(1);
+        drain(&mb, &mut ram, 0x2000_0000);
+        f.tick(1);
+        assert_eq!(word(&mut f, RXF0S) & 0x7F, 1, "good frame lands");
+        assert_eq!((word(&mut f, ECR) >> 8) & 0x7F, 7, "REC -1");
+    }
+
+    #[test]
+    fn error_escalation_reaches_bus_off_and_recovers() {
+        let (mut f, mb, mut ram) = errig();
+        write_word(&mut f, CCCR, CCCR_INIT | CCCR_CCE | (1 << 7) | CCCR_DAR);
+        tx_el0(&mut ram);
+        for _ in 0..12 {
+            f.inject_error(1, true);
+            tx_round(&mut f, &mb, &mut ram);
+        }
+        assert_ne!(word(&mut f, PSR) & PSR_EW, 0, "warning at TEC 96");
+        for _ in 12..16 {
+            f.inject_error(1, true);
+            tx_round(&mut f, &mb, &mut ram);
+        }
+        assert_ne!(word(&mut f, PSR) & PSR_EP, 0, "passive at TEC 128");
+        for _ in 16..32 {
+            f.inject_error(1, true);
+            tx_round(&mut f, &mb, &mut ram);
+        }
+        assert_eq!(word(&mut f, ECR) & 0xFF, 255, "TEC capped");
+        assert_ne!(word(&mut f, PSR) & PSR_BO, 0, "bus-off");
+        // 128 accepted frames recover the node.
+        for _ in 0..128 {
+            f.inject_frame(good_frame());
+            f.tick(1);
+        }
+        assert_eq!(
+            word(&mut f, PSR) & (PSR_BO | PSR_EP | PSR_EW),
+            0,
+            "flags clear"
+        );
+        assert_eq!(word(&mut f, ECR) & 0xFFFF, 0, "counters reset");
+        // The bus works again.
+        tx_el0(&mut ram);
+        tx_round(&mut f, &mb, &mut ram);
+        assert_ne!(word(&mut f, TXBTO) & 1, 0, "TX resumes");
     }
 }
