@@ -830,6 +830,145 @@ impl Timer {
         Self::for_device::<D>("TIM7", "tim7", 0xFFFF, 0)
     }
 
+    /// A `TIM8` at `0x4001_3400` (F1): 16-bit advanced counter. Like `TIM1`
+    /// the break input leads the table, so update routes to line 1.
+    ///
+    /// # Panics
+    /// Panics if the generated device tables do not contain the `TIM8`
+    /// peripheral (a build-time invariant enforced by conformance tests).
+    #[must_use]
+    pub fn tim8() -> Self {
+        Self::tim8_for::<stm32f103::Stm32f103>()
+    }
+
+    /// A `TIM8` on another chip's device tables.
+    ///
+    /// # Panics
+    /// Panics if `D`'s generated tables do not contain the `TIM8` peripheral.
+    #[must_use]
+    pub fn tim8_for<D: Device>() -> Self {
+        Self::for_device::<D>("TIM8", "tim8", 0xFFFF, 1)
+    }
+
+    /// A `TIM9` at `0x4001_4C00` (F1): 16-bit general counter, single line.
+    ///
+    /// # Panics
+    /// Panics if the generated device tables do not contain the `TIM9`
+    /// peripheral (a build-time invariant enforced by conformance tests).
+    #[must_use]
+    pub fn tim9() -> Self {
+        Self::tim9_for::<stm32f103::Stm32f103>()
+    }
+
+    /// A `TIM9` on another chip's device tables.
+    ///
+    /// # Panics
+    /// Panics if `D`'s generated tables do not contain the `TIM9` peripheral.
+    #[must_use]
+    pub fn tim9_for<D: Device>() -> Self {
+        Self::for_device::<D>("TIM9", "tim9", 0xFFFF, 0)
+    }
+
+    /// A `TIM10` at `0x4001_5000` (F1): 16-bit counter, single line.
+    ///
+    /// # Panics
+    /// Panics if the generated device tables do not contain the `TIM10`
+    /// peripheral (a build-time invariant enforced by conformance tests).
+    #[must_use]
+    pub fn tim10() -> Self {
+        Self::tim10_for::<stm32f103::Stm32f103>()
+    }
+
+    /// A `TIM10` on another chip's device tables.
+    ///
+    /// # Panics
+    /// Panics if `D`'s generated tables do not contain the `TIM10`
+    /// peripheral.
+    #[must_use]
+    pub fn tim10_for<D: Device>() -> Self {
+        Self::for_device::<D>("TIM10", "tim10", 0xFFFF, 0)
+    }
+
+    /// A `TIM11` at `0x4001_5400` (F1): 16-bit counter, single line.
+    ///
+    /// # Panics
+    /// Panics if the generated device tables do not contain the `TIM11`
+    /// peripheral (a build-time invariant enforced by conformance tests).
+    #[must_use]
+    pub fn tim11() -> Self {
+        Self::tim11_for::<stm32f103::Stm32f103>()
+    }
+
+    /// A `TIM11` on another chip's device tables.
+    ///
+    /// # Panics
+    /// Panics if `D`'s generated tables do not contain the `TIM11`
+    /// peripheral.
+    #[must_use]
+    pub fn tim11_for<D: Device>() -> Self {
+        Self::for_device::<D>("TIM11", "tim11", 0xFFFF, 0)
+    }
+
+    /// A `TIM12` at `0x4000_1800` (F1): 16-bit general counter, single line.
+    ///
+    /// # Panics
+    /// Panics if the generated device tables do not contain the `TIM12`
+    /// peripheral (a build-time invariant enforced by conformance tests).
+    #[must_use]
+    pub fn tim12() -> Self {
+        Self::tim12_for::<stm32f103::Stm32f103>()
+    }
+
+    /// A `TIM12` on another chip's device tables.
+    ///
+    /// # Panics
+    /// Panics if `D`'s generated tables do not contain the `TIM12`
+    /// peripheral.
+    #[must_use]
+    pub fn tim12_for<D: Device>() -> Self {
+        Self::for_device::<D>("TIM12", "tim12", 0xFFFF, 0)
+    }
+
+    /// A `TIM13` at `0x4000_1C00` (F1): 16-bit counter, single line.
+    ///
+    /// # Panics
+    /// Panics if the generated device tables do not contain the `TIM13`
+    /// peripheral (a build-time invariant enforced by conformance tests).
+    #[must_use]
+    pub fn tim13() -> Self {
+        Self::tim13_for::<stm32f103::Stm32f103>()
+    }
+
+    /// A `TIM13` on another chip's device tables.
+    ///
+    /// # Panics
+    /// Panics if `D`'s generated tables do not contain the `TIM13`
+    /// peripheral.
+    #[must_use]
+    pub fn tim13_for<D: Device>() -> Self {
+        Self::for_device::<D>("TIM13", "tim13", 0xFFFF, 0)
+    }
+
+    /// A `TIM14` at `0x4000_2000` (F1): 16-bit counter, single line.
+    ///
+    /// # Panics
+    /// Panics if the generated device tables do not contain the `TIM14`
+    /// peripheral (a build-time invariant enforced by conformance tests).
+    #[must_use]
+    pub fn tim14() -> Self {
+        Self::tim14_for::<stm32f103::Stm32f103>()
+    }
+
+    /// A `TIM14` on another chip's device tables.
+    ///
+    /// # Panics
+    /// Panics if `D`'s generated tables do not contain the `TIM14`
+    /// peripheral.
+    #[must_use]
+    pub fn tim14_for<D: Device>() -> Self {
+        Self::for_device::<D>("TIM14", "tim14", 0xFFFF, 0)
+    }
+
     fn for_device<D: Device>(
         peripheral: &str,
         name: &'static str,

@@ -33,6 +33,7 @@ use crate::device::stm32::fmc::{
     Bdma, Dfsdm, Dma2d, Dma2dMailbox, Dmamux, DmamuxRoutes, Fmc, Hrtim, Ltdc, Mdma, Qspi, QspiGate,
     Sai4,
 };
+use crate::device::stm32::fsmc::Fsmc;
 use crate::device::stm32::gpio::Gpio as StmGpio;
 use crate::device::stm32::gpio_f4::GpioF4;
 use crate::device::stm32::hash::Hash;
@@ -175,6 +176,18 @@ pub fn stm32f103() -> BoardMemory {
     mem.attach(Box::new(
         StmGpio::at(stm32::GPIOC, "gpioc").with_analog_bus(mem.analog_handle()),
     ));
+    mem.attach(Box::new(
+        StmGpio::at(stm32::GPIOD, "gpiod").with_analog_bus(mem.analog_handle()),
+    ));
+    mem.attach(Box::new(
+        StmGpio::at(stm32::GPIOE, "gpioe").with_analog_bus(mem.analog_handle()),
+    ));
+    mem.attach(Box::new(
+        StmGpio::at(stm32::GPIOF, "gpiof").with_analog_bus(mem.analog_handle()),
+    ));
+    mem.attach(Box::new(
+        StmGpio::at(stm32::GPIOG, "gpiog").with_analog_bus(mem.analog_handle()),
+    ));
     mem.attach(Box::new(Usart::with_dma(dma_requests.clone())));
     mem.attach(Box::new(Usart::usart2_for_device_with_dma::<Stm32f103>(
         dma_requests.clone(),
@@ -182,6 +195,9 @@ pub fn stm32f103() -> BoardMemory {
     mem.attach(Box::new(Usart::usart3_for_device_with_dma::<Stm32f103>(
         dma_requests.clone(),
     )));
+    // UART4/5 have no DMA on this density (cf. SPI2/3 above); CPU paths only.
+    mem.attach(Box::new(Usart::uart4_for::<Stm32f103>()));
+    mem.attach(Box::new(Usart::uart5_for::<Stm32f103>()));
     mem.attach(Box::new(
         Timer::tim2()
             .with_dma_update(dma_requests.clone(), 0, 2)
@@ -192,6 +208,24 @@ pub fn stm32f103() -> BoardMemory {
     mem.attach(Box::new(Timer::tim4().with_analog_bus(mem.analog_handle())));
     mem.attach(Box::new(Timer::tim6().with_analog_bus(mem.analog_handle())));
     mem.attach(Box::new(Timer::tim7().with_analog_bus(mem.analog_handle())));
+    mem.attach(Box::new(Timer::tim5().with_analog_bus(mem.analog_handle())));
+    mem.attach(Box::new(Timer::tim8().with_analog_bus(mem.analog_handle())));
+    mem.attach(Box::new(Timer::tim9().with_analog_bus(mem.analog_handle())));
+    mem.attach(Box::new(
+        Timer::tim10().with_analog_bus(mem.analog_handle()),
+    ));
+    mem.attach(Box::new(
+        Timer::tim11().with_analog_bus(mem.analog_handle()),
+    ));
+    mem.attach(Box::new(
+        Timer::tim12().with_analog_bus(mem.analog_handle()),
+    ));
+    mem.attach(Box::new(
+        Timer::tim13().with_analog_bus(mem.analog_handle()),
+    ));
+    mem.attach(Box::new(
+        Timer::tim14().with_analog_bus(mem.analog_handle()),
+    ));
     mem.attach(Box::new(Exti::new().with_analog_bus(mem.analog_handle())));
     mem.attach(Box::new(Afio::new()));
     mem.attach(Box::new(
@@ -200,7 +234,11 @@ pub fn stm32f103() -> BoardMemory {
             .with_analog_bus(mem.analog_handle()),
     )); // DMA1 ch1: ADC1
     mem.attach(Box::new(Adc::adc2().with_analog_bus(mem.analog_handle())));
-    mem.attach(Box::new(Adc::adc3().with_analog_bus(mem.analog_handle())));
+    mem.attach(Box::new(
+        Adc::adc3()
+            .with_dma(dma_requests.clone(), 1, 5)
+            .with_analog_bus(mem.analog_handle()),
+    )); // DMA2 ch5: ADC3 (RM0008 §13.3.7 Table 78)
     mem.attach(Box::new(Spi::spi1().with_dma(
         Some((dma_requests.clone(), 0, 3)),
         Some((dma_requests.clone(), 0, 2)),
@@ -209,9 +247,17 @@ pub fn stm32f103() -> BoardMemory {
     mem.attach(Box::new(Spi::spi3()));
     mem.attach(Box::new(I2c::new()));
     mem.attach(Box::new(I2c::i2c2_for::<Stm32f103>()));
+    mem.attach(Box::new(Can::new_for::<Stm32f103>()));
+    mem.attach(Box::new(Fsmc::new_for::<Stm32f103>()));
+    mem.attach(Box::new(UsbFs::new_for::<Stm32f103>()));
     let dma = Arc::new(Mutex::new(Vec::new()));
     mem.set_dma_mailbox(dma.clone());
-    mem.attach(Box::new(DmaF1::dma1(dma, dma_requests)));
+    mem.attach(Box::new(DmaF1::dma1(dma.clone(), dma_requests.clone())));
+    mem.attach(Box::new(DmaF1::dma_for::<Stm32f103>(
+        "DMA2",
+        dma,
+        dma_requests,
+    )));
     let watchdog = Arc::new(Mutex::new(false));
     mem.set_watchdog_reset(watchdog.clone());
     mem.attach(Box::new(Iwdg::new(watchdog.clone())));

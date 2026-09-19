@@ -48,19 +48,18 @@ fn main() {
     for fam in FAMILIES {
         let ctor = ctors[fam];
         let mem = ctor();
-        // Mounted devices by upper-cased name; behavioral wins on collision.
-        let mut mounted: HashMap<String, &str> = HashMap::new();
+        // Mounted behavioral windows: every (base, len) claimed by a real
+        // device. Matching by address coverage (not by name) so instances
+        // that share one driver name (`I2C1`/`I2C2` both live behind
+        // `I2c`) still classify honestly.
+        let mut beh_windows: Vec<(u32, u32)> = Vec::new();
         for d in mem.devices() {
-            let key = d.name().to_uppercase();
-            let kind = d.behavior_kind();
-            mounted
-                .entry(key)
-                .and_modify(|k| {
-                    if kind == "behavioral" {
-                        *k = kind;
-                    }
-                })
-                .or_insert(kind);
+            if d.behavior_kind() != "behavioral" {
+                continue;
+            }
+            for r in d.ranges() {
+                beh_windows.push((r.base, r.len));
+            }
         }
         let table = tables[fam];
         let mut beh_names: Vec<&str> = Vec::new();
@@ -73,10 +72,13 @@ fn main() {
                 core_names.push(p.name);
                 continue;
             }
-            let key = p.name.to_uppercase();
-            match mounted.get(&key).copied().unwrap_or("latch") {
-                "behavioral" => beh_names.push(p.name),
-                _ => latch_names.push(p.name),
+            let covered = beh_windows
+                .iter()
+                .any(|(b, l)| p.base >= *b && p.base < b + l);
+            if covered {
+                beh_names.push(p.name);
+            } else {
+                latch_names.push(p.name);
             }
         }
         let bus_total = (beh_names.len() + latch_names.len()) as u32;

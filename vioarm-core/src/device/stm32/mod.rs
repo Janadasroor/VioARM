@@ -29,6 +29,7 @@ pub mod exti;
 pub mod fdcan;
 pub mod flash;
 pub mod fmc;
+pub mod fsmc;
 pub mod gpio;
 pub mod gpio_f4;
 pub mod hash;
@@ -82,3 +83,11 @@ pub const GPIOA: u32 = 0x4001_0800;
 pub const GPIOB: u32 = 0x4001_0C00;
 /// Base address of GPIOC.
 pub const GPIOC: u32 = 0x4001_1000;
+/// Base address of GPIOD.
+pub const GPIOD: u32 = 0x4001_1400;
+/// Base address of GPIOE.
+pub const GPIOE: u32 = 0x4001_1800;
+/// Base address of GPIOF.
+pub const GPIOF: u32 = 0x4001_1C00;
+/// Base address of GPIOG.
+pub const GPIOG: u32 = 0x4001_2000;

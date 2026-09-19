@@ -99,7 +99,8 @@ record result in `docs/src/boards.md`. All pending.
 - [ ] `stm32f100` (48)
 - [ ] `stm32f101` (46)
 - [ ] `stm32f102` (25)
-- [ ] `stm32f103` (53) — scoreboard board; close first, it's the reference
+- [x] `stm32f103` (53) — scoreboard board; closed first: 51/51 behavioral, zero latch
+      (`f103_closeout.rs` 11 tests + `fsmc` lib tests; record in `docs/src/boards.md`).
 - [ ] `stm32f105` (45)
 - [ ] `stm32f107` (49) — scoreboard + fabric board; close second
 - [ ] `stm32f303xe` (59)
