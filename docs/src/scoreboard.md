@@ -13,6 +13,7 @@ or published silicon figures. Nothing here was tuned to the simulator.
 | Dhrystone | 2.1 (Weicker) | 100000 runs, `cortex-m3 -O2`, board `stm32f103` @8 MHz | All 20 "should be" self-checks; 1.0–1.25 DMIPS/MHz published band for gcc-built M3 | **all self-checks pass, 9.08 DMIPS = 1.135 DMIPS/MHz** |
 | mbedTLS | 4.2.0 + TF-PSA-Crypto | `mbedtls_aes_self_test` (ECB/CBC × 128/192/256) + `mbedtls_sha256_self_test` (NIST vectors) | every vector prints `passed` | **OVERALL: PASSED** (AES 161.7M cycles, SHA-256 57.3M cycles) |
 | Eclipse ThreadX | 6.x (Eclipse) | stock `demo_threadx` (8 threads, queue, semaphore, mutex, event flags, byte/block pools) + supervisor | no thread ever errors; 2000+20 ticks, all counters grow, queue backlog ≤ capacity | **PASSED** (645K messages, sent−recvd = 41 ≤ 101) |
+| TFLite Micro | 2026-09 (`cc2d43b`) | `hello_world` sine inference: float + int8 models, 8 golden inputs vs `sinf` (ε=0.05), `FullyConnected`-only resolver, 3 KiB arena | upstream self-checks pass; x86 reference output | **ALL TESTS PASSED, 17/17 lines bit-exact vs x86** (≈335K cycles, 44.5 KiB text) |
 | Embench-IoT | 2026-09 | all 19 speed benchmarks, board `stm32f107` | each `verify_benchmark` returns correct | **19/19 correct=1** (cycles table below) |
 | CoreMark | 2K perf | 40 iterations, `stm32f103` @8 MHz | CRCs `e714/1fd7/8e3a`; ~2.05–2.1/MHz published | **CRCs match, 2.067/MHz** |
 | FreeRTOS | 10/11 kernel | two demo-style tasks + tick counter | exact 250.000 ms LED periods | **250 ms exact** |
@@ -36,7 +37,7 @@ One timed `benchmark()` call per bench after warmup (`correct=1` all):
 
 ## What the scoreboard found in the simulator
 
-Testing famous firmware is a bug-finding method, and it paid off three
+Testing famous firmware is a bug-finding method, and it paid off four
 times — each a real compatibility gap no unit test covered:
 
 1. **ELF loader ignored `p_paddr`** (`vioarm-core/src/loader.rs`): the
@@ -52,6 +53,16 @@ times — each a real compatibility gap no unit test covered:
    odd PC (FreeRTOS masks it in software, which is why only ThreadX
    tripped it). Now masked like the v8-M path. Regression test
    `v7m_exception_return_masks_stacked_thumb_bit`.
+4. **`ORN` had swapped operands** (`exec_dp32` + both JIT templates):
+   `op2 | !rn` instead of `rn | !op2`. Embench's `md5sum`/`qrduino`
+   caught it; bisected to a single instruction against a native model.
+   Regression test `v7m_orn_is_rn_or_not_op2`.
+
+TFLite Micro, by contrast, ran first-try with zero simulator changes —
+C++ (`-fno-exceptions -fno-rtti`), flatbuffer parsing, float and
+quantized-int8 kernels all just worked, and its UART log matches the x86
+reference build byte-for-byte (17/17 lines, raw prediction bits
+included). QEMU concurs on the functional output as well.
 
 ## Reproduce it
 
