@@ -18,8 +18,21 @@
 //! [`Peripheral::drive_inputs`]: the low byte is what the slave returns for
 //! every master-read byte. Driving zero makes the slave absent — the address
 //! phase is then acknowledged with `SR1.AF` instead of `ADDR`, raising the
-//! error interrupt. The master's shifted-out bytes (addresses and data) are
-//! captured for the host through [`Peripheral::drain_output`].
+//! error interrupt. Bit 8 stretches the in-flight (or next) byte by
+//! `STRETCH_CYCLES`, modeling a slow slave holding the clock. The master's
+//! shifted-out bytes (addresses and data) are captured for the host through
+//! [`Peripheral::drain_output`].
+//!
+//! Ten-bit addresses ride the same phase machine: a `11110xx0` header byte
+//! keeps the address phase open for the second byte (a `11110xx1` header
+//! completes at once, covering the read-after-repeated-start form).
+//! Repeated start is legal mid-transfer. Byte-transfer-finished (`BTF`)
+//! marks completions for `BTF`-polling firmware. Deliberately unmodeled:
+//! slave mode (this is a master-only engine), receive overrun (the engine
+//! only clocks the next byte after firmware reads `DR`, so it cannot
+//! happen — the clock stretches instead, as on silicon), multi-master
+//! arbitration (`ARLO`/`BERR`), SMBus packet error (`PECERR`) and
+//! timeouts — the flags clear by software but never latch from the bus.
 //!
 //! `CR2.ITEVTEN`/`ITBUFEN` raise the event line (line 0) for `SB`/`ADDR`/
 //! `BTF`/`STOPF` and the data-ready `TXE`/`RXNE`; `CR2.ITERREN` raises the
@@ -79,6 +92,8 @@ const TRA: u32 = 1 << 2;
 const START_CYCLES: u64 = 8;
 /// Machine cycles a byte (address or data) takes on the wire.
 const BYTE_CYCLES: u64 = 8;
+/// Extra cycles a stretched byte takes (clock held by the slave).
+const STRETCH_CYCLES: u64 = 64;
 
 /// Where a transfer sits in its sequence.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -108,6 +123,12 @@ struct I2cBehavior {
     remaining: u64,
     /// Direction of the active data phase (`true` = master receive).
     receiving: bool,
+    /// A 10-bit header (`11110xx0`) was sent; the second address byte is
+    /// still expected before the address phase completes.
+    addr_second: bool,
+    /// The next byte transfer is clock-stretched by the slave (set through
+    /// the stimulus channel, consumed at the next byte start).
+    stretch_pending: bool,
     /// Bytes the master shifted out, for host draining.
     tx: Vec<u8>,
 }
@@ -124,6 +145,17 @@ impl I2cBehavior {
         self.phase = Phase::Idle;
         self.remaining = 0;
         self.receiving = false;
+        self.addr_second = false;
+    }
+
+    /// Cycles a newly started byte takes, consuming a pending stretch.
+    fn byte_cycles(&mut self) -> u64 {
+        if self.stretch_pending {
+            self.stretch_pending = false;
+            BYTE_CYCLES + STRETCH_CYCLES
+        } else {
+            BYTE_CYCLES
+        }
     }
 }
 
@@ -148,13 +180,21 @@ impl Behavior for I2cBehavior {
                 } else {
                     let start_edge = new & START != 0 && old & START == 0;
                     let stop_edge = new & STOP != 0 && old & STOP == 0;
+                    // A start edge begins (or re-begins: repeated start is
+                    // legal mid-transfer) when the bus is free or held by
+                    // this master.
                     if start_edge
                         && new & PE != 0
-                        && matches!(self.phase, Phase::Idle | Phase::Stop)
+                        && matches!(
+                            self.phase,
+                            Phase::Idle | Phase::Stop | Phase::Addr | Phase::Data
+                        )
                     {
+                        self.addr_second = false;
                         self.begin_start();
                     } else if stop_edge && matches!(self.phase, Phase::Addr | Phase::Data) {
                         self.phase = Phase::Stop;
+                        self.addr_second = false;
                         self.remaining = BYTE_CYCLES;
                     }
                 }
@@ -165,18 +205,31 @@ impl Behavior for I2cBehavior {
                 // Only the low byte of the data register is the wire byte.
                 if shift == 0 {
                     match self.phase {
+                        Phase::Addr if self.addr_second => {
+                            // Second byte of a 10-bit address: completes the
+                            // address phase like a 7-bit byte does.
+                            self.tx.push(val);
+                            self.addr_second = false;
+                            view.set(SR1, view.get(SR1) & !SB);
+                            self.remaining = self.byte_cycles();
+                        }
                         Phase::Addr => {
                             // The address byte (7-bit address plus read/write)
-                            // goes out; SB was the event that led here.
+                            // goes out; SB was the event that led here. A
+                            // `11110xx0` header opens a 10-bit address: the
+                            // second byte is still expected.
                             self.tx.push(val);
                             self.receiving = val & 1 != 0;
                             view.set(SR1, view.get(SR1) & !SB);
-                            self.remaining = BYTE_CYCLES;
+                            if val & 0xF8 == 0xF0 && val & 1 == 0 {
+                                self.addr_second = true;
+                            }
+                            self.remaining = self.byte_cycles();
                         }
                         Phase::Data if !self.receiving => {
                             self.tx.push(val);
-                            view.set(SR1, view.get(SR1) & !TXE);
-                            self.remaining = BYTE_CYCLES;
+                            view.set(SR1, view.get(SR1) & !(TXE | BTF));
+                            self.remaining = self.byte_cycles();
                         }
                         _ => {}
                     }
@@ -203,21 +256,22 @@ impl Behavior for I2cBehavior {
                 if view.get(SR1) & ADDR != 0 {
                     view.set(SR1, view.get(SR1) & !ADDR);
                     if matches!(self.phase, Phase::Data) && self.receiving {
-                        self.remaining = BYTE_CYCLES;
+                        self.remaining = self.byte_cycles();
                     }
                 }
                 value
             }
             DR => {
-                // Reading the data register acknowledges `RXNE`; with `ACK`
-                // still set a master receiver clocks the next byte.
+                // Reading the data register acknowledges `RXNE` (and the
+                // `BTF` that arrived with it); with `ACK` still set a master
+                // receiver clocks the next byte.
                 if view.get(SR1) & RXNE != 0 {
-                    view.set(SR1, view.get(SR1) & !RXNE);
+                    view.set(SR1, view.get(SR1) & !(RXNE | BTF));
                     if matches!(self.phase, Phase::Data)
                         && self.receiving
                         && view.get(CR1) & ACK != 0
                     {
-                        self.remaining = BYTE_CYCLES;
+                        self.remaining = self.byte_cycles();
                     }
                 }
                 value
@@ -245,7 +299,14 @@ impl Behavior for I2cBehavior {
                 self.remaining = 0;
             }
             Phase::Addr => {
-                // The address byte shifted out and was acknowledged.
+                // The address byte shifted out and was acknowledged. A
+                // 10-bit header only opens the phase: the flag stays set
+                // so the second byte takes the two-byte path, and nothing
+                // completes yet.
+                if self.addr_second {
+                    self.remaining = 0;
+                    return;
+                }
                 if self.slave_byte == 0 {
                     // No slave on the bus: the address is NACKed and the
                     // transfer aborts with the error flag set.
@@ -267,14 +328,19 @@ impl Behavior for I2cBehavior {
                 }
             }
             Phase::Data if self.receiving => {
-                // A byte from the slave landed in the data register.
+                // A byte from the slave landed in the data register. (No
+                // overrun path: the engine only clocks the next byte after
+                // firmware reads `DR`, so `RXNE` is always clear here —
+                // the peripheral stretches the clock in between, as on
+                // silicon. `OVR` stays software-clearable for future DMA.)
                 view.set(DR, u32::from(self.slave_byte));
-                view.set(SR1, view.get(SR1) | RXNE);
+                view.set(SR1, view.get(SR1) | (RXNE | BTF));
                 self.remaining = 0;
             }
             Phase::Data => {
-                // A transmitted byte completed: the buffer is empty again.
-                view.set(SR1, view.get(SR1) | TXE);
+                // A transmitted byte completed: the buffer is empty again,
+                // with `BTF` marking the finished byte.
+                view.set(SR1, view.get(SR1) | (TXE | BTF));
                 self.remaining = 0;
             }
             Phase::Stop => {
@@ -308,7 +374,16 @@ impl Behavior for I2cBehavior {
 
     fn drive_inputs(&mut self, _view: &mut Registers<&mut [u32]>, value: u32) {
         // The low byte is the slave's response; zero marks an absent slave.
+        // Bit 8 stretches the in-flight (or next) byte: the slave holds the
+        // clock, adding `STRETCH_CYCLES` to its transfer.
         self.slave_byte = (value & 0xFF) as u8;
+        if value & (1 << 8) != 0 {
+            if self.remaining > 0 {
+                self.remaining += STRETCH_CYCLES;
+            } else {
+                self.stretch_pending = true;
+            }
+        }
     }
 
     fn drain_output(&mut self) -> Vec<u8> {
@@ -630,5 +705,83 @@ mod tests {
         let mut i = I2c::new();
         assert!(matches!(i.read(BASE + 0x24), Err(BusError::Reserved)));
         assert!(matches!(i.write(BASE - 1, 0), Err(BusError::Reserved)));
+    }
+
+    /// Repeated start mid-transfer reopens the address phase (EEPROM
+    /// random-read shape: write address, Sr, read data).
+    #[test]
+    fn repeated_start_reopens_the_address_phase() {
+        let mut i = enabled();
+        i.drive_inputs(0xA5);
+        start(&mut i);
+        send_addr(&mut i, 0xA0);
+        let _ = read_word(&mut i, BASE + SR2);
+        // Data phase is live; a fresh START re-begins addressing.
+        write_word(&mut i, BASE + CR1, PE | START);
+        i.tick(START_CYCLES);
+        assert_eq!(read_word(&mut i, BASE + SR1) & SB, SB, "Sr raised SB");
+        send_addr(&mut i, 0xA1);
+        assert_eq!(read_word(&mut i, BASE + SR1) & ADDR, ADDR);
+        assert_eq!(read_word(&mut i, BASE + SR2) & TRA, 0, "now receiving");
+    }
+
+    /// A `11110xx0` header keeps the address phase open for the second
+    /// byte; a `11110xx1` header completes at once.
+    #[test]
+    fn ten_bit_header_needs_two_bytes() {
+        let mut i = enabled();
+        i.drive_inputs(0xA5);
+        start(&mut i);
+        // Header with R/W = 0: ADDR must wait for the second byte.
+        write_word(&mut i, BASE + DR, 0xF0u32);
+        i.tick(BYTE_CYCLES);
+        assert_eq!(read_word(&mut i, BASE + SR1) & ADDR, 0, "no ADDR yet");
+        write_word(&mut i, BASE + DR, 0x55u32);
+        i.tick(BYTE_CYCLES);
+        assert_eq!(read_word(&mut i, BASE + SR1) & ADDR, ADDR, "ADDR now");
+        assert_eq!(i.drain_output(), [0xF0, 0x55]);
+        // Header with R/W = 1 completes at once (Sr read form).
+        let mut j = enabled();
+        j.drive_inputs(0xA5);
+        start(&mut j);
+        write_word(&mut j, BASE + DR, 0xF1u32);
+        j.tick(BYTE_CYCLES);
+        assert_eq!(read_word(&mut j, BASE + SR1) & ADDR, ADDR);
+        assert_eq!(j.drain_output(), [0xF1]);
+    }
+
+    /// `BTF` marks completions for polling firmware and clears on data
+    /// access.
+    #[test]
+    fn btf_marks_completions_and_clears_on_access() {
+        let mut i = enabled();
+        i.drive_inputs(0xA5);
+        start(&mut i);
+        send_addr(&mut i, 0xA0);
+        let _ = read_word(&mut i, BASE + SR2);
+        write_word(&mut i, BASE + DR, 0x11u32);
+        i.tick(BYTE_CYCLES);
+        assert_eq!(read_word(&mut i, BASE + SR1) & super::BTF, super::BTF);
+        // A fresh data write clears it again until completion.
+        write_word(&mut i, BASE + DR, 0x22u32);
+        assert_eq!(read_word(&mut i, BASE + SR1) & super::BTF, 0);
+    }
+
+    /// A stretched byte takes `BYTE_CYCLES + STRETCH_CYCLES` (cycle-counted
+    /// through `tick`, the way firmware observes a slow slave).
+    #[test]
+    fn stretch_extends_byte_timing() {
+        let mut i = enabled();
+        i.drive_inputs(0xA5);
+        start(&mut i);
+        send_addr(&mut i, 0xA0);
+        let _ = read_word(&mut i, BASE + SR2);
+        // Arm the stretch after addressing so it lands on the data byte.
+        i.drive_inputs(0xA5 | (1 << 8)); // slave holds the clock
+        write_word(&mut i, BASE + DR, 0x11u32);
+        i.tick(BYTE_CYCLES);
+        assert_eq!(read_word(&mut i, BASE + SR1) & TXE, 0, "still shifting");
+        i.tick(super::STRETCH_CYCLES);
+        assert_eq!(read_word(&mut i, BASE + SR1) & TXE, TXE, "done now");
     }
 }
