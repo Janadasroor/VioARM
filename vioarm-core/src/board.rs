@@ -7975,9 +7975,10 @@ pub fn stm32f303xe() -> BoardMemory {
         ));
     }
     if <Stm32f303xe as crate::device::svd::Device>::peripheral("OPAMP").is_some() {
-        mem.attach(Box::new(crate::device::stm32::opamp::Opamp::new_for::<
-            Stm32f303xe,
-        >()));
+        mem.attach(Box::new(
+            crate::device::stm32::opamp::Opamp::new_for::<Stm32f303xe>()
+                .with_bus(mem.analog_handle()),
+        ));
     }
     if <Stm32f303xe as crate::device::svd::Device>::peripheral("TSC").is_some() {
         mem.attach(Box::new(crate::device::stm32::tsc::Tsc::new_for::<
@@ -8371,9 +8372,10 @@ pub fn stm32h743() -> BoardMemory {
     // }
     // DAC
     if <Stm32h743 as crate::device::svd::Device>::peripheral("DAC").is_some() {
-        mem.attach(Box::new(Dac::new_with_dma::<Stm32h743>(
-            dma_requests.clone(),
-        )));
+        mem.attach(Box::new(
+            Dac::new_with_dma::<Stm32h743>(dma_requests.clone())
+                .with_analog_bus(mem.analog_handle()),
+        ));
     }
     // SDMMC1/2 (SDIO) - H743 uses SDMMC1 at 0x52007000, SDMMC2 at 0x48022400
     if <Stm32h743 as crate::device::svd::Device>::peripheral("SDMMC1").is_some()
@@ -8513,21 +8515,24 @@ pub fn stm32h743() -> BoardMemory {
         mem.attach(Box::new(
             Adc::adc1_for::<Stm32h743>()
                 .with_common(adc12_common_state.clone())
-                .with_dma(dma_requests.clone(), 0, 7),
+                .with_dma(dma_requests.clone(), 0, 7)
+                .with_analog_bus(mem.analog_handle()),
         ));
     }
     if <Stm32h743 as crate::device::svd::Device>::peripheral("ADC2").is_some() {
         mem.attach(Box::new(
             Adc::adc2_for::<Stm32h743>()
                 .with_common(adc12_common_state.clone())
-                .with_dma(dma_requests.clone(), 0, 7),
+                .with_dma(dma_requests.clone(), 0, 7)
+                .with_analog_bus(mem.analog_handle()),
         ));
     }
     if <Stm32h743 as crate::device::svd::Device>::peripheral("ADC3").is_some() {
         mem.attach(Box::new(
             Adc::adc3_for::<Stm32h743>()
                 .with_common(adc3_common_state.clone())
-                .with_dma(dma_requests.clone(), 0, 7),
+                .with_dma(dma_requests.clone(), 0, 7)
+                .with_analog_bus(mem.analog_handle()),
         ));
     }
     // DMA - H7 uses stream DMA like F4 plus DMAMUX; use DmaF4 with Vec mailbox.
@@ -8579,7 +8584,9 @@ pub fn stm32h743() -> BoardMemory {
         mem.attach(Box::new(Sai4::new_for::<Stm32h743>()));
     }
     if <Stm32h743 as crate::device::svd::Device>::peripheral("DFSDM").is_some() {
-        mem.attach(Box::new(Dfsdm::new_for::<Stm32h743>()));
+        mem.attach(Box::new(
+            Dfsdm::new_for::<Stm32h743>().with_bus(mem.analog_handle()),
+        ));
     }
     if <Stm32h743 as crate::device::svd::Device>::peripheral("HRTIM_Master").is_some() {
         mem.attach(Box::new(Hrtim::master_for::<Stm32h743>()));
@@ -8766,9 +8773,10 @@ pub fn stm32h743() -> BoardMemory {
     if <Stm32h743 as crate::device::svd::Device>::peripheral("OPAMP").is_some()
         || <Stm32h743 as crate::device::svd::Device>::peripheral("OPAMP1").is_some()
     {
-        mem.attach(Box::new(crate::device::stm32::opamp::Opamp::new_for::<
-            Stm32h743,
-        >()));
+        mem.attach(Box::new(
+            crate::device::stm32::opamp::Opamp::new_for::<Stm32h743>()
+                .with_bus(mem.analog_handle()),
+        ));
     }
     if <Stm32h743 as crate::device::svd::Device>::peripheral("RNG").is_some() {
         mem.attach(Box::new(

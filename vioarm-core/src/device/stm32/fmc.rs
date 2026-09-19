@@ -1381,10 +1381,116 @@ impl InterruptSource for Mdma {
 }
 
 #[derive(Debug, Default)]
+struct SaiBlock {
+    /// Transmit/receive FIFO (8 words).
+    fifo: std::collections::VecDeque<u32>,
+    /// Words staged for reception (tests, debugger inject).
+    rx_stage: std::collections::VecDeque<u32>,
+    /// Ticks since the last word moved.
+    clock: u64,
+    /// Consecutive mute-pattern words (RX `MUTEDET`).
+    mute_run: u32,
+    /// Byte-lane assembler for `DR` writes / word-pop counter for reads.
+    w_acc: u32,
+    w_mask: u8,
+    r_word: u32,
+    r_lane: u8,
+}
+
+#[derive(Debug, Default)]
 struct Sai4Behavior {
+    blocks: [SaiBlock; 2],
     pending: bool,
-    ticks: u8,
-    active: bool,
+}
+
+/// Block register bases: A at `0x04`, B at `0x24` (`CR1`).
+fn sai_base(block: usize) -> u32 {
+    0x04 + 0x20 * block as u32
+}
+
+impl Sai4Behavior {
+    /// `true` for transmitter blocks (`MODE` 0/2: master/slave TX).
+    fn is_tx(view: &Registers<&mut [u32]>, b: u32) -> bool {
+        matches!(view.try_get(b).unwrap_or(0) & 0x3, 0 | 2)
+    }
+
+    fn sync_pending(&mut self, view: &mut Registers<&mut [u32]>) {
+        for b in [0x04u32, 0x24] {
+            let sr = view.try_get(b + 0x14).unwrap_or(0);
+            let im = view.try_get(b + 0x10).unwrap_or(0);
+            if sr & im & 0x7F != 0 {
+                self.pending = true;
+            }
+        }
+    }
+
+    /// Move one TX word out (or one RX word in) per `(MCKDIV + 1)` ticks.
+    fn block_tick(&mut self, view: &mut Registers<&mut [u32]>, b: usize, delta: u64) {
+        let base = sai_base(b);
+        if view.try_get(base).unwrap_or(0) & (1 << 16) == 0 {
+            return; // `SAIXEN` clear: block off.
+        }
+        let tx = Self::is_tx(view, base);
+        let mckdiv = u64::from((view.try_get(base).unwrap_or(0) >> 20) & 0xF);
+        let blk = &mut self.blocks[b];
+        blk.clock += delta;
+        let period = mckdiv + 1;
+        while blk.clock >= period {
+            blk.clock -= period;
+            if tx {
+                blk.fifo.pop_front();
+            } else if let Some(w) = blk.rx_stage.pop_front() {
+                if blk.fifo.len() < 8 {
+                    blk.fifo.push_back(w);
+                    // Mute detect: `MUTECNT + 1` pattern words in a row.
+                    let cr2 = view.try_get(base + 4).unwrap_or(0);
+                    let expect_ones = cr2 & (1 << 6) != 0;
+                    let pattern = if expect_ones {
+                        w == 0xFFFF_FFFF
+                    } else {
+                        w == 0
+                    };
+                    if pattern {
+                        blk.mute_run += 1;
+                        let cnt = ((cr2 >> 7) & 0x3F) + 1;
+                        if blk.mute_run >= cnt {
+                            Self::set_sr(view, base, 1 << 1);
+                        }
+                    } else {
+                        blk.mute_run = 0;
+                    }
+                }
+            }
+        }
+        Self::update_sr(view, base, &blk.fifo, tx);
+    }
+
+    /// Set status bits (OR semantics).
+    fn set_sr(view: &mut Registers<&mut [u32]>, base: u32, bits: u32) {
+        let sr = view.try_get(base + 0x14).unwrap_or(0) | bits;
+        view.try_set(base + 0x14, sr);
+    }
+
+    /// Recompute `FREQ`/`FLVL` from the FIFO level and direction.
+    fn update_sr(
+        view: &mut Registers<&mut [u32]>,
+        base: u32,
+        fifo: &std::collections::VecDeque<u32>,
+        tx: bool,
+    ) {
+        let fth = (view.try_get(base + 4).unwrap_or(0) & 0x7) as usize;
+        let mut sr = view.try_get(base + 0x14).unwrap_or(0) & !(0x7 << 16) & !(1 << 3);
+        sr |= (fifo.len().min(7) as u32) << 16;
+        let freq = if tx {
+            fifo.len() <= fth
+        } else {
+            fifo.len() > fth
+        };
+        if freq {
+            sr |= 1 << 3;
+        }
+        view.try_set(base + 0x14, sr);
+    }
 }
 
 impl Behavior for Sai4Behavior {
@@ -1396,38 +1502,112 @@ impl Behavior for Sai4Behavior {
         shift: u32,
     ) -> u32 {
         let word = view.merged(offset, val, shift);
-        // SAI_GCR 0x00 or A/B CR1 0x04/0x24 with SAIEN bit0 (16-bit GCR)
-        // Use CR1-like offsets 0x04 and 0x24 for A/B blocks
-        if offset == 0x04 || offset == 0x24 {
-            if word & 1 != 0 && !self.active {
-                self.active = true;
-                self.ticks = 1;
-            } else if word & 1 == 0 {
-                self.active = false;
-                self.ticks = 0;
-                self.pending = false;
+        // Data registers stage/consume FIFO words; every other register
+        // latches (protocol/clock/slot/mask bits have no further model).
+        let block = if (0x04..=0x20).contains(&offset) {
+            Some(0)
+        } else if (0x24..=0x40).contains(&offset) {
+            Some(1)
+        } else {
+            None
+        };
+        if let Some(b) = block {
+            let base = sai_base(b);
+            let tx = Self::is_tx(view, base);
+            if offset == base + 0x1c {
+                // `DR`: TX assembles lanes into FIFO words (full drops
+                // with `OVRUDR`); RX writes are ignored (documented).
+                if tx {
+                    let (word, overrun) = {
+                        let blk = &mut self.blocks[b];
+                        blk.w_acc |= u32::from(val) << shift;
+                        blk.w_mask |= 1 << (shift / 8);
+                        if blk.w_mask != 0xF {
+                            (None, false)
+                        } else {
+                            let w = blk.w_acc;
+                            blk.w_acc = 0;
+                            blk.w_mask = 0;
+                            (Some(w), blk.fifo.len() >= 8)
+                        }
+                    };
+                    if let Some(w) = word {
+                        if overrun {
+                            Self::set_sr(view, base, 1);
+                        } else {
+                            self.blocks[b].fifo.push_back(w);
+                        }
+                        Self::update_sr(view, base, &self.blocks[b].fifo, true);
+                        self.sync_pending(view);
+                    }
+                }
+            }
+            if offset == base + 0x18 {
+                // `CLRFR`: write-1-to-clear the sticky flags.
+                if let Some(sr) = view.try_get(base + 0x14) {
+                    view.try_set(base + 0x14, sr & !word);
+                }
+                if view.try_get(base + 0x14).unwrap_or(0) & 0x7F == 0 {
+                    self.pending = false;
+                }
+                return view.get(offset);
+            }
+            if offset == base + 0x04 {
+                // `CR2.FFLUSH`: drop the FIFO now (self-clearing pulse).
+                if word & (1 << 3) != 0 {
+                    self.blocks[b].fifo.clear();
+                    self.blocks[b].mute_run = 0;
+                    Self::update_sr(view, base, &self.blocks[b].fifo, tx);
+                    return word & !(1 << 3);
+                }
+            }
+        }
+        // `CR1.SAIXEN` falling flushes the block FIFO and sticky flags.
+        if (offset == 0x04 || offset == 0x24) && word & (1 << 16) == 0 {
+            let b = if offset == 0x04 { 0 } else { 1 };
+            self.blocks[b].fifo.clear();
+            self.blocks[b].mute_run = 0;
+            if let Some(sr) = view.try_get(sai_base(b) + 0x14) {
+                view.try_set(sai_base(b) + 0x14, sr & !(1 | (1 << 1)));
             }
         }
         word
     }
-    fn tick(&mut self, view: &mut Registers<&mut [u32]>, delta: u64) {
-        if !self.active || self.ticks == 0 {
-            return;
-        }
-        let dec = (delta as u8).min(self.ticks);
-        self.ticks -= dec;
-        if self.ticks == 0 {
-            self.active = false;
-            // set SR OVRUDR? use offset 0x08/0x28 bit3 as placeholder
-            for off in [0x08u32, 0x28] {
-                if view.try_get(off).is_some() {
-                    let mut v = view.try_get(off).unwrap_or(0);
-                    v |= 1 << 0;
-                    view.try_set(off, v);
+    fn on_read(&mut self, view: &mut Registers<&mut [u32]>, offset: u32, value: u32) -> u32 {
+        // `DR` reads: TX returns the FIFO front without consuming
+        // (documented); RX pops one word per word-read (lanes share a
+        // counter — firmware always reads `DR` as words). Empty RX pops
+        // flag `OVRUDR` and read 0.
+        for b in 0..2 {
+            let base = sai_base(b);
+            if offset == base + 0x1c && !Self::is_tx(view, base) {
+                if self.blocks[b].r_lane == 0 {
+                    match self.blocks[b].fifo.pop_front() {
+                        Some(w) => self.blocks[b].r_word = w,
+                        None => {
+                            Self::set_sr(view, base, 1);
+                            self.sync_pending(view);
+                            self.blocks[b].r_word = 0;
+                        }
+                    }
+                    Self::update_sr(view, base, &self.blocks[b].fifo, false);
+                    self.sync_pending(view);
                 }
+                let w = self.blocks[b].r_word;
+                self.blocks[b].r_lane += 1;
+                if self.blocks[b].r_lane == 4 {
+                    self.blocks[b].r_lane = 0;
+                }
+                return w;
             }
-            self.pending = true;
         }
+        value
+    }
+    fn tick(&mut self, view: &mut Registers<&mut [u32]>, delta: u64) {
+        for b in 0..2 {
+            self.block_tick(view, b, delta);
+        }
+        self.sync_pending(view);
     }
     fn pending(&self, _view: &Registers<&[u32]>) -> u32 {
         if self.pending {
@@ -1440,13 +1620,15 @@ impl Behavior for Sai4Behavior {
         self.pending = false;
     }
     fn reset(&mut self) {
+        self.blocks = [SaiBlock::default(), SaiBlock::default()];
         self.pending = false;
-        self.active = false;
-        self.ticks = 0;
     }
 }
 
-/// Serial audio interface (handshake model).
+/// Serial audio interface: per-block TX/RX FIFOs with frame rhythm from
+/// `MCKDIV`, `FREQ`/`FLVL` levels, overrun/underrun and RX mute-detect
+/// flags, and interrupt gating. `DS`/slots/sync/mono/mute-TX/DMA stay
+/// latches (documented); frames clock with no pins attached.
 #[derive(Debug)]
 pub struct Sai4 {
     inner: RegisterFile<Sai4Behavior>,
@@ -1467,6 +1649,14 @@ impl Sai4 {
         let def = D::peripheral(name).expect("generated tables contain SAI");
         Self {
             inner: RegisterFile::new(def, Sai4Behavior::default()),
+        }
+    }
+
+    /// Stage received words for block `b` (0 = A, 1 = B): they stream
+    /// into the RX FIFO on frame ticks (tests, debugger inject).
+    pub fn inject_rx(&mut self, b: usize, words: &[u32]) {
+        if let Some(blk) = self.inner.behavior_mut().blocks.get_mut(b) {
+            blk.rx_stage.extend(words.iter());
         }
     }
 }
@@ -1504,11 +1694,104 @@ impl InterruptSource for Sai4 {
     }
 }
 
+/// One DFSDM filter's conversion state.
+#[derive(Clone, Copy, Debug, Default)]
+struct DfsdmFilter {
+    /// Ticks until the armed conversion completes (0 = idle).
+    ticks: u64,
+    /// Continuous regular conversions re-arm on completion.
+    recont: bool,
+    /// Injected conversion armed alongside.
+    inj: bool,
+}
+
 #[derive(Debug, Default)]
 struct DfsdmBehavior {
-    pending: bool,
-    ticks: u8,
-    active: bool,
+    filters: [DfsdmFilter; 4],
+    /// Pending interrupt mask, one bit per filter.
+    pending: u32,
+    analog_bus: Option<Arc<Mutex<crate::device::analog::AnalogBusState>>>,
+}
+
+/// Filter register bases: `CR1` at `0xA0 + 4f` (stride 4 per group).
+fn dfsdm_reg(group_base: u32, f: usize) -> u32 {
+    group_base + 4 * f as u32
+}
+
+impl DfsdmBehavior {
+    /// Conversion ticks from the oversampling ratio (one output sample
+    /// per `FOSR + 1` ticks, documented tick-time model).
+    fn conv_ticks(view: &Registers<&mut [u32]>, f: usize) -> u64 {
+        u64::from((view.try_get(dfsdm_reg(0xF0, f)).unwrap_or(0) >> 16) & 0x3FF) + 1
+    }
+
+    /// The selected regular channel, if its clock is enabled.
+    fn rch(view: &Registers<&mut [u32]>, f: usize) -> Option<u32> {
+        let ch = (view.try_get(dfsdm_reg(0xA0, f)).unwrap_or(0) >> 24) & 0x7;
+        let cfg = view.try_get(8 * ch).unwrap_or(0);
+        if cfg & (1 << 7) != 0 && cfg & (1 << 31) != 0 {
+            Some(ch)
+        } else {
+            None
+        }
+    }
+
+    /// Sample the shared bus as signed 24-bit data (offset binary:
+    /// 0 mV → −FS/2, 1650 mV → 0, 3300 mV → +FS/2; unset bus reads 0).
+    fn sample(&self) -> i32 {
+        let mv = self
+            .analog_bus
+            .as_ref()
+            .and_then(crate::device::analog::AnalogBusState::millivolts)
+            .unwrap_or(0);
+        ((mv as i64 - 1650) * 8_388_608 / 1650).clamp(-8_388_608, 8_388_607) as i32
+    }
+
+    /// Latch one conversion result, flag overruns, run the watchdog.
+    fn complete(&mut self, view: &mut Registers<&mut [u32]>, f: usize, injected: bool) {
+        let data = self.sample();
+        let (datar, eoc, ovr) = if injected {
+            (dfsdm_reg(0x100, f), 1, 1 << 2)
+        } else {
+            (dfsdm_reg(0x110, f), 1 << 1, 1 << 3)
+        };
+        let ch = Self::rch(view, f).unwrap_or(0);
+        let isr = dfsdm_reg(0xC0, f);
+        let mut flags = view.try_get(isr).unwrap_or(0);
+        if flags & eoc != 0 {
+            flags |= ovr; // unread result overwritten (documented)
+        }
+        flags |= eoc;
+        view.try_set(isr, flags);
+        let word = ((data as u32) << 8) | ch;
+        view.try_set(datar, word);
+        // Analog watchdog on the signed result.
+        let awht = view.try_get(dfsdm_reg(0x120, f)).unwrap_or(0) as i32 >> 8;
+        let awlt = view.try_get(dfsdm_reg(0x130, f)).unwrap_or(0) as i32 >> 8;
+        if data < awlt || data > awht {
+            let isr2 = view.try_get(isr).unwrap_or(0) | (1 << 4);
+            view.try_set(isr, isr2);
+            let awsr = dfsdm_reg(0x140, f);
+            view.try_set(awsr, view.try_get(awsr).unwrap_or(0) | (1 << ch));
+        }
+        self.sync_filter(view, f);
+    }
+
+    /// Recompute filter `f`'s pending bit from enabled flags.
+    fn sync_filter(&mut self, view: &mut Registers<&mut [u32]>, f: usize) {
+        let isr = view.try_get(dfsdm_reg(0xC0, f)).unwrap_or(0);
+        let cr2 = view.try_get(dfsdm_reg(0xB0, f)).unwrap_or(0);
+        let enabled = ((isr & 1) != 0 && cr2 & 1 != 0) // JEOCF & JEOCIE
+            || ((isr & (1 << 1)) != 0 && cr2 & (1 << 1) != 0) // REOCF & REOCIE
+            || ((isr & (1 << 4)) != 0 && cr2 & (1 << 4) != 0) // AWDF & AWDIE
+            || ((isr & (1 << 2)) != 0 && cr2 & (1 << 2) != 0) // JOVRF & JOVRIE
+            || ((isr & (1 << 3)) != 0 && cr2 & (1 << 3) != 0); // ROVRF & ROVRIE
+        if enabled {
+            self.pending |= 1 << f;
+        } else {
+            self.pending &= !(1 << f);
+        }
+    }
 }
 
 impl Behavior for DfsdmBehavior {
@@ -1520,57 +1803,108 @@ impl Behavior for DfsdmBehavior {
         shift: u32,
     ) -> u32 {
         let word = view.merged(offset, val, shift);
-        // DFSDM_CH0 CFGR1 at 0x00 DFEN bit0 or FLTCR1 at maybe 0x100
-        // Simplify: any write to 0x00 with bit0 set triggers
-        if offset == 0x00 || offset == 0x100 {
-            if word & 1 != 0 && !self.active {
-                self.active = true;
-                self.ticks = 1;
-            } else if word & 1 == 0 {
-                self.active = false;
-                self.ticks = 0;
-                self.pending = false;
+        // Filter control registers land every 4 bytes from their group.
+        for f in 0..4usize {
+            if offset == dfsdm_reg(0xA0, f) {
+                // `CR1`: starts arm conversions, `RCONT` latches. Start
+                // bits are pulses (cleared on store, like silicon).
+                let mut stored = word;
+                if word & (1 << 17) != 0 {
+                    self.filters[f].ticks = Self::conv_ticks(view, f);
+                    self.filters[f].recont = word & (1 << 18) != 0;
+                    self.filters[f].inj = false;
+                    stored &= !(1 << 17);
+                }
+                if word & (1 << 1) != 0 {
+                    self.filters[f].ticks = Self::conv_ticks(view, f);
+                    self.filters[f].inj = true;
+                    stored &= !(1 << 1);
+                }
+                if word & 1 == 0 {
+                    self.filters[f].ticks = 0;
+                    self.filters[f].inj = false;
+                }
+                return stored;
+            }
+            if offset == dfsdm_reg(0xD0, f) {
+                // `ICR`: clear overrun flags.
+                if let Some(isr) = view.try_get(dfsdm_reg(0xC0, f)) {
+                    let mut clear = 0;
+                    if word & (1 << 2) != 0 {
+                        clear |= 1 << 2;
+                    }
+                    if word & (1 << 3) != 0 {
+                        clear |= 1 << 3;
+                    }
+                    view.try_set(dfsdm_reg(0xC0, f), isr & !clear);
+                }
+                self.sync_filter(view, f);
+                return view.get(offset);
+            }
+            if offset == dfsdm_reg(0x150, f) {
+                // `AWCFR`: any write clears the watchdog flag.
+                if let Some(isr) = view.try_get(dfsdm_reg(0xC0, f)) {
+                    view.try_set(dfsdm_reg(0xC0, f), isr & !(1 << 4));
+                    view.try_set(dfsdm_reg(0x140, f), 0);
+                }
+                self.sync_filter(view, f);
             }
         }
         word
     }
-    fn tick(&mut self, view: &mut Registers<&mut [u32]>, delta: u64) {
-        if !self.active || self.ticks == 0 {
-            return;
+    fn on_read(&mut self, view: &mut Registers<&mut [u32]>, offset: u32, value: u32) -> u32 {
+        // Reading a data register consumes its end-of-conversion flag
+        // (documented contract; overruns then mean exactly "unread").
+        for f in 0..4usize {
+            if offset == dfsdm_reg(0x110, f) {
+                if let Some(isr) = view.try_get(dfsdm_reg(0xC0, f)) {
+                    view.try_set(dfsdm_reg(0xC0, f), isr & !(1 << 1));
+                }
+                self.sync_filter(view, f);
+            }
+            if offset == dfsdm_reg(0x100, f) {
+                if let Some(isr) = view.try_get(dfsdm_reg(0xC0, f)) {
+                    view.try_set(dfsdm_reg(0xC0, f), isr & !1);
+                }
+                self.sync_filter(view, f);
+            }
         }
-        let dec = (delta as u8).min(self.ticks);
-        self.ticks -= dec;
-        if self.ticks == 0 {
-            self.active = false;
-            // set ISR at 0x04 or 0x104 REOC
-            for off in [0x04u32, 0x104] {
-                if view.try_get(off).is_some() {
-                    let mut v = view.try_get(off).unwrap_or(0);
-                    v |= 1;
-                    view.try_set(off, v);
+        value
+    }
+    fn tick(&mut self, view: &mut Registers<&mut [u32]>, delta: u64) {
+        for f in 0..4usize {
+            if self.filters[f].ticks == 0 {
+                continue;
+            }
+            let left = self.filters[f].ticks.saturating_sub(delta);
+            self.filters[f].ticks = left;
+            if left == 0 {
+                let inj = self.filters[f].inj;
+                self.filters[f].inj = false;
+                self.complete(view, f, inj);
+                if self.filters[f].recont {
+                    self.filters[f].ticks = Self::conv_ticks(view, f);
                 }
             }
-            self.pending = true;
         }
     }
     fn pending(&self, _view: &Registers<&[u32]>) -> u32 {
-        if self.pending {
-            1
-        } else {
-            0
-        }
+        self.pending
     }
-    fn acknowledge(&mut self, _lines: u32) {
-        self.pending = false;
+    fn acknowledge(&mut self, lines: u32) {
+        self.pending &= !lines;
     }
     fn reset(&mut self) {
-        self.pending = false;
-        self.active = false;
-        self.ticks = 0;
+        self.filters = [DfsdmFilter::default(); 4];
+        self.pending = 0;
     }
 }
 
-/// Digital filter for sigma-delta modulators (handshake model).
+/// Digital filter for sigma-delta modulators: channel enables, regular
+/// and injected conversions of the shared analog bus (offset binary),
+/// analog watchdog, and per-filter interrupt lines. Filter order and
+/// integrator settings pace conversions only; DMA, serial breaks, and
+/// extremes stay latches (documented).
 #[derive(Debug)]
 pub struct Dfsdm {
     inner: RegisterFile<DfsdmBehavior>,
@@ -1584,6 +1918,13 @@ impl Dfsdm {
         Self {
             inner: RegisterFile::new(def, DfsdmBehavior::default()),
         }
+    }
+
+    /// Attach the shared analog bus (boards): conversions sample it.
+    #[must_use]
+    pub fn with_bus(mut self, bus: Arc<Mutex<crate::device::analog::AnalogBusState>>) -> Self {
+        self.inner.behavior_mut().analog_bus = Some(bus);
+        self
     }
 }
 
@@ -1617,6 +1958,10 @@ impl InterruptSource for Dfsdm {
     }
     fn acknowledge(&mut self, lines: u32) {
         self.inner.acknowledge(lines);
+    }
+    /// One line per filter (`DFSDM_FLT0-3`, consecutive vectors).
+    fn lines(&self) -> u32 {
+        0b1111
     }
 }
 
@@ -1797,8 +2142,8 @@ impl InterruptSource for Hrtim {
 #[cfg(test)]
 mod tests {
     use super::{
-        Bdma, Dma2d, Dma2dMailbox, Dma2dRead, Dma2dResult, Dmamux, DmamuxRoutes, Hrtim, Ltdc, Mdma,
-        Sai4,
+        Bdma, Dfsdm, Dma2d, Dma2dMailbox, Dma2dRead, Dma2dResult, Dmamux, DmamuxRoutes, Hrtim,
+        Ltdc, Mdma, Sai4,
     };
     use crate::device::svd::stm32h743::Stm32h743;
     use crate::device::{InterruptSource, Peripheral};
@@ -2037,12 +2382,56 @@ mod tests {
     }
 
     #[test]
-    fn sai4_enable_pends() {
+    fn sai4_tx_empty_requests_data() {
         let mut s = Sai4::new_for::<Stm32h743>();
         let base = s.ranges()[0].base;
-        write_word(&mut s, base + 0x04, 1);
+        // Block A master TX, FIFO threshold 0, FREQ interrupt on.
+        write_word(&mut s, base + 0x04, 1 << 16); // CR1 SAIXEN
+        write_word(&mut s, base + 0x14, 1 << 3); // IM FREQIE
+        assert_eq!(s.pending(), 0);
         s.tick(1);
-        assert_eq!(s.pending(), 1);
+        assert_ne!(read_word(&mut s, base + 0x18) & (1 << 3), 0, "FREQ");
+        assert_eq!(read_word(&mut s, base + 0x18) >> 16 & 0x7, 0, "FLVL 0");
+        assert_ne!(s.pending(), 0);
+    }
+
+    #[test]
+    fn sai4_tx_streams_and_flags_overrun() {
+        let mut s = Sai4::new_for::<Stm32h743>();
+        let base = s.ranges()[0].base;
+        write_word(&mut s, base + 0x04, 1 << 16); // TX enable
+        write_word(&mut s, base + 0x14, 1); // IM OVRUDRIE
+        for w in 0..8u32 {
+            write_word(&mut s, base + 0x20, 0x1000 + w);
+        }
+        assert_eq!(read_word(&mut s, base + 0x18) >> 16 & 0x7, 7, "FLVL capped");
+        write_word(&mut s, base + 0x20, 0xDEAD_BEEF); // ninth word
+        assert_ne!(read_word(&mut s, base + 0x18) & 1, 0, "OVRUDR");
+        assert_ne!(s.pending(), 0);
+        write_word(&mut s, base + 0x1c, 1); // CLRFR COVRUDR
+        assert_eq!(s.pending(), 0);
+        s.tick(8); // one word per tick at MCKDIV 0
+        assert_eq!(read_word(&mut s, base + 0x18) >> 16 & 0x7, 0, "drained");
+    }
+
+    #[test]
+    fn sai4_rx_mute_detect_and_dr() {
+        let mut s = Sai4::new_for::<Stm32h743>();
+        let base = s.ranges()[0].base;
+        // Block B master RX, mute after 2 zero words, interrupts on.
+        write_word(&mut s, base + 0x24, (1 << 16) | 1); // CR1 SAIXEN RX
+        write_word(&mut s, base + 0x28, (1 << 7) | 1); // CR2 MUTECNT1 FTH1
+        write_word(&mut s, base + 0x34, (1 << 1) | (1 << 3)); // IM MUTEDETIE FREQIE
+        s.inject_rx(1, &[0, 0, 0x1234_5678]);
+        s.tick(3);
+        assert_ne!(read_word(&mut s, base + 0x38) & (1 << 1), 0, "MUTEDET");
+        assert_ne!(s.pending(), 0);
+        assert_eq!(read_word(&mut s, base + 0x40), 0, "first zero");
+        assert_eq!(read_word(&mut s, base + 0x40), 0, "second zero");
+        assert_eq!(read_word(&mut s, base + 0x40), 0x1234_5678, "data");
+        // Draining below threshold re-arms FREQ; flags clear by CLRFR.
+        write_word(&mut s, base + 0x3c, (1 << 1) | 1);
+        assert_eq!(read_word(&mut s, base + 0x38) & 0x3, 0);
     }
 
     /// DMA2D with a scripted bus: reads come from `mem`, writes land there.
@@ -2200,5 +2589,82 @@ mod tests {
         assert_ne!(read_word(&mut d, base + 0x04) & (1 << 2), 0, "TWIF");
         assert_ne!(d.pending(), 0);
         dma2d_run(&mut d, &mb, &mut mem, RAM);
+    }
+
+    /// DFSDM on a shared bus (millivolts set per test).
+    fn dfsdm(bus_mv: u32) -> (Dfsdm, u32) {
+        use crate::device::analog::AnalogBusState;
+        let bus = AnalogBusState::shared();
+        AnalogBusState::set_millivolts(&bus, bus_mv);
+        let mut d = Dfsdm::new_for::<Stm32h743>().with_bus(bus);
+        let base = d.ranges()[0].base;
+        d.reset();
+        // Channel 0 clock on; filter 0 regular on channel 0, IRQ on.
+        write_word(&mut d, base, (1 << 7) | (1 << 31)); // CHCFG0R1 CHEN DFSDMEN
+        write_word(&mut d, base + 0xb0, (1 << 1) | (1 << 4)); // CR2 REOCIE AWDIE
+        (d, base)
+    }
+
+    #[test]
+    fn dfsdm_regular_converts_bus_midscale() {
+        let (mut d, base) = dfsdm(1650);
+        write_word(&mut d, base + 0xa0, 1 | (1 << 17)); // CR1 DFEN RSWSTART
+        d.tick(1); // FOSR reset 0 → one tick
+        assert_ne!(read_word(&mut d, base + 0xc0) & (1 << 1), 0, "REOCF");
+        assert_ne!(d.pending() & 1, 0, "filter 0 line");
+        assert_eq!(read_word(&mut d, base + 0x110), 0, "midscale DATA");
+    }
+
+    #[test]
+    fn dfsdm_data_tracks_rails() {
+        let (mut d, base) = dfsdm(3300);
+        write_word(&mut d, base + 0xa0, 1 | (1 << 17));
+        d.tick(1);
+        assert_eq!(read_word(&mut d, base + 0x110), 0x7FFF_FF00, "+FS");
+        let (mut d, base) = dfsdm(0);
+        write_word(&mut d, base + 0xa0, 1 | (1 << 17));
+        d.tick(1);
+        assert_eq!(read_word(&mut d, base + 0x110), 0x8000_0000, "-FS");
+    }
+
+    #[test]
+    fn dfsdm_watchdog_trips_and_clears() {
+        let (mut d, base) = dfsdm(1650); // DATA 0
+        write_word(&mut d, base + 0x130, 0x0010_0000); // AWLTR +1M (DATA below)
+        write_word(&mut d, base + 0xa0, 1 | (1 << 17));
+        d.tick(1);
+        assert_ne!(read_word(&mut d, base + 0xc0) & (1 << 4), 0, "AWDF");
+        assert_ne!(read_word(&mut d, base + 0x140) & 1, 0, "channel 0");
+        assert_ne!(d.pending() & 1, 0);
+        assert_eq!(read_word(&mut d, base + 0x110), 0, "consume REOCF");
+        write_word(&mut d, base + 0x150, 0xFFFF_FFFF); // AWCFR clears
+        assert_eq!(read_word(&mut d, base + 0xc0) & (1 << 4), 0, "AWDF clears");
+        assert_eq!(d.pending() & 1, 0);
+    }
+
+    #[test]
+    fn dfsdm_injected_overruns_when_unread() {
+        let (mut d, base) = dfsdm(1650);
+        write_word(&mut d, base + 0xb0, 1 | (1 << 2)); // CR2 JEOCIE JOVRIE
+        write_word(&mut d, base + 0xa0, 1 | (1 << 1)); // DFEN JSWSTART
+        d.tick(1);
+        assert_ne!(read_word(&mut d, base + 0xc0) & 1, 0, "JEOCF");
+        write_word(&mut d, base + 0xa0, 1 | (1 << 1)); // convert again
+        d.tick(1);
+        assert_ne!(read_word(&mut d, base + 0xc0) & (1 << 2), 0, "JOVRF");
+        assert_ne!(d.pending() & 1, 0);
+        assert_eq!(read_word(&mut d, base + 0x100), 0, "data drains JEOCF");
+    }
+
+    #[test]
+    fn dfsdm_continuous_rearms() {
+        let (mut d, base) = dfsdm(1650);
+        write_word(&mut d, base + 0xb0, 1 << 1); // REOCIE
+        write_word(&mut d, base + 0xa0, 1 | (1 << 17) | (1 << 18)); // DFEN RSWSTART RCONT
+        d.tick(1);
+        assert_ne!(read_word(&mut d, base + 0xc0) & (1 << 1), 0, "first REOCF");
+        assert_eq!(read_word(&mut d, base + 0x110), 0, "consume clears");
+        d.tick(1);
+        assert_ne!(read_word(&mut d, base + 0xc0) & (1 << 1), 0, "second REOCF");
     }
 }
