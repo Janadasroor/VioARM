@@ -102,7 +102,8 @@ record result in `docs/src/boards.md`. All pending.
 - [x] `stm32f103` (53) — scoreboard board; closed first: 51/51 behavioral, zero latch
       (`f103_closeout.rs` 11 tests + `fsmc` lib tests; record in `docs/src/boards.md`).
 - [ ] `stm32f105` (45)
-- [ ] `stm32f107` (49) — scoreboard + fabric board; close second
+- [x] `stm32f107` (49) — scoreboard + fabric board; closed second: 47/47 behavioral, zero latch
+      (audit-only close-out; record in `docs/src/boards.md`).
 - [ ] `stm32f303xe` (59)
 - [ ] `stm32f407` (91) — DMA/FPU reference board
 - [ ] `stm32g474xx` (91)

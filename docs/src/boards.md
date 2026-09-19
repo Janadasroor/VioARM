@@ -3,7 +3,7 @@
 | Board | Core | Flash | RAM | Peripherals |
 |---|---|---|---|---|
 | stm32f103 | M3 | 64 KiB | 20 KiB | GPIO(A–G)+USART(1–3+4/5)+TIM(1–14)+ADC+SPI+I2C+CAN+DMA2+FSMC+USB — 51/51 closed |
-| stm32f107 | M3 | 256 KiB | 64 KiB | +ETH+USB+CAN2 |
+| stm32f107 | M3 | 256 KiB | 64 KiB | +ETH+USB+CAN2 — 47/47 closed |
 | stm32f407 | M4 | 1 MiB | 128 KiB+CCM | +FPU+DMA F4 paced (TIM/ADC/SPI/USART request lines) |
 | stm32h743 | M7 | 2 MiB | 512 KiB | +FPU-DP+SDRAM+QSPI+DTCM/AXI 0x20000+0x60000+FDCAN1+LPTIM1-5 |
 | **505 Dnames** | M0/M3/M4/M7 | 16K–2M | 4K–512K | **506 boards `100%` `bootable` `32` `SVD` donors + removal deltas `505` `per_dname.rs` `true-generation` `F2`/`F7`/`G0` `IROM1/IRAM1` `H7` `DTCM` `all_boards()` `all_per_dnames()` `RCC` `HPRE/PPRE` → `APB` timer ratios `FLASH` `WS` fetch stalls |
@@ -129,10 +129,13 @@ Per-board detail (latch lists are the Phase C work items):
    USART2 USART3 ADC1 CAN2 CAN1 FLASH RCC · latch: PWR GPIOD GPIOE RTC BKP TIM1 TIM4 TIM5 TIM6 TIM7
    I2C1 I2C2 SPI2 SPI3 ADC2 USB_OTG_GLOBAL USB_OTG_HOST USB_OTG_DEVICE USB_OTG_PWRCLK DAC UART4
    UART5 CRC
-- `stm32f107` behavioral: PWR RCC GPIOA GPIOB GPIOC GPIOD GPIOE AFIO EXTI DMA1 DMA2 RTC BKP IWDG
-   WWDG TIM1 TIM2 TIM3 TIM4 TIM5 TIM6 TIM7 I2C1 I2C2 SPI1 SPI2 SPI3 USART1 USART2 USART3 ADC1 ADC2
-   CAN2 CAN1 ETHERNET_MAC ETHERNET_MMC ETHERNET_PTP ETHERNET_DMA USB_OTG_GLOBAL USB_OTG_HOST
-   USB_OTG_DEVICE USB_OTG_PWRCLK DAC UART4 UART5 CRC FLASH · latch:
+- `stm32f107` — **closed (Phase C): 47/47 behavioral, zero latch** (nothing to mount; the
+   address-coverage re-audit credits the shared-name `I2Cx` and sub-window `ETH`/`USB_OTG` instances
+   the name matcher missed). T3 (firmware-proven on this board): Embench-IoT 19/19 + TFLM
+   `hello_world` (CPU), GPIO/USART1/TIM2 (`real_firmware` legs), USART1 + SPI (fabric ping-pong/pair
+   with real C firmware), CAN (fabric arbitration + `RX0` ISR dispatch), ETH and USB_OTG_FS (ISR
+   dispatch; data paths lib-proven on f107 tables). Everything else T2 on shared drivers. Pins
+   verified (`boards --pins stm32f107`: `PA9: USART1_TX`, `PA11/12: USB_DM/DP`, …).
 - `stm32f303xe` behavioral: GPIOA GPIOB GPIOC GPIOD GPIOE GPIOF TSC CRC RCC DMA1 DMA2 TIM2 TIM3 TIM4
    TIM15 TIM16 TIM17 USART1 USART2 USART3 SPI1 SPI2 EXTI COMP PWR CAN USB_FS I2C1 I2C2 IWDG WWDG
    TIM6 TIM7 DAC TIM1 TIM20 TIM8 ADC1 ADC2 ADC3 ADC4 ADC1_2 SYSCFG OPAMP · latch: GPIOG GPIOH Flash
