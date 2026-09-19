@@ -38,9 +38,23 @@
 //! `BTF`/`STOPF` and the data-ready `TXE`/`RXNE`; `CR2.ITERREN` raises the
 //! error line (line 1) for `AF` and the other `SR1` error flags. Both are
 //! level-triggered and mask exactly like the silicon interrupt controller.
+//!
+//! New-generation tables (F0/F3/L0/L4: `TIMINGR`/`ISR`/`ICR`/`RXDR`/`TXDR`
+//! instead of `SR1`/`SR2`/`DR`) run a second engine over the same phase
+//! machine, detected per instance from the register names. Firmware writes
+//! `CR2` (`SADD`, `RD_WRN`, `NBYTES`, `START`/`STOP`/`AUTOEND`); the engine
+//! raises `ADDR` (+`TXIS` for transmit) or `NACKF` for the address byte,
+//! then `TXIS`/`RXNE` per data byte and `TC` at the count, with `STOPF`
+//! after the stop. Flags clear through `ICR` (`ADDRCF`/`NACKCF`/`STOPCF`/
+//! `TCCF`); `TC` also clears on the next `START`. Byte pacing derives from
+//! `TIMINGR` (`PRESC`/`SCLL`/`SCLH`: 9 clocks per byte). The absent-slave
+//! contract is shared with the F1 engine: a zero staged byte NACKs the
+//! address. Deliberately unmodeled on this path: 10-bit addresses,
+//! `RELOAD`, `NACK`-bit generation, SMBus/PEC/wakeup, DMA — the registers
+//! latch, the engine ignores them.
 
 use crate::device::svd::stm32f103;
-use crate::device::svd::{Behavior, Device, RegisterFile, Registers};
+use crate::device::svd::{Behavior, Device, PeripheralDef, RegisterFile, Registers};
 use crate::device::Peripheral;
 use crate::error::BusError;
 use crate::mem::bus::Region;
@@ -78,6 +92,53 @@ const OVR: u32 = 1 << 11;
 const PECERR: u32 = 1 << 12;
 const TIMEOUT: u32 = 1 << 14;
 const SMBALERT: u32 = 1 << 15;
+
+/// New-generation register offsets (F0/F3/L0/L4). `CR1`/`CR2` share the F1
+/// offsets with different fields; `DR`/`SR1`/`SR2` do not exist there
+/// (`TIMINGR`/`TIMEOUTR` sit at those offsets instead).
+const NG_TIMINGR: u32 = 0x10;
+const NG_ISR: u32 = 0x18;
+const NG_ICR: u32 = 0x1C;
+const NG_RXDR: u32 = 0x24;
+const NG_TXDR: u32 = 0x28;
+
+/// New-generation `CR1` interrupt enables.
+const NG_TXIE: u32 = 1 << 1;
+const NG_RXIE: u32 = 1 << 2;
+const NG_ADDRIE: u32 = 1 << 3;
+const NG_NACKIE: u32 = 1 << 4;
+const NG_STOPIE: u32 = 1 << 5;
+const NG_TCIE: u32 = 1 << 6;
+const NG_ERRIE: u32 = 1 << 7;
+
+/// New-generation `CR2` fields.
+const NG_SADD_MASK: u32 = 0x3FF;
+const NG_RD_WRN: u32 = 1 << 10;
+const NG_START: u32 = 1 << 13;
+const NG_STOP: u32 = 1 << 14;
+const NG_NBYTES_SHIFT: u32 = 16;
+const NG_AUTOEND: u32 = 1 << 25;
+
+/// New-generation `ISR` flags.
+const NG_TXIS: u32 = 1 << 1;
+const NG_RXNE: u32 = 1 << 2;
+const NG_ADDR: u32 = 1 << 3;
+const NG_NACKF: u32 = 1 << 4;
+const NG_STOPF: u32 = 1 << 5;
+const NG_TC: u32 = 1 << 6;
+const NG_BUSY: u32 = 1 << 15;
+const NG_DIR: u32 = 1 << 16;
+const NG_ADDCODE_SHIFT: u32 = 17;
+
+/// New-generation `ICR` clear bits.
+const NG_ADDRCF: u32 = 1 << 3;
+const NG_NACKCF: u32 = 1 << 4;
+const NG_STOPCF: u32 = 1 << 5;
+const NG_TCCF: u32 = 1 << 6;
+
+/// Dynamic `ISR` flags (everything the engine sets or clears).
+const NG_DYNAMIC: u32 =
+    NG_TXIS | NG_RXNE | NG_ADDR | NG_NACKF | NG_STOPF | NG_TC | NG_BUSY | NG_DIR | 0x7F << 17;
 
 /// `SR1` flags software clears by writing zero; `TXE`/`RXNE` are hardware-only.
 const CLEARABLE: u32 =
@@ -131,9 +192,23 @@ struct I2cBehavior {
     stretch_pending: bool,
     /// Bytes the master shifted out, for host draining.
     tx: Vec<u8>,
+    /// New-generation register layout (F0/F3/L0/L4 `TIMINGR`/`ISR` engine).
+    new_gen: bool,
+    /// Bytes left in the new-generation transfer (`CR2.NBYTES` count).
+    nbytes_left: u8,
+    /// Latched `CR2` direction (`true` = master receive) and auto-end.
+    ng_receiving: bool,
+    ng_autoend: bool,
+    /// Latched 7-bit slave address for `ISR.ADDCODE`.
+    ng_sadd: u16,
 }
 
 impl I2cBehavior {
+    /// Whether `def` carries the new-generation register set.
+    fn is_new_gen(def: &PeripheralDef) -> bool {
+        def.registers.iter().any(|r| r.name == "TIMINGR")
+    }
+
     /// Begin a start condition, clearing any pending stop.
     fn begin_start(&mut self) {
         self.phase = Phase::Start;
@@ -157,6 +232,120 @@ impl I2cBehavior {
             BYTE_CYCLES
         }
     }
+
+    /// New-generation byte time from `TIMINGR`: 9 SCL clocks per byte,
+    /// each `(PRESC + 1) * (SCLL + SCLH + 2)` device ticks.
+    fn ng_byte_cycles(&mut self, view: &Registers<&mut [u32]>) -> u64 {
+        let t = view.get(NG_TIMINGR);
+        let presc = (t >> 28) & 0xF;
+        let scl = (t & 0xFF) + ((t >> 8) & 0xFF) + 2;
+        let base = 9 * u64::from(presc + 1) * u64::from(scl);
+        if self.stretch_pending {
+            self.stretch_pending = false;
+            base + STRETCH_CYCLES
+        } else {
+            base
+        }
+    }
+
+    /// Latch a new-generation `CR2` transfer on a `START` edge. Field
+    /// snapshot waits for start completion: firmware writes `CR2` in one
+    /// word, but the `START` edge (lane 1) lands before `NBYTES`
+    /// (lanes 2–3) under byte-lane dispatch.
+    fn ng_begin(&mut self, view: &mut Registers<&mut [u32]>) {
+        view.set(NG_ISR, view.get(NG_ISR) & !NG_TC);
+        self.begin_start();
+    }
+
+    /// Advance the new-generation transfer state machine.
+    fn ng_tick(&mut self, view: &mut Registers<&mut [u32]>, delta: u64) {
+        if self.remaining == 0 {
+            return;
+        }
+        if self.remaining > delta {
+            self.remaining -= delta;
+            return;
+        }
+        self.remaining = 0;
+        match self.phase {
+            Phase::Start => {
+                view.set(NG_ISR, view.get(NG_ISR) | NG_BUSY);
+                // The word write completed while the start was on the
+                // wire: snapshot the transfer fields now.
+                let cr2 = view.get(CR2);
+                self.ng_sadd = (cr2 & NG_SADD_MASK) as u16;
+                self.ng_receiving = cr2 & NG_RD_WRN != 0;
+                self.receiving = self.ng_receiving;
+                self.ng_autoend = cr2 & NG_AUTOEND != 0;
+                self.nbytes_left = ((cr2 >> NG_NBYTES_SHIFT) & 0xFF) as u8;
+                self.phase = Phase::Addr;
+                self.remaining = self.ng_byte_cycles(view);
+            }
+            Phase::Addr => {
+                // `START` self-clears once the address is on the wire.
+                view.set(CR2, view.get(CR2) & !NG_START);
+                if self.slave_byte == 0 {
+                    // No slave on the bus: NACK, release, abort.
+                    view.set(NG_ISR, (view.get(NG_ISR) & !NG_BUSY) | NG_NACKF);
+                    self.reset_transfer();
+                } else if self.nbytes_left == 0 {
+                    // Empty transfer: straight to transfer-complete.
+                    view.set(NG_ISR, view.get(NG_ISR) | NG_TC);
+                    self.phase = Phase::Data;
+                } else {
+                    let isr = view.get(NG_ISR)
+                        | NG_ADDR
+                        | ((u32::from(self.ng_sadd) & 0x7F) << NG_ADDCODE_SHIFT);
+                    if self.ng_receiving {
+                        view.set(NG_ISR, isr | NG_DIR);
+                        self.phase = Phase::Data;
+                        self.remaining = self.ng_byte_cycles(view);
+                    } else {
+                        view.set(NG_ISR, isr & !NG_DIR);
+                        self.phase = Phase::Data;
+                        view.set(NG_ISR, view.get(NG_ISR) | NG_TXIS);
+                    }
+                }
+            }
+            Phase::Data if self.ng_receiving => {
+                // A byte from the slave landed; the next clocks after
+                // firmware reads `RXDR`. The count completes with the
+                // byte itself, so `TC` (and an `AUTOEND` stop) can
+                // arrive while `RXNE` is still set, as on silicon.
+                view.set(NG_RXDR, u32::from(self.slave_byte));
+                self.nbytes_left = self.nbytes_left.saturating_sub(1);
+                let mut isr = view.get(NG_ISR) | NG_RXNE;
+                if self.nbytes_left == 0 {
+                    isr |= NG_TC;
+                }
+                view.set(NG_ISR, isr);
+                if self.nbytes_left == 0 && self.ng_autoend {
+                    self.phase = Phase::Stop;
+                    self.remaining = START_CYCLES;
+                }
+            }
+            Phase::Data => {
+                // A transmitted byte completed.
+                if self.nbytes_left == 0 {
+                    view.set(NG_ISR, view.get(NG_ISR) & !NG_TXIS);
+                    view.set(NG_ISR, view.get(NG_ISR) | NG_TC);
+                    if self.ng_autoend {
+                        self.phase = Phase::Stop;
+                        self.remaining = START_CYCLES;
+                    }
+                } else {
+                    view.set(NG_ISR, view.get(NG_ISR) | NG_TXIS);
+                }
+            }
+            Phase::Stop => {
+                // The stop condition ends the transfer and releases the bus.
+                view.set(CR2, view.get(CR2) & !(NG_START | NG_STOP));
+                view.set(NG_ISR, (view.get(NG_ISR) & !NG_BUSY) | NG_STOPF);
+                self.reset_transfer();
+            }
+            Phase::Idle => {}
+        }
+    }
 }
 
 impl Behavior for I2cBehavior {
@@ -169,6 +358,16 @@ impl Behavior for I2cBehavior {
     ) -> u32 {
         match offset {
             CR1 => {
+                if self.new_gen {
+                    // No edges live here on this layout (`START`/`STOP`
+                    // are `CR2` bits); clearing `PE` aborts the transfer.
+                    let new = view.merged(CR1, val, shift);
+                    if new & PE == 0 {
+                        self.reset_transfer();
+                        view.set(NG_ISR, view.get(NG_ISR) & !NG_DYNAMIC);
+                    }
+                    return new;
+                }
                 let old = view.get(CR1);
                 let new = view.merged(CR1, val, shift);
                 if new & SWRST != 0 {
@@ -201,6 +400,10 @@ impl Behavior for I2cBehavior {
                 new
             }
             DR => {
+                if self.new_gen {
+                    // `TIMINGR` on this layout: pure latch.
+                    return view.merged(offset, val, shift);
+                }
                 let new = view.merged(DR, val, shift);
                 // Only the low byte of the data register is the wire byte.
                 if shift == 0 {
@@ -236,6 +439,10 @@ impl Behavior for I2cBehavior {
                 }
                 new
             }
+            SR1 if self.new_gen => {
+                // `TIMEOUTR` on this layout: pure latch.
+                view.merged(offset, val, shift)
+            }
             SR1 => {
                 let new = view.merged(SR1, val, shift);
                 // Write-zero-to-clear for the software-clearable flags, leaving
@@ -244,12 +451,81 @@ impl Behavior for I2cBehavior {
                 view.set(SR1, view.get(SR1) & !clear);
                 view.get(SR1)
             }
+            CR2 if self.new_gen => {
+                let old = view.get(CR2);
+                let new = view.merged(CR2, val, shift);
+                view.set(CR2, new);
+                let start_edge = new & NG_START != 0 && old & NG_START == 0;
+                let stop_edge = new & NG_STOP != 0 && old & NG_STOP == 0;
+                if start_edge
+                    && view.get(CR1) & PE != 0
+                    && matches!(self.phase, Phase::Idle | Phase::Stop)
+                {
+                    self.ng_begin(view);
+                } else if stop_edge && matches!(self.phase, Phase::Addr | Phase::Data) {
+                    self.phase = Phase::Stop;
+                    self.remaining = START_CYCLES;
+                }
+                new
+            }
+            NG_TXDR if self.new_gen => {
+                // A staged transmit byte shifts out when `TXIS` is set;
+                // only the low lane is the wire byte.
+                if shift == 0
+                    && view.get(NG_ISR) & NG_TXIS != 0
+                    && matches!(self.phase, Phase::Data)
+                    && !self.ng_receiving
+                {
+                    self.tx.push(val);
+                    self.nbytes_left = self.nbytes_left.saturating_sub(1);
+                    view.set(NG_ISR, view.get(NG_ISR) & !NG_TXIS);
+                    self.remaining = self.ng_byte_cycles(view);
+                }
+                view.merged(offset, val, shift)
+            }
+            NG_ICR if self.new_gen => {
+                // Write-1-to-clear for the acknowledged flags.
+                let new = view.merged(NG_ICR, val, shift);
+                let mut isr = view.get(NG_ISR);
+                if new & NG_ADDRCF != 0 {
+                    isr &= !NG_ADDR;
+                }
+                if new & NG_NACKCF != 0 {
+                    isr &= !NG_NACKF;
+                }
+                if new & NG_STOPCF != 0 {
+                    isr &= !NG_STOPF;
+                }
+                if new & NG_TCCF != 0 {
+                    isr &= !NG_TC;
+                }
+                view.set(NG_ISR, isr);
+                new
+            }
             _ => view.merged(offset, val, shift),
         }
     }
 
     fn on_read(&mut self, view: &mut Registers<&mut [u32]>, offset: u32, value: u32) -> u32 {
         match offset {
+            NG_ISR if self.new_gen => {
+                // Status reads have no side effects on this layout.
+                value
+            }
+            NG_RXDR if self.new_gen => {
+                // Reading the receive register acknowledges `RXNE` and
+                // clocks the next byte while the count is open.
+                if view.get(NG_ISR) & NG_RXNE != 0 {
+                    view.set(NG_ISR, view.get(NG_ISR) & !NG_RXNE);
+                    if matches!(self.phase, Phase::Data)
+                        && self.ng_receiving
+                        && self.nbytes_left > 0
+                    {
+                        self.remaining = self.ng_byte_cycles(view);
+                    }
+                }
+                value
+            }
             SR2 => {
                 // Reading SR1 and then SR2 acknowledges `ADDR`; a master
                 // receiver then starts clocking the first data byte.
@@ -262,6 +538,10 @@ impl Behavior for I2cBehavior {
                 value
             }
             DR => {
+                if self.new_gen {
+                    // `TIMINGR` on this layout: no read side effects.
+                    return value;
+                }
                 // Reading the data register acknowledges `RXNE` (and the
                 // `BTF` that arrived with it); with `ACK` still set a master
                 // receiver clocks the next byte.
@@ -281,6 +561,10 @@ impl Behavior for I2cBehavior {
     }
 
     fn tick(&mut self, view: &mut Registers<&mut [u32]>, delta: u64) {
+        if self.new_gen {
+            self.ng_tick(view, delta);
+            return;
+        }
         if self.remaining == 0 {
             return;
         }
@@ -354,6 +638,18 @@ impl Behavior for I2cBehavior {
     }
 
     fn pending(&self, view: &Registers<&[u32]>) -> u32 {
+        if self.new_gen {
+            let cr1 = view.get(CR1);
+            let isr = view.get(NG_ISR);
+            let ev = (cr1 & NG_TXIE != 0 && isr & NG_TXIS != 0)
+                || (cr1 & NG_RXIE != 0 && isr & NG_RXNE != 0)
+                || (cr1 & NG_ADDRIE != 0 && isr & NG_ADDR != 0)
+                || (cr1 & NG_NACKIE != 0 && isr & NG_NACKF != 0)
+                || (cr1 & NG_STOPIE != 0 && isr & NG_STOPF != 0)
+                || (cr1 & NG_TCIE != 0 && isr & NG_TC != 0);
+            let er = cr1 & NG_ERRIE != 0;
+            return u32::from(ev) | (u32::from(er) << 1);
+        }
         let cr2 = view.get(CR2);
         let sr1 = view.get(SR1);
         let itevt = cr2 & ITEVTEN != 0;
@@ -364,7 +660,11 @@ impl Behavior for I2cBehavior {
     }
 
     fn lines(&self) -> u32 {
-        3
+        if self.new_gen {
+            2
+        } else {
+            3
+        }
     }
 
     fn reset(&mut self) {
@@ -416,8 +716,15 @@ impl I2c {
     #[must_use]
     pub fn for_device<D: Device>() -> Self {
         let def = D::peripheral("I2C1").expect("generated tables contain I2C1");
+        let new_gen = I2cBehavior::is_new_gen(def);
         Self {
-            inner: RegisterFile::new(def, I2cBehavior::default()),
+            inner: RegisterFile::new(
+                def,
+                I2cBehavior {
+                    new_gen,
+                    ..Default::default()
+                },
+            ),
         }
     }
 
@@ -429,8 +736,15 @@ impl I2c {
     #[must_use]
     pub fn i2c2_for<D: Device>() -> Self {
         let def = D::peripheral("I2C2").expect("generated tables contain I2C2");
+        let new_gen = I2cBehavior::is_new_gen(def);
         Self {
-            inner: RegisterFile::new(def, I2cBehavior::default()),
+            inner: RegisterFile::new(
+                def,
+                I2cBehavior {
+                    new_gen,
+                    ..Default::default()
+                },
+            ),
         }
     }
 
@@ -442,8 +756,15 @@ impl I2c {
     #[must_use]
     pub fn i2c3_for<D: Device>() -> Self {
         let def = D::peripheral("I2C3").expect("generated tables contain I2C3");
+        let new_gen = I2cBehavior::is_new_gen(def);
         Self {
-            inner: RegisterFile::new(def, I2cBehavior::default()),
+            inner: RegisterFile::new(
+                def,
+                I2cBehavior {
+                    new_gen,
+                    ..Default::default()
+                },
+            ),
         }
     }
 
@@ -451,8 +772,15 @@ impl I2c {
     #[must_use]
     pub fn i2c4_for<D: Device>() -> Self {
         let def = D::peripheral("I2C4").expect("generated tables contain I2C4");
+        let new_gen = I2cBehavior::is_new_gen(def);
         Self {
-            inner: RegisterFile::new(def, I2cBehavior::default()),
+            inner: RegisterFile::new(
+                def,
+                I2cBehavior {
+                    new_gen,
+                    ..Default::default()
+                },
+            ),
         }
     }
 }
@@ -783,5 +1111,160 @@ mod tests {
         assert_eq!(read_word(&mut i, BASE + SR1) & TXE, 0, "still shifting");
         i.tick(super::STRETCH_CYCLES);
         assert_eq!(read_word(&mut i, BASE + SR1) & TXE, TXE, "done now");
+    }
+
+    // --- New-generation engine (F0 tables) ---
+
+    use super::{
+        NG_ADDR, NG_ADDRCF, NG_ADDRIE, NG_AUTOEND, NG_BUSY, NG_DIR, NG_NACKCF, NG_NACKF,
+        NG_NBYTES_SHIFT, NG_RD_WRN, NG_RXDR, NG_RXNE, NG_SADD_MASK, NG_START, NG_STOP, NG_STOPCF,
+        NG_STOPF, NG_TC, NG_TCCF, NG_TXDR, NG_TXIS,
+    };
+    use crate::device::svd::stm32f030::Stm32f030;
+
+    const NG_BASE: u32 = 0x4000_5400;
+    const NG_CR2: u32 = 0x04;
+    const NG_TIMINGR: u32 = 0x10;
+    const NG_ISR: u32 = 0x18;
+    const NG_ICR: u32 = 0x1C;
+
+    fn ng_enabled() -> I2c {
+        let mut i = I2c::for_device::<Stm32f030>();
+        assert!(i.inner.behavior().new_gen, "F0 tables select new-gen");
+        write_word(&mut i, NG_BASE + CR1, PE);
+        i
+    }
+
+    /// `CR2` word for a transfer: 7-bit `sadd`, direction, byte count.
+    fn ng_cr2(sadd: u32, read: bool, nbytes: u32, autoend: bool) -> u32 {
+        (sadd & NG_SADD_MASK)
+            | (u32::from(read) * NG_RD_WRN)
+            | (nbytes << NG_NBYTES_SHIFT)
+            | (u32::from(autoend) * NG_AUTOEND)
+            | NG_START
+    }
+
+    /// Run the start condition, then one address byte time.
+    fn ng_started(i: &mut I2c) {
+        i.tick(8);
+        i.tick(18);
+    }
+
+    #[test]
+    fn ng_nacks_without_slave() {
+        let mut i = ng_enabled();
+        // No staged byte: nobody answers the address.
+        write_word(&mut i, NG_BASE + NG_CR2, ng_cr2(0x50, false, 1, false));
+        ng_started(&mut i);
+        let isr = read_word(&mut i, NG_BASE + NG_ISR);
+        assert_ne!(isr & NG_NACKF, 0, "NACKF latches");
+        assert_eq!(isr & NG_BUSY, 0, "bus released");
+        // Write-1-to-clear through ICR.
+        write_word(&mut i, NG_BASE + NG_ICR, NG_NACKCF);
+        assert_eq!(read_word(&mut i, NG_BASE + NG_ISR) & NG_NACKF, 0);
+    }
+
+    #[test]
+    fn ng_tx_to_staged_slave() {
+        let mut i = ng_enabled();
+        i.drive_inputs(0x01); // slave present
+        write_word(&mut i, NG_BASE + NG_CR2, ng_cr2(0x50, false, 2, false));
+        ng_started(&mut i);
+        let isr = read_word(&mut i, NG_BASE + NG_ISR);
+        assert_ne!(isr & NG_ADDR, 0, "ADDR latches");
+        assert_ne!(isr & NG_TXIS, 0, "TXIS invites the first byte");
+        assert_eq!(isr & NG_DIR, 0, "transmit direction");
+        assert_eq!((isr >> 17) & 0x7F, 0x50, "ADDCODE matches");
+        // ADDRCF clears ADDR; two bytes shift out, then TC.
+        write_word(&mut i, NG_BASE + NG_ICR, NG_ADDRCF);
+        assert_eq!(read_word(&mut i, NG_BASE + NG_ISR) & NG_ADDR, 0);
+        write_word(&mut i, NG_BASE + NG_TXDR, 0xAA);
+        i.tick(18);
+        assert_ne!(read_word(&mut i, NG_BASE + NG_ISR) & NG_TXIS, 0);
+        write_word(&mut i, NG_BASE + NG_TXDR, 0xBB);
+        i.tick(18);
+        let isr = read_word(&mut i, NG_BASE + NG_ISR);
+        assert_ne!(isr & NG_TC, 0, "TC after the count");
+        assert_eq!(i.drain_output(), [0xAA, 0xBB], "bytes drained");
+        // TCCF clears TC; STOP releases with STOPF.
+        write_word(&mut i, NG_BASE + NG_ICR, NG_TCCF);
+        assert_eq!(read_word(&mut i, NG_BASE + NG_ISR) & NG_TC, 0);
+        write_word(&mut i, NG_BASE + NG_CR2, NG_STOP);
+        i.tick(8);
+        let isr = read_word(&mut i, NG_BASE + NG_ISR);
+        assert_ne!(isr & NG_STOPF, 0, "STOPF latches");
+        assert_eq!(isr & NG_BUSY, 0, "bus released");
+        write_word(&mut i, NG_BASE + NG_ICR, NG_STOPCF);
+        assert_eq!(read_word(&mut i, NG_BASE + NG_ISR) & NG_STOPF, 0);
+    }
+
+    #[test]
+    fn ng_rx_from_slave_with_autoend() {
+        let mut i = ng_enabled();
+        i.drive_inputs(0x5A);
+        write_word(&mut i, NG_BASE + NG_CR2, ng_cr2(0x50, true, 2, true));
+        ng_started(&mut i);
+        let isr = read_word(&mut i, NG_BASE + NG_ISR);
+        assert_ne!(isr & NG_ADDR, 0, "ADDR latches");
+        assert_ne!(isr & NG_DIR, 0, "receive direction");
+        i.tick(18);
+        assert_eq!(
+            read_word(&mut i, NG_BASE + NG_RXDR) & 0xFF,
+            0x5A,
+            "first byte lands"
+        );
+        // The read cleared RXNE and clocked byte two.
+        assert_eq!(read_word(&mut i, NG_BASE + NG_ISR) & NG_RXNE, 0);
+        i.tick(18);
+        assert_eq!(
+            read_word(&mut i, NG_BASE + NG_RXDR) & 0xFF,
+            0x5A,
+            "second byte"
+        );
+        // The count completed with the byte: TC set, AUTOEND stop sent.
+        let isr = read_word(&mut i, NG_BASE + NG_ISR);
+        assert_ne!(isr & NG_TC, 0, "TC with the last byte");
+        i.tick(8);
+        let isr = read_word(&mut i, NG_BASE + NG_ISR);
+        assert_ne!(isr & NG_STOPF, 0, "AUTOEND stop lands");
+    }
+
+    #[test]
+    fn ng_timingr_paces_bytes() {
+        let mut i = ng_enabled();
+        // PRESC=15, SCLL=SCLH=0: 9 * 16 * 2 = 288 ticks per byte.
+        write_word(&mut i, NG_BASE + NG_TIMINGR, 0xF000_0000);
+        assert_eq!(
+            read_word(&mut i, NG_BASE + NG_TIMINGR),
+            0xF000_0000,
+            "TIMINGR latches"
+        );
+        write_word(&mut i, NG_BASE + NG_CR2, ng_cr2(0x50, false, 1, false));
+        i.tick(8);
+        i.tick(100);
+        assert_eq!(
+            read_word(&mut i, NG_BASE + NG_ISR) & (NG_NACKF | NG_ADDR),
+            0,
+            "address still shifting"
+        );
+        i.tick(200);
+        assert_ne!(
+            read_word(&mut i, NG_BASE + NG_ISR) & NG_NACKF,
+            0,
+            "NACKF after the slow byte"
+        );
+    }
+
+    #[test]
+    fn ng_irq_lines_mask() {
+        let mut i = ng_enabled();
+        // ADDRIE only: ADDR pends line 0, nothing else does.
+        write_word(&mut i, NG_BASE + CR1, PE | NG_ADDRIE);
+        i.drive_inputs(0x01);
+        write_word(&mut i, NG_BASE + NG_CR2, ng_cr2(0x50, false, 1, false));
+        ng_started(&mut i);
+        assert_eq!(i.pending(), 1, "ADDR raises line 0");
+        write_word(&mut i, NG_BASE + NG_ICR, NG_ADDRCF);
+        assert_eq!(i.pending(), 0, "clear drops the line");
     }
 }

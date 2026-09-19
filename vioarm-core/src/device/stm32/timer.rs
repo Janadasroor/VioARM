@@ -969,6 +969,36 @@ impl Timer {
         Self::for_device::<D>("TIM14", "tim14", 0xFFFF, 0)
     }
 
+    /// A `TIM15` on another chip's device tables (F0/F3 16-bit, single line).
+    ///
+    /// # Panics
+    /// Panics if `D`'s generated tables do not contain the `TIM15`
+    /// peripheral.
+    #[must_use]
+    pub fn tim15_for<D: Device>() -> Self {
+        Self::for_device::<D>("TIM15", "tim15", 0xFFFF, 0)
+    }
+
+    /// A `TIM16` on another chip's device tables (F0/F3 16-bit, single line).
+    ///
+    /// # Panics
+    /// Panics if `D`'s generated tables do not contain the `TIM16`
+    /// peripheral.
+    #[must_use]
+    pub fn tim16_for<D: Device>() -> Self {
+        Self::for_device::<D>("TIM16", "tim16", 0xFFFF, 0)
+    }
+
+    /// A `TIM17` on another chip's device tables (F0/F3 16-bit, single line).
+    ///
+    /// # Panics
+    /// Panics if `D`'s generated tables do not contain the `TIM17`
+    /// peripheral.
+    #[must_use]
+    pub fn tim17_for<D: Device>() -> Self {
+        Self::for_device::<D>("TIM17", "tim17", 0xFFFF, 0)
+    }
+
     fn for_device<D: Device>(
         peripheral: &str,
         name: &'static str,

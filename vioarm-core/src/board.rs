@@ -23,6 +23,7 @@ use crate::device::stm32::can::Can;
 use crate::device::stm32::cec::Cec;
 use crate::device::stm32::crc::Crc;
 use crate::device::stm32::dac::Dac;
+use crate::device::stm32::dbgmcu::Dbgmcu;
 use crate::device::stm32::dma::{DmaF1, DmaRequests};
 use crate::device::stm32::dma_f4::DmaF4;
 use crate::device::stm32::eth::{Eth, EthH7, EthMailbox};
@@ -1900,7 +1901,9 @@ pub fn stm32f030() -> BoardMemory {
     mem.set_flash_gate(gate.clone());
     let clock = ClockState::shared();
     mem.set_clock(clock.clone());
-    if <Stm32f030 as crate::device::svd::Device>::peripheral("FLASH").is_some() {
+    if <Stm32f030 as crate::device::svd::Device>::peripheral("FLASH").is_some()
+        || <Stm32f030 as crate::device::svd::Device>::peripheral("Flash").is_some()
+    {
         mem.attach(Box::new(FlashF1::for_device::<Stm32f030>(gate)));
     }
     mem.attach(Box::new(
@@ -1918,6 +1921,8 @@ pub fn stm32f030() -> BoardMemory {
         (0x4800_0000u32, "gpioa"),
         (0x4800_0400, "gpiob"),
         (0x4800_0800, "gpioc"),
+        (0x4800_0c00, "gpiod"),
+        (0x4800_1400, "gpiof"),
     ] {
         if <Stm32f030 as crate::device::svd::Device>::by_base(base).is_some() {
             mem.attach(Box::new(GpioF4::at_in::<Stm32f030>(base, name)));
@@ -1926,7 +1931,18 @@ pub fn stm32f030() -> BoardMemory {
     if <Stm32f030 as crate::device::svd::Device>::peripheral("USART1").is_some() {
         mem.attach(Box::new(Usart::for_device::<Stm32f030>()));
     }
-    for ctor in [Timer::tim1_for::<Stm32f030>, Timer::tim3_for::<Stm32f030>] {
+    if <Stm32f030 as crate::device::svd::Device>::peripheral("USART2").is_some() {
+        mem.attach(Box::new(Usart::usart2_for::<Stm32f030>()));
+    }
+    for ctor in [
+        Timer::tim1_for::<Stm32f030>,
+        Timer::tim3_for::<Stm32f030>,
+        Timer::tim6_for::<Stm32f030>,
+        Timer::tim14_for::<Stm32f030>,
+        Timer::tim15_for::<Stm32f030>,
+        Timer::tim16_for::<Stm32f030>,
+        Timer::tim17_for::<Stm32f030>,
+    ] {
         let base = ctor().ranges()[0].base;
         if <Stm32f030 as crate::device::svd::Device>::by_base(base).is_some() {
             mem.attach(Box::new(ctor()));
@@ -1957,8 +1973,23 @@ pub fn stm32f030() -> BoardMemory {
     if <Stm32f030 as crate::device::svd::Device>::peripheral("SPI1").is_some() {
         mem.attach(Box::new(Spi::spi1_for::<Stm32f030>()));
     }
+    if <Stm32f030 as crate::device::svd::Device>::peripheral("SPI2").is_some() {
+        mem.attach(Box::new(Spi::spi2_for::<Stm32f030>()));
+    }
     if <Stm32f030 as crate::device::svd::Device>::peripheral("I2C1").is_some() {
         mem.attach(Box::new(I2c::for_device::<Stm32f030>()));
+    }
+    if <Stm32f030 as crate::device::svd::Device>::peripheral("I2C2").is_some() {
+        mem.attach(Box::new(I2c::i2c2_for::<Stm32f030>()));
+    }
+    if <Stm32f030 as crate::device::svd::Device>::peripheral("RTC").is_some() {
+        mem.attach(Box::new(Rtc::new_for::<Stm32f030>()));
+    }
+    if <Stm32f030 as crate::device::svd::Device>::peripheral("DBGMCU").is_some() {
+        // RM0360 §26.4.1: DEV_ID 0x444 for STM32F030x6 (32K/4K, this
+        // board); REV_ID 0x1000 first silicon. Cross-checked via
+        // OpenOCD's stm32f1x.c table and the stm32flash/AN2606 list.
+        mem.attach(Box::new(Dbgmcu::new_for::<Stm32f030>(0x1000_0444)));
     }
     if <Stm32f030 as crate::device::svd::Device>::peripheral("DMA").is_some()
         || <Stm32f030 as crate::device::svd::Device>::peripheral("DMA1").is_some()

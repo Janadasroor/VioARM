@@ -42,8 +42,8 @@ T2-or-better) vs `latch` (pure `NoBehavior` register file, T1).
 System-block windows (`0xE000_0000+`: NVIC/SCB/SysTick) are `core`
 modeled in the CPU, not on the bus. Variants (`stm32f030c6`, …)
 delegate to their family constructor, so the 21 families below are the
-complete behavioral picture (1,046 bus windows: **555 behavioral**,
-491 latch, plus 60 core-owned — re-audited after the address-coverage
+complete behavioral picture (1,046 bus windows: **568 behavioral**,
+478 latch, plus 60 core-owned — re-audited after the address-coverage
 fix, which also closed shared-name `I2C` and sub-window `ETH`/`USB`
 instances on their boards).
 
@@ -55,7 +55,7 @@ boards — the real F0 boards are `f030/f031/f042/f072/f091`.
 
 | Board | Bus windows | Behavioral | Latch | Core |
 |---|---|---|---|---|
-| stm32f030 | 30 | 17 | 13 | 1 |
+| stm32f030 | 30 | 30 | 0 | 1 |
 | stm32f031 | 27 | 17 | 10 | 1 |
 | stm32f042 | 33 | 16 | 17 | 1 |
 | stm32f072 | 42 | 29 | 13 | 1 |
@@ -79,9 +79,14 @@ boards — the real F0 boards are `f030/f031/f042/f072/f091`.
 
 Per-board detail (latch lists are the Phase C work items):
 
-- `stm32f030` behavioral: CRC GPIOC GPIOB GPIOA SPI1 PWR I2C1 IWDG WWDG TIM1 TIM3 EXTI DMA RCC
-   SYSCFG ADC USART1 · latch: GPIOF GPIOD SPI2 I2C2 TIM14 TIM6 USART2 RTC TIM15 TIM16 TIM17 Flash
-   DBGMCU
+- `stm32f030` — **closed (Phase C): 30/30 behavioral, zero latch.** T3 (firmware-proven on this
+   board): GPIO/USART/TIM/ADC (`chip_cmsis_500`); everything else T2, including direct-poke proofs
+   (`f030_closeout.rs`) for GPIOD/F, USART2 loopback, SPI2 shift, I2C2 new-gen NACK, TIM6/14–17,
+   RTC calendar + alarm A, Flash erase + program, and DBGMCU `IDCODE 0x10000444`. New models:
+   `DBGMCU` (board-supplied `IDCODE`) and the I2C new-generation engine (also repairs F0 mounts
+   elsewhere). Documented limits: UART/SPI/I2C DMA unwired on this density; I2C 10-bit/`RELOAD`/
+   SMBus unmodeled; FSMC/SDIO absent from the die (not in table). Pins verified (`boards --pins
+   stm32f030`: `PA9: USART1_TX`, `PA5: GPIO_O`, …).
 - `stm32f031` behavioral: CRC GPIOC GPIOB GPIOA SPI1 PWR I2C1 IWDG WWDG TIM1 TIM2 EXTI DMA RCC
    SYSCFG ADC USART1 · latch: GPIOF TIM3 TIM14 RTC TIM16 TIM17 TSC CEC Flash DBGMCU
 - `stm32f042` behavioral: CRC GPIOB GPIOA SPI1 PWR I2C1 IWDG WWDG TIM1 TIM2 EXTI RCC SYSCFG USART1

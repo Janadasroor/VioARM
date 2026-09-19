@@ -293,7 +293,10 @@ impl FlashF1 {
     /// Panics if `D`'s generated tables do not contain the `FLASH` peripheral.
     #[must_use]
     pub fn for_device<D: Device>(gate: Arc<Mutex<FlashGate>>) -> Self {
-        let def = D::peripheral("FLASH").expect("generated tables contain FLASH");
+        // F0 tables name it `Flash` (F1/F4 use `FLASH`); same controller.
+        let def = D::peripheral("FLASH")
+            .or_else(|| D::peripheral("Flash"))
+            .expect("generated tables contain FLASH");
         Self {
             inner: RegisterFile::new(def, FlashBehavior::new(gate)),
         }

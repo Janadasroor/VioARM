@@ -21,6 +21,7 @@ pub mod comp;
 pub mod crc;
 pub mod crs;
 pub mod dac;
+pub mod dbgmcu;
 pub mod dcmi;
 pub mod dma;
 pub mod dma_f4;

@@ -86,7 +86,8 @@ For each board below: enumerate its SVD table, mark every peripheral
 T1/T2/T3, promote T1→T2 in Phase A/B order, attach pin table if headline,
 record result in `docs/src/boards.md`. All pending.
 
-- [ ] `stm32f030` (31) — F0 baseline close-out
+- [x] `stm32f030` (31) — F0 baseline closed: 30/30 behavioral, zero latch
+      (new `DBGMCU` + I2C new-gen engine; record in `docs/src/boards.md`).
 - [ ] `stm32f031` (28)
 - [ ] `stm32f042` (34)
 - [ ] `stm32f072` (43)
