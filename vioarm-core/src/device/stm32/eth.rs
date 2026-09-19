@@ -139,6 +139,157 @@ fn eth_hash(mac: &[u8]) -> u32 {
     (!crc >> 26) & 0x3F
 }
 
+/// One's-complement sum of big-endian 16-bit words (odd tail padded).
+fn csum_add(sum: u32, bytes: &[u8]) -> u32 {
+    let mut acc = sum;
+    let mut it = bytes.chunks_exact(2);
+    for w in &mut it {
+        acc += u32::from(u16::from_be_bytes([w[0], w[1]]));
+    }
+    if let Some(&last) = it.remainder().first() {
+        acc += u32::from(last) << 8;
+    }
+    acc
+}
+
+/// Fold carries and complement: the checksum to store.
+fn csum_fold(sum: u32) -> u16 {
+    let mut acc = sum;
+    while acc >> 16 != 0 {
+        acc = (acc & 0xFFFF) + (acc >> 16);
+    }
+    !(acc as u16)
+}
+
+/// Whether `bytes` (checksum field included) sum to a valid one's
+/// complement total.
+fn csum_valid(bytes: &[u8]) -> bool {
+    csum_fold(csum_add(0, bytes)) == 0
+}
+
+/// IPv4 header slice of an Ethernet frame: `(header, payload)` with the
+/// header length from `IHL` (options included). `None` for non-IPv4, short,
+/// or non-first fragments (only the first carries the transport header).
+fn ipv4_split(frame: &[u8]) -> Option<(&[u8], &[u8])> {
+    let ip = frame.get(14..)?;
+    if ip.len() < 20 || ip[0] >> 4 != 4 {
+        return None;
+    }
+    let ihl = usize::from(ip[0] & 0x0F) * 4;
+    if ihl < 20 || ip.len() < ihl {
+        return None;
+    }
+    // Fragment offset nonzero, or more-fragments with nonzero offset:
+    // only the first fragment carries the transport header.
+    if u16::from_be_bytes([ip[6], ip[7]]) & 0x1FFF != 0 {
+        return None;
+    }
+    Some((&ip[..ihl], &ip[ihl..]))
+}
+
+/// Insert checksums per `TDES3.CIC`: 1 = IP header only; 2 = IP header +
+/// transport checksum over the segment bytes (no pseudo-header); 3 = IP
+/// header + transport checksum with pseudo-header. TCP/UDP/ICMP only;
+/// anything else passes through untouched.
+fn tx_insert_checksum(frame: &mut [u8], cic: u32) {
+    if cic == 0 {
+        return;
+    }
+    // Compute every checksum before touching the frame: the header and
+    // segment slices borrow it immutably.
+    let (ip_sum, l4_sum, seg_off, ck_off) = match ipv4_split(frame) {
+        Some((hdr, seg)) => {
+            let ip_sum = csum_fold(csum_add(0, &hdr_zeroed(hdr)));
+            if cic == 1 {
+                (Some(ip_sum), None, 0, 0)
+            } else {
+                let proto = hdr[9];
+                let (ck_off, with_pseudo) = match proto {
+                    6 => (16, cic == 3), // TCP checksum, pseudo iff CIC=3
+                    17 => (6, cic == 3), // UDP checksum, pseudo iff CIC=3
+                    1 => (2, false),     // ICMP checksum, never pseudo
+                    _ => (usize::MAX, false),
+                };
+                if ck_off == usize::MAX || seg.len() < ck_off + 2 {
+                    (Some(ip_sum), None, 0, 0)
+                } else {
+                    let mut sum = csum_add(0, &seg_zeroed(seg, ck_off));
+                    if with_pseudo {
+                        // IPv4 pseudo-header: src, dst, zero, proto, length.
+                        sum = csum_add(sum, &hdr[12..20]);
+                        sum += u32::from(proto);
+                        sum += seg.len() as u32;
+                    }
+                    (Some(ip_sum), Some(csum_fold(sum)), 14 + hdr.len(), ck_off)
+                }
+            }
+        }
+        None => return,
+    };
+    if let Some(sum) = ip_sum {
+        if frame.len() >= 14 + 12 {
+            frame[14 + 10..14 + 12].copy_from_slice(&sum.to_be_bytes());
+        }
+    }
+    if let Some(sum) = l4_sum {
+        if frame.len() >= seg_off + ck_off + 2 {
+            frame[seg_off + ck_off..seg_off + ck_off + 2].copy_from_slice(&sum.to_be_bytes());
+        }
+    }
+}
+
+/// Copy of `hdr` with its checksum field zeroed, for the header sum.
+fn hdr_zeroed(hdr: &[u8]) -> Vec<u8> {
+    let mut h = hdr.to_vec();
+    if h.len() >= 12 {
+        h[10] = 0;
+        h[11] = 0;
+    }
+    h
+}
+
+/// Copy of `seg` with the 2-byte checksum at `ck_off` zeroed.
+fn seg_zeroed(seg: &[u8], ck_off: usize) -> Vec<u8> {
+    let mut s = seg.to_vec();
+    if s.len() >= ck_off + 2 {
+        s[ck_off] = 0;
+        s[ck_off + 1] = 0;
+    }
+    s
+}
+
+/// Validate checksums with `MACCR.IPC` semantics: `None` when the frame is
+/// not IPv4 (bypassed); otherwise `(header_ok, payload_ok, proto_known)`.
+/// Payload covers TCP/UDP (with pseudo-header) and ICMP; other protocols
+/// report no payload verdict.
+fn rx_check_checksum(frame: &[u8]) -> Option<(bool, bool, bool)> {
+    let (hdr, seg) = ipv4_split(frame)?;
+    let header_ok = csum_valid(hdr);
+    let proto = hdr[9];
+    let (ck_off, pseudo) = match proto {
+        6 => (16, true), // TCP
+        17 => (6, true), // UDP
+        1 => (2, false), // ICMP
+        _ => return Some((header_ok, true, false)),
+    };
+    if seg.len() < ck_off + 2 {
+        return Some((header_ok, false, true));
+    }
+    let stored = u16::from_be_bytes([seg[ck_off], seg[ck_off + 1]]);
+    let mut sum = csum_add(0, &seg_zeroed(seg, ck_off));
+    if pseudo {
+        sum = csum_add(sum, &hdr[12..20]);
+        sum += u32::from(proto);
+        sum += seg.len() as u32;
+    }
+    // A stored zero means "not computed" (UDP may legally send zero):
+    // accept without a verdict either way.
+    if proto == 17 && stored == 0 {
+        return Some((header_ok, true, true));
+    }
+    Some((header_ok, csum_fold(sum) == stored, true))
+}
+
 /// One memory request queued by the Ethernet controller for `SystemMemory` to
 /// perform. Reads return their bytes through the mailbox's results FIFO.
 #[derive(Debug)]
@@ -189,6 +340,12 @@ impl Win {
             .iter()
             .position(|r| r.offset == offset)
             .unwrap_or_else(|| panic!("no register at offset 0x{offset:x}"))
+    }
+
+    /// Whether the SVD table carries a register here (MMC counters exist
+    /// on some tables only).
+    fn has(&self, offset: u32) -> bool {
+        self.def.registers.iter().any(|r| r.offset == offset)
     }
 
     fn get(&self, offset: u32) -> u32 {
@@ -989,13 +1146,21 @@ impl Eth {
 /// `DMACTDTPR` transmit kick, ring wrap from `DMACTxRLR`/`DMACRxRLR`,
 /// and `DMACSR.TI/RI/NIS` (+`TBU/RBU/AIS`) gated by `DMACIER`.
 ///
-/// Deliberate limits, all documented: single-buffer frames only (a frame
-/// larger than `DMACRxCR.RBSZ` latches `RBU` and drops); checksum offload
-/// (`MACCR.IPC`, `TDES3.CIC`) and CRC/pad control (`CPC`) are latched and
-/// passed through — bytes are never modified, so a stack's valid frames
-/// echo bit-exact; context descriptors (VLAN/TSO) are consumed without
-/// effect; MTL queue setup, MMC counters, and PMT/magic-packet wakeup are
-/// latch-only (the H7 has a single `ETH` line, no wakeup line).
+/// Deliberate limits, all documented: TX frames chain across `FD`..`LD`
+/// descriptors (one `TI` per frame, the `FD` descriptor's `CIC` applies)
+/// and RX frames scatter across consecutive owned descriptors
+/// (all-or-nothing — a mid-chain unowned descriptor latches `RBU` and the
+/// frame drops, as does a frame larger than the whole ring); checksum
+/// offload inserts IPv4 header + TCP/UDP/ICMP checksums per `TDES3.CIC`
+/// (pseudo-header only for `CIC=3` on TCP/UDP) and validates them under
+/// `MACCR.IPC` with `RDES1` `IPCB`/`IPHE`/`IPCE` + `RDES3.ES` write-back
+/// (frames are still delivered, never dropped on checksum errors; FCS is
+/// not modeled so `RX_CRC_ERROR` never counts); MMC unicast/TX-good packet
+/// counters increment where the table carries them (broadcast/multicast
+/// frame counters are absent from the SVD); context descriptors (VLAN/TSO)
+/// are consumed without effect; MTL queue setup, MMC control/interrupts,
+/// and PMT/magic-packet wakeup are latch-only (the H7 has a single `ETH`
+/// line, no wakeup line).
 // MAC window register offsets.
 const H7_MACCR: u32 = 0x00;
 const H7_MACPFR: u32 = 0x08;
@@ -1063,6 +1228,11 @@ const H7_TX_CTXT: u32 = 1 << 30;
 const H7_TX_FD: u32 = 1 << 29;
 const H7_TX_LD: u32 = 1 << 28;
 const H7_TX_BUF2V: u32 = 1 << 25;
+/// `TDES3.CIC` checksum-insertion control (ST HAL `ETH_DMATXNDESCRF_CIC`):
+/// 0 bypass, 1 IP header, 2 IP header + payload (no pseudo-header),
+/// 3 IP header + payload with pseudo-header.
+const H7_TX_CIC_SHIFT: u32 = 16;
+const H7_TX_CIC_MASK: u32 = 0x3;
 const H7_TX_FL_MASK: u32 = 0x7FFF;
 const H7_TX_B1L_MASK: u32 = 0x3FFF;
 const H7_RX_OWN: u32 = 1 << 31;
@@ -1071,6 +1241,18 @@ const H7_RX_BUF1V: u32 = 1 << 24;
 const H7_RX_FD: u32 = 1 << 29;
 const H7_RX_LD: u32 = 1 << 28;
 const H7_RX_PL_MASK: u32 = 0x7FFF;
+/// `RDES3.ES` error summary (ST HAL `EMAC_DES3_ES`).
+const H7_RX_ES: u32 = 1 << 15;
+/// RX checksum write-back in `RDES1` (ST HAL `ETH_DMARXNDESCWBF_*`):
+/// bypassed, IP header error, IP payload error.
+const H7_RX_IPCB: u32 = 1 << 6;
+const H7_RX_IPHE: u32 = 1 << 3;
+const H7_RX_IPCE: u32 = 1 << 7;
+/// `MACCR.IPC` checksum-offload enable (MicroPython `ETH_MACCR_IPC`).
+const H7_MACCR_IPC: u32 = 1 << 27;
+// MMC counter offsets in the MAC window (H7 SVD `Ethernet_MAC`).
+const H7_MMC_TX_PKTS_GOOD: u32 = 0x768;
+const H7_MMC_RX_UCAST_GOOD: u32 = 0x7C4;
 
 /// Which descriptor fetch or frame move the H7 DMA engine is waiting on.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -1100,6 +1282,14 @@ enum H7Phase {
         part1: Vec<u8>,
         total: usize,
     },
+    /// RX scatter reads are in flight: descriptor addresses in ring order,
+    /// the `(buffer, control)` pairs fetched so far, and the frame waiting
+    /// for an all-owned chain.
+    AwaitRxChain {
+        addrs: Vec<u32>,
+        fetched: Vec<(u32, u32)>,
+        frame: Vec<u8>,
+    },
 }
 
 /// Everything the SVD cannot describe about the H7 controller.
@@ -1120,6 +1310,11 @@ struct H7State {
     /// The in-flight TX walk already produced a frame: reaching an
     /// unowned descriptor ends the walk quietly (no `TBU`).
     tx_chain: bool,
+    /// Bytes of a multi-descriptor TX frame accumulated so far (`FD` to
+    /// the current descriptor, emitted on `LD`).
+    tx_accum: Vec<u8>,
+    /// The `TDES3` of the `FD` descriptor (carries the frame's `CIC`).
+    tx_fd_tdes3: u32,
     /// Completed TX frames, framed for the host channel.
     output: Vec<u8>,
 }
@@ -1294,7 +1489,10 @@ impl EthH7 {
     }
 
     /// Advance the RX ring one frame: store the pending host frame into the
-    /// descriptor's buffer and write back `FD|LD|PL` (keeping `IOC`).
+    /// descriptor's buffer and write back `FD|LD|PL` (keeping `IOC`) plus
+    /// the `RDES1` checksum status. Frames larger than one buffer scatter
+    /// across consecutive owned descriptors (all-or-nothing: a mid-chain
+    /// unowned descriptor latches `RBU` and drops the frame).
     fn rx_advance(&mut self, bytes: &[u8]) {
         let w = |i: usize| {
             u32::from_le_bytes([
@@ -1325,26 +1523,145 @@ impl EthH7 {
                 self.state.phase = H7Phase::Idle;
                 return;
             }
-            if frame.len() > self.rbsz() {
-                // Single-buffer frames only: an oversized frame latches
-                // `RBU` and drops (documented limit).
+            let rbsz = self.rbsz();
+            if rbsz == 0 || frame.len() <= rbsz {
+                self.rx_store_single(buf1, rdes3, &frame);
+                self.latch_h7(H7_RI);
+                self.state.rx_desc = next;
+                self.state.phase = H7Phase::Idle;
+                return;
+            }
+            // Multi-buffer scatter: the frame needs several descriptors.
+            let base = self.dma.get(H7_DMACRXDLAR);
+            let rlr = self.dma.get(H7_DMACRXRLR);
+            let count = self.ring_count(rlr);
+            let needed = u32::try_from(frame.len().div_ceil(rbsz)).unwrap_or(u32::MAX);
+            if needed > count {
+                // Larger than the whole ring: drop and flag (documented).
                 self.latch_h7(H7_RBU);
                 self.state.rx_desc = next;
                 self.state.phase = H7Phase::Idle;
                 return;
             }
-            if !frame.is_empty() {
-                self.push_write(buf1, frame.clone());
+            let mut addrs = Vec::with_capacity(needed as usize);
+            let mut cur = self.state.rx_desc;
+            for _ in 0..needed {
+                addrs.push(cur);
+                cur = self.ring_next(cur, base, rlr);
             }
-            let wb = (rdes3 & H7_RX_IOC)
-                | H7_RX_FD
-                | H7_RX_LD
-                | (u32::try_from(frame.len()).unwrap_or(u32::MAX) & H7_RX_PL_MASK);
-            self.push_write(self.state.rx_desc + 12, wb.to_le_bytes().to_vec());
+            let fetched = vec![(buf1, rdes3)];
+            for addr in addrs.iter().skip(1) {
+                self.push_read(*addr, 16);
+            }
+            self.state.phase = H7Phase::AwaitRxChain {
+                addrs,
+                fetched,
+                frame,
+            };
+            return;
         }
         self.latch_h7(H7_RI);
         self.state.rx_desc = next;
         self.state.phase = H7Phase::Idle;
+    }
+
+    /// Store a frame that fits one buffer; returns the `RDES3` write-back.
+    fn rx_store_single(&mut self, buf1: u32, rdes3: u32, frame: &[u8]) {
+        if !frame.is_empty() {
+            self.push_write(buf1, frame.to_vec());
+        }
+        let status = self.rx_csum_status(frame);
+        let mut wb = (rdes3 & H7_RX_IOC)
+            | H7_RX_FD
+            | H7_RX_LD
+            | (u32::try_from(frame.len()).unwrap_or(u32::MAX) & H7_RX_PL_MASK);
+        if status != 0 {
+            wb |= H7_RX_ES;
+        }
+        self.push_write(self.state.rx_desc + 12, wb.to_le_bytes().to_vec());
+        self.push_write(self.state.rx_desc + 4, status.to_le_bytes().to_vec());
+        self.mmc_rx_count(frame);
+    }
+
+    /// Complete a scattered frame once every descriptor is fetched: all
+    /// owned → store chunk per buffer with `FD`/`LD` ends and the checksum
+    /// status on the last; any unowned → `RBU` and the frame drops.
+    fn rx_chain_complete(&mut self, addrs: Vec<u32>, fetched: Vec<(u32, u32)>, frame: Vec<u8>) {
+        let rbsz = self.rbsz().max(1);
+        if fetched.iter().any(|(_, rdes3)| rdes3 & H7_RX_OWN == 0) {
+            self.latch_h7(H7_RBU);
+            self.state.rx_desc = self.ring_next(
+                addrs[0],
+                self.dma.get(H7_DMACRXDLAR),
+                self.dma.get(H7_DMACRXRLR),
+            );
+            self.state.phase = H7Phase::Idle;
+            return;
+        }
+        let status = self.rx_csum_status(&frame);
+        for (i, (addr, (buf, rdes3))) in addrs.iter().zip(fetched.iter()).enumerate() {
+            let start = i * rbsz;
+            let end = (start + rbsz).min(frame.len());
+            let chunk = &frame[start..end];
+            if !chunk.is_empty() {
+                self.push_write(*buf, chunk.to_vec());
+            }
+            let last = i + 1 == addrs.len();
+            let mut wb = (rdes3 & H7_RX_IOC)
+                | (u32::try_from(chunk.len()).unwrap_or(u32::MAX) & H7_RX_PL_MASK);
+            if i == 0 {
+                wb |= H7_RX_FD;
+            }
+            if last {
+                wb |= H7_RX_LD;
+                if status != 0 {
+                    wb |= H7_RX_ES;
+                }
+            }
+            self.push_write(addr + 12, wb.to_le_bytes().to_vec());
+            if last {
+                self.push_write(addr + 4, status.to_le_bytes().to_vec());
+            }
+        }
+        self.mmc_rx_count(&frame);
+        self.latch_h7(H7_RI);
+        let last = addrs[addrs.len() - 1];
+        self.state.rx_desc = self.ring_next(
+            last,
+            self.dma.get(H7_DMACRXDLAR),
+            self.dma.get(H7_DMACRXRLR),
+        );
+        self.state.phase = H7Phase::Idle;
+    }
+
+    /// The `RDES1` checksum write-back for a received frame: bypassed when
+    /// offload is off or the frame is not IPv4, else header/payload errors.
+    fn rx_csum_status(&self, frame: &[u8]) -> u32 {
+        if self.mac.get(H7_MACCR) & H7_MACCR_IPC == 0 {
+            return H7_RX_IPCB;
+        }
+        match rx_check_checksum(frame) {
+            None => H7_RX_IPCB,
+            Some((header_ok, payload_ok, _)) => {
+                let mut status = 0;
+                if !header_ok {
+                    status |= H7_RX_IPHE;
+                }
+                if !payload_ok {
+                    status |= H7_RX_IPCE;
+                }
+                status
+            }
+        }
+    }
+
+    /// Count a received frame in MMC: unicast only (the table carries no
+    /// broadcast/multicast frame counters).
+    fn mmc_rx_count(&mut self, frame: &[u8]) {
+        let unicast = frame.len() >= 6 && frame[0] & 1 == 0 && frame[..6] != [0xFF; 6];
+        if unicast {
+            self.mmc_add(H7_MMC_RX_UCAST_GOOD, 1);
+        }
     }
 
     /// Consume one TX descriptor: gather buffer 1 (+2) and hand the bytes
@@ -1411,28 +1728,57 @@ impl EthH7 {
         }
     }
 
-    /// Complete a TX frame: drain the gathered bytes (clamped to the
-    /// descriptor's frame length) to the host channel, return the
-    /// descriptor's ownership, and keep walking while owned.
-    fn tx_complete(&mut self, desc: u32, tdes3: u32, next: u32, mut data: Vec<u8>, total: usize) {
-        // `CIC`/`CPC` pass through: checksums and padding are firmware's
-        // bytes, never recomputed (documented stance).
+    /// Append one TX descriptor's bytes to the in-flight frame and hand
+    /// ownership back. A `FD` descriptor starts a new frame (its `TDES3`
+    /// carries the frame's `CIC`); an `LD` descriptor emits the frame.
+    fn tx_append(&mut self, desc: u32, tdes3: u32, next: u32, mut data: Vec<u8>, total: usize) {
         let want = if total != 0 { total } else { data.len() };
         data.truncate(want);
-        let len = u16::try_from(data.len()).unwrap_or(u16::MAX);
-        self.state.output.push(EVT_TX);
-        self.state.output.push((len & 0xFF) as u8);
-        self.state.output.push((len >> 8) as u8);
-        self.state.output.extend_from_slice(&data);
+        if tdes3 & H7_TX_FD != 0 {
+            self.state.tx_accum.clear();
+            self.state.tx_fd_tdes3 = tdes3;
+        }
+        self.state.tx_accum.extend_from_slice(&data);
         self.push_write(desc + 12, (tdes3 & !H7_TX_OWN).to_le_bytes().to_vec());
         self.state.tx_desc = next;
         self.state.tx_chain = true;
         self.state.phase = H7Phase::Idle;
+        if tdes3 & H7_TX_LD != 0 {
+            let frame = core::mem::take(&mut self.state.tx_accum);
+            let cic = self.state.tx_fd_tdes3;
+            self.tx_emit(frame, cic);
+        } else if self.tx_enabled() {
+            // Keep walking while the next descriptor is already owned.
+            self.push_read(next, 16);
+            self.state.phase = H7Phase::AwaitTxDesc;
+        }
+    }
+
+    /// Emit one TX frame: checksum-insert per the `FD` descriptor's `CIC`,
+    /// frame it for the host channel, count it in MMC, and raise `TI`.
+    fn tx_emit(&mut self, mut frame: Vec<u8>, fd_tdes3: u32) {
+        let cic = (fd_tdes3 >> H7_TX_CIC_SHIFT) & H7_TX_CIC_MASK;
+        tx_insert_checksum(&mut frame, cic);
+        let len = u16::try_from(frame.len()).unwrap_or(u16::MAX);
+        self.state.output.push(EVT_TX);
+        self.state.output.push((len & 0xFF) as u8);
+        self.state.output.push((len >> 8) as u8);
+        self.state.output.extend_from_slice(&frame);
+        self.mmc_add(H7_MMC_TX_PKTS_GOOD, 1);
         self.latch_h7(H7_TI);
         // Keep walking while the next descriptor is already owned.
         if self.tx_enabled() {
-            self.push_read(next, 16);
+            self.push_read(self.state.tx_desc, 16);
             self.state.phase = H7Phase::AwaitTxDesc;
+        }
+    }
+
+    /// Add `n` to an MMC counter (32-bit wrap, like silicon); a no-op on
+    /// tables that do not carry the counter.
+    fn mmc_add(&mut self, off: u32, n: u32) {
+        if self.mac.has(off) {
+            let cur = self.mac.get(off);
+            self.mac.set(off, cur.wrapping_add(n));
         }
     }
 
@@ -1522,7 +1868,7 @@ impl Peripheral for EthH7 {
                             total,
                         };
                     } else {
-                        self.tx_complete(desc, tdes3, next, result, total);
+                        self.tx_append(desc, tdes3, next, result, total);
                     }
                 }
                 H7Phase::AwaitTxData2 {
@@ -1533,7 +1879,31 @@ impl Peripheral for EthH7 {
                     total,
                 } => {
                     part1.extend_from_slice(&result);
-                    self.tx_complete(desc, tdes3, next, part1, total);
+                    self.tx_append(desc, tdes3, next, part1, total);
+                }
+                H7Phase::AwaitRxChain {
+                    addrs,
+                    mut fetched,
+                    frame,
+                } => {
+                    let w = |i: usize| {
+                        u32::from_le_bytes([
+                            result[4 * i],
+                            result[4 * i + 1],
+                            result[4 * i + 2],
+                            result[4 * i + 3],
+                        ])
+                    };
+                    fetched.push((w(0), w(3)));
+                    if fetched.len() < addrs.len() {
+                        self.state.phase = H7Phase::AwaitRxChain {
+                            addrs,
+                            fetched,
+                            frame,
+                        };
+                    } else {
+                        self.rx_chain_complete(addrs, fetched, frame);
+                    }
                 }
                 H7Phase::Idle => {}
             }
@@ -1547,6 +1917,7 @@ impl Peripheral for EthH7 {
             } else if self.tx_enabled() && self.state.tx_poll {
                 self.state.tx_poll = false;
                 self.state.tx_chain = false;
+                self.state.tx_accum.clear();
                 self.push_read(self.state.tx_desc, 16);
                 self.state.phase = H7Phase::AwaitTxDesc;
             }
@@ -1649,6 +2020,7 @@ impl EthH7 {
             write_latch(&mut self.dma, off, val)?;
             self.state.tx_poll = true;
             self.state.tx_chain = false;
+            self.state.tx_accum.clear();
             return Ok(());
         }
         if let Some(l) = lane(off, H7_DMACSR) {
@@ -2021,8 +2393,8 @@ mod tests {
     // ---- H7 engine ----
 
     use super::{
-        EthH7, H7_AIS, H7_NIS, H7_RBU, H7_RI, H7_RX_BUF1V, H7_RX_FD, H7_RX_LD, H7_RX_OWN, H7_TBU,
-        H7_TI, H7_TX_FD, H7_TX_LD, H7_TX_OWN,
+        EthH7, H7_AIS, H7_NIS, H7_RBU, H7_RI, H7_RX_BUF1V, H7_RX_FD, H7_RX_IPCB, H7_RX_LD,
+        H7_RX_OWN, H7_RX_PL_MASK, H7_TBU, H7_TI, H7_TX_FD, H7_TX_LD, H7_TX_OWN,
     };
 
     const H7MAC: u32 = 0x4002_8000;
@@ -2285,14 +2657,55 @@ mod tests {
     }
 
     #[test]
-    fn h7_oversized_frame_drops_with_rbu() {
+    fn h7_rx_frame_scatters_across_owned_descriptors() {
         let mut mem = h7sys();
         h7_station(&mut mem);
         h7_enable(&mut mem);
-        // Shrink the buffers below the frame: single-buffer limit.
+        // Buffers smaller than the frame: two descriptors per frame.
         write_word(&mut mem, H7DMA + 0x108, 1 | (4 << 1)); // SR|RBSZ=4
         h7_rx_ring(&mut mem, RAM + 0x100, 4, RAM + 0x400, 0x400);
         inject_frame(&mut mem, &[2, 2, 3, 4, 5, 6, 7, 8]);
+        for _ in 0..8 {
+            cycle(&mut mem);
+        }
+        let s0 = read_word(&mut mem, RAM + 0x100 + 12);
+        let s1 = read_word(&mut mem, RAM + 0x110 + 12);
+        assert_eq!(s0 & H7_RX_OWN, 0, "desc0 complete");
+        assert_ne!(s0 & H7_RX_FD, 0, "FD on first");
+        assert_eq!(s0 & H7_RX_LD, 0, "no LD on first");
+        assert_eq!(s0 & H7_RX_PL_MASK, 4, "PL0");
+        assert_eq!(s1 & H7_RX_OWN, 0, "desc1 complete");
+        assert_eq!(s1 & H7_RX_FD, 0, "no FD on last");
+        assert_ne!(s1 & H7_RX_LD, 0, "LD on last");
+        assert_eq!(s1 & H7_RX_PL_MASK, 4, "PL1");
+        for (i, b) in [2u8, 2, 3, 4].iter().enumerate() {
+            assert_eq!(mem.read(RAM + 0x400 + i as u32), Ok(*b), "chunk0");
+        }
+        for (i, b) in [5u8, 6, 7, 8].iter().enumerate() {
+            assert_eq!(mem.read(RAM + 0x800 + i as u32), Ok(*b), "chunk1");
+        }
+        // Offload is off: the checksum status reports bypassed.
+        assert_eq!(
+            read_word(&mut mem, RAM + 0x110 + 4) & 0xFF,
+            H7_RX_IPCB,
+            "IPCB"
+        );
+        assert_ne!(read_word(&mut mem, H7DMA + 0x160) & H7_RI, 0, "RI");
+        assert_eq!(read_word(&mut mem, H7DMA + 0x160) & H7_RBU, 0, "no RBU");
+    }
+
+    #[test]
+    fn h7_frame_larger_than_ring_drops_with_rbu() {
+        let mut mem = h7sys();
+        h7_station(&mut mem);
+        h7_enable(&mut mem);
+        // Five 4-byte buffers needed, four in the ring: drop and flag.
+        write_word(&mut mem, H7DMA + 0x108, 1 | (4 << 1)); // SR|RBSZ=4
+        h7_rx_ring(&mut mem, RAM + 0x100, 4, RAM + 0x400, 0x400);
+        inject_frame(
+            &mut mem,
+            &[2, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17],
+        );
         cycle(&mut mem);
         cycle(&mut mem);
         assert_ne!(
