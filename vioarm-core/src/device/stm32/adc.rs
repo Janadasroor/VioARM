@@ -114,6 +114,14 @@ struct AdcConfig {
     dr_off: u32,
     eoc_bit: u32,
     adon_bit: u32,
+    /// Register holding external-trigger enables (`CR2` on F1/F4).
+    ext_reg_off: u32,
+    /// Single-bit enables (`CR2.EXTTRIG`/`JEXTTRIG`, F1); 0 when absent.
+    exttrig_bit: u32,
+    jexttrig_bit: u32,
+    /// Two-bit enable-field masks (`CR2.EXTEN`/`JEXTEN`, F4); 0 when absent.
+    exten_mask: u32,
+    jexten_mask: u32,
 }
 
 /// The sampling core the SVD cannot express.
@@ -238,6 +246,18 @@ impl AdcBehavior {
             channel: self.injected_channel_at(view, 0),
             remaining: u64::from(CONVERSION_CYCLES),
         });
+    }
+
+    /// Whether the external trigger path is armed: the F1 single-bit
+    /// enable, or the F4 two-bit field set to anything but disabled.
+    fn ext_enabled(&self, view: &Registers<&mut [u32]>, injected: bool) -> bool {
+        let cr2 = view.get(self.config.ext_reg_off);
+        let (bit, mask) = if injected {
+            (self.config.jexttrig_bit, self.config.jexten_mask)
+        } else {
+            (self.config.exttrig_bit, self.config.exten_mask)
+        };
+        cr2 & bit != 0 || (mask != 0 && cr2 & mask != 0)
     }
 
     /// Land one regular result in `DR` (shared by the tick paths).
@@ -378,6 +398,11 @@ impl Behavior for AdcBehavior {
                     && was_powered
                     && word & CONT == 0
                     && self.converting.is_none()
+                    // ...and only when the written lane actually carries
+                    // the ADON bit: a word store lands byte-by-byte, and
+                    // the upper lanes must not re-trigger on the power
+                    // state the first lane just established.
+                    && (u32::from(val) & (self.config.adon_bit >> shift)) != 0
                 {
                     // F1 legacy: a second ADON write (while already powered,
                     // outside continuous mode) starts a conversion.
@@ -533,9 +558,30 @@ impl Behavior for AdcBehavior {
         self.jindex = 0;
     }
 
-    fn drive_inputs(&mut self, _view: &mut Registers<&mut [u32]>, value: u32) {
+    fn drive_inputs(&mut self, view: &mut Registers<&mut [u32]>, value: u32) {
+        // Bits 11:0 carry the level; bits 20:16 select the channel + 1
+        // (`0` = every channel, keeping the old fill behavior for plain
+        // millivolt values); bit 24 is a regular external-trigger edge,
+        // bit 25 an injected one.
         let level = (value & 0x0FFF) as u16;
-        self.analog.fill(level);
+        match (value >> 16) & 0x1F {
+            0 | 19..=31 => self.analog.fill(level),
+            ch => self.analog[ch as usize - 1] = level,
+        }
+        if value & (1 << 24) != 0
+            && self.ext_enabled(view, false)
+            && view.get(self.config.cr_off) & self.config.adon_bit != 0
+            && self.converting.is_none()
+        {
+            self.start_sequence(view);
+        }
+        if value & (1 << 25) != 0
+            && self.ext_enabled(view, true)
+            && view.get(self.config.cr_off) & self.config.adon_bit != 0
+            && self.jconverting.is_none()
+        {
+            self.start_injected(view);
+        }
     }
 }
 
@@ -899,6 +945,32 @@ fn config_from(def: &'static PeripheralDef) -> AdcConfig {
         .iter()
         .find(|f| f.name == "ADON" || f.name == "ADEN");
     let adon_bit = adon_field.map(|f| 1u32 << f.offset).unwrap_or(1 << 0);
+    // External triggers: F1 enables with single bits (`CR2.EXTTRIG`,
+    // `CR2.JEXTTRIG`), F4 with two-bit fields (`CR2.EXTEN`, `CR2.JEXTEN`
+    // nonzero). The stimulus edge fires whichever source is selected —
+    // source disambiguation is out of scope.
+    let cr2 = def.registers.iter().find(|r| r.name == "CR2");
+    let bit_in = |reg_name: &str, field: &str| -> u32 {
+        def.registers
+            .iter()
+            .find(|r| r.name == reg_name)
+            .and_then(|r| r.fields.iter().find(|f| f.name == field))
+            .map(|f| 1u32 << f.offset)
+            .unwrap_or(0)
+    };
+    let mask_in = |reg_name: &str, field: &str| -> u32 {
+        def.registers
+            .iter()
+            .find(|r| r.name == reg_name)
+            .and_then(|r| r.fields.iter().find(|f| f.name == field))
+            .map(|f| 0x3u32 << f.offset)
+            .unwrap_or(0)
+    };
+    let ext_reg_off = cr2.map(|r| r.offset).unwrap_or(cr.offset);
+    let exttrig_bit = bit_in("CR2", "EXTTRIG");
+    let jexttrig_bit = bit_in("CR2", "JEXTTRIG");
+    let exten_mask = mask_in("CR2", "EXTEN");
+    let jexten_mask = mask_in("CR2", "JEXTEN");
     // The F1 still routes the external trigger through `CR2.EXTTRIG`; the F4
     // replaced it with `EXTEN`. Where `EXTTRIG` exists, a second `ADON` write
     // restarts the converter.
@@ -937,6 +1009,11 @@ fn config_from(def: &'static PeripheralDef) -> AdcConfig {
         dr_off: dr.offset,
         eoc_bit,
         adon_bit,
+        ext_reg_off,
+        exttrig_bit,
+        jexttrig_bit,
+        exten_mask,
+        jexten_mask,
     }
 }
 
@@ -1374,5 +1451,88 @@ mod tests {
         write_word(&mut adc, CR2, ADON | SWSTART_F1);
         adc.tick(14);
         assert_eq!(read_word(&mut adc, DR), 4095);
+    }
+
+    /// Per-channel stimulus: each scan slot samples its own driven level.
+    #[test]
+    fn per_channel_drive_feeds_scan_slots() {
+        let mut adc = Adc::adc1();
+        adc.drive_inputs(1000 | (1 << 16));
+        adc.drive_inputs(2000 | (2 << 16));
+        adc.drive_inputs(3000 | (3 << 16));
+        write_word(&mut adc, CR1, SCAN);
+        write_word(&mut adc, SQR3_OFF, (1 << 5) | (2 << 10));
+        write_word(&mut adc, SQR1, 2 << 20); // L = 2: three conversions
+        write_word(&mut adc, CR2, ADON);
+        write_word(&mut adc, CR2, ADON | SWSTART_F1);
+        let mut out = Vec::new();
+        for _ in 0..3 {
+            adc.tick(14);
+            assert_ne!(read_word(&mut adc, SR) & EOC, 0);
+            out.push(read_word(&mut adc, DR) & 0xFFF);
+        }
+        assert_eq!(out, [1000, 2000, 3000]);
+    }
+
+    /// A plain level (channel field zero) still fills every channel.
+    #[test]
+    fn plain_drive_still_fills_every_channel() {
+        let mut adc = Adc::adc1();
+        adc.drive_inputs(0x0ABC);
+        write_word(&mut adc, CR1, SCAN);
+        write_word(&mut adc, SQR3_OFF, 5 | (9 << 5));
+        write_word(&mut adc, SQR1, 1 << 20); // L = 1: two conversions
+        write_word(&mut adc, CR2, ADON);
+        write_word(&mut adc, CR2, ADON | SWSTART_F1);
+        for _ in 0..2 {
+            adc.tick(14);
+            assert_eq!(read_word(&mut adc, DR), 0x0ABC);
+        }
+    }
+
+    /// External trigger: an edge starts the sequence only when armed
+    /// (`CR2.EXTTRIG` on F1, `CR2.EXTEN` nonzero on F4).
+    #[test]
+    fn external_trigger_starts_conversion_when_armed() {
+        let mut adc = Adc::adc1();
+        adc.drive_inputs(0x0ABC);
+        write_word(&mut adc, CR2, ADON);
+        // Disarmed: the edge does nothing.
+        adc.drive_inputs((1 << 24) | 0x0ABC);
+        adc.tick(14);
+        assert_eq!(read_word(&mut adc, SR) & EOC, 0);
+        // Arm EXTTRIG (CR2 bit 20): the edge starts the sequence.
+        write_word(&mut adc, CR2, ADON | (1 << 20));
+        adc.drive_inputs((1 << 24) | 0x0ABC);
+        adc.tick(14);
+        assert_eq!(read_word(&mut adc, DR), 0x0ABC);
+        // F4: EXTEN = 01 arms the same path.
+        let mut f4 = Adc::adc1_for::<Stm32f407>();
+        f4.drive_inputs(0x0ABC);
+        write_word(&mut f4, CR2, ADON);
+        f4.drive_inputs((1 << 24) | 0x0ABC);
+        f4.tick(14);
+        assert_eq!(read_word(&mut f4, SR) & EOC, 0);
+        write_word(&mut f4, CR2, ADON | (1 << 28));
+        f4.drive_inputs((1 << 24) | 0x0ABC);
+        f4.tick(14);
+        assert_eq!(read_word(&mut f4, DR), 0x0ABC);
+    }
+
+    /// Injected trigger: `JEXTTRIG` + stimulus bit 25 runs the injected
+    /// sequence into `JDR1`.
+    #[test]
+    fn injected_trigger_starts_injected_sequence() {
+        let mut adc = Adc::adc1();
+        adc.drive_inputs(0x0555 | (1 << 16)); // ch0
+        write_word(&mut adc, CR2, ADON);
+        adc.drive_inputs((1 << 25) | 0x0555);
+        adc.tick(14);
+        assert_eq!(read_word(&mut adc, SR) & JEOC, 0, "disarmed: nothing");
+        write_word(&mut adc, CR2, ADON | (1 << 15)); // JEXTTRIG
+        adc.drive_inputs((1 << 25) | 0x0555);
+        adc.tick(14);
+        assert_ne!(read_word(&mut adc, SR) & JEOC, 0);
+        assert_eq!(read_word(&mut adc, JDR1) & 0xFFF, 0x0555);
     }
 }
