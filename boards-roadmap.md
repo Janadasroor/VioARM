@@ -68,33 +68,10 @@ board e2e with real firmware → `arch.md` + CHANGELOG.
 - [x] **CRC full**: programmable `POL`/`POLYSIZE`/`REV_IN`/`REV_OUT`/`INIT` over a transaction-grouped MSB-first engine (byte/halfword/word paths); fixed units bit-identical; `RESET` keeps config now. Proof: 6 exact check values + C firmware ISO-HDLC/CCITT-FALSE on `g474` (`tests/crc_vectors.rs`).
 - [x] **RNG startup + health**: rewritten with resolved offsets, `CECS`/`SECS` halt+`CEIS`/`SEIS`+IRQ, W0C/disable recovery, `CED` switch; fixed missing `drive_inputs` forwarding and stale-return clobbers. Proof: 5 lib tests (smoke + flags + recovery) + board smoke on `h743` (`tests/rng_smoke.rs`).
 - [x] **General DMA completion**: no driver changes — pacing, FIFO/`DBM`/`M2M` IRQs, request wiring already proven (52 lib tests + `f2_clock_dma.rs`); added the missing firmware proof: C `MEM2MEM` copy + circular reload on `f103` (`tests/dma_flow.rs`). **Phase A complete (10/10).**
-- [ ] **SPI slave + full duplex master**: master TX exists; add slave
-      capture both directions, NSS handling, IRQ/DMA paths. Proof:
-      fabric master/slave ping-pong both directions.
-- [ ] **I2C full transaction set**: START/STOP, ACK/NACK, clock stretch,
-      10-bit + IRQ paths on F1/F4. Proof: EEPROM-style firmware e2e.
-- [ ] **ADC full modes**: scan/continuous/injected + analog watchdog +
-      DMA on F1/F4/H7 (basic single-shot is T2). Proof: multi-channel
-      ramp vs expected codes.
-- [ ] **DAC + COMP/OPAMP chains**: waveform output, comparator IRQs with
-      hysteresis (bus side exists). Proof: triangle-out + threshold IRQ.
-- [ ] **RTC + backup domain**: calendar, alarms, tamper, BKP persistence
-      across reset. Proof: alarm-IRQ firmware, persistence check.
-- [ ] **Watchdogs (IWDG/WWDG)**: reset on expiry, window check, EWI.
-      Proof: reset-observed e2e.
-- [ ] **CRC full**: polynomial/size/mode paths on F1/F4/H7. Proof:
-      known-answer vectors.
-- [ ] **RNG startup + health**: DRDY, error flags, reseeding behavior.
-      Proof: statistical smoke + flag checks.
-- [ ] **General DMA completion**: request pacing exists (F4/H7/F1
-      sources); add FIFO/threshold errors, double-buffer, MEM2MEM IRQ
-      paths. Proof: TIM→DMA→USART chain e2e.
 
 ## Phase B — complex peripherals (one work package each)
 
-- [ ] **USB host**: HPRT/SOF scheduler + channels exist behaviorally;
-      close split/hub/isochronous gaps. Proof: virtual CDC-ACM + HID
-      device traffic.
+- [x] **USB host**: split start/complete sequencing via `HCSPLT` (`OTG_HS` only) + virtual HID boot-keyboard (descriptors, idle/protocol/report/LED, interrupt-IN reports); hub topology + hub-class stay documented non-goals. Proof: HID enumeration + key report + LED on `f407` `OTG_FS`, bulk OUT/IN split pairs on `OTG_HS` (`tests/usb_host_hid_split.rs`).
 - [ ] **Ethernet full (H7)**: echo exists; add checksum offload,
       multi-buffer frames, MMC/PMT counters. Proof: large-payload echo
       with verified checksums.

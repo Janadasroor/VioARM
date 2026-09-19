@@ -20,12 +20,17 @@
 //! Host mode (`GUSBCFG.FDMOD` clear) drives a [`VirtualUsbDevice`] plugged
 //! with [`Usb::plug_virtual_device`]: the HPRT port state machine (power,
 //! connect detect, SOF-counted reset, enable), the SOF scheduler (frame
-//! counter, `HFNUM`, periodic interrupt transfers deferred to the frame
-//! boundary), and host-channel execution (control SETUP/data/status,
-//! bulk/interrupt IN/OUT against the virtual device, with ACK/NAK/STALL and
-//! `HCTSIZ` remaining-byte write-back). `CMD_SOF` on the host channel is the
-//! controller emitting one frame; everything completes deterministically, so
-//! a host stack's register sequence runs identically on every run.
+//! counter, `HFNUM`, periodic interrupt/isochronous transfers deferred to
+//! the frame boundary), and host-channel execution (control SETUP/data/
+//! status, bulk/interrupt/isochronous IN/OUT against the virtual device,
+//! split start/complete sequencing via `HCSPLT`, with ACK/NAK/STALL and
+//! `HCTSIZ` remaining-byte write-back). The virtual device is CDC-ACM by
+//! default ([`VirtualUsbDevice::new`]) or a HID boot keyboard
+//! ([`VirtualUsbDevice::hid_keyboard`]). `CMD_SOF` on the host channel is
+//! the controller emitting one frame; everything completes
+//! deterministically, so a host stack's register sequence runs identically
+//! on every run. Deliberately unmodeled: hub topology and hub-class
+//! descriptors (STALL), high-bandwidth multi-packet microframe scheduling.
 
 use crate::device::svd::{Access, Device, PeripheralDef, RegisterDef};
 use crate::device::{InterruptSource, Peripheral};
@@ -138,6 +143,12 @@ const HCTSIZ_XFRSIZ: u32 = 0x7_FFFF;
 const HCTSIZ_PKTCNT_SHIFT: u32 = 19;
 const HCTSIZ_DPID_SHIFT: u32 = 29;
 
+// HCSPLT fields (split transactions through a hub: start-split queues the
+// token at the hub's translator, complete-split retrieves the result).
+const HCSPLT0: u32 = 0x104;
+const SPLIT_COMPLSPLT: u32 = 1 << 16;
+const SPLIT_SPLITENA: u32 = 1 << 31;
+
 // HCINT bits.
 const HC_XFRC: u32 = 1 << 0;
 const HC_CHH: u32 = 1 << 1;
@@ -223,6 +234,12 @@ impl Win {
             .iter()
             .position(|r| r.offset == offset)
             .unwrap_or_else(|| panic!("no register at offset 0x{offset:x}"))
+    }
+
+    /// Whether the SVD table carries a register here (`HCSPLT` exists on
+    /// `OTG_HS` only; every `OTG_FS` table omits it).
+    fn has(&self, offset: u32) -> bool {
+        self.def.registers.iter().any(|r| r.offset == offset)
     }
 
     fn get(&self, offset: u32) -> u32 {
@@ -339,12 +356,27 @@ struct CtrlXfer {
 pub struct VirtualUsbDevice {
     address: u8,
     configuration: u8,
+    kind: VdevKind,
     ctrl: Option<CtrlXfer>,
     in_data: [Vec<u8>; 4],
     out_data: [Vec<u8>; 4],
     halted_in: [bool; 4],
     halted_out: [bool; 4],
     line_coding: [u8; 7],
+    /// HID idle rate (`SET_IDLE`) and protocol (`SET_PROTOCOL`: 0 boot).
+    idle: u8,
+    protocol: u8,
+    /// HID output report (keyboard LEDs) from `SET_REPORT`.
+    leds: u8,
+}
+
+/// Which class the virtual device presents: CDC-ACM (default) or a HID
+/// boot keyboard.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum VdevKind {
+    #[default]
+    Cdc,
+    HidKeyboard,
 }
 
 impl Default for VirtualUsbDevice {
@@ -379,6 +411,46 @@ const VDEV_STR_SER: &[u8] = b"VIOARM0001";
 /// Default line coding reported by `GET_LINE_CODING`: 115200 8-N-1.
 const VDEV_LINE_CODING: [u8; 7] = [0x00, 0xC2, 0x01, 0x00, 0x00, 0x00, 0x08];
 
+/// HID boot-keyboard device descriptor: per-interface class, 64-byte EP0.
+const HID_DEVICE_DESC: [u8; 18] = [
+    0x12, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x40, 0x83, 0x04, 0x41, 0x57, 0x00, 0x01, 0x01, 0x02,
+    0x00, 0x01,
+];
+
+/// HID boot-keyboard configuration: one interface, HID descriptor, one
+/// interrupt IN endpoint (`wTotalLength` 34).
+const HID_CONFIG_DESC: [u8; 34] = [
+    0x09, 0x02, 0x22, 0x00, 0x01, 0x01, 0x00, 0xA0, 0x32, 0x09, 0x04, 0x00, 0x00, 0x01, 0x03, 0x01,
+    0x01, 0x00, 0x09, 0x21, 0x11, 0x01, 0x00, 0x01, 0x22, 0x3F, 0x00, 0x07, 0x05, 0x81, 0x03, 0x08,
+    0x00, 0x0A,
+];
+
+/// HID boot-keyboard report descriptor (63 bytes, matches the HID
+/// descriptor's `wDescriptorLength` above).
+const HID_REPORT_DESC: [u8; 63] = [
+    0x05, 0x01, 0x09, 0x06, 0xA1, 0x01, 0x05, 0x07, 0x19, 0xE0, 0x29, 0xE7, 0x15, 0x00, 0x25, 0x01,
+    0x75, 0x01, 0x95, 0x08, 0x81, 0x02, 0x95, 0x01, 0x75, 0x08, 0x81, 0x03, 0x95, 0x05, 0x75, 0x01,
+    0x05, 0x08, 0x19, 0x01, 0x29, 0x05, 0x91, 0x02, 0x95, 0x01, 0x75, 0x03, 0x91, 0x03, 0x95, 0x06,
+    0x75, 0x08, 0x15, 0x00, 0x25, 0x65, 0x05, 0x07, 0x19, 0x00, 0x29, 0x65, 0x81, 0x00, 0xC0,
+];
+
+/// The HID class descriptor, built from the report length so the two can
+/// never disagree.
+fn hid_class_desc() -> [u8; 9] {
+    let len = HID_REPORT_DESC.len();
+    [
+        0x09,
+        0x21,
+        0x11,
+        0x01,
+        0x00,
+        0x01,
+        0x22,
+        (len & 0xFF) as u8,
+        ((len >> 8) & 0xFF) as u8,
+    ]
+}
+
 fn utf16le(s: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(2 + 2 * s.len());
     out.push(u8::try_from(2 + 2 * s.len()).unwrap_or(u8::MAX));
@@ -397,12 +469,27 @@ impl VirtualUsbDevice {
         Self {
             address: 0,
             configuration: 0,
+            kind: VdevKind::Cdc,
             ctrl: None,
             in_data: Default::default(),
             out_data: Default::default(),
             halted_in: [false; 4],
             halted_out: [false; 4],
             line_coding: VDEV_LINE_CODING,
+            idle: 0,
+            protocol: 1,
+            leds: 0,
+        }
+    }
+
+    /// A fresh HID boot-keyboard at address 0, unconfigured: interface 0,
+    /// interrupt IN endpoint 1, no keys pressed.
+    #[must_use]
+    pub fn hid_keyboard() -> Self {
+        Self {
+            kind: VdevKind::HidKeyboard,
+            protocol: 0,
+            ..Self::new()
         }
     }
 
@@ -422,6 +509,12 @@ impl VirtualUsbDevice {
     #[must_use]
     pub const fn line_coding(&self) -> [u8; 7] {
         self.line_coding
+    }
+
+    /// The LED byte stored by HID `SET_REPORT`.
+    #[must_use]
+    pub const fn leds(&self) -> u8 {
+        self.leds
     }
 
     /// Stage bytes for the device to send on an IN endpoint (1-3).
@@ -491,18 +584,30 @@ impl VirtualUsbDevice {
                     xfer.pending_addr = Some((value & 0x7F) as u8);
                     true
                 }
-                // GET_DESCRIPTOR: device, configuration, or string.
+                // GET_DESCRIPTOR: device, configuration, string, or (HID)
+                // the HID class and report descriptors.
                 6 if dir_in => {
                     let bytes: Vec<u8> = match (value >> 8) as u8 {
-                        1 => VDEV_DEVICE_DESC.to_vec(),
-                        2 => VDEV_CONFIG_DESC.to_vec(),
+                        1 => match self.kind {
+                            VdevKind::Cdc => VDEV_DEVICE_DESC.to_vec(),
+                            VdevKind::HidKeyboard => HID_DEVICE_DESC.to_vec(),
+                        },
+                        2 => match self.kind {
+                            VdevKind::Cdc => VDEV_CONFIG_DESC.to_vec(),
+                            VdevKind::HidKeyboard => HID_CONFIG_DESC.to_vec(),
+                        },
                         3 => match value as u8 {
                             0 => VDEV_STR_LANG.to_vec(),
                             1 => utf16le(VDEV_STR_MAN),
-                            2 => utf16le(VDEV_STR_PROD),
+                            2 => utf16le(match self.kind {
+                                VdevKind::Cdc => VDEV_STR_PROD,
+                                VdevKind::HidKeyboard => b"VioARM Virtual HID",
+                            }),
                             3 => utf16le(VDEV_STR_SER),
                             _ => return false,
                         },
+                        0x21 if self.kind == VdevKind::HidKeyboard => hid_class_desc().to_vec(),
+                        0x22 if self.kind == VdevKind::HidKeyboard => HID_REPORT_DESC.to_vec(),
                         _ => return false,
                     };
                     let n = usize::from(length).min(bytes.len());
@@ -529,20 +634,56 @@ impl VirtualUsbDevice {
                 _ => false,
             }
         } else if req_type & 0x60 == 0x20 {
-            // CDC class requests on the COMM interface.
-            match req {
+            // Class requests: CDC on the COMM interface, HID on interface 0.
+            match (self.kind, req) {
                 // GET_LINE_CODING.
-                0x21 if dir_in => {
+                (VdevKind::Cdc, 0x21) if dir_in => {
                     xfer.data_in = self.line_coding.to_vec();
                     true
                 }
                 // SET_LINE_CODING: 7 OUT data bytes follow.
-                0x20 if !dir_in => {
+                (VdevKind::Cdc, 0x20) if !dir_in => {
                     xfer.data_out_expected = 7;
                     true
                 }
                 // SET_CONTROL_LINE_STATE: no data stage.
-                0x22 if !dir_in => true,
+                (VdevKind::Cdc, 0x22) if !dir_in => true,
+                // GET_REPORT (input): the current key state — the oldest
+                // staged report without consuming it, or all-zeros idle.
+                (VdevKind::HidKeyboard, 0x01) if dir_in && value >> 8 == 1 => {
+                    xfer.data_in = self
+                        .in_data
+                        .get(1)
+                        .and_then(|buf| buf.get(..8))
+                        .map_or(vec![0; 8], |head| head.to_vec());
+                    true
+                }
+                // GET_IDLE / GET_PROTOCOL.
+                (VdevKind::HidKeyboard, 0x02) if dir_in => {
+                    xfer.data_in = vec![self.idle];
+                    true
+                }
+                (VdevKind::HidKeyboard, 0x03) if dir_in => {
+                    xfer.data_in = vec![self.protocol];
+                    true
+                }
+                // SET_REPORT (output): LED byte follows.
+                (VdevKind::HidKeyboard, 0x09)
+                    if !dir_in && value >> 8 == 2 && usize::from(length) >= 1 =>
+                {
+                    xfer.data_out_expected = 1;
+                    true
+                }
+                // SET_IDLE: the rate (high byte) paces repeat reports.
+                (VdevKind::HidKeyboard, 0x0A) if !dir_in => {
+                    self.idle = (value >> 8) as u8;
+                    true
+                }
+                // SET_PROTOCOL: 0 boot, 1 report.
+                (VdevKind::HidKeyboard, 0x0B) if !dir_in && value <= 1 => {
+                    self.protocol = value as u8;
+                    true
+                }
                 _ => false,
             }
         } else {
@@ -596,9 +737,13 @@ impl VirtualUsbDevice {
         if xfer.data_out_expected > 0 {
             xfer.data_out.extend_from_slice(payload);
             if xfer.data_out.len() >= xfer.data_out_expected {
-                // SET_LINE_CODING stores its 7 bytes; the status IN follows.
+                // SET_LINE_CODING stores its 7 bytes, SET_REPORT its LED
+                // byte; the status IN follows.
                 if xfer.setup[1] == 0x20 && xfer.data_out.len() >= 7 {
                     self.line_coding.copy_from_slice(&xfer.data_out[..7]);
+                }
+                if xfer.setup[1] == 0x09 && !xfer.data_out.is_empty() {
+                    self.leds = xfer.data_out[0];
                 }
                 xfer.data_out_expected = 0;
             }
@@ -1088,7 +1233,22 @@ impl UsbState {
 
     /// Run one channel program against the virtual device.
     fn execute_channel(&mut self, h: &mut Win, ch: usize) {
-        let char_word = h.get(HCCHAR0 + u32::try_from(ch).unwrap_or(u32::MAX) * HC_STRIDE);
+        let ch_reg = HCCHAR0 + u32::try_from(ch).unwrap_or(u32::MAX) * HC_STRIDE;
+        let char_word = h.get(ch_reg);
+        let splt_off = HCSPLT0 + u32::try_from(ch).unwrap_or(u32::MAX) * HC_STRIDE;
+        // `HCSPLT` exists on `OTG_HS` only; without it every channel runs
+        // unsplit, exactly as the FS silicon does.
+        let splt = if h.has(splt_off) { h.get(splt_off) } else { 0 };
+        if splt & SPLIT_SPLITENA != 0 && splt & SPLIT_COMPLSPLT == 0 {
+            // Start-split: the hub's translator accepts the token now; the
+            // complete-split re-arm carries the data. Nothing reaches the
+            // device yet — hub topology (`HUBADDR`/`PRTADDR`, translators)
+            // is transparent here, so only the sequencing is observable.
+            self.hcint[ch] |= HC_ACK;
+            h.set(ch_reg, char_word & !HC_CHENA);
+            return;
+        }
+        // Complete-split (or no split): run the real transaction.
         let tsiz = h.get(HCTSIZ0 + u32::try_from(ch).unwrap_or(u32::MAX) * HC_STRIDE);
         let ep = usize::try_from((char_word >> HC_EPNUM_SHIFT) & HC_EPNUM).unwrap_or(usize::MAX);
         let dir_in = char_word & HC_EPDIR != 0;
@@ -1928,8 +2088,8 @@ fn ep_block(off: u32, base: u32) -> (usize, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::{
-        Usb, VirtualUsbDevice, CMD_OUT, CMD_RESET, CMD_SETUP, CMD_SOF, ENUMDNE, EVT_IN, RXFLVL,
-        USBRST,
+        hid_class_desc, Usb, VirtualUsbDevice, CMD_OUT, CMD_RESET, CMD_SETUP, CMD_SOF, ENUMDNE,
+        EVT_IN, HID_CONFIG_DESC, HID_REPORT_DESC, RXFLVL, USBRST,
     };
     use crate::device::{InterruptSource, Peripheral};
     use crate::error::BusError;
@@ -1980,6 +2140,28 @@ mod tests {
         write_word(u, FS + 0x800 + 0x10, 1); // DIEPMSK XFRCM
         write_word(u, FS + 0x800 + 0x14, 1 | (1 << 3)); // DOEPMSK XFRCM | STUPM
         write_word(u, FS + 0x800 + 0x1c, (1 << 0) | (1 << 16)); // DAINTMSK
+    }
+
+    #[test]
+    fn hid_descriptors_agree_on_report_length() {
+        // The HID descriptor inside the configuration and the standalone
+        // class descriptor both quote the report length: all three must
+        // match the actual report descriptor.
+        let len = HID_REPORT_DESC.len();
+        assert_eq!(
+            &HID_CONFIG_DESC[25..27],
+            &[(len & 0xFF) as u8, ((len >> 8) & 0xFF) as u8],
+            "config-embedded HID descriptor"
+        );
+        assert_eq!(
+            &hid_class_desc()[..],
+            &HID_CONFIG_DESC[18..27],
+            "class descriptor"
+        );
+        assert_eq!(
+            u16::from_le_bytes([HID_CONFIG_DESC[2], HID_CONFIG_DESC[3]]),
+            34
+        );
     }
 
     #[test]
