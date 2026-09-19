@@ -58,9 +58,7 @@ current tier (T1/T2/T3), and record it as a matrix in
 Work is per unique IP, not per board. Each item: model → lib tests →
 board e2e with real firmware → `arch.md` + CHANGELOG.
 
-- [ ] **USART RX + full duplex**: RX path, framing/overrun errors, IRQs on
-      all F1/F4/H7 USARTs (TX is T3; RX is the gap). Proof: loopback
-      firmware on `f103` + `h743`.
+- [x] **USART RX + full duplex**: RX error model (`ORE` on overrun, `FE`/`PE` stimulus bits, F1 `SR`-then-`DR` sequence, new-gen `ICR`, error IRQs via `EIE`/`PEIE`); `RE` gating deliberately unenforced (documented). Proof: 5 lib tests + loopback firmware on `f103` + `h743` (`tests/usart_loopback.rs`).
 - [ ] **SPI slave + full duplex master**: master TX exists; add slave
       capture both directions, NSS handling, IRQ/DMA paths. Proof:
       fabric master/slave ping-pong both directions.

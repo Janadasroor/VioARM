@@ -18,6 +18,17 @@
 //! are set and while a received byte is pending in `DR`. Reading `DR` (or
 //! writing zero to it) drops the RX request, mirroring the level request line
 //! that falls when the data register is drained.
+//!
+//! Receive errors follow silicon: a byte arriving while `RXNE` is still set
+//! latches `ORE` and is dropped (the first byte is kept); stimulus bit 9
+//! injects a framing error (`FE`), bit 10 a parity error (`PE`). On F1
+//! tables the flags clear with the `SR`-then-`DR` read sequence (a bare
+//! `DR` read only clears `RXNE`); on new-gen tables they clear by writing
+//! 1 to `ICR` (`ORECF`/`FECF`/`PECF`). `ORE`/`FE` assert the IRQ line via
+//! `CR3.EIE`, `PE` via `CR1.PEIE`. Deliberately unmodeled: noise errors
+//! (`NE`, needs an oversampling model), `OVRDIS` variants (overrun always
+//! latches), and `RE` gating — like `UE`-off arrival, injected bytes latch
+//! regardless, keeping host injection order-free by design.
 
 use crate::device::stm32::dma::DmaRequests;
 use crate::device::svd::stm32f103;
@@ -39,6 +50,10 @@ const CR1_F1: u32 = 0x0C;
 const RXNE: u32 = 1 << 5;
 const TC: u32 = 1 << 6;
 const TXE: u32 = 1 << 7;
+/// Receive error flags, same positions on F1 `SR` and new-gen `ISR`.
+const ORE_FALLBACK: u32 = 1 << 3;
+const FE_FALLBACK: u32 = 1 << 1;
+const PE_FALLBACK: u32 = 1 << 0;
 /// `SR.LBD` (F1 bit 8): a LIN break was detected on `RX`.
 const LBD_F1: u32 = 1 << 8;
 /// `CR2` offset and bits (LIN support).
@@ -50,6 +65,10 @@ const LBDIE_F1: u32 = 1 << 6;
 const UE: u32 = 1 << 13;
 const TE: u32 = 1 << 3;
 const RXNEIE: u32 = 1 << 5;
+/// `CR1.PEIE` (both generations, bit 8): parity-error interrupt enable.
+const PEIE_FALLBACK: u32 = 1 << 8;
+/// `CR3.EIE` (both generations, bit 0): framing/overrun interrupt enable.
+const EIE_FALLBACK: u32 = 1 << 0;
 
 /// The F1 USART→DMA1 request routing, per the reference manual. USART1 TX
 /// lives on channel 4, USART2 RX on channel 6, and so on; the connectivity
@@ -90,6 +109,27 @@ struct UsartBehavior {
     rxne_bit: u32,
     txe_bit: u32,
     tc_bit: u32,
+    /// Receive error flag positions (`ORE`/`FE`/`PE`), resolved from the
+    /// status register fields.
+    ore_bit: u32,
+    fe_bit: u32,
+    pe_bit: u32,
+    /// `CR1.PEIE`: parity-error interrupt enable.
+    peie_bit: u32,
+    /// `CR3` offset (`None` when the table has no `CR3`: no `EIE` path).
+    cr3_off: Option<u32>,
+    /// `CR3.EIE`: framing/overrun-error interrupt enable.
+    eie_bit: u32,
+    /// New-gen `ICR` offset (`None` on F1 tables, which clear errors with
+    /// the `SR`-then-`DR` read sequence instead).
+    icr_off: Option<u32>,
+    /// New-gen `ICR` write-1-to-clear bits.
+    icr_orecf: u32,
+    icr_fecf: u32,
+    icr_pecf: u32,
+    /// F1 clear sequence arm: set by an `SR` read, consumed by the next
+    /// data-register access. Error flags only clear inside the sequence.
+    sr_armed: bool,
     clken_bit: Option<u32>,
     abren_bit: Option<u32>,
     abrf_bit: Option<u32>,
@@ -117,6 +157,17 @@ impl Default for UsartBehavior {
             clken_bit: None,
             abren_bit: None,
             abrf_bit: None,
+            ore_bit: ORE_FALLBACK,
+            fe_bit: FE_FALLBACK,
+            pe_bit: PE_FALLBACK,
+            peie_bit: PEIE_FALLBACK,
+            cr3_off: None,
+            eie_bit: 0,
+            icr_off: None,
+            icr_orecf: ORE_FALLBACK,
+            icr_fecf: FE_FALLBACK,
+            icr_pecf: PE_FALLBACK,
+            sr_armed: false,
         }
     }
 }
@@ -134,14 +185,24 @@ impl Behavior for UsartBehavior {
                     }
                 }
             }
+            // Reading the status register arms the F1 error-clear sequence:
+            // the following data-register access clears `ORE`/`FE`/`PE`.
+            self.sr_armed = true;
             return v;
         }
         if offset == self.rdr_off {
             // Reading the data register drains the received byte and
-            // acknowledges `RXNE`, dropping the DMA RX request line.
+            // acknowledges `RXNE`, dropping the DMA RX request line. Error
+            // flags clear only inside the `SR`-then-`DR` sequence — and only
+            // on F1 tables; new-gen tables need `ICR`.
             if let Some(sr) = view.try_get(self.sr_off) {
-                view.try_set(self.sr_off, sr & !self.rxne_bit);
+                let mut sr = sr & !self.rxne_bit;
+                if self.sr_armed && self.icr_off.is_none() {
+                    sr &= !(self.ore_bit | self.fe_bit | self.pe_bit);
+                }
+                view.try_set(self.sr_off, sr);
             }
+            self.sr_armed = false;
             self.drop_rx_request();
             return value;
         }
@@ -183,9 +244,39 @@ impl Behavior for UsartBehavior {
                     }
                     self.drop_rx_request();
                 }
+                // A data-register write completes the F1 error-clear
+                // sequence the same way a read does.
+                if self.sr_armed {
+                    if let Some(sr) = view.try_get(self.sr_off) {
+                        view.try_set(
+                            self.sr_off,
+                            sr & !(self.ore_bit | self.fe_bit | self.pe_bit),
+                        );
+                    }
+                    self.sr_armed = false;
+                }
             }
             // A transmit does not alter the received data.
             return view.try_get(self.tdr_off).unwrap_or(0);
+        }
+        // New-gen interrupt-clear register: writing 1 to `ORECF`/`FECF`/
+        // `PECF` clears the matching `ISR` error flag.
+        if Some(offset) == self.icr_off {
+            if let Some(sr) = view.try_get(self.sr_off) {
+                let written = u32::from(val);
+                let mut sr = sr;
+                if written & self.icr_orecf != 0 {
+                    sr &= !self.ore_bit;
+                }
+                if written & self.icr_fecf != 0 {
+                    sr &= !self.fe_bit;
+                }
+                if written & self.icr_pecf != 0 {
+                    sr &= !self.pe_bit;
+                }
+                view.try_set(self.sr_off, sr);
+            }
+            return view.merged(offset, val, shift);
         }
         // For old single-DR (rdr==tdr), also handle DR at same offset for TX
         if self.rdr_off == self.tdr_off && offset == self.rdr_off {
@@ -198,6 +289,17 @@ impl Behavior for UsartBehavior {
                         view.try_set(self.sr_off, sr & !self.rxne_bit);
                     }
                     self.drop_rx_request();
+                }
+                // Like the `TDR` branch above, a write completes the F1
+                // sequence (never on new-gen tables with an `ICR`).
+                if self.sr_armed && self.icr_off.is_none() {
+                    if let Some(sr) = view.try_get(self.sr_off) {
+                        view.try_set(
+                            self.sr_off,
+                            sr & !(self.ore_bit | self.fe_bit | self.pe_bit),
+                        );
+                    }
+                    self.sr_armed = false;
                 }
             }
             return view.try_get(self.rdr_off).unwrap_or(0);
@@ -226,23 +328,48 @@ impl Behavior for UsartBehavior {
         // Level-triggered: asserts while a received byte is both unread and
         // unmasked. The handler clears it by reading `DR`. A LIN break
         // (`SR.LBD` with `CR2.LBDIE`) asserts the same line until cleared.
+        // Receive errors assert it too when unmasked: `ORE`/`FE` via
+        // `CR3.EIE`, `PE` via `CR1.PEIE`.
         let sr = view.try_get(self.sr_off).unwrap_or(0);
         let cr1 = view.try_get(self.cr1_off).unwrap_or(0);
+        let ue = cr1 & self.ue_bit != 0;
         let rx = sr & self.rxne_bit != 0
             && cr1 & (self.rxneie_bit | self.ue_bit) == (self.rxneie_bit | self.ue_bit);
+        let eie = self
+            .cr3_off
+            .is_some_and(|off| view.try_get(off).unwrap_or(0) & self.eie_bit != 0);
+        let err = ue
+            && ((sr & (self.ore_bit | self.fe_bit) != 0 && eie)
+                || (sr & self.pe_bit != 0 && cr1 & self.peie_bit != 0));
         let lbd = view.try_get(CR2_F1).is_some_and(|cr2| cr2 & LBDIE_F1 != 0) && sr & LBD_F1 != 0;
-        u32::from(rx || lbd)
+        u32::from(rx || lbd || err)
     }
 
     fn reset(&mut self) {
         self.output.clear();
+        self.sr_armed = false;
     }
 
     fn drive_inputs(&mut self, view: &mut Registers<&mut [u32]>, value: u32) {
-        // The low byte is one received character.
-        view.try_set(self.rdr_off, value & 0xFF);
+        // The low byte is one received character. A byte arriving while the
+        // previous one is still unread overruns: silicon latches `ORE` and
+        // drops the newcomer, keeping the first byte.
         if let Some(sr) = view.try_get(self.sr_off) {
-            view.try_set(self.sr_off, sr | self.rxne_bit);
+            if sr & self.rxne_bit != 0 {
+                view.try_set(self.sr_off, sr | self.ore_bit);
+            } else {
+                view.try_set(self.rdr_off, value & 0xFF);
+                let mut sr = sr | self.rxne_bit;
+                // Stimulus error injection: bit 9 frames badly, bit 10
+                // carries a parity error (bit 8 stays the LIN break).
+                if value & (1 << 9) != 0 {
+                    sr |= self.fe_bit;
+                }
+                if value & (1 << 10) != 0 {
+                    sr |= self.pe_bit;
+                }
+                view.try_set(self.sr_off, sr);
+            }
         }
         // Auto-baud detection: if ABREN is set in CR2, the next received
         // byte completes the measurement — clear ABREN and latch ABRF in ISR.
@@ -634,6 +761,44 @@ impl Usart {
         let abrf_bit = Self::field_bit(def, "ISR", "ABRF")
             .or_else(|| Self::field_bit(def, "ISR", "ABRE"))
             .map(|b| 1u32 << b);
+        // Receive error model, resolved from the status register fields so
+        // F1 `SR` and new-gen `ISR` layouts both work.
+        let status_reg = if is_new { "ISR" } else { "SR" };
+        let ore_bit = Self::field_bit(def, status_reg, "ORE")
+            .map(|b| 1u32 << b)
+            .unwrap_or(ORE_FALLBACK);
+        let fe_bit = Self::field_bit(def, status_reg, "FE")
+            .map(|b| 1u32 << b)
+            .unwrap_or(FE_FALLBACK);
+        let pe_bit = Self::field_bit(def, status_reg, "PE")
+            .map(|b| 1u32 << b)
+            .unwrap_or(PE_FALLBACK);
+        let peie_bit = Self::field_bit(def, "CR1", "PEIE")
+            .map(|b| 1u32 << b)
+            .unwrap_or(PEIE_FALLBACK);
+        let (cr3_off, eie_bit) = match Self::reg_offset(def, "CR3") {
+            Some(off) => (
+                Some(off),
+                Self::field_bit(def, "CR3", "EIE")
+                    .map(|b| 1u32 << b)
+                    .unwrap_or(EIE_FALLBACK),
+            ),
+            None => (None, 0),
+        };
+        let icr_off = if is_new {
+            Self::reg_offset(def, "ICR")
+        } else {
+            None
+        };
+        let icr_orecf = Self::field_bit(def, "ICR", "ORECF")
+            .map(|b| 1u32 << b)
+            .unwrap_or(ORE_FALLBACK);
+        let icr_fecf = Self::field_bit(def, "ICR", "FECF")
+            .map(|b| 1u32 << b)
+            .unwrap_or(FE_FALLBACK);
+        let icr_pecf = Self::field_bit(def, "ICR", "PECF")
+            .map(|b| 1u32 << b)
+            .unwrap_or(PE_FALLBACK);
         let behavior = UsartBehavior {
             output: Vec::new(),
             requests,
@@ -654,6 +819,17 @@ impl Usart {
             clken_bit,
             abren_bit,
             abrf_bit,
+            ore_bit,
+            fe_bit,
+            pe_bit,
+            peie_bit,
+            cr3_off,
+            eie_bit,
+            icr_off,
+            icr_orecf,
+            icr_fecf,
+            icr_pecf,
+            sr_armed: false,
         };
         Self {
             inner: RegisterFile::new(def, behavior),
@@ -1002,5 +1178,106 @@ mod tests {
         u.drive_inputs(1 << 8);
         assert_eq!(read_word(&mut u, B + SR) & (1 << 8), 0, "masked");
         assert_eq!(u.pending(), 0);
+    }
+
+    /// F1 `SR` error bits for the tests below.
+    const ORE: u32 = 1 << 3;
+    const FE: u32 = 1 << 1;
+    const PE: u32 = 1 << 0;
+    /// F1 `CR1.PEIE` (bit 8), `CR3` offset and `CR3.EIE` (bit 0).
+    const PEIE: u32 = 1 << 8;
+    const CR3_F1: u32 = 0x14;
+    const EIE: u32 = 1 << 0;
+
+    /// Overrun: a byte arriving while `RXNE` is set latches `ORE` and is
+    /// dropped; the first byte survives.
+    #[test]
+    fn overrun_sets_ore_and_keeps_first_byte() {
+        const B: u32 = 0x4001_3800;
+        let mut u = enabled();
+        u.drive_inputs(0x41);
+        u.drive_inputs(0x42);
+        assert_eq!(read_word(&mut u, B + SR) & ORE, ORE, "ORE latched");
+        assert_eq!(read_word(&mut u, B + DR) & 0xFF, 0x41, "first byte kept");
+    }
+
+    /// `ORE` survives a bare `DR` read and clears only inside the
+    /// `SR`-then-`DR` sequence.
+    #[test]
+    fn ore_clears_only_via_sr_then_dr_sequence() {
+        const B: u32 = 0x4001_3800;
+        let mut u = enabled();
+        u.drive_inputs(0x41);
+        u.drive_inputs(0x42);
+        // Bare DR read drains the byte but keeps the flag.
+        let _ = read_word(&mut u, B + DR);
+        assert_eq!(read_word(&mut u, B + SR) & ORE, ORE, "flag survives");
+        // The sequence clears it.
+        let _ = read_word(&mut u, B + SR);
+        let _ = read_word(&mut u, B + DR);
+        assert_eq!(read_word(&mut u, B + SR) & ORE, 0, "flag cleared");
+    }
+
+    /// Stimulus bits 9/10 inject framing/parity errors; they clear with
+    /// the same sequence.
+    #[test]
+    fn framing_and_parity_inject_and_clear_via_sequence() {
+        const B: u32 = 0x4001_3800;
+        let mut u = enabled();
+        u.drive_inputs((1 << 10) | (1 << 9) | 0x55);
+        // Bare DR read drains the byte but keeps the flags (no SR read
+        // armed the sequence yet).
+        let _ = read_word(&mut u, B + DR);
+        assert_eq!(read_word(&mut u, B + SR) & (FE | PE), FE | PE, "kept");
+        let _ = read_word(&mut u, B + DR);
+        assert_eq!(read_word(&mut u, B + SR) & (FE | PE), 0, "cleared");
+    }
+
+    /// Error IRQs: `ORE` needs `CR3.EIE`, `PE` needs `CR1.PEIE`; without
+    /// them the flags latch silently.
+    #[test]
+    fn error_interrupt_asserts_via_eie_and_peie() {
+        const B: u32 = 0x4001_3800;
+        let mut u = enabled();
+        // Overrun with no enables: flag, no line.
+        u.drive_inputs(0x41);
+        u.drive_inputs(0x42);
+        assert_eq!(u.pending(), 0);
+        // `EIE` routes the overrun to the line; the sequence drops it.
+        write_word(&mut u, B + CR3_F1, EIE);
+        assert_eq!(u.pending(), 1, "ORE line via EIE");
+        let _ = read_word(&mut u, B + SR);
+        let _ = read_word(&mut u, B + DR);
+        assert_eq!(u.pending(), 0);
+        // `PE` needs `PEIE`: `EIE` alone does not route it.
+        u.drive_inputs((1 << 10) | 0x33);
+        assert_eq!(u.pending(), 0, "PE masked without PEIE");
+        write_word(&mut u, B + CR1, UE | TE | (1 << 2) | PEIE);
+        assert_eq!(u.pending(), 1, "PE line via PEIE");
+    }
+
+    /// New-gen tables clear errors by writing 1 to `ICR`, not with the
+    /// `SR` sequence: F0 `USART1` overrun clears via `ICR.ORECF`.
+    #[test]
+    fn icr_write_clears_overrun_on_new_gen() {
+        use crate::device::svd::stm32f030::Stm32f030;
+        const B: u32 = 0x4001_3800;
+        const CR1: u32 = 0x00;
+        const ISR: u32 = 0x1C;
+        const RDR: u32 = 0x24;
+        const ICR: u32 = 0x20;
+        const UE0: u32 = 1 << 0;
+        let mut u = Usart::usart1_for::<Stm32f030>();
+        write_word(&mut u, B + CR1, UE0 | (1 << 3) | (1 << 2));
+        u.drive_inputs(0x41);
+        u.drive_inputs(0x42);
+        assert_eq!(read_word(&mut u, B + ISR) & ORE, ORE, "ORE latched");
+        // A bare RDR read keeps the flag (no F1 sequence on new-gen).
+        let _ = read_word(&mut u, B + RDR);
+        assert_eq!(read_word(&mut u, B + ISR) & ORE, ORE, "flag survives");
+        // `ICR.ORECF` clears it; the first byte's data is still there.
+        u.write(B + ICR, 1 << 3).unwrap();
+        assert_eq!(read_word(&mut u, B + ISR) & ORE, 0, "flag cleared");
+        assert_eq!(read_word(&mut u, B + RDR) & 0xFF, 0x41, "data kept");
     }
 }
