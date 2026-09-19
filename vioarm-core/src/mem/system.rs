@@ -16,6 +16,7 @@ use crate::device::stm32::dma::DmaUnit;
 use crate::device::stm32::eth::{EthMailbox, EthMemOp};
 use crate::device::stm32::fdcan::{FdcanMailbox, FdcanResult};
 use crate::device::stm32::flash::{FlashErase, FlashGate};
+use crate::device::stm32::fmc::Dma2dMailbox;
 use crate::device::stm32::fmc::QspiGate;
 use crate::device::stm32::rcc::ClockState;
 use crate::device::vdd::VddState;
@@ -103,6 +104,10 @@ pub struct SystemMemory<M: Bus> {
     /// controllers push message-RAM reads and received-frame writes here;
     /// this bus performs them, appending correlated read results.
     fdcan_mailbox: Option<Arc<Mutex<FdcanMailbox>>>,
+    /// The shared DMA2D mailbox, drained after every device tick. The
+    /// controller pushes source-row reads and destination writes here;
+    /// this bus performs them, appending correlated read results.
+    dma2d_mailbox: Option<Arc<Mutex<Dma2dMailbox>>>,
     /// The shared watchdog reset latch. The IWDG/WWDG devices set it when their
     /// counter underflows; `reset_requested()` folds it into the SCB's latch so
     /// the `Machine` performs a full reset, and `reset_devices()` clears it.
@@ -161,6 +166,7 @@ impl<M: Bus + core::fmt::Debug> core::fmt::Debug for SystemMemory<M> {
             .field("dma_mailbox", &self.dma_mailbox)
             .field("eth_mailbox", &self.eth_mailbox)
             .field("fdcan_mailbox", &self.fdcan_mailbox)
+            .field("dma2d_mailbox", &self.dma2d_mailbox)
             .field("watchdog", &self.watchdog)
             .field("clock", &self.clock)
             .field("tim_phase", &self.tim_phase)
@@ -194,6 +200,7 @@ impl<M: Bus> SystemMemory<M> {
             dma_mailbox: None,
             eth_mailbox: None,
             fdcan_mailbox: None,
+            dma2d_mailbox: None,
             watchdog: None,
             vdd: VddState::shared(),
             clock: None,
@@ -336,6 +343,14 @@ impl<M: Bus> SystemMemory<M> {
     /// leaves FDCAN payloads unable to move (flags still update).
     pub fn set_fdcan_mailbox(&mut self, mailbox: Arc<Mutex<FdcanMailbox>>) {
         self.fdcan_mailbox = Some(mailbox);
+    }
+
+    /// Install the shared DMA2D mailbox. The attached DMA2D controller must
+    /// push through the same `Arc`; this bus performs its source-row reads
+    /// and destination writes after each device tick. `None` (the default)
+    /// leaves pixel traffic unable to move (flags still update).
+    pub fn set_dma2d_mailbox(&mut self, mailbox: Arc<Mutex<Dma2dMailbox>>) {
+        self.dma2d_mailbox = Some(mailbox);
     }
 
     /// Install the shared watchdog reset latch. The `IWDG`/`WWDG` devices must
@@ -534,6 +549,8 @@ impl<M: Bus> SystemMemory<M> {
         self.drain_eth_ops();
         // And the FDCAN controllers' message-RAM traffic.
         self.drain_fdcan_ops();
+        // And the DMA2D controller's row reads and frame writes.
+        self.drain_dma2d_ops();
         self.latch_device_asserts();
     }
 
@@ -638,6 +655,42 @@ impl<M: Bus> SystemMemory<M> {
                     index: r.index,
                     bytes,
                 });
+        }
+        let writes = core::mem::take(&mut mailbox.lock().unwrap_or_else(|e| e.into_inner()).writes);
+        for (addr, bytes) in writes {
+            for (i, byte) in bytes.iter().enumerate() {
+                let _ = self.write(
+                    addr.wrapping_add(u32::try_from(i).unwrap_or(u32::MAX)),
+                    *byte,
+                );
+            }
+        }
+    }
+
+    /// Perform the DMA2D controller's queued pixel traffic. Source-row
+    /// reads go through the full bus path and their bytes are appended as
+    /// correlated results, in request order; destination writes are
+    /// performed directly. A request whose addresses are reserved is
+    /// dropped (short result).
+    fn drain_dma2d_ops(&mut self) {
+        use crate::device::stm32::fmc::Dma2dResult;
+        let Some(mailbox) = self.dma2d_mailbox.clone() else {
+            return;
+        };
+        let reads = core::mem::take(&mut mailbox.lock().unwrap_or_else(|e| e.into_inner()).reads);
+        for r in reads {
+            let mut bytes = Vec::with_capacity(r.len as usize);
+            for i in 0..r.len {
+                let Some(byte) = self.read(r.addr.wrapping_add(i)).ok() else {
+                    break;
+                };
+                bytes.push(byte);
+            }
+            mailbox
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .results
+                .push_back(Dma2dResult { row: r.row, bytes });
         }
         let writes = core::mem::take(&mut mailbox.lock().unwrap_or_else(|e| e.into_inner()).writes);
         for (addr, bytes) in writes {

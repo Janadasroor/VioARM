@@ -30,7 +30,8 @@ use crate::device::stm32::exti::Exti;
 use crate::device::stm32::fdcan::{Fdcan, FdcanCut, FdcanMailbox, FdcanRam, FdcanStub};
 use crate::device::stm32::flash::{FlashF1, FlashF4, FlashGate};
 use crate::device::stm32::fmc::{
-    Bdma, Dfsdm, Dma2d, Dmamux, DmamuxRoutes, Fmc, Hrtim, Ltdc, Mdma, Qspi, QspiGate, Sai4,
+    Bdma, Dfsdm, Dma2d, Dma2dMailbox, Dmamux, DmamuxRoutes, Fmc, Hrtim, Ltdc, Mdma, Qspi, QspiGate,
+    Sai4,
 };
 use crate::device::stm32::gpio::Gpio as StmGpio;
 use crate::device::stm32::gpio_f4::GpioF4;
@@ -8562,7 +8563,11 @@ pub fn stm32h743() -> BoardMemory {
         mem.attach(Box::new(Ltdc::new_for::<Stm32h743>()));
     }
     if <Stm32h743 as crate::device::svd::Device>::peripheral("DMA2D").is_some() {
-        mem.attach(Box::new(Dma2d::new_for::<Stm32h743>()));
+        let dma2d_mailbox = Arc::new(Mutex::new(Dma2dMailbox::default()));
+        mem.set_dma2d_mailbox(dma2d_mailbox.clone());
+        mem.attach(Box::new(
+            Dma2d::new_for::<Stm32h743>().with_mailbox(dma2d_mailbox),
+        ));
     }
     if <Stm32h743 as crate::device::svd::Device>::peripheral("BDMA").is_some() {
         mem.attach(Box::new(Bdma::new_for::<Stm32h743>()));

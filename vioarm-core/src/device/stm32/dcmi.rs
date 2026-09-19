@@ -1,5 +1,11 @@
-//! DCMI `0x48020000` (H7) / `0x50050000` — digital camera interface.
-//! `CR.CAPTURE@0` enable, `CR.ENABLE@14`, `RIS.FRAMERI@0` latches 1-tick after CAPTURE.
+//! DCMI digital camera interface: capture handshake plus snapshot data.
+//!
+//! `CR.CAPTURE@0` with `CR.ENABLE@14` latches `RIS.FRAMERI@0` one tick
+//! later (cleared by `ICR`/W1C, gated to the line by `IER`). Captured
+//! bytes staged with [`Dcmi::inject_frame`] pop out of `DR@0x28` in
+//! little-endian words (short tails zero-padded); `DR` reads past the
+//! staged bytes return 0. DMA linkage is out of scope (snapshot-mode
+//! `DR` reads only).
 
 use crate::device::svd::{Behavior, Device, RegisterFile, Registers};
 use crate::device::{InterruptSource, Peripheral};
@@ -9,10 +15,14 @@ use crate::mem::bus::Region;
 const CR_CAPTURE: u32 = 1 << 0;
 const CR_ENABLE: u32 = 1 << 14;
 const RIS_FRAMERI: u32 = 1 << 0;
+const DR: u32 = 0x28;
 
 #[derive(Clone, Debug, Default)]
 struct DcmiBehavior {
     pending: bool,
+    staged: std::collections::VecDeque<u8>,
+    dr_word: u32,
+    dr_lane: u8,
 }
 
 impl Behavior for DcmiBehavior {
@@ -61,6 +71,33 @@ impl Behavior for DcmiBehavior {
             self.pending = false;
         }
     }
+    fn drive_inputs(&mut self, _view: &mut Registers<&mut [u32]>, value: u32) {
+        // Stage one captured byte (tests, debugger inject); capped so a
+        // runaway stimulator cannot grow the queue without bound.
+        if self.staged.len() < 1 << 20 {
+            self.staged.push_back((value & 0xFF) as u8);
+        }
+    }
+    fn on_read(&mut self, _view: &mut Registers<&mut [u32]>, offset: u32, value: u32) -> u32 {
+        // Snapshot data: one pop per word read (lanes share a counter,
+        // like AES `DOUTR` — firmware always reads `DR` as words).
+        if offset == DR {
+            if self.dr_lane == 0 {
+                let mut w = [0u8; 4];
+                for b in w.iter_mut() {
+                    *b = self.staged.pop_front().unwrap_or(0);
+                }
+                self.dr_word = u32::from_le_bytes(w);
+            }
+            let w = self.dr_word;
+            self.dr_lane += 1;
+            if self.dr_lane == 4 {
+                self.dr_lane = 0;
+            }
+            return w;
+        }
+        value
+    }
     fn pending(&self, view: &Registers<&[u32]>) -> u32 {
         let isr = view.get(0x08);
         let ier = view.get(0x0C); // IER at 0x0C
@@ -85,6 +122,12 @@ impl Dcmi {
             inner: RegisterFile::new(def, DcmiBehavior::default()),
         }
     }
+
+    /// Stage one captured frame: its bytes pop out of `DR` reads after
+    /// the next `CAPTURE` (tests, debugger inject).
+    pub fn inject_frame(&mut self, bytes: &[u8]) {
+        self.inner.behavior_mut().staged.extend(bytes.iter());
+    }
 }
 impl Peripheral for Dcmi {
     fn ranges(&self) -> &[Region] {
@@ -101,6 +144,9 @@ impl Peripheral for Dcmi {
     }
     fn tick(&mut self, d: u64) {
         self.inner.tick(d);
+    }
+    fn drive_inputs(&mut self, value: u32) {
+        self.inner.drive_inputs(value);
     }
     fn name(&self) -> &'static str {
         "dcmi"
@@ -150,5 +196,19 @@ mod tests {
         // Clear via ICR at 0x14? Actually ICR after IER, but we handle RIS W1C
         w(&mut d, 0x14, 1); // ICR
         assert_eq!(r(&mut d, 0x08) & RIS_FRAMERI, 0);
+    }
+
+    #[test]
+    fn dcmi_snapshot_bytes_pop_from_dr() {
+        let mut d = Dcmi::new_for::<Stm32h743>();
+        d.inject_frame(&[0x11, 0x22, 0x33, 0x44, 0x55]);
+        w(&mut d, 0x0C, 1); // IER FRAME_IE
+        w(&mut d, 0x00, CR_ENABLE | CR_CAPTURE);
+        d.tick(1);
+        assert_ne!(r(&mut d, 0x08) & RIS_FRAMERI, 0, "FRAMERI");
+        assert_ne!(d.pending(), 0, "line");
+        assert_eq!(r(&mut d, 0x28), 0x4433_2211, "first word LE");
+        assert_eq!(r(&mut d, 0x28), 0x55, "short tail padded");
+        assert_eq!(r(&mut d, 0x28), 0, "drained");
     }
 }

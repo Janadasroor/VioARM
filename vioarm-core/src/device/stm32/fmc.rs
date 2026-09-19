@@ -8,6 +8,7 @@ use crate::device::svd::{Behavior, Device, NoBehavior, RegisterFile, Registers};
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
 use crate::mem::bus::Region;
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 /// Flexible Memory Controller.
@@ -378,19 +379,42 @@ impl InterruptSource for Dmamux {
 }
 
 // ---------------------------------------------------------------------------
-// H7 high-integration peripherals — previously NoBehavior latch stubs.
-// Now behavioral: EN/START bit triggers a 1-tick transfer/completion that
-// sets ISR flag and raises IRQ if interrupt-enable is set.  This is the
-// minimal silicon-accurate handshake needed for HAL probing + IRQ dispatch
-// (RM0433 §15 DMA2D, §13 LTDC, §11 BDMA, §12 MDMA, §53 SAI, §22 DFSDM,
-// §26 HRTIM).
+// H7 high-integration peripherals: LTDC display layers/reload/line-IRQ and
+// DMA2D pixel fills/copies run behaviorally (below); BDMA/MDMA/SAI/DFSDM/
+// HRTIM keep the EN/START handshake (RM0433 §11 BDMA, §12 MDMA, §53 SAI,
+// §22 DFSDM, §26 HRTIM).
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Default)]
 struct LtdcBehavior {
     enabled: bool,
     pending: bool,
-    vsync_cnt: u32,
+    /// Current scanline (0..frame lines).
+    line: u32,
+    /// Layer enable latched (`LEN`) vs active (applied at reload).
+    len_armed: [bool; 2],
+    len_active: [bool; 2],
+    /// A `VBR` reload waits for the next frame wrap.
+    vbr_armed: bool,
+}
+
+impl LtdcBehavior {
+    fn raise_isr(view: &mut Registers<&mut [u32]>, bits: u32) {
+        if let Some(mut isr) = view.try_get(0x38) {
+            isr |= bits;
+            view.try_set(0x38, isr);
+        } else {
+            view.try_set(0x38, bits);
+        }
+    }
+
+    fn sync_pending(&mut self, view: &mut Registers<&mut [u32]>) {
+        let isr = view.try_get(0x38).unwrap_or(0);
+        let ier = view.try_get(0x34).unwrap_or(0);
+        if isr & ier & 0xF != 0 {
+            self.pending = true;
+        }
+    }
 }
 
 impl Behavior for LtdcBehavior {
@@ -403,12 +427,34 @@ impl Behavior for LtdcBehavior {
     ) -> u32 {
         let word = view.merged(offset, val, shift);
         match offset {
+            // GCR LTDCEN bit0.
             0x18 => {
-                // GCR LTDCEN bit0
                 self.enabled = word & 1 != 0;
+                if !self.enabled {
+                    self.line = 0;
+                    self.vbr_armed = false;
+                }
             }
+            // SRCR: IMR reloads now, VBR reloads at the next frame wrap;
+            // both latch RRIF. Bits are self-clearing pulses.
+            0x24 => {
+                if word & 1 != 0 {
+                    self.len_active = self.len_armed;
+                    Self::raise_isr(view, 1 << 3);
+                }
+                if word & (1 << 1) != 0 {
+                    self.vbr_armed = true;
+                }
+                self.sync_pending(view);
+                return word & !0x3;
+            }
+            // Layer enables arm at `LEN`, applying at the next reload.
+            0x84 | 0x104 => {
+                let i = if offset == 0x84 { 0 } else { 1 };
+                self.len_armed[i] = word & 1 != 0;
+            }
+            // ICR write-1-to-clear ISR bits at 0x38.
             0x3c => {
-                // ICR write-1-to-clear ISR bits at 0x38
                 if let Some(mut isr) = view.try_get(0x38) {
                     // bits 3:0
                     let clear = word & 0xF;
@@ -427,27 +473,46 @@ impl Behavior for LtdcBehavior {
         }
         word
     }
+    fn on_read(&mut self, _view: &mut Registers<&mut [u32]>, offset: u32, value: u32) -> u32 {
+        // CPSR: live scan position (Y from the line counter, X frozen —
+        // no pixel clock is modeled).
+        if offset == 0x44 {
+            return self.line & 0x7FF;
+        }
+        value
+    }
     fn tick(&mut self, view: &mut Registers<&mut [u32]>, delta: u64) {
-        if !self.enabled {
+        if !self.enabled || delta == 0 {
             return;
         }
-        self.vsync_cnt = self.vsync_cnt.wrapping_add(delta as u32);
-        // VSYNC period ≈ 100 cycles for simulation (not silicon-accurate)
-        if self.vsync_cnt >= 100 {
-            self.vsync_cnt = 0;
-            // set ISR LIF bit0
-            if let Some(mut isr) = view.try_get(0x38) {
-                isr |= 1;
-                view.try_set(0x38, isr);
-            } else {
-                view.try_set(0x38, 1);
+        // One tick is one scanline; a frame is `TOTALH + 1` lines
+        // (registers hold total − 1, RM0433 § LTDC).
+        let totalh = view.try_get(0x14).unwrap_or(0) & 0x7FF;
+        let frame = totalh + 1;
+        let lip = view.try_get(0x40).unwrap_or(0) & 0x7FF;
+        // Line interrupt: the scan passes through `LIPOS` during the
+        // advance (a deferred full frame away when already on it, so a
+        // cleared flag never refires mid-line).
+        if lip < frame {
+            let mut dist = (lip + frame - (self.line % frame)) % frame;
+            if dist == 0 {
+                dist = frame;
             }
-            // IER LIE bit0 enables line interrupt
-            let ier = view.try_get(0x34).unwrap_or(0);
-            if ier & 1 != 0 {
-                self.pending = true;
+            if u64::from(dist) <= delta {
+                Self::raise_isr(view, 1);
             }
         }
+        let next = self.line + delta as u32;
+        if next >= frame {
+            // Frame wrap: a deferred `VBR` reload applies, with its flag.
+            if self.vbr_armed {
+                self.len_active = self.len_armed;
+                Self::raise_isr(view, 1 << 3);
+                self.vbr_armed = false;
+            }
+        }
+        self.line = next % frame;
+        self.sync_pending(view);
     }
     fn pending(&self, _view: &Registers<&[u32]>) -> u32 {
         if self.pending {
@@ -462,11 +527,18 @@ impl Behavior for LtdcBehavior {
     fn reset(&mut self) {
         self.enabled = false;
         self.pending = false;
-        self.vsync_cnt = 0;
+        self.line = 0;
+        self.len_armed = [false; 2];
+        self.len_active = [false; 2];
+        self.vbr_armed = false;
     }
 }
 
-/// Display controller (handshake model).
+/// Display controller: enable, per-layer enables with immediate or
+/// vertical-blanking reload (`RRIF`), line-position interrupt against a
+/// scanline counter (`TOTALH + 1` lines per frame), and live `CPSR.Y`.
+/// Layer framebuffers, pixel formats, and blending stay latches — no
+/// pixel pipeline is modeled (documented).
 #[derive(Debug)]
 pub struct Ltdc {
     inner: RegisterFile<LtdcBehavior>,
@@ -519,11 +591,334 @@ impl InterruptSource for Ltdc {
     }
 }
 
+/// One DMA2D source-row read for the bus to perform.
+#[derive(Clone, Copy, Debug)]
+pub struct Dma2dRead {
+    /// First byte address.
+    pub addr: u32,
+    /// Byte count.
+    pub len: u32,
+    /// Destination row (0-based).
+    pub row: u32,
+}
+
+/// A completed source-row read, correlated by row.
+#[derive(Clone, Debug)]
+pub struct Dma2dResult {
+    /// Echo of [`Dma2dRead::row`].
+    pub row: u32,
+    /// The bytes read (short on reserved addresses).
+    pub bytes: Vec<u8>,
+}
+
+/// The DMA2D controller/bus mailbox, shared like the DMA/Ethernet ones.
+#[derive(Debug, Default)]
+pub struct Dma2dMailbox {
+    /// Pending row reads for the bus.
+    pub reads: Vec<Dma2dRead>,
+    /// Read results, for the controller to consume.
+    pub results: VecDeque<Dma2dResult>,
+    /// Pending `(address, bytes)` writes for the bus.
+    pub writes: Vec<(u32, Vec<u8>)>,
+}
+
+/// Pixel-format code (`xPFCCR.CM`) to bytes per pixel. ARGB8888/RGB888/
+/// RGB565/ARGB1555/ARGB4444/L8 only; CLUT and alpha-only formats latch
+/// `TEIF` (documented).
+fn dma2d_bpp(cm: u32) -> Option<usize> {
+    match cm {
+        0 => Some(4),
+        1 => Some(3),
+        2..=4 => Some(2),
+        5 => Some(1),
+        _ => None,
+    }
+}
+
+/// One pixel to full ARGB. Memory order is little-endian words
+/// (`0xAARRGGBB` reads `B G R A`); RGB888 reads `B G R`; 1555/4444 expand
+/// their fields; L8 is white scaled by the byte (documented contract).
+fn dma2d_to_argb(fmt: u32, px: &[u8]) -> (u8, u8, u8, u8) {
+    match fmt {
+        0 => (px[3], px[2], px[1], px[0]),
+        1 => (255, px[2], px[1], px[0]),
+        2 => {
+            let w = u16::from_le_bytes([px[0], px[1]]);
+            let r = ((w >> 11) & 0x1F) as u8;
+            let g = ((w >> 5) & 0x3F) as u8;
+            let b = (w & 0x1F) as u8;
+            (
+                255,
+                (r << 3) | (r >> 2),
+                (g << 2) | (g >> 4),
+                (b << 3) | (b >> 2),
+            )
+        }
+        3 => {
+            let w = u16::from_le_bytes([px[0], px[1]]);
+            let a = if w & 0x8000 != 0 { 255 } else { 0 };
+            let r = ((w >> 10) & 0x1F) as u8;
+            let g = ((w >> 5) & 0x1F) as u8;
+            let b = (w & 0x1F) as u8;
+            (
+                a,
+                (r << 3) | (r >> 2),
+                (g << 3) | (g >> 2),
+                (b << 3) | (b >> 2),
+            )
+        }
+        4 => {
+            let w = u16::from_le_bytes([px[0], px[1]]);
+            let expand = |v: u16| (v & 0xF) as u8 * 0x11;
+            (expand(w >> 12), expand(w >> 8), expand(w >> 4), expand(w))
+        }
+        _ => {
+            // L8: white scaled by luminance.
+            let y = px[0];
+            (255, y, y, y)
+        }
+    }
+}
+
+/// Full ARGB to one output pixel (inverse of [`dma2d_to_argb`]).
+fn dma2d_from_argb(fmt: u32, a: u8, r: u8, g: u8, b: u8) -> Vec<u8> {
+    match fmt {
+        0 => vec![b, g, r, a],
+        1 => vec![b, g, r],
+        2 => {
+            let w = (u16::from(r >> 3) << 11) | (u16::from(g >> 2) << 5) | u16::from(b >> 3);
+            w.to_le_bytes().to_vec()
+        }
+        3 => {
+            let w = (u16::from(a > 127) << 15)
+                | (u16::from(r >> 3) << 10)
+                | (u16::from(g >> 3) << 5)
+                | u16::from(b >> 3);
+            w.to_le_bytes().to_vec()
+        }
+        4 => {
+            let n = |v: u8| (v >> 4) as u16;
+            (n(a) << 12 | n(r) << 8 | n(g) << 4 | n(b))
+                .to_le_bytes()
+                .to_vec()
+        }
+        _ => vec![(u16::from(r) + u16::from(g) + u16::from(b) + 2) as u8 / 3],
+    }
+}
+
+/// A latched DMA2D transfer (register snapshot at `START`).
+#[derive(Debug)]
+struct Dma2dXfer {
+    mode: u32,
+    omar: u32,
+    fgmar: u32,
+    oor: u32,
+    fgor: u32,
+    nl: u32,
+    pl: u32,
+    out_cm: u32,
+    fg_cm: u32,
+    ocolr: u32,
+    rows_done: u32,
+}
+
 #[derive(Debug, Default)]
 struct Dma2dBehavior {
     active: bool,
-    ticks: u8,
+    susp: bool,
+    /// `START` requested but not yet executed: the transfer snapshot runs
+    /// at the next tick, when all `CR` lanes (notably `MODE`) have landed.
+    /// (Starting on lane 0 would run a half-programmed transfer.)
+    start_armed: bool,
+    elapsed: u64,
+    ticks_total: u64,
     pending: bool,
+    mailbox: Option<Arc<Mutex<Dma2dMailbox>>>,
+    xfer: Option<Dma2dXfer>,
+}
+
+impl Dma2dBehavior {
+    fn raise_isr(view: &mut Registers<&mut [u32]>, bits: u32) {
+        let isr = view.try_get(0x04).unwrap_or(0) | bits;
+        view.try_set(0x04, isr);
+    }
+
+    fn sync_pending(&mut self, view: &mut Registers<&mut [u32]>) {
+        let isr = view.try_get(0x04).unwrap_or(0);
+        let cr = view.try_get(0x00).unwrap_or(0);
+        let ier = (cr >> 8) & 0x3F;
+        if isr & ier & 0x3F != 0 {
+            self.pending = true;
+        }
+    }
+
+    /// Latch the transfer config at `START`; validate modes and pixel
+    /// formats (`TEIF` otherwise), then run flag-only or fetch rows.
+    fn start(&mut self, view: &mut Registers<&mut [u32]>) {
+        let cr = view.try_get(0x00).unwrap_or(0);
+        let mode = (cr >> 16) & 0x3;
+        let nl = view.try_get(0x44).unwrap_or(0) & 0xFFFF;
+        let pl = (view.try_get(0x44).unwrap_or(0) >> 16) & 0x3FFF;
+        let out_cm = view.try_get(0x34).unwrap_or(0) & 0x7;
+        let fg_cm = view.try_get(0x1c).unwrap_or(0) & 0x7;
+        let out_bpp = dma2d_bpp(out_cm);
+        let fg_bpp = dma2d_bpp(fg_cm);
+        // Blend needs an alpha compositor, CLUT/alpha formats need tables:
+        // visible error instead of a silent wrong blit (documented).
+        if mode == 2 || out_bpp.is_none() || (mode != 3 && fg_bpp.is_none()) {
+            Self::raise_isr(view, 1);
+            self.sync_pending(view);
+            Self::clear_start(view);
+            return;
+        }
+        // Empty rectangles complete on the first tick, moving nothing
+        // (ticks_total floors at 1 below).
+        let pixels = u64::from(nl) * u64::from(pl);
+        self.ticks_total = (pixels / 64).max(1);
+        self.elapsed = 0;
+        let out_bpp = out_bpp.unwrap_or(4);
+        let fg_bpp = fg_bpp.unwrap_or(4);
+        let xfer = Dma2dXfer {
+            mode,
+            omar: view.try_get(0x3c).unwrap_or(0),
+            fgmar: view.try_get(0x0c).unwrap_or(0),
+            oor: view.try_get(0x40).unwrap_or(0) & 0x3FFF,
+            fgor: view.try_get(0x10).unwrap_or(0) & 0x3FFF,
+            nl,
+            pl,
+            out_cm,
+            fg_cm,
+            ocolr: view.try_get(0x38).unwrap_or(0),
+            rows_done: 0,
+        };
+        // Memory-to-memory fetches every source row up front; register
+        // fills and flag-only runs finish on the tick count instead.
+        if let (Some(mb), 0 | 1) = (&self.mailbox, mode) {
+            let fg = u32::try_from(fg_bpp).unwrap_or(u32::MAX);
+            let row_bytes = xfer.pl * fg;
+            let stride = row_bytes + xfer.fgor * fg;
+            let mut mb = mb.lock().unwrap_or_else(|e| e.into_inner());
+            for y in 0..xfer.nl {
+                mb.reads.push(Dma2dRead {
+                    addr: xfer.fgmar.wrapping_add(y.wrapping_mul(stride)),
+                    len: row_bytes,
+                    row: y,
+                });
+            }
+        }
+        self.xfer = Some(xfer);
+        self.active = true;
+    }
+
+    /// Finish: `TCIF`, `START` clears, transfer drops.
+    fn complete(&mut self, view: &mut Registers<&mut [u32]>) {
+        Self::raise_isr(view, 1 << 1);
+        Self::clear_start(view);
+        self.active = false;
+        self.xfer = None;
+        self.sync_pending(view);
+    }
+
+    /// Cancel: `CAEIF`, `START` clears, queued traffic drops.
+    fn abort(&mut self, view: &mut Registers<&mut [u32]>) {
+        Self::raise_isr(view, 1 << 3);
+        Self::clear_start(view);
+        self.active = false;
+        self.susp = false;
+        self.xfer = None;
+        if let Some(mb) = &self.mailbox {
+            let mut mb = mb.lock().unwrap_or_else(|e| e.into_inner());
+            mb.reads.clear();
+            mb.results.clear();
+        }
+        self.sync_pending(view);
+    }
+
+    fn clear_start(view: &mut Registers<&mut [u32]>) {
+        if let Some(cr) = view.try_get(0x00) {
+            view.try_set(0x00, cr & !1);
+        }
+    }
+
+    /// Synthesize register-fill rows at completion (one converted color
+    /// per pixel, pitched by `OOR`).
+    fn fill_rect(&mut self, view: &mut Registers<&mut [u32]>) {
+        let _ = view;
+        let Some(x) = self.xfer.as_ref() else {
+            return;
+        };
+        let px = x.ocolr.to_be_bytes();
+        let (a, r, g, b) = (px[0], px[1], px[2], px[3]);
+        let out_bpp = u32::try_from(dma2d_bpp(x.out_cm).unwrap_or(4)).unwrap_or(u32::MAX);
+        let pl = usize::try_from(x.pl).unwrap_or(usize::MAX);
+        let mut row = Vec::with_capacity(pl * out_bpp as usize);
+        for _ in 0..pl {
+            row.extend(dma2d_from_argb(x.out_cm, a, r, g, b));
+        }
+        let stride = x.pl * out_bpp + x.oor * out_bpp;
+        if let Some(mb) = &self.mailbox {
+            let mut mb = mb.lock().unwrap_or_else(|e| e.into_inner());
+            for y in 0..x.nl {
+                mb.writes
+                    .push((x.omar.wrapping_add(y.wrapping_mul(stride)), row.clone()));
+            }
+        }
+    }
+
+    /// Consume arrived source rows: convert and emit destination writes.
+    /// Rows must arrive in order (the bus preserves request order); a
+    /// short row pads with zeros.
+    fn drain_rows(&mut self, view: &mut Registers<&mut [u32]>) {
+        let lwr = view.try_get(0x48).unwrap_or(0) & 0xFFFF;
+        let mut rows = Vec::new();
+        if let Some(mb) = &self.mailbox {
+            let mut mb = mb.lock().unwrap_or_else(|e| e.into_inner());
+            while let Some(r) = mb.results.pop_front() {
+                rows.push(r);
+            }
+        }
+        for r in rows {
+            let done = match self.xfer.as_mut() {
+                Some(x) if r.row == x.rows_done => {
+                    let out_bpp =
+                        u32::try_from(dma2d_bpp(x.out_cm).unwrap_or(4)).unwrap_or(u32::MAX);
+                    let fg_bpp = u32::try_from(dma2d_bpp(x.fg_cm).unwrap_or(4)).unwrap_or(u32::MAX);
+                    let pl = usize::try_from(x.pl).unwrap_or(usize::MAX);
+                    let mut out = Vec::with_capacity(pl * out_bpp as usize);
+                    let mut src = r.bytes;
+                    src.resize(pl * fg_bpp as usize, 0);
+                    for px in src.chunks_exact(fg_bpp as usize) {
+                        let (a, rr, g, b) = dma2d_to_argb(x.fg_cm, px);
+                        out.extend(dma2d_from_argb(x.out_cm, a, rr, g, b));
+                    }
+                    let stride = x.pl * out_bpp + x.oor * out_bpp;
+                    let addr = x.omar.wrapping_add(r.row.wrapping_mul(stride));
+                    if let Some(mb) = &self.mailbox {
+                        mb.lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .writes
+                            .push((addr, out));
+                    }
+                    x.rows_done += 1;
+                    x.rows_done
+                }
+                _ => {
+                    // No transfer, or out of order: park it back.
+                    if let Some(mb) = &self.mailbox {
+                        mb.lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .results
+                            .push_front(r);
+                    }
+                    break;
+                }
+            };
+            if lwr != 0 && done == lwr {
+                Self::raise_isr(view, 1 << 2);
+                self.sync_pending(view);
+            }
+        }
+    }
 }
 
 impl Behavior for Dma2dBehavior {
@@ -536,16 +931,17 @@ impl Behavior for Dma2dBehavior {
     ) -> u32 {
         let word = view.merged(offset, val, shift);
         match offset {
+            // CR: START arms for the next tick (full word converged),
+            // SUSP pauses, ABORT cancels with CAEIF. ABORT is a pulse.
             0x00 => {
-                // CR START bit0
-                if word & 1 != 0 && !self.active {
-                    self.active = true;
-                    self.ticks = 1;
+                if word & (1 << 2) != 0 {
+                    self.start_armed = false;
+                    self.abort(view);
+                    return word & !(1 << 2);
                 }
-                // SUSP/ABORT clear active
-                if word & 0x6 != 0 {
-                    self.active = false;
-                    self.ticks = 0;
+                self.susp = word & (1 << 1) != 0;
+                if word & 1 != 0 && !self.active {
+                    self.start_armed = true;
                 }
             }
             0x08 => {
@@ -555,7 +951,7 @@ impl Behavior for Dma2dBehavior {
                     isr &= !clear;
                     view.try_set(0x04, isr);
                 }
-                if view.try_get(0x04).unwrap_or(0) == 0 {
+                if view.try_get(0x04).unwrap_or(0) & 0x3F == 0 {
                     self.pending = false;
                 }
                 return view.get(offset);
@@ -565,27 +961,27 @@ impl Behavior for Dma2dBehavior {
         word
     }
     fn tick(&mut self, view: &mut Registers<&mut [u32]>, delta: u64) {
-        if !self.active || self.ticks == 0 {
+        if self.start_armed && !self.active && !self.susp {
+            self.start_armed = false;
+            self.start(view);
+        }
+        if !self.active || self.susp || delta == 0 {
             return;
         }
-        let dec = (delta as u8).min(self.ticks);
-        self.ticks -= dec;
-        if self.ticks == 0 {
-            self.active = false;
-            // set ISR TCIF bit1
-            let mut isr = view.try_get(0x04).unwrap_or(0);
-            isr |= 1 << 1;
-            view.try_set(0x04, isr);
-            // clear START in CR
-            if let Some(mut cr) = view.try_get(0x00) {
-                cr &= !1;
-                view.try_set(0x00, cr);
+        self.elapsed += delta;
+        // Register fills finish on the tick count; memory copies finish
+        // as source rows arrive (no mailbox: everything is flag-only).
+        let fill_done =
+            matches!(&self.xfer, Some(x) if x.mode == 3) && self.elapsed >= self.ticks_total;
+        self.drain_rows(view);
+        let rows_done = matches!(&self.xfer, Some(x) if x.mode != 3 && x.rows_done >= x.nl);
+        let flag_done = self.mailbox.is_none() && self.elapsed >= self.ticks_total;
+        if self.active && (fill_done || rows_done || flag_done) {
+            // Register-fill rows are synthesized at completion.
+            if fill_done {
+                self.fill_rect(view);
             }
-            let cr = view.try_get(0x00).unwrap_or(0);
-            if cr & (1 << 9) != 0 {
-                // TCIE
-                self.pending = true;
-            }
+            self.complete(view);
         }
     }
     fn pending(&self, _view: &Registers<&[u32]>) -> u32 {
@@ -600,12 +996,20 @@ impl Behavior for Dma2dBehavior {
     }
     fn reset(&mut self) {
         self.active = false;
-        self.ticks = 0;
+        self.susp = false;
+        self.start_armed = false;
+        self.elapsed = 0;
+        self.ticks_total = 0;
         self.pending = false;
+        self.xfer = None;
     }
 }
 
-/// Chrom-ART graphics accelerator (handshake model).
+/// Chrom-ART graphics accelerator: register-to-memory fills and
+/// memory-to-memory copies with pixel-format conversion over a bus
+/// mailbox (flag-only without one); blend/CLUT formats latch `TEIF`.
+/// Line offsets count pixels (documented assumption); alpha blending is
+/// out of scope (overwrite semantics).
 #[derive(Debug)]
 pub struct Dma2d {
     inner: RegisterFile<Dma2dBehavior>,
@@ -619,6 +1023,14 @@ impl Dma2d {
         Self {
             inner: RegisterFile::new(def, Dma2dBehavior::default()),
         }
+    }
+
+    /// Attach the memory-bus mailbox (boards): pixel traffic flows
+    /// through it; without one every mode completes flag-only.
+    #[must_use]
+    pub fn with_mailbox(mut self, mailbox: Arc<Mutex<Dma2dMailbox>>) -> Self {
+        self.inner.behavior_mut().mailbox = Some(mailbox);
+        self
     }
 }
 
@@ -1384,9 +1796,13 @@ impl InterruptSource for Hrtim {
 
 #[cfg(test)]
 mod tests {
-    use super::{Bdma, Dma2d, Dmamux, DmamuxRoutes, Hrtim, Ltdc, Mdma, Sai4};
+    use super::{
+        Bdma, Dma2d, Dma2dMailbox, Dma2dRead, Dma2dResult, Dmamux, DmamuxRoutes, Hrtim, Ltdc, Mdma,
+        Sai4,
+    };
     use crate::device::svd::stm32h743::Stm32h743;
     use crate::device::{InterruptSource, Peripheral};
+    use std::sync::{Arc, Mutex};
 
     fn write_word<P: Peripheral>(p: &mut P, addr: u32, val: u32) {
         for i in 0..4 {
@@ -1527,6 +1943,54 @@ mod tests {
     }
 
     #[test]
+    fn ltdc_layer_reload_paths() {
+        let mut l = Ltdc::new_for::<Stm32h743>();
+        let base = l.ranges()[0].base;
+        write_word(&mut l, base + 0x18, 1); // GCR LTDCEN
+        write_word(&mut l, base + 0x34, 1 << 3); // IER RRIE
+                                                 // Layer 1 enable arms immediately with IMR, latching RRIF.
+        write_word(&mut l, base + 0x84, 1); // L1CR LEN
+        assert_eq!(
+            read_word(&mut l, base + 0x38) & (1 << 3),
+            0,
+            "no reload yet"
+        );
+        write_word(&mut l, base + 0x24, 1); // SRCR IMR
+        assert_ne!(read_word(&mut l, base + 0x38) & (1 << 3), 0, "RRIF");
+        assert_ne!(l.pending(), 0, "reload line");
+        write_word(&mut l, base + 0x3c, 1 << 3); // ICR
+        assert_eq!(l.pending(), 0);
+        // Layer 2 enable waits for the blanking reload.
+        write_word(&mut l, base + 0x104, 1); // L2CR LEN
+        write_word(&mut l, base + 0x24, 1 << 1); // SRCR VBR
+        assert_eq!(read_word(&mut l, base + 0x38) & (1 << 3), 0, "deferred");
+        l.tick(1); // one-line frame wraps, reload applies
+        assert_ne!(read_word(&mut l, base + 0x38) & (1 << 3), 0, "RRIF at wrap");
+    }
+
+    #[test]
+    fn ltdc_line_compare_tracks_scan() {
+        let mut l = Ltdc::new_for::<Stm32h743>();
+        let base = l.ranges()[0].base;
+        write_word(&mut l, base + 0x18, 1); // GCR LTDCEN
+        write_word(&mut l, base + 0x14, 99); // TWCR TOTALH 99 → 100 lines
+        write_word(&mut l, base + 0x40, 50); // LIPCR line 50
+        write_word(&mut l, base + 0x34, 1); // IER LIE
+        l.tick(49);
+        assert_eq!(read_word(&mut l, base + 0x38) & 1, 0, "not yet");
+        assert_eq!(read_word(&mut l, base + 0x44) & 0x7FF, 49, "CPSR.Y live");
+        l.tick(1);
+        assert_ne!(read_word(&mut l, base + 0x38) & 1, 0, "LIF at line 50");
+        assert_ne!(l.pending(), 0);
+        // Past the line, no refire until the next frame.
+        write_word(&mut l, base + 0x3c, 1);
+        l.tick(10);
+        assert_eq!(read_word(&mut l, base + 0x38) & 1, 0, "passed");
+        l.tick(90); // wraps through line 50 again
+        assert_ne!(read_word(&mut l, base + 0x38) & 1, 0, "LIF next frame");
+    }
+
+    #[test]
     fn dma2d_start_completes_and_pends() {
         let mut d = Dma2d::new_for::<Stm32h743>();
         let base = d.ranges()[0].base;
@@ -1579,5 +2043,162 @@ mod tests {
         write_word(&mut s, base + 0x04, 1);
         s.tick(1);
         assert_eq!(s.pending(), 1);
+    }
+
+    /// DMA2D with a scripted bus: reads come from `mem`, writes land there.
+    fn dma2d() -> (Dma2d, Arc<Mutex<Dma2dMailbox>>, u32) {
+        let mb = Arc::new(Mutex::new(Dma2dMailbox::default()));
+        let mut d = Dma2d::new_for::<Stm32h743>().with_mailbox(mb.clone());
+        let base = d.ranges()[0].base;
+        d.reset();
+        (d, mb, base)
+    }
+
+    /// Serve one bus round against `mem` at `ram_base`.
+    fn dma2d_drain(mb: &Arc<Mutex<Dma2dMailbox>>, mem: &mut [u8], ram_base: u32) {
+        let mut mb = mb.lock().unwrap();
+        let reads: Vec<Dma2dRead> = core::mem::take(&mut mb.reads);
+        for r in reads {
+            let off = r.addr.wrapping_sub(ram_base) as usize;
+            mb.results.push_back(Dma2dResult {
+                row: r.row,
+                bytes: mem[off..off + r.len as usize].to_vec(),
+            });
+        }
+        let writes: Vec<(u32, Vec<u8>)> = core::mem::take(&mut mb.writes);
+        for (addr, bytes) in writes {
+            let off = addr.wrapping_sub(ram_base) as usize;
+            mem[off..off + bytes.len()].copy_from_slice(&bytes);
+        }
+    }
+
+    /// Tick + drain rounds until `TCIF`, returning ticks used.
+    fn dma2d_run(d: &mut Dma2d, mb: &Arc<Mutex<Dma2dMailbox>>, mem: &mut [u8], ram: u32) -> u64 {
+        for t in 1..=40 {
+            d.tick(1);
+            dma2d_drain(mb, mem, ram);
+            if read_word(d, d.ranges()[0].base + 0x04) & (1 << 1) != 0 {
+                return t;
+            }
+        }
+        panic!("TCIF never latched");
+    }
+
+    const RAM: u32 = 0x2000_0000;
+
+    #[test]
+    fn dma2d_r2m_fills_red_argb8888() {
+        let (mut d, mb, base) = dma2d();
+        let mut mem = vec![0u8; 0x1000];
+        write_word(&mut d, base + 0x34, 0); // OPFCCR ARGB8888
+        write_word(&mut d, base + 0x38, 0xFFFF_0000); // OCOLR opaque red
+        write_word(&mut d, base + 0x3c, RAM); // OMAR
+        write_word(&mut d, base + 0x44, 2 | (8 << 16)); // NLR 2 lines × 8 px
+        write_word(&mut d, base, (1 << 9) | (3 << 16) | 1); // TCIE R2M START
+        dma2d_run(&mut d, &mb, &mut mem, RAM);
+        assert_ne!(d.pending(), 0);
+        // B G R A per pixel, little-endian.
+        assert_eq!(&mem[..8], &[0, 0, 0xFF, 0xFF, 0, 0, 0xFF, 0xFF]);
+        assert_eq!(&mem[32..40], &[0, 0, 0xFF, 0xFF, 0, 0, 0xFF, 0xFF]);
+        assert_eq!(read_word(&mut d, base) & 1, 0, "START clears");
+    }
+
+    #[test]
+    fn dma2d_m2m_copies_bytes_exactly() {
+        let (mut d, mb, base) = dma2d();
+        let mut mem = vec![0u8; 0x1000];
+        for (i, b) in mem[..64].iter_mut().enumerate() {
+            *b = (i * 5 + 1) as u8;
+        }
+        let want = mem[..64].to_vec();
+        write_word(&mut d, base + 0x1c, 0); // FGPFCCR ARGB8888
+        write_word(&mut d, base + 0x34, 0); // OPFCCR ARGB8888
+        write_word(&mut d, base + 0x0c, RAM); // FGMAR
+        write_word(&mut d, base + 0x3c, RAM + 0x400); // OMAR
+        write_word(&mut d, base + 0x44, 4 | (4 << 16)); // 4 lines × 4 px
+        write_word(&mut d, base, (1 << 9) | 1); // TCIE M2M START
+        dma2d_run(&mut d, &mb, &mut mem, RAM);
+        assert_eq!(mem[0x400..0x440], want[..], "byte-exact copy");
+    }
+
+    #[test]
+    fn dma2d_pfc_rgb565_red_to_argb() {
+        let (mut d, mb, base) = dma2d();
+        let mut mem = vec![0u8; 0x1000];
+        mem[0] = 0x00;
+        mem[1] = 0xF8; // RGB565 red
+        write_word(&mut d, base + 0x1c, 2); // FGPFCCR RGB565
+        write_word(&mut d, base + 0x34, 0); // OPFCCR ARGB8888
+        write_word(&mut d, base + 0x0c, RAM);
+        write_word(&mut d, base + 0x3c, RAM + 0x400);
+        write_word(&mut d, base + 0x44, 1 | (1 << 16));
+        write_word(&mut d, base, (1 << 9) | (1 << 16) | 1); // TCIE PFC START
+        dma2d_run(&mut d, &mb, &mut mem, RAM);
+        assert_eq!(&mem[0x400..0x404], &[0, 0, 0xFF, 0xFF], "expanded red");
+    }
+
+    #[test]
+    fn dma2d_blend_and_bad_format_raise_teif() {
+        let (mut d, mb, base) = dma2d();
+        let mem = vec![0u8; 0x1000];
+        // Config errors surface on the first tick after START, once the
+        // full control word (notably `MODE`) has converged.
+        write_word(&mut d, base, (1 << 8) | (2 << 16) | 1); // TEIE BLEND START
+        d.tick(1);
+        assert_ne!(read_word(&mut d, base + 0x04) & 1, 0, "TEIF on blend");
+        assert_eq!(read_word(&mut d, base + 0x04) & (1 << 1), 0, "no TCIF");
+        assert_eq!(read_word(&mut d, base) & 1, 0, "START clears");
+        assert_ne!(d.pending(), 0, "error line");
+        write_word(&mut d, base + 0x08, 1); // IFCR CTEIF
+        assert_eq!(d.pending(), 0);
+        // Unknown pixel format: same treatment.
+        write_word(&mut d, base + 0x1c, 6); // FGPFCCR A4-ish
+        write_word(&mut d, base, (1 << 8) | (1 << 16) | 1); // TEIE PFC START
+        d.tick(1);
+        assert_ne!(read_word(&mut d, base + 0x04) & 1, 0, "TEIF on format");
+        let _ = (mb, mem);
+    }
+
+    #[test]
+    fn dma2d_abort_raises_caeif() {
+        let (mut d, mb, base) = dma2d();
+        let mem = vec![0u8; 0x1000];
+        write_word(&mut d, base + 0x1c, 0);
+        write_word(&mut d, base + 0x34, 0);
+        write_word(&mut d, base + 0x0c, RAM);
+        write_word(&mut d, base + 0x3c, RAM + 0x400);
+        write_word(&mut d, base + 0x44, 8 | (8 << 16));
+        write_word(&mut d, base, (1 << 11) | 1); // CAEIE START
+                                                 // No bus service: rows stall, then abort wins.
+        d.tick(1);
+        write_word(&mut d, base, (1 << 11) | (1 << 2)); // CAEIE ABORT
+        assert_ne!(read_word(&mut d, base + 0x04) & (1 << 3), 0, "CAEIF");
+        assert_eq!(read_word(&mut d, base) & 1, 0, "START clears");
+        assert_ne!(d.pending(), 0);
+        assert_eq!(read_word(&mut d, base + 0x04) & (1 << 1), 0, "no TCIF");
+        let _ = (mb, mem);
+    }
+
+    #[test]
+    fn dma2d_watermark_fires_at_lwr_line() {
+        let (mut d, mb, base) = dma2d();
+        let mut mem = vec![0u8; 0x1000];
+        write_word(&mut d, base + 0x1c, 0);
+        write_word(&mut d, base + 0x34, 0);
+        write_word(&mut d, base + 0x0c, RAM);
+        write_word(&mut d, base + 0x3c, RAM + 0x400);
+        write_word(&mut d, base + 0x44, 4 | (2 << 16)); // 4 lines × 2 px
+        write_word(&mut d, base + 0x48, 2); // LWR line 2
+        write_word(&mut d, base, (1 << 10) | 1); // TWIE START
+        for _ in 0..20 {
+            d.tick(1);
+            dma2d_drain(&mb, &mut mem, RAM);
+            if read_word(&mut d, base + 0x04) & (1 << 2) != 0 {
+                break;
+            }
+        }
+        assert_ne!(read_word(&mut d, base + 0x04) & (1 << 2), 0, "TWIF");
+        assert_ne!(d.pending(), 0);
+        dma2d_run(&mut d, &mb, &mut mem, RAM);
     }
 }

@@ -76,8 +76,7 @@ board e2e with real firmware → `arch.md` + CHANGELOG.
 - [x] **CAN/FDCAN timing**: bxCAN `TEC`/`REC` + `EWGF`/`EPVF`/`BOFF` + sticky `LEC` + `TERR` + bus-off freeze/recovery (timing stays `BTR`-derived, proven tick-exact); FDCAN `ECR`/`PSR` (destructive reads), error-destroyed RX, `DAR` abort/retry, TX event FIFO, `TXBCR` cancellation. Proof: error-injection suites in `can.rs`/`fdcan.rs` lib tests (escalation to bus-off and recovery both controllers).
 - [x] **SDIO/SDMMC full speed paths**: paced data path (`CLKCR` divisor/width, `CMD6` HS doubling, tick-exact), `CMD18`/`CMD25` multi-block with `CMD12` end, per-block CRCs, `DTIMER` deadline (`DTIMEOUT`), `CTIMEOUT` on clash, `CMD13` polling. Proof: 4-block write→read byte-compare + pacing + timeout/clash lib tests (`sdio.rs`).
 - [x] **Crypto completion**: AES GCM/GMAC/CMAC (GHASH, phased `GCMPH`, subkeys, `SUSPR`), HASH HMAC-SHA1/224/256 (two-step `DCAL`, `LKEY`) + `CSR` suspend/resume; MD5/empty-CMAC/non-96-bit-IV stay documented non-goals. Proof: NIST vectors per mode + board proofs on `u585`/`u575` (`aes.rs`/`hash.rs` lib tests, `crypto_boards.rs`).
-- [ ] **Display/camera (LTDC/DMA2D/DSI/DCMI/JPEG)**: descoped in B6;
-      handshake behavior first, then data paths. Proof: frame-IRQ e2e.
+- [x] **Display/camera (LTDC/DMA2D/DSI/DCMI/JPEG)**: LTDC layers + reload + line IRQ, DMA2D fills/copies with format conversion over a bus mailbox, DCMI snapshot bytes + frame flag, JPEG handshake; pixel pipelines/blending, DSI (no SVD/panel), DMA capture, JPEG codec stay documented non-goals. Proof: board frame-IRQ e2e on `h743` (`display_frame_irq.rs`).
 - [ ] **Analog extras (DFSDM/SAI/SPDIFRX/OPAMP maps)**: currently
       latch-only on H7/G4; promote in firmware-demand order.
 - [ ] **Radio honesty (SUBGHZ/BLE)**: keep documented-virtual stance;
