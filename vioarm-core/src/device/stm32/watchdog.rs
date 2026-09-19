@@ -8,12 +8,13 @@
 //! reboots the whole part — exactly what an un-refreshed watchdog does on
 //! silicon. There is no way to stop it once started.
 //!
-//! The `WWDG` is a 7-bit down-counter gated by `WDGA` in `CR`. Each refresh
-//! (a write to `CR`) must happen inside the window set by `CFR.W`: refreshing
-//! above it, or letting the counter underflow past `0x40`, also latches the
-//! watchdog reset. When the counter reaches `0x40` the `SR.EWIF` flag is set
+//! The `WWDG` is a 7-bit down-counter gated by `WDGA` in `CR`, clocked on
+//! `PCLK/4096` divided by `2^WDGTB`. Each refresh (a write to `CR`) must
+//! happen inside the window set by `CFR.W`: refreshing above it, or
+//! letting the counter underflow past `0x40`, also latches the watchdog
+//! reset. When the counter reaches `0x40` the `SR.EWIF` flag is set
 //! and — with `CFR.EWI` enabled — the WWDG interrupt (IRQ 0) raises, giving
-//! the handler one step to refresh before the reset at `0x3F`.
+//! the handler thousands of steps to refresh before the reset at `0x3F`.
 
 use crate::device::svd::stm32f103;
 use crate::device::svd::{Behavior, Device, RegisterFile, Registers};
@@ -185,8 +186,13 @@ impl Behavior for WwdgBehavior {
                         if u32::from(self.counter) & 0x7F > window {
                             *self.reset.lock().unwrap_or_else(|e| e.into_inner()) = true;
                         }
+                    } else if word & 0x7F < 0x40 {
+                        // Enabling with the counter already below the edge
+                        // resets immediately, like silicon.
+                        *self.reset.lock().unwrap_or_else(|e| e.into_inner()) = true;
                     }
-                    self.counter = 0x7F;
+                    // Both enable and refresh load the written T bits.
+                    self.counter = (word & 0x7F) as u8;
                     self.psc_phase = 0;
                 }
                 word
@@ -199,7 +205,12 @@ impl Behavior for WwdgBehavior {
         if view.get(WCR) & WDGA == 0 {
             return;
         }
-        let div = 1u64 << ((view.get(CFR) >> 7) & 0x3);
+        // The counter runs on PCLK/4096 divided by 2^WDGTB (RM0008
+        // §20.3.2). The base prescaler matters beyond timing: it keeps
+        // thousands of steps between the 0x40 early wakeup and the 0x3F
+        // underflow, so an armed EWI always gets its interrupt before a
+        // reset can preempt it.
+        let div = 4096u64 * (1u64 << ((view.get(CFR) >> 7) & 0x3));
         self.psc_phase += delta;
         let mut steps = self.psc_phase / div;
         self.psc_phase %= div;
@@ -351,6 +362,8 @@ mod tests {
 
     const IWDG_BASE: u32 = 0x4000_3000;
     const WWDG_BASE: u32 = 0x4000_2C00;
+    /// One WWDG count at WDGTB=0 (PCLK/4096 base prescaler).
+    const WTICK: u64 = 4096;
 
     #[allow(clippy::cast_possible_truncation)]
     fn write_word<P: Peripheral>(p: &mut P, addr: u32, val: u32) {
@@ -462,13 +475,13 @@ mod tests {
         write_word(&mut w, WWDG_BASE, 0x80 | 0x7F);
         // Counter 0x41 -> 0x40: EWIF + interrupt; 0x40 -> 0x3F: reset.
         for _ in 0..0x3E {
-            w.tick(1);
+            w.tick(WTICK);
             assert!(!*reset.lock().unwrap_or_else(|e| e.into_inner()));
             assert_eq!(w.pending(), 0);
         }
-        w.tick(1); // reaches 0x40
+        w.tick(WTICK); // reaches 0x40
         assert_eq!(w.pending(), 0, "EWI is not yet enabled");
-        w.tick(1); // 0x40 -> 0x3F: reset
+        w.tick(WTICK); // 0x40 -> 0x3F: reset
         assert!(*reset.lock().unwrap_or_else(|e| e.into_inner()));
     }
 
@@ -479,16 +492,16 @@ mod tests {
         write_word(&mut w, WWDG_BASE + 0x04, 0x0200 | 0x7F); // CFR: EWI | W=0x7F
         write_word(&mut w, WWDG_BASE, 0x80 | 0x7F); // WDGA | T
         for _ in 0..0x3E {
-            w.tick(1);
+            w.tick(WTICK);
         }
-        w.tick(1); // reaches 0x40
+        w.tick(WTICK); // reaches 0x40
         assert_eq!(w.pending(), 1, "EWIF set and EWI enabled");
         assert!(!*reset.lock().unwrap_or_else(|e| e.into_inner()));
         // Writing SR clears EWIF and drops the interrupt.
         w.write(WWDG_BASE + 0x08, 0).unwrap();
         assert_eq!(w.pending(), 0);
         // The next step still resets.
-        w.tick(1);
+        w.tick(WTICK);
         assert!(*reset.lock().unwrap_or_else(|e| e.into_inner()));
     }
 
@@ -499,7 +512,7 @@ mod tests {
         write_word(&mut w, WWDG_BASE + 0x04, 0x7F); // CFR: W = 0x7F (whole window)
         write_word(&mut w, WWDG_BASE, 0x80 | 0x7F);
         for _ in 0..0x20 {
-            w.tick(1);
+            w.tick(WTICK);
             assert!(!*reset.lock().unwrap_or_else(|e| e.into_inner()));
             // Refresh on the same counter value each iteration.
             write_word(&mut w, WWDG_BASE, 0x7F);
@@ -522,5 +535,27 @@ mod tests {
     fn wwdg_register_layout() {
         assert_eq!(Wwdg::new(latch()).exception_number(), Some(16), "IRQ 0");
         assert_eq!(Iwdg::new(latch()).exception_number(), None, "no IWDG IRQ");
+    }
+
+    /// Enabling loads the written counter: below the edge resets at once,
+    /// a mid-window value counts down from there.
+    #[test]
+    fn wwdg_enable_loads_counter_and_checks_the_edge() {
+        let reset = latch();
+        let mut w = Wwdg::new(reset.clone());
+        write_word(&mut w, WWDG_BASE + 0x04, 0x7F); // CFR: whole window
+        write_word(&mut w, WWDG_BASE, 0x80 | 0x50); // enable at T=0x50
+        assert!(!*reset.lock().unwrap_or_else(|e| e.into_inner()));
+        // 0x50 -> 0x40 is 16 ticks: EWIF appears without EWI.
+        for _ in 0..16 {
+            w.tick(WTICK);
+        }
+        assert_eq!(read_word(&mut w, WWDG_BASE + 0x08) & 1, 1, "EWIF at 0x40");
+        // Enabling straight below the edge resets immediately.
+        let reset2 = latch();
+        let mut w2 = Wwdg::new(reset2.clone());
+        write_word(&mut w2, WWDG_BASE + 0x04, 0x7F);
+        write_word(&mut w2, WWDG_BASE, 0x80 | 0x30);
+        assert!(*reset2.lock().unwrap_or_else(|e| e.into_inner()));
     }
 }

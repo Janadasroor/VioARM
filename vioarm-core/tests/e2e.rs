@@ -1083,9 +1083,11 @@ fn wwdg_underflow_requests_a_full_reset() {
         let mem = m.core.mem();
         mem.write_word(0x4000_2C00, 0x0080 | 0x007F).unwrap(); // WDGA | T = 0x7F
     }
-    // The 7-bit counter runs 0x7F..=0x40 over 63 cycles; the 64th underflows
-    // past the window and latches a reset request. `b .` is 3c.
-    for _ in 0..21 {
+    // The 7-bit counter runs 0x7F..=0x40 over 63*4096 PCLK cycles
+    // (WDGTB=0: the PCLK/4096 base prescaler); the 64th count underflows
+    // past the window and latches a reset request. `b .` is 3c, so step
+    // 87382 covers cycle 262144 = the 64th count.
+    for _ in 0..87_381 {
         m.step().unwrap();
         assert!(!m.core.mem().reset_requested());
     }
