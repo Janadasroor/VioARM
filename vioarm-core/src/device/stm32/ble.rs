@@ -4,10 +4,12 @@
 //! Advertising bytes staged through `TXDATA` leave via `TXGO` for the host
 //! channel (the [`Fabric`](crate::fabric::Fabric) radio bus carries them to
 //! peer RX FIFOs); inbound bytes arrive the same way. `CR.LOOPBACK` copies
-//! into the own RX FIFO for single-machine self-tests. No access address,
-//! CRC, whitening, channels, or PHY exists here: payload bytes in, payload
-//! bytes out, in order. There is deliberately no interrupt line either (no
-//! silicon AP IRQ exists to mirror) — firmware polls `RXSTAT`/`TXDONE`.
+//! into the own RX FIFO for single-machine self-tests. The shared packet
+//! engine adds virtual link-layer address filtering + CRC-16 (see
+//! `radio.rs`); whitening, channels, and PHY do not exist here: framed
+//! payload bytes in, payload bytes out, in order. There is deliberately no
+//! interrupt line either (no silicon AP IRQ exists to mirror) — firmware
+//! polls `RXSTAT`/`TXDONE`.
 
 use super::radio::PacketBehavior;
 use crate::device::svd::{Access, PeripheralDef, RegisterDef, RegisterFile};
@@ -86,6 +88,30 @@ impl Ble {
                     offset: 0x30,
                     width: 32,
                     access: Access::ReadOnly,
+                    reset: 0,
+                    fields: &[],
+                },
+                RegisterDef {
+                    name: "ADDRF",
+                    offset: 0x34,
+                    width: 32,
+                    access: Access::ReadWrite,
+                    reset: 0,
+                    fields: &[],
+                },
+                RegisterDef {
+                    name: "CRCF",
+                    offset: 0x38,
+                    width: 32,
+                    access: Access::ReadWrite,
+                    reset: 0,
+                    fields: &[],
+                },
+                RegisterDef {
+                    name: "DROPSTAT",
+                    offset: 0x3c,
+                    width: 32,
+                    access: Access::ReadWrite,
                     reset: 0,
                     fields: &[],
                 },

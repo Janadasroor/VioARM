@@ -112,6 +112,30 @@ impl Subghz {
                     reset: 0,
                     fields: &[],
                 },
+                RegisterDef {
+                    name: "ADDRF",
+                    offset: 0x34,
+                    width: 32,
+                    access: Access::ReadWrite,
+                    reset: 0,
+                    fields: &[],
+                },
+                RegisterDef {
+                    name: "CRCF",
+                    offset: 0x38,
+                    width: 32,
+                    access: Access::ReadWrite,
+                    reset: 0,
+                    fields: &[],
+                },
+                RegisterDef {
+                    name: "DROPSTAT",
+                    offset: 0x3c,
+                    width: 32,
+                    access: Access::ReadWrite,
+                    reset: 0,
+                    fields: &[],
+                },
             ],
         };
         Self {
