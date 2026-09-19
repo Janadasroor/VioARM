@@ -3,7 +3,18 @@
 //! `DHR12L1`/`DHR8R1` and channel-2, `DHR12RD` dual, `DOR1`/`DOR2` read-only
 //! reflect the last converted value. When `TENx==0` a `DHR` write loads `DORx`
 //! if `ENx`; when `TENx==1` and `TSELx==0` (software) `SWTRIGR` latches.
+//!
+//! Waveform generation (`CR.WAVEx`, `MAMPx`): a software trigger steps the
+//! wave instead of latching `DHR` — triangle ramps the counter up and down
+//! within `(1 << (MAMP+1)) - 1`, noise steps a 12-bit LFSR (taps 12/6/4/1,
+//! a documented approximation: the RM names the LFSR but not its
+//! polynomial) masked to the same amplitude. Both add to the `DHR` base,
+//! clipped at full scale. Converted outputs publish to the analog bus when
+//! wired (`with_analog_bus`), feeding ADC/COMP chains. Deliberately
+//! unmodeled: timer-triggered waves (no stimulus edge exists yet) and
+//! wave+DMA combinations.
 
+use crate::device::analog::AnalogBusState;
 use crate::device::stm32::dma::DmaRequests;
 use crate::device::svd::{Behavior, Device, RegisterFile, Registers};
 use crate::device::{InterruptSource, Peripheral};
@@ -33,14 +44,62 @@ const CR_EN2: u32 = 1 << 16;
 const CR_TEN2: u32 = 1 << 18;
 const CR_TSEL2_SHIFT: u32 = 19;
 const CR_DMAEN2: u32 = 1 << 28;
+/// Waveform generation (`WAVE[1:0]`: 0 off, 1 noise, 2/3 triangle) and
+/// amplitude mask (`MAMP[3:0]`: mask `(1 << (MAMP+1)) - 1`).
+const CR_WAVE1_SHIFT: u32 = 6;
+const CR_MAMP1_SHIFT: u32 = 8;
+const CR_WAVE2_SHIFT: u32 = 22;
+const CR_MAMP2_SHIFT: u32 = 24;
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct DacBehavior {
     requests: Option<Arc<Mutex<DmaRequests>>>,
+    /// Waveform state per channel: triangle counter + direction, and the
+    /// noise LFSR (reset seed `0xAAA`).
+    tri1: u16,
+    tri1_up: bool,
+    lfsr1: u16,
+    tri2: u16,
+    tri2_up: bool,
+    lfsr2: u16,
+    /// Shared analog bus (WP-R4): converted outputs publish their
+    /// millivolts, feeding ADC/COMP chains on the same board.
+    analog_bus: Option<Arc<Mutex<AnalogBusState>>>,
+}
+
+/// Noise LFSR seed (silicon reset value).
+const LFSR_SEED: u16 = 0xAAA;
+
+impl Default for DacBehavior {
+    fn default() -> Self {
+        Self {
+            requests: None,
+            tri1: 0,
+            tri1_up: true,
+            lfsr1: LFSR_SEED,
+            tri2: 0,
+            tri2_up: true,
+            lfsr2: LFSR_SEED,
+            analog_bus: None,
+        }
+    }
 }
 
 impl DacBehavior {
-    fn transfer_ch1(view: &mut Registers<&mut [u32]>, val12: u32) {
+    /// One 12-bit LFSR step (taps 12/6/4/1, maximal — a documented
+    /// approximation: the RM names the LFSR but not its polynomial).
+    fn lfsr_step(lfsr: u16) -> u16 {
+        let bit = ((lfsr >> 11) ^ (lfsr >> 5) ^ (lfsr >> 3) ^ lfsr) & 1;
+        ((lfsr << 1) | bit) & 0xFFF
+    }
+
+    /// Publish a converted code to the analog bus, if wired.
+    fn publish(&self, code: u32) {
+        if let Some(bus) = self.analog_bus.as_ref() {
+            AnalogBusState::set_millivolts(bus, code * 3300 / 4095);
+        }
+    }
+    fn transfer_ch1(&mut self, view: &mut Registers<&mut [u32]>, val12: u32) {
         let cr = view.get(CR);
         if cr & CR_EN1 == 0 {
             return;
@@ -50,8 +109,9 @@ impl DacBehavior {
             return;
         }
         view.set(DOR1, val12 & 0xFFF);
+        self.publish(val12 & 0xFFF);
     }
-    fn transfer_ch2(view: &mut Registers<&mut [u32]>, val12: u32) {
+    fn transfer_ch2(&mut self, view: &mut Registers<&mut [u32]>, val12: u32) {
         let cr = match view.try_get(CR) {
             Some(v) => v,
             None => return,
@@ -63,7 +123,77 @@ impl DacBehavior {
             return;
         }
         view.try_set(DOR2, val12 & 0xFFF);
+        self.publish(val12 & 0xFFF);
     }
+    /// Amplitude mask from `MAMP[3:0]`: `(1 << (MAMP+1)) - 1`.
+    fn wave_mask(mamp: u32) -> u32 {
+        if mamp >= 12 {
+            0xFFF
+        } else {
+            (1 << (mamp + 1)) - 1
+        }
+    }
+
+    /// Step channel 1's waveform on a software trigger: the wave value
+    /// adds to the `DHR` base (clipped at full scale), like silicon.
+    fn step_wave1(&mut self, view: &mut Registers<&mut [u32]>) {
+        let cr = view.get(CR);
+        let base = view.get(DHR12R1) & 0xFFF;
+        let mask = Self::wave_mask((cr >> CR_MAMP1_SHIFT) & 0xF);
+        let out = if (cr >> CR_WAVE1_SHIFT) & 0x3 == 1 {
+            self.lfsr1 = Self::lfsr_step(self.lfsr1);
+            base.saturating_add(u32::from(self.lfsr1) & mask).min(0xFFF)
+        } else {
+            if self.tri1_up {
+                if self.tri1 >= mask as u16 {
+                    self.tri1_up = false;
+                    self.tri1 -= 1;
+                } else {
+                    self.tri1 += 1;
+                }
+            } else if self.tri1 == 0 {
+                self.tri1_up = true;
+                self.tri1 += 1;
+            } else {
+                self.tri1 -= 1;
+            }
+            base.saturating_add(u32::from(self.tri1)).min(0xFFF)
+        };
+        view.set(DOR1, out);
+        self.publish(out);
+    }
+
+    /// Step channel 2's waveform (mirror of channel 1).
+    fn step_wave2(&mut self, view: &mut Registers<&mut [u32]>) {
+        let cr = view.get(CR);
+        let base = match view.try_get(DHR12R2) {
+            Some(v) => v & 0xFFF,
+            None => return,
+        };
+        let mask = Self::wave_mask((cr >> CR_MAMP2_SHIFT) & 0xF);
+        let out = if (cr >> CR_WAVE2_SHIFT) & 0x3 == 1 {
+            self.lfsr2 = Self::lfsr_step(self.lfsr2);
+            base.saturating_add(u32::from(self.lfsr2) & mask).min(0xFFF)
+        } else {
+            if self.tri2_up {
+                if self.tri2 >= mask as u16 {
+                    self.tri2_up = false;
+                    self.tri2 -= 1;
+                } else {
+                    self.tri2 += 1;
+                }
+            } else if self.tri2 == 0 {
+                self.tri2_up = true;
+                self.tri2 += 1;
+            } else {
+                self.tri2 -= 1;
+            }
+            base.saturating_add(u32::from(self.tri2)).min(0xFFF)
+        };
+        view.try_set(DOR2, out);
+        self.publish(out);
+    }
+
     fn assert_dma(&self, ch: u8) {
         if let Some(req) = &self.requests {
             // DAC1 -> DMA1 Ch3, DAC2 -> DMA1 Ch4, memory→periph.
@@ -78,6 +208,14 @@ impl Behavior for DacBehavior {
     // Triggers convert synchronously (SWTRIGR/TIM edge); nothing free-runs.
     fn needs_tick() -> bool {
         false
+    }
+    fn reset(&mut self) {
+        self.tri1 = 0;
+        self.tri1_up = true;
+        self.lfsr1 = LFSR_SEED;
+        self.tri2 = 0;
+        self.tri2_up = true;
+        self.lfsr2 = LFSR_SEED;
     }
     fn on_write(
         &mut self,
@@ -98,9 +236,12 @@ impl Behavior for DacBehavior {
                     {
                         if cr & CR_DMAEN1 != 0 {
                             self.assert_dma(3);
+                        } else if (cr >> CR_WAVE1_SHIFT) & 0x3 != 0 {
+                            self.step_wave1(view);
                         } else {
                             let v = view.get(DHR12R1) & 0xFFF;
                             view.set(DOR1, v);
+                            self.publish(v);
                         }
                     }
                 }
@@ -110,9 +251,12 @@ impl Behavior for DacBehavior {
                     {
                         if cr & CR_DMAEN2 != 0 {
                             self.assert_dma(4);
+                        } else if (cr >> CR_WAVE2_SHIFT) & 0x3 != 0 {
+                            self.step_wave2(view);
                         } else if let Some(v) = view.try_get(DHR12R2) {
                             let v = v & 0xFFF;
                             view.try_set(DOR2, v);
+                            self.publish(v);
                         }
                     }
                 }
@@ -121,53 +265,53 @@ impl Behavior for DacBehavior {
             }
             DHR12R1 => {
                 let v = word & 0xFFF;
-                Self::transfer_ch1(view, v);
+                self.transfer_ch1(view, v);
                 word
             }
             DHR12L1 => {
                 let v = (word >> 4) & 0xFFF;
-                Self::transfer_ch1(view, v);
+                self.transfer_ch1(view, v);
                 word
             }
             DHR8R1 => {
                 let v = word & 0xFF;
-                Self::transfer_ch1(view, v);
+                self.transfer_ch1(view, v);
                 word
             }
             DHR12R2 => {
                 let v = word & 0xFFF;
-                Self::transfer_ch2(view, v);
+                self.transfer_ch2(view, v);
                 word
             }
             DHR12L2 => {
                 let v = (word >> 4) & 0xFFF;
-                Self::transfer_ch2(view, v);
+                self.transfer_ch2(view, v);
                 word
             }
             DHR8R2 => {
                 let v = word & 0xFF;
-                Self::transfer_ch2(view, v);
+                self.transfer_ch2(view, v);
                 word
             }
             DHR12RD => {
                 let v1 = word & 0xFFF;
                 let v2 = (word >> 16) & 0xFFF;
-                Self::transfer_ch1(view, v1);
-                Self::transfer_ch2(view, v2);
+                self.transfer_ch1(view, v1);
+                self.transfer_ch2(view, v2);
                 word
             }
             DHR12LD => {
                 let v1 = (word >> 4) & 0xFFF;
                 let v2 = (word >> 20) & 0xFFF;
-                Self::transfer_ch1(view, v1);
-                Self::transfer_ch2(view, v2);
+                self.transfer_ch1(view, v1);
+                self.transfer_ch2(view, v2);
                 word
             }
             DHR8RD => {
                 let v1 = word & 0xFF;
                 let v2 = (word >> 8) & 0xFF;
-                Self::transfer_ch1(view, v1);
-                Self::transfer_ch2(view, v2);
+                self.transfer_ch1(view, v1);
+                self.transfer_ch2(view, v2);
                 word
             }
             DOR1 | DOR2 => cur, // read-only
@@ -200,9 +344,18 @@ impl Dac {
                 def,
                 DacBehavior {
                     requests: Some(requests),
+                    ..DacBehavior::default()
                 },
             ),
         }
+    }
+
+    /// Publish converted outputs to the shared analog bus (feeds ADC/COMP
+    /// chains on the same board).
+    #[must_use]
+    pub fn with_analog_bus(mut self, bus: Arc<Mutex<AnalogBusState>>) -> Self {
+        self.inner.behavior_mut().analog_bus = Some(bus);
+        self
     }
 }
 impl Peripheral for Dac {
@@ -271,5 +424,58 @@ mod tests {
         let mut d = Dac::new_for::<Stm32f103>();
         write_word(&mut d, 0x08, 0x0FFF);
         assert_eq!(read_word(&mut d, 0x2C) & 0xFFF, 0x000);
+    }
+
+    /// Triangle wave: `SWTRIGR` steps the counter up within the `MAMP`
+    /// mask and back down, added to the `DHR` base.
+    #[test]
+    fn triangle_ramps_up_and_down_within_amplitude() {
+        let mut d = Dac::new_for::<Stm32f103>();
+        // EN1 | TEN1 | WAVE1 = triangle (2) | MAMP1 = 7 (mask 0xFF).
+        write_word(&mut d, 0x00, 0x1 | 0x4 | (2 << 6) | (7 << 8));
+        write_word(&mut d, 0x08, 0x000);
+        for _ in 0..10 {
+            write_word(&mut d, 0x04, 0x01);
+        }
+        assert_eq!(read_word(&mut d, 0x2C) & 0xFFF, 10);
+        for _ in 0..245 {
+            write_word(&mut d, 0x04, 0x01);
+        }
+        assert_eq!(read_word(&mut d, 0x2C) & 0xFFF, 255);
+        write_word(&mut d, 0x04, 0x01);
+        assert_eq!(read_word(&mut d, 0x2C) & 0xFFF, 254);
+        write_word(&mut d, 0x04, 0x01);
+        assert_eq!(read_word(&mut d, 0x2C) & 0xFFF, 253);
+    }
+
+    /// Noise wave: outputs vary inside the mask and rerun identically.
+    #[test]
+    fn noise_varies_within_mask_and_reruns_identically() {
+        fn run8() -> Vec<u32> {
+            let mut d = Dac::new_for::<Stm32f103>();
+            write_word(&mut d, 0x00, 0x1 | 0x4 | (1 << 6) | (3 << 8));
+            write_word(&mut d, 0x08, 0x000);
+            (0..8)
+                .map(|_| {
+                    write_word(&mut d, 0x04, 0x01);
+                    read_word(&mut d, 0x2C) & 0xFFF
+                })
+                .collect()
+        }
+        let first = run8();
+        assert!(first.iter().all(|&v| v <= 0xF), "masked: {first:?}");
+        assert!(first.iter().any(|&v| v != first[0]), "varies: {first:?}");
+        assert_eq!(run8(), first, "deterministic rerun");
+    }
+
+    /// Converted outputs publish to the wired analog bus.
+    #[test]
+    fn converted_output_publishes_to_the_bus() {
+        use crate::device::analog::AnalogBusState;
+        let bus = AnalogBusState::shared();
+        let mut d = Dac::new_for::<Stm32f103>().with_analog_bus(bus.clone());
+        write_word(&mut d, 0x00, 0x0000_0001); // EN1, direct
+        write_word(&mut d, 0x08, 2048);
+        assert_eq!(AnalogBusState::millivolts(&bus), Some(2048 * 3300 / 4095));
     }
 }

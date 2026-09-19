@@ -152,9 +152,10 @@ pub fn stm32f103() -> BoardMemory {
     mem.attach(Box::new(Crc::new_for::<
         crate::device::svd::stm32f103::Stm32f103,
     >()));
-    mem.attach(Box::new(Dac::new_with_dma::<
-        crate::device::svd::stm32f103::Stm32f103,
-    >(dma_requests.clone())));
+    mem.attach(Box::new(
+        Dac::new_with_dma::<crate::device::svd::stm32f103::Stm32f103>(dma_requests.clone())
+            .with_analog_bus(mem.analog_handle()),
+    ));
     mem.attach(Box::new(Rtc::new_for::<
         crate::device::svd::stm32f103::Stm32f103,
     >()));
@@ -271,9 +272,9 @@ pub fn stm32f107() -> BoardMemory {
     ));
     mem.attach(Box::new(Crc::new_for::<Stm32f107>()));
     let dma_requests = Arc::new(Mutex::new(DmaRequests::new()));
-    mem.attach(Box::new(Dac::new_with_dma::<Stm32f107>(
-        dma_requests.clone(),
-    )));
+    mem.attach(Box::new(
+        Dac::new_with_dma::<Stm32f107>(dma_requests.clone()).with_analog_bus(mem.analog_handle()),
+    ));
     mem.attach(Box::new(Rtc::new_for::<Stm32f107>()));
     mem.attach(Box::new(Bkp::new_for::<Stm32f107>()));
     if <Stm32f107 as crate::device::svd::Device>::peripheral("SDIO").is_some() {
@@ -418,7 +419,9 @@ pub fn stm32f407() -> BoardMemory {
         Pwr::new_for::<Stm32f407>().with_vdd(mem.vdd_handle()),
     ));
     mem.attach(Box::new(Crc::new_for::<Stm32f407>()));
-    mem.attach(Box::new(Dac::new_for::<Stm32f407>()));
+    mem.attach(Box::new(
+        Dac::new_for::<Stm32f407>().with_analog_bus(mem.analog_handle()),
+    ));
     mem.attach(Box::new(Rtc::new_for::<Stm32f407>()));
     mem.attach(Box::new(Sdio::new_for::<Stm32f407>()));
     mem.attach(Box::new(GpioF4::at_in::<Stm32f407>(0x4002_0000, "gpioa")));
@@ -587,7 +590,9 @@ fn f4_full_board(flash_len: u32, ram_len: u32, ccm_len: u32) -> BoardMemory {
         Pwr::new_for::<Stm32f407>().with_vdd(mem.vdd_handle()),
     ));
     mem.attach(Box::new(Crc::new_for::<Stm32f407>()));
-    mem.attach(Box::new(Dac::new_for::<Stm32f407>()));
+    mem.attach(Box::new(
+        Dac::new_for::<Stm32f407>().with_analog_bus(mem.analog_handle()),
+    ));
     mem.attach(Box::new(Rtc::new_for::<Stm32f407>()));
     mem.attach(Box::new(Sdio::new_for::<Stm32f407>()));
     mem.attach(Box::new(GpioF4::at_in::<Stm32f407>(0x4002_0000, "gpioa")));
@@ -795,7 +800,9 @@ fn f4gen_full_board<D: crate::device::svd::Device>(
         mem.attach(Box::new(Crc::new_for::<D>()));
     }
     if live("DAC") {
-        mem.attach(Box::new(Dac::new_for::<D>()));
+        mem.attach(Box::new(
+            Dac::new_for::<D>().with_analog_bus(mem.analog_handle()),
+        ));
     }
     if live("RTC") {
         mem.attach(Box::new(Rtc::new_for::<D>()));
@@ -1373,7 +1380,9 @@ fn f0_full_board(flash_len: u32, ram_len: u32) -> BoardMemory {
         mem.attach(Box::new(Crc::new_for::<Stm32f072>()));
     }
     if <Stm32f072 as crate::device::svd::Device>::peripheral("DAC").is_some() {
-        mem.attach(Box::new(Dac::new_for::<Stm32f072>()));
+        mem.attach(Box::new(
+            Dac::new_for::<Stm32f072>().with_analog_bus(mem.analog_handle()),
+        ));
     }
     for (base, name) in [
         (0x4800_0000u32, "gpioa"),
@@ -1704,7 +1713,9 @@ pub fn stm32f072() -> BoardMemory {
         mem.attach(Box::new(Crc::new_for::<Stm32f072>()));
     }
     if <Stm32f072 as crate::device::svd::Device>::peripheral("DAC").is_some() {
-        mem.attach(Box::new(Dac::new_for::<Stm32f072>()));
+        mem.attach(Box::new(
+            Dac::new_for::<Stm32f072>().with_analog_bus(mem.analog_handle()),
+        ));
     }
     // F0 RTC is the new RTC (TR/DR/CR), not the old PRL/CNT/ALR; skip old behavior
     if <Stm32f072 as crate::device::svd::Device>::peripheral("RTC").is_some()
@@ -2117,9 +2128,10 @@ pub fn stm32f042() -> BoardMemory {
         mem.attach(Box::new(Crc::new_for::<Stm32f042>()));
     }
     if <Stm32f042 as crate::device::svd::Device>::peripheral("COMP").is_some() {
-        mem.attach(Box::new(crate::device::stm32::comp::Comp::new_for::<
-            Stm32f042,
-        >()));
+        mem.attach(Box::new(
+            crate::device::stm32::comp::Comp::new_for::<Stm32f042>()
+                .with_analog_bus(mem.analog_handle()),
+        ));
     }
     if <Stm32f042 as crate::device::svd::Device>::peripheral("CRS").is_some() {
         mem.attach(Box::new(
@@ -2304,7 +2316,9 @@ pub fn stm32f091() -> BoardMemory {
         mem.attach(Box::new(Crc::new_for::<Stm32f091>()));
     }
     if <Stm32f091 as crate::device::svd::Device>::peripheral("DAC").is_some() {
-        mem.attach(Box::new(Dac::new_for::<Stm32f091>()));
+        mem.attach(Box::new(
+            Dac::new_for::<Stm32f091>().with_analog_bus(mem.analog_handle()),
+        ));
     }
     for (base, name) in [
         (0x4800_0000u32, "gpioa"),
@@ -7856,7 +7870,9 @@ pub fn stm32f303xe() -> BoardMemory {
     if <Stm32f303xe as crate::device::svd::Device>::peripheral("DAC1").is_some()
         || <Stm32f303xe as crate::device::svd::Device>::peripheral("DAC").is_some()
     {
-        mem.attach(Box::new(Dac::new_for::<Stm32f303xe>()));
+        mem.attach(Box::new(
+            Dac::new_for::<Stm32f303xe>().with_analog_bus(mem.analog_handle()),
+        ));
     }
     // F3 GPIO is F4-style (MODER); input and alternate pins follow the
     // shared analog bus through the Schmitt path (WP-R4).
@@ -8777,9 +8793,10 @@ pub fn stm32h743() -> BoardMemory {
     // H743 remaining latch gap: COMP1/CAN_CCU/CRS/CEC/TIM15-17/AXI/DELAY_Block
     // Promote where behavioral exists, else explicit NoBehavior latch before fallback
     if <Stm32h743 as crate::device::svd::Device>::peripheral("COMP1").is_some() {
-        mem.attach(Box::new(crate::device::stm32::comp::Comp::new_for::<
-            Stm32h743,
-        >()));
+        mem.attach(Box::new(
+            crate::device::stm32::comp::Comp::new_for::<Stm32h743>()
+                .with_analog_bus(mem.analog_handle()),
+        ));
     }
     if <Stm32h743 as crate::device::svd::Device>::peripheral("CRS").is_some() {
         // Use Crs behavior (CR.CEN@5 → ISR.SYNCOKF) — H743 CRS at 0x40008400 same offsets as F0
