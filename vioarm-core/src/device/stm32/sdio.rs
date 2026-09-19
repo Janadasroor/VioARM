@@ -1,8 +1,24 @@
 //! STM32 SDIO (`SDIO`, `0x4001_8000` on F1 / `0x4001_2C00` on F4), SVD-driven.
-//! CMD-accurate plus data stub: `ARG`/`CMD` with `CPSMEN` latches `RESPCMD`/
-//! `RESP1`, sets `STA.CMDSENT`/`CMDREND` and `DATAEND`/`DBCKEND` when `DCTRL`/
-//! `DLEN` indicate a block, `ICR` W1C, `MASK` gates `SDIO` IRQ 49. FIFO and
-//! full card FSM remain stubbed.
+//!
+//! CMD-accurate plus a paced data path over a 1 MiB card image: `ARG`/`CMD`
+//! with `CPSMEN` latches `RESPCMD`/`RESP1`, sets `STA.CMDSENT`/`CMDREND` and
+//! completes `DATAEND`/`DBCKEND` as bytes move; `ICR` W1C, `MASK` gates
+//! `SDIO` IRQ 49.
+//!
+//! Data timing: bytes stream card↔FIFO over ticks derived from `CLKCR`
+//! (`CLKDIV+2` divisor, `WIDBUS` 1/4/8 lines) and the high-speed flag
+//! (`CMD6` switch doubles the rate), so bus width and speed are observable
+//! in tick counts. `CMD18`/`CMD25` stream multi-block runs (`DLEN` bytes
+//! from consecutive blocks) with `DATAEND` deferred to `CMD12`.
+//! `DTIMER` bounds the transfer in the same tick units: overrun latches
+//! `DTIMEOUT` and aborts. A transfer-starting command (`CMD17`/`18`/`24`/
+//! `25`/data-`CMD6`) while a transfer runs latches `CTIMEOUT` (single data
+//! path); `CMD12`/`CMD13`/ACMDs never clash. `CCRCFAIL`/`DCRCFAIL` arrive by injection
+//! (`drive_inputs` bits 16/17, clear 18); command CRCs never reach the
+//! `CMD` register, so `CCRCFAIL` has no stimulus path. Reads append the
+//! block CRC-16 after the payload; `CMD6` serves 64 zero status bytes.
+//! FIFO depth is unbounded (firmware-paced); `CMD12` ends multi-block runs
+//! unconditionally.
 
 use crate::device::svd::{Behavior, Device, RegisterFile, Registers};
 use crate::device::{InterruptSource, Peripheral};
@@ -10,6 +26,7 @@ use crate::error::BusError;
 use crate::mem::bus::Region;
 
 const CMD: u32 = 0x0C;
+const CLKCR: u32 = 0x04;
 const RESPCMD: u32 = 0x10;
 const RESP1: u32 = 0x14;
 const DTIMER: u32 = 0x24;
@@ -62,6 +79,31 @@ struct SdioBehavior {
     spi_mode: bool,
     inject_ccrcfail: bool,
     inject_dcrcfail: bool,
+    /// High-speed timing (set by `CMD6` switch to function 1).
+    hs: bool,
+    /// A multi-block run (`CMD18`/`CMD25`) awaiting `CMD12`.
+    multi: bool,
+    /// Bytes of the current transfer still to move, with its deadline.
+    xfer: Option<Xfer>,
+}
+
+/// One paced data transfer: reads stream staged bytes→FIFO on ticks,
+/// writes complete when firmware fills the FIFO; both die past `DTIMER`.
+#[derive(Debug)]
+struct Xfer {
+    /// Host-to-card (`DCTRL.DTDIR` set).
+    write: bool,
+    /// Payload bytes expected (writes: `DLEN` at dispatch).
+    total: usize,
+    /// Staged source bytes still to stream (reads: payload + CRCs).
+    staged: Vec<u8>,
+    /// Staged bytes already moved to the FIFO.
+    staged_off: usize,
+    /// Ticks elapsed (against `DTIMER`) and ticks budgeted overall.
+    elapsed: u64,
+    budget: u64,
+    /// Bytes streamed per tick (width × speed scaled).
+    step: usize,
 }
 
 impl Default for SdioBehavior {
@@ -76,14 +118,174 @@ impl Default for SdioBehavior {
             spi_mode: false,
             inject_ccrcfail: false,
             inject_dcrcfail: false,
+            hs: false,
+            multi: false,
+            xfer: None,
         }
     }
 }
 
+impl SdioBehavior {
+    /// Data-line width in bytes per tick unit from `CLKCR.WIDBUS`.
+    fn width_bytes(view: &Registers<&mut [u32]>) -> usize {
+        match (view.get(CLKCR) >> 11) & 0x3 {
+            1 => 4,
+            2 => 8,
+            _ => 1,
+        }
+    }
+
+    /// Ticks for `n` bytes: `(CLKDIV+2)` time quanta per line-round,
+    /// halved in high-speed mode.
+    fn transfer_ticks(&self, view: &Registers<&mut [u32]>, n: usize) -> u64 {
+        let clkdiv = u64::from(view.get(CLKCR) & 0xFF) + 2;
+        let per_tick = (Self::width_bytes(view) * if self.hs { 2 } else { 1 }) as u64;
+        (n as u64 * clkdiv / per_tick.max(1)).max(1)
+    }
+
+    /// Card-image offset for `ARG`: block numbers (`CMD18`/`25` style,
+    /// `ARG < image` and block-aligned) or byte addresses (SDSC).
+    fn block_offset(&self, arg: u32) -> usize {
+        let block = if arg >= 512 && arg % 512 == 0 && (arg as usize) < self.card.len() {
+            (arg as usize) / 512
+        } else {
+            arg as usize
+        };
+        (block * 512).min(self.card.len())
+    }
+
+    /// Start a paced transfer for a data command: stage the read source
+    /// (payload plus one CRC-16 per 512-byte block, as the data lines
+    /// carry them) or arm a write commit; `CMD18`/`25` open multi-block
+    /// runs with `DATAEND` deferred to `CMD12`.
+    fn start_transfer(&mut self, view: &mut Registers<&mut [u32]>, idx: u32, sta: &mut u32) {
+        self.last_arg = view.get(0x08);
+        let dlen = view.get(DLEN) as usize;
+        let write = view.get(DCTRL) & DCTRL_DTDIR != 0;
+        self.multi = idx == 18 || idx == 25;
+        self.fifo.clear();
+        if dlen == 0 {
+            *sta |= STA_DATAEND | STA_DBCKEND;
+            return;
+        }
+        let budget = self.transfer_ticks(view, dlen);
+        let step = (dlen as u64 / budget.max(1)).max(1) as usize;
+        if !write {
+            let staged = if idx == 6 {
+                // `CMD6` function status: 64 bytes, group-1 function
+                // selected when high-speed switched.
+                let mut s = vec![0u8; 64];
+                if self.hs {
+                    s[13] = 0x01;
+                }
+                let crc = sd_crc16(&s);
+                s.push((crc >> 8) as u8);
+                s.push((crc & 0xFF) as u8);
+                s
+            } else {
+                // Payload from consecutive blocks plus per-block CRCs.
+                let mut s = Vec::with_capacity(dlen + 2 * dlen.div_ceil(512));
+                let mut left = dlen;
+                let mut off = self.block_offset(self.last_arg);
+                while left > 0 {
+                    let n = left.min(512);
+                    let mut blk = vec![0xFFu8; n];
+                    for (i, b) in blk.iter_mut().enumerate() {
+                        *b = self.card.get(off + i).copied().unwrap_or(0xFF);
+                    }
+                    let crc = sd_crc16(&blk);
+                    s.extend_from_slice(&blk);
+                    s.push((crc >> 8) as u8);
+                    s.push((crc & 0xFF) as u8);
+                    left -= n;
+                    off = off.saturating_add(n).min(self.card.len());
+                }
+                s
+            };
+            self.xfer = Some(Xfer {
+                write: false,
+                total: dlen,
+                staged,
+                staged_off: 0,
+                elapsed: 0,
+                budget,
+                step,
+            });
+        } else {
+            *sta |= STA_TXDAVL;
+            self.xfer = Some(Xfer {
+                write: true,
+                total: dlen,
+                staged: Vec::new(),
+                staged_off: 0,
+                elapsed: 0,
+                budget,
+                step,
+            });
+        }
+    }
+
+    /// Commit a filled write transfer to consecutive card blocks.
+    fn commit_write(&mut self, view: &mut Registers<&mut [u32]>) {
+        let arg = self.last_arg;
+        let off = self.block_offset(arg);
+        if let Some(x) = self.xfer.take() {
+            for (i, b) in self.fifo.iter().enumerate().take(x.total) {
+                if off + i < self.card.len() {
+                    self.card[off + i] = *b;
+                }
+            }
+        }
+        let mut sta = view.get(STA) | STA_DBCKEND;
+        if !self.multi {
+            sta |= STA_DATAEND;
+        }
+        view.set(STA, sta);
+    }
+
+    /// Latch a data timeout and drop the transfer (partial FIFO stays).
+    fn data_timeout(&mut self, view: &mut Registers<&mut [u32]>) {
+        self.xfer = None;
+        let sta = view.get(STA) | STA_DTIMEOUT;
+        view.set(STA, sta);
+    }
+}
+
 impl Behavior for SdioBehavior {
-    // Card transfers complete synchronously in the model.
     fn needs_tick() -> bool {
-        false
+        true
+    }
+
+    fn tick(&mut self, view: &mut Registers<&mut [u32]>, delta: u64) {
+        let Some(x) = self.xfer.as_mut() else {
+            return;
+        };
+        x.elapsed = x.elapsed.saturating_add(delta);
+        // Deadline first: `DTIMER` bounds the run in the same tick units
+        // (0 disables, for firmware that never programs it).
+        let dtimer = u64::from(view.get(DTIMER));
+        if dtimer != 0 && x.elapsed > dtimer {
+            self.data_timeout(view);
+            return;
+        }
+        if x.write {
+            // Firmware-paced: the FIFO write arm commits when full.
+            return;
+        }
+        let n = x.step.min(x.staged.len() - x.staged_off);
+        for _ in 0..n {
+            let b = x.staged[x.staged_off];
+            x.staged_off += 1;
+            self.fifo.push_back(b);
+        }
+        if x.staged_off >= x.staged.len() {
+            self.xfer = None;
+            let mut sta = view.get(STA) | STA_DBCKEND;
+            if !self.multi {
+                sta |= STA_DATAEND;
+            }
+            view.set(STA, sta);
+        }
     }
     fn on_write(
         &mut self,
@@ -146,6 +348,37 @@ impl Behavior for SdioBehavior {
                             // SD_APP_OP_COND — OCR ready
                             resp1 = self.ocr;
                         }
+                        6 if is_acmd => {
+                            // ACMD6 SET_BUS_WIDTH — accepted; the host-side
+                            // `CLKCR.WIDBUS` governs pacing (documented).
+                            resp1 = 0x0000_0900;
+                        }
+                        6 => {
+                            // CMD6 SWITCH_FUNC — function 1 of group 1 with
+                            // switch mode enters high-speed timing.
+                            let arg = view.get(0x08);
+                            if arg >> 31 & 1 == 1 && arg & 0xF == 1 {
+                                self.hs = true;
+                            }
+                            resp1 = 0x0000_0900;
+                        }
+                        12 if self.multi => {
+                            // STOP_TRANSMISSION ends the run: the data end
+                            // lands here, unconditionally.
+                            let sta = view.get(STA) | STA_DATAEND;
+                            view.set(STA, sta);
+                            self.multi = false;
+                            self.xfer = None;
+                            resp1 = 0x0000_0900;
+                        }
+                        13 => {
+                            // SEND_STATUS — ready/idle outside transfers.
+                            resp1 = if self.xfer.is_some() {
+                                0x0000_0C00
+                            } else {
+                                0x0000_0900
+                            };
+                        }
                         _ => {}
                     }
                     if waitresp != 0 || self.spi_mode {
@@ -164,42 +397,18 @@ impl Behavior for SdioBehavior {
                         sta |= STA_DCRCFAIL;
                         self.inject_dcrcfail = false;
                     }
-                    // If data path is enabled, complete the block and prime FIFO.
-                    if view.get(DCTRL) & DCTRL_DTEN != 0 {
-                        sta |= STA_DATAEND | STA_DBCKEND;
-                        self.last_arg = view.get(0x08);
-                        if view.get(DCTRL) & DCTRL_DTDIR == 0 {
-                            let dlen = view.get(DLEN) as usize;
-                            self.fifo.clear();
-                            let arg = self.last_arg;
-                            let block =
-                                if arg >= 512 && arg % 512 == 0 && (arg as usize) < self.card.len()
-                                {
-                                    (arg as usize) / 512
-                                } else {
-                                    arg as usize
-                                };
-                            let off = (block * 512).min(self.card.len());
-                            for i in 0..dlen.min(self.card.len().saturating_sub(off)) {
-                                let b = self.card.get(off + i).copied().unwrap_or(0xFF);
-                                self.fifo.push_back(b);
-                            }
-                            while self.fifo.len() < dlen {
-                                self.fifo.push_back(0xFF);
-                            }
-                            // The card appends the block CRC on the data
-                            // lines right after the payload.
-                            let served: Vec<u8> = self.fifo.iter().take(dlen).copied().collect();
-                            let crc = sd_crc16(&served);
-                            self.fifo.push_back((crc >> 8) as u8);
-                            self.fifo.push_back((crc & 0xFF) as u8);
-                            if !self.fifo.is_empty() {
-                                sta |= STA_RXDAVL;
-                            }
-                        } else {
-                            self.fifo.clear();
-                            sta |= STA_TXDAVL;
+                    // Only transfer-starting commands engage the data path
+                    // (`CMD12`/`CMD13`/ACMDs never do, even with `DTEN`
+                    // sticky); a second starter mid-run hits the single
+                    // data path and times out.
+                    let starts = matches!(idx, 17 | 18 | 24 | 25) || (idx == 6 && !is_acmd);
+                    if view.get(DCTRL) & DCTRL_DTEN != 0 && starts {
+                        if self.xfer.is_some() {
+                            sta |= STA_CTIMEOUT;
+                            view.set(STA, sta);
+                            return word & !(1 << 10);
                         }
+                        self.start_transfer(view, idx, &mut sta);
                     }
                     view.set(STA, sta);
                     // CPSMEN self-clears after dispatch.
@@ -212,21 +421,10 @@ impl Behavior for SdioBehavior {
                 self.fifo.push_back(val);
                 let sta = view.get(STA) | STA_TXDAVL;
                 view.set(STA, sta);
-                // When a full block has been written, commit to card image.
-                let dlen = view.get(DLEN);
-                if dlen != 0 && (self.fifo.len() as u32) >= dlen {
-                    let arg = self.last_arg;
-                    let block = if arg >= 512 && arg % 512 == 0 && (arg as usize) < self.card.len()
-                    {
-                        (arg as usize) / 512
-                    } else {
-                        arg as usize
-                    };
-                    let off = (block * 512).min(self.card.len());
-                    for (i, b) in self.fifo.iter().enumerate().take(dlen as usize) {
-                        if off + i < self.card.len() {
-                            self.card[off + i] = *b;
-                        }
+                // A filled write transfer commits to the card image.
+                if let Some(x) = self.xfer.as_ref() {
+                    if x.write && self.fifo.len() >= x.total {
+                        self.commit_write(view);
                     }
                 }
                 // FIFO is not a stored word; keep the register word as 0.
@@ -303,6 +501,9 @@ impl Behavior for SdioBehavior {
         self.fifo.clear();
         self.inject_ccrcfail = false;
         self.inject_dcrcfail = false;
+        self.hs = false;
+        self.multi = false;
+        self.xfer = None;
     }
 }
 
@@ -352,6 +553,9 @@ impl Peripheral for Sdio {
     }
     fn reset(&mut self) {
         self.inner.reset();
+    }
+    fn tick(&mut self, delta: u64) {
+        self.inner.tick(delta);
     }
     fn name(&self) -> &'static str {
         "sdio"
@@ -431,7 +635,14 @@ mod tests {
         write_word(&mut s, base + 0x3C, 1 << 8); // MASK DATAENDIE
         write_word(&mut s, base + 0x28, 512); // DLEN
         write_word(&mut s, base + 0x2C, 0x0000_0001); // DCTRL DTEN
-        write_word(&mut s, base + 0x0C, 0x0000_0440 | (1 << 10)); // CMD17 READ_SINGLE_BLOCK + CPSMEN
+        write_word(&mut s, base + 0x0C, (17 | (1 << 6)) | (1 << 10)); // CMD17 READ_SINGLE_BLOCK + CPSMEN
+                                                                      // The paced path streams 512 + 2 CRC bytes, then completes.
+        for _ in 0..1200 {
+            s.tick(1);
+            if read_word(&mut s, base + 0x34) & (1 << 8) != 0 {
+                break;
+            }
+        }
         assert_ne!(read_word(&mut s, base + 0x34) & (1 << 8), 0, "DATAEND set");
         assert_ne!(read_word(&mut s, base + 0x34) & (1 << 10), 0, "DBCKEND set");
         assert_ne!(s.pending(), 0);
@@ -475,8 +686,11 @@ mod tests {
         write_word(&mut s, B + super::DLEN, 9);
         write_word(&mut s, B + super::DTIMER, 0x2C);
         write_word(&mut s, B + super::DCTRL, super::DCTRL_DTEN);
-        write_word(&mut s, B + CMD, 0x0000_0440 | (1 << 10)); // CMD17
-                                                              // Drain payload + CRC bytes from the FIFO.
+        write_word(&mut s, B + CMD, (17 | (1 << 6)) | (1 << 10)); // CMD17
+                                                                  // Stream the payload + CRC bytes, then drain.
+        for _ in 0..40 {
+            s.tick(1);
+        }
         let mut got = Vec::new();
         for _ in 0..11 {
             got.push(s.read(B + FIFO).unwrap());
@@ -502,8 +716,189 @@ mod tests {
         // Subsequent read should still work via block read
         write_word(&mut s, B + super::DLEN, 512);
         write_word(&mut s, B + super::DCTRL, super::DCTRL_DTEN);
-        write_word(&mut s, B + CMD, 0x0000_0440 | (1 << 10)); // CMD17
+        write_word(&mut s, B + CMD, (17 | (1 << 6)) | (1 << 10)); // CMD17
+        for _ in 0..1200 {
+            s.tick(1);
+            if read_word(&mut s, B + 0x34) & (1 << 21) != 0 {
+                break;
+            }
+        }
         let _ = s.read(B + super::FIFO).unwrap();
         assert!(s.read(B + super::FIFO).is_ok());
+    }
+
+    /// Issue a data command word: index + R1 wait + CPSMEN.
+    fn data_cmd(s: &mut Sdio, base: u32, idx: u32) {
+        write_word(s, base + 0x0C, idx | (1 << 6) | (1 << 10));
+    }
+
+    /// Tick until `STA` shows `mask` (or `max` ticks pass); returns ticks used.
+    fn tick_until(s: &mut Sdio, base: u32, mask: u32, max: u64) -> u64 {
+        for t in 1..=max {
+            s.tick(1);
+            if read_word(s, base + 0x34) & mask != 0 {
+                return t;
+            }
+        }
+        panic!("STA {mask:#x} never latched");
+    }
+
+    /// Multi-block write (`CMD25`) then read (`CMD18`) of 4 blocks with a
+    /// byte-compare, CRCs verified per block, `CMD12` ending each run.
+    #[test]
+    fn multiblock_write_then_read_compare() {
+        let base = Stm32f103::peripheral("SDIO").unwrap().base;
+        let mut s = Sdio::new_for::<Stm32f103>();
+        // ---- CMD25: write blocks 10..13 --------------------------------
+        let pattern: Vec<u8> = (0..2048).map(|i| ((i * 7 + 3) & 0xFF) as u8).collect();
+        write_word(&mut s, base + 0x08, 10 * 512); // ARG block 10
+        write_word(&mut s, base + 0x28, 2048); // DLEN
+        write_word(&mut s, base + 0x2C, 0x0000_0003); // DCTRL DTEN|DTDIR
+        data_cmd(&mut s, base, 25);
+        for b in &pattern {
+            s.write(base + super::FIFO, *b).unwrap();
+        }
+        assert_ne!(read_word(&mut s, base + 0x34) & (1 << 10), 0, "DBCKEND");
+        assert_eq!(
+            read_word(&mut s, base + 0x34) & (1 << 8),
+            0,
+            "no DATAEND yet"
+        );
+        data_cmd(&mut s, base, 12); // STOP_TRANSMISSION
+        assert_ne!(
+            read_word(&mut s, base + 0x34) & (1 << 8),
+            0,
+            "DATAEND at CMD12"
+        );
+        // ---- CMD18: read them back --------------------------------------
+        write_word(&mut s, base + 0x38, 0xFFFF_FFFF); // ICR clears
+        write_word(&mut s, base + 0x08, 10 * 512);
+        write_word(&mut s, base + 0x28, 2048);
+        write_word(&mut s, base + 0x2C, 0x0000_0001); // DCTRL DTEN read
+        data_cmd(&mut s, base, 18);
+        let streamed = tick_until(&mut s, base, 1 << 10, 9000);
+        assert_eq!(streamed, 2056, "2056 staged bytes at 1 per tick");
+        let mut got = Vec::new();
+        for _ in 0..2048 + 8 {
+            got.push(s.read(base + super::FIFO).unwrap());
+        }
+        // Payload compares block by block; each block's CRC-16 verifies.
+        for b in 0..4 {
+            let off = b * 514;
+            assert_eq!(
+                &got[off..off + 512],
+                &pattern[b * 512..(b + 1) * 512],
+                "block {b}"
+            );
+            assert_eq!(
+                u16::from_be_bytes([got[off + 512], got[off + 513]]),
+                sd_crc16(&pattern[b * 512..(b + 1) * 512]),
+                "block {b} CRC"
+            );
+        }
+        assert_eq!(
+            read_word(&mut s, base + 0x34) & (1 << 8),
+            0,
+            "no DATAEND yet"
+        );
+        data_cmd(&mut s, base, 12);
+        assert_ne!(
+            read_word(&mut s, base + 0x34) & (1 << 8),
+            0,
+            "DATAEND at CMD12"
+        );
+    }
+
+    /// Bus width and high-speed switch observe exactly in transfer ticks
+    /// for one 512-byte block (+2 CRC bytes staged): 1-bit 514, 4-bit 257,
+    /// 4-bit + HS 129.
+    #[test]
+    fn bus_width_and_high_speed_scale_pacing() {
+        let base = Stm32f103::peripheral("SDIO").unwrap().base;
+        let read512 = |s: &mut Sdio| {
+            write_word(s, base + 0x38, 0xFFFF_FFFF); // ICR clears stale flags
+            write_word(s, base + 0x08, 0);
+            write_word(s, base + 0x28, 512);
+            write_word(s, base + 0x2C, 0x0000_0001);
+            data_cmd(s, base, 17);
+            // `CMD13` polls tran state mid-transfer without clashing.
+            data_cmd(s, base, 13);
+            assert_eq!(read_word(s, base + 0x14), 0x0000_0C00);
+            tick_until(s, base, 1 << 8, 2000)
+        };
+        let mut s = Sdio::new_for::<Stm32f103>();
+        assert_eq!(read512(&mut s), 514, "1-bit ticks");
+        // 4-bit bus.
+        s.reset();
+        write_word(&mut s, base + 0x04, 1 << 11); // CLKCR WIDBUS 4-bit
+        assert_eq!(read512(&mut s), 257, "4-bit ticks");
+        // High-speed switch via CMD6 then the same read (data path off:
+        // the status block is not wanted here).
+        write_word(&mut s, base + 0x2C, 0);
+        write_word(&mut s, base + 0x08, 0x80FF_FFF1); // switch, group 1 = 1
+        data_cmd(&mut s, base, 6);
+        assert_eq!(read_word(&mut s, base + 0x14), 0x0000_0900, "CMD6 R1");
+        assert_eq!(read512(&mut s), 129, "4-bit high-speed ticks");
+    }
+
+    /// A transfer outrunning `DTIMER` latches `DTIMEOUT` and aborts.
+    #[test]
+    fn dtimeout_aborts_overrun_transfer() {
+        let base = Stm32f103::peripheral("SDIO").unwrap().base;
+        let mut s = Sdio::new_for::<Stm32f103>();
+        write_word(&mut s, base + 0x08, 0);
+        write_word(&mut s, base + 0x28, 512);
+        write_word(&mut s, base + 0x24, 10); // DTIMER far short of 1024
+        write_word(&mut s, base + 0x2C, 0x0000_0001);
+        data_cmd(&mut s, base, 17);
+        tick_until(&mut s, base, 1 << 3, 100);
+        assert_eq!(read_word(&mut s, base + 0x34) & (1 << 8), 0, "no DATAEND");
+        assert_eq!(read_word(&mut s, base + 0x34) & (1 << 10), 0, "no DBCKEND");
+    }
+
+    /// A second transfer-starting command mid-run latches `CTIMEOUT` and
+    /// the first transfer still completes intact.
+    #[test]
+    fn ctimeout_on_clashing_data_command() {
+        let base = Stm32f103::peripheral("SDIO").unwrap().base;
+        let mut s = Sdio::new_for::<Stm32f103>();
+        write_word(&mut s, base + 0x08, 0);
+        write_word(&mut s, base + 0x28, 9);
+        write_word(&mut s, base + 0x2C, 0x0000_0001);
+        data_cmd(&mut s, base, 17);
+        for _ in 0..5 {
+            s.tick(1);
+        }
+        // A write command into the running read: refused.
+        write_word(&mut s, base + 0x2C, 0x0000_0003);
+        data_cmd(&mut s, base, 24);
+        assert_ne!(read_word(&mut s, base + 0x34) & (1 << 2), 0, "CTIMEOUT");
+        // The read still streams to its end (9 + 2 bytes, all zeros here).
+        tick_until(&mut s, base, 1 << 8, 100);
+        let mut got = Vec::new();
+        for _ in 0..11 {
+            got.push(s.read(base + super::FIFO).unwrap());
+        }
+        assert_eq!(&got[..9], &[0; 9], "read intact");
+        assert_eq!(
+            u16::from_be_bytes([got[9], got[10]]),
+            sd_crc16(&[0; 9]),
+            "CRC intact"
+        );
+    }
+
+    /// `ACMD6`/`CMD6`/`CMD13` answer the card-state words a stack polls.
+    #[test]
+    fn card_state_responses() {
+        let base = Stm32f103::peripheral("SDIO").unwrap().base;
+        let mut s = Sdio::new_for::<Stm32f103>();
+        // CMD55 then ACMD6 SET_BUS_WIDTH.
+        data_cmd(&mut s, base, 55);
+        write_word(&mut s, base + 0x08, 2); // 4-bit
+        write_word(&mut s, base + 0x0C, 6 | (1 << 6) | (1 << 10) | (1 << 14)); // ACMD6
+        assert_eq!(read_word(&mut s, base + 0x14), 0x0000_0900, "ACMD6 ready");
+        // Idle status outside transfers.
+        data_cmd(&mut s, base, 13);
+        assert_eq!(read_word(&mut s, base + 0x14), 0x0000_0900, "tran idle");
     }
 }
