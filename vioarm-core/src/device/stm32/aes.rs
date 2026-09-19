@@ -12,13 +12,17 @@
 //! deterministic by construction), proven by NIST vectors driven through
 //! the registers.
 //!
-//! Deliberate limits, all documented: GCM/GMAC/CMAC complete with zeroed
-//! `DOUTR` (no GHASH engine); DMA request lines latch without effect;
-//! suspend (`SUSPR`) latches without save/restore semantics; shared and
-//! device-unique keys (`KMOD`, the `SAES` hardware key) run as normal
-//! software-provided keys — key hiding and side-channel hardening are out
-//! of scope. `DATATYPE` 0/1/2/3 swapping applies symmetrically to data in
-//! and out.
+//! Deliberate limits, all documented: DMA request lines latch without
+//! effect; suspend on classic tables is absent (no `SUSPR` registers);
+//! shared and device-unique keys (`KMOD`, the `SAES` hardware key) run as
+//! normal software-provided keys — key hiding and side-channel hardening
+//! are out of scope. `DATATYPE` 0/1/2/3 swapping applies symmetrically to
+//! data in and out (GCM IV/AAD/lengths included). GCM accepts 96-bit IVs
+//! only (first 12 init bytes; the rest of the init block is ignored);
+//! CMAC exists on U5-layout tables only, and zero-length messages are out
+//! of scope (`NPBLB` cannot express 16 pad bytes, so no register sequence
+//! drives the empty K2 block); GMAC is the GCM flow without a
+//! payload phase.
 
 use crate::device::svd::{
     Access, Behavior, Device, IrqDef, PeripheralDef, RegisterDef, RegisterFile, Registers,
@@ -46,9 +50,16 @@ const CCFC: u32 = 1 << 7;
 const ERRC: u32 = 1 << 8;
 const CCFIE: u32 = 1 << 9;
 const ERRIE: u32 = 1 << 10;
-const CHMOD2: u32 = 1 << 16; // U5 GCM/GMAC/CMAC selector
+const CHMOD2: u32 = 1 << 16; // U5 chaining-mode high bit (CMAC selector)
 const KEYSIZE: u32 = 1 << 18; // U5 256-bit key
 const IPRST: u32 = 1 << 31; // U5 IP reset
+/// `CR.GCMPH` phase shift: `[17:16]` classic, `[14:13]` U5 (SVD-verified).
+const GCMPH_CLASSIC_SHIFT: u32 = 16;
+const GCMPH_U5_SHIFT: u32 = 13;
+/// U5 `CR.NPBLB` padding count for the last payload block.
+const NPBLB_SHIFT: u32 = 20;
+/// U5 suspend registers (absent on classic tables).
+const SUSPR0: u32 = 0x40;
 const MODE_ENC: u32 = 0;
 const MODE_KEYDERIV: u32 = 1;
 const MODE_DEC: u32 = 2;
@@ -105,6 +116,61 @@ const fn xtime(a: u8) -> u8 {
         (a << 1) ^ 0x1b
     } else {
         a << 1
+    }
+}
+
+/// `GF(2^128)` multiply, GCM MSB-first form (`R = 0xE1`).
+fn ghash_mul(x: &[u8; 16], y: &[u8; 16]) -> [u8; 16] {
+    let mut z = [0u8; 16];
+    let mut v = *y;
+    for i in 0..128 {
+        if (x[i / 8] >> (7 - (i % 8))) & 1 != 0 {
+            for j in 0..16 {
+                z[j] ^= v[j];
+            }
+        }
+        let lsb = v[15] & 1;
+        for j in (1..16).rev() {
+            v[j] = (v[j] >> 1) | (v[j - 1] << 7);
+        }
+        v[0] >>= 1;
+        if lsb != 0 {
+            v[0] ^= 0xE1;
+        }
+    }
+    z
+}
+
+/// One GHASH step: `Y = (Y ^ block) * H`.
+fn ghash_acc(y: &mut [u8; 16], h: &[u8; 16], block: &[u8; 16]) {
+    for i in 0..16 {
+        y[i] ^= block[i];
+    }
+    *y = ghash_mul(y, h);
+}
+
+/// `GF(2^128)` doubling for CMAC subkeys (`Rb = 0x87`).
+fn gcm_dbl(x: &[u8; 16]) -> [u8; 16] {
+    let mut out = [0u8; 16];
+    let msb = x[0] & 0x80;
+    for i in 0..15 {
+        out[i] = (x[i] << 1) | (x[i + 1] >> 7);
+    }
+    out[15] = x[15] << 1;
+    if msb != 0 {
+        out[15] ^= 0x87;
+    }
+    out
+}
+
+/// Big-endian 32-bit counter increment (GCM `inc32`).
+fn inc32(c: &mut [u8; 16]) {
+    for b in c[12..16].iter_mut().rev() {
+        let (v, carry) = b.overflowing_add(1);
+        *b = v;
+        if !carry {
+            break;
+        }
     }
 }
 
@@ -254,7 +320,8 @@ const fn datatype_swap(word: u32, datatype: u32) -> u32 {
 
 #[derive(Clone, Debug)]
 struct AesBehavior {
-    /// 256-bit keys exist only where the tables carry `KEYR4-7` (U5).
+    /// 256-bit keys exist only where the tables carry `KEYR4-7` (U5
+    /// layout, which also selects `GCMPH[14:13]`/`CHMOD_2`/`NPBLB`).
     allow_256: bool,
     /// Staged input words and the byte-lane assembler behind them.
     din: [u32; 4],
@@ -269,6 +336,12 @@ struct AesBehavior {
     /// Running CBC IV / CTR counter, live once a session started one.
     chain: [u8; 16],
     chaining: bool,
+    /// GCM streaming state: GHASH accumulator, pre-counter, subkey, and
+    /// whether the init phase ran (reset on `EN` fall).
+    ghash: [u8; 16],
+    gcm_j0: [u8; 16],
+    gcm_h: [u8; 16],
+    gcm_init: bool,
     ccf: bool,
     rderr: bool,
     wrerr: bool,
@@ -288,6 +361,10 @@ impl Default for AesBehavior {
             dout_lane: 0,
             chain: [0; 16],
             chaining: false,
+            ghash: [0; 16],
+            gcm_j0: [0; 16],
+            gcm_h: [0; 16],
+            gcm_init: false,
             ccf: false,
             rderr: false,
             wrerr: false,
@@ -307,7 +384,14 @@ impl AesBehavior {
         let datatype = (cr >> DATATYPE_SHIFT) & 0x3;
         let mode = (cr >> MODE_SHIFT) & 0x3;
         let chmod = (cr >> CHMOD_SHIFT) & 0x3;
-        let gcm = chmod == 0x3 || cr & CHMOD2 != 0;
+        // Effective chaining mode: classic tables stop at GCM (3) with
+        // `GCMPH[17:16]`; U5 tables add the `CHMOD_2` high bit (CMAC = 4)
+        // with `GCMPH[14:13]`. (`allow_256` tracks the U5 layout.)
+        let eff = if self.allow_256 {
+            (((cr >> 16) & 1) << 2) | chmod
+        } else {
+            chmod
+        };
         // Key-derivation mode only latches done; decryption reuses the
         // encryption schedule directly, so no derived key is ever needed.
         if mode == MODE_KEYDERIV {
@@ -337,11 +421,12 @@ impl AesBehavior {
         for (i, chunk) in block.chunks_exact_mut(4).enumerate() {
             chunk.copy_from_slice(&datatype_swap(self.din[i], datatype).to_be_bytes());
         }
-        let out = if gcm {
-            // No GHASH engine: complete with zeros (documented).
-            [0u8; 16]
-        } else {
-            match chmod {
+        let out = match eff {
+            // GCM/GMAC phased by `GCMPH` (init/header/payload/final).
+            3 => self.gcm_block(view, &rk, rounds, mode, &block),
+            // CMAC last-block (U5 only; prior blocks run as CBC).
+            4 => self.cmac_block(view, &rk, rounds, &block),
+            _ => match chmod {
                 // ECB.
                 0 => {
                     if mode == MODE_DEC {
@@ -399,7 +484,7 @@ impl AesBehavior {
                     }
                     out
                 }
-            }
+            },
         };
         for (i, chunk) in out.chunks_exact(4).enumerate() {
             let w = u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
@@ -409,6 +494,131 @@ impl AesBehavior {
         self.dout_lane = 0;
         self.din_n = 0;
         self.ccf = true;
+    }
+
+    /// Current GCM phase from the layout's `GCMPH` field.
+    fn gcm_phase(&self, cr: u32) -> u32 {
+        if self.allow_256 {
+            (cr >> GCMPH_U5_SHIFT) & 0x3
+        } else {
+            (cr >> GCMPH_CLASSIC_SHIFT) & 0x3
+        }
+    }
+
+    /// One GCM/GMAC block for the current phase: init (IV → `J0`/`H`),
+    /// header (GHASH AAD), payload (CTR + GHASH ciphertext), final
+    /// (GHASH lengths block, tag out). GMAC is this flow without payload.
+    /// `block` is the staged input with `DATATYPE` already applied.
+    fn gcm_block(
+        &mut self,
+        view: &Registers<&mut [u32]>,
+        rk: &[u32],
+        rounds: usize,
+        mode: u32,
+        block: &[u8; 16],
+    ) -> [u8; 16] {
+        let cr = view.get(CR);
+        let phase = self.gcm_phase(cr);
+        match phase {
+            // Init: the IV block arrives; `H`, `J0`, and a zero tag
+            // accumulator start the run. 96-bit IVs only (documented).
+            0 => {
+                self.gcm_h = cipher_block(&[0u8; 16], rk, rounds);
+                self.gcm_j0[..12].copy_from_slice(&block[..12]);
+                self.gcm_j0[12..].copy_from_slice(&[0, 0, 0, 1]);
+                self.ghash = [0u8; 16];
+                self.gcm_init = true;
+                [0u8; 16]
+            }
+            // Header: GHASH one AAD block (output not consumed).
+            1 => {
+                if self.gcm_init {
+                    ghash_acc(&mut self.ghash, &self.gcm_h, block);
+                }
+                [0u8; 16]
+            }
+            // Payload: CTR from `inc32(J0)`; GHASH the ciphertext.
+            2 => {
+                if !self.gcm_init {
+                    return [0u8; 16];
+                }
+                if !self.chaining {
+                    self.chain = self.gcm_j0;
+                    inc32(&mut self.chain);
+                    self.chaining = true;
+                }
+                let ks = cipher_block(&self.chain, rk, rounds);
+                inc32(&mut self.chain);
+                let mut out = [0u8; 16];
+                // U5 `NPBLB`: zero-pad the last partial payload block.
+                let valid = if self.allow_256 {
+                    16usize.saturating_sub(((cr >> NPBLB_SHIFT) & 0xF) as usize)
+                } else {
+                    16
+                };
+                let mut proc = *block;
+                for b in proc.iter_mut().skip(valid) {
+                    *b = 0;
+                }
+                for i in 0..16 {
+                    out[i] = proc[i] ^ ks[i];
+                }
+                let ct = if mode == MODE_DEC { proc } else { out };
+                ghash_acc(&mut self.ghash, &self.gcm_h, &ct);
+                out
+            }
+            // Final: GHASH the lengths block, tag = `E(K,J0) ^ Y`.
+            _ => {
+                if !self.gcm_init {
+                    return [0u8; 16];
+                }
+                ghash_acc(&mut self.ghash, &self.gcm_h, block);
+                let ej0 = cipher_block(&self.gcm_j0, rk, rounds);
+                let mut tag = [0u8; 16];
+                for i in 0..16 {
+                    tag[i] = ej0[i] ^ self.ghash[i];
+                }
+                tag
+            }
+        }
+    }
+
+    /// One CMAC block: the last message block masked with `K1` (complete)
+    /// or padded and masked with `K2`, over the CBC chain (zero when the
+    /// message is a single block). Direction is always encrypt-side.
+    /// `block` is the staged input with `DATATYPE` already applied.
+    fn cmac_block(
+        &mut self,
+        view: &Registers<&mut [u32]>,
+        rk: &[u32],
+        rounds: usize,
+        block: &[u8; 16],
+    ) -> [u8; 16] {
+        let cr = view.get(CR);
+        let l = cipher_block(&[0u8; 16], rk, rounds);
+        let k1 = gcm_dbl(&l);
+        let k2 = gcm_dbl(&k1);
+        let npblb = if self.allow_256 {
+            ((cr >> NPBLB_SHIFT) & 0xF) as usize
+        } else {
+            0
+        };
+        let (last, k) = if npblb == 0 {
+            (*block, k1)
+        } else {
+            let n = 16usize.saturating_sub(npblb);
+            let mut p = [0u8; 16];
+            p[..n].copy_from_slice(&block[..n]);
+            p[n] = 0x80;
+            (p, k2)
+        };
+        let mut x = [0u8; 16];
+        for i in 0..16 {
+            x[i] = self.chain[i] ^ last[i] ^ k[i];
+        }
+        let out = cipher_block(&x, rk, rounds);
+        self.chain = out;
+        out
     }
 }
 
@@ -460,6 +670,10 @@ impl Behavior for AesBehavior {
                 if !en {
                     self.chaining = false;
                     self.ccf = false;
+                    // Disabling aborts the GCM run (fresh init required).
+                    self.gcm_init = false;
+                    self.ghash = [0; 16];
+                    self.gcm_j0 = [0; 16];
                 }
                 if word & CCFC != 0 {
                     self.ccf = false;
@@ -506,6 +720,21 @@ impl Behavior for AesBehavior {
                 }
                 view.merged(offset, val, shift)
             }
+            // Suspend save/restore (U5 tables only): `SUSPR0-3` mirror the
+            // chaining/counter bytes, `SUSPR4-7` the GHASH accumulator.
+            // Lane writes converge once the full word lands.
+            SUSPR0..=0x5c => {
+                let word = view.merged(offset, val, shift);
+                let bytes = word.to_be_bytes();
+                if offset < 0x50 {
+                    let i = ((offset - SUSPR0) / 4) as usize * 4;
+                    self.chain[i..i + 4].copy_from_slice(&bytes);
+                } else {
+                    let i = ((offset - 0x50) / 4) as usize * 4;
+                    self.ghash[i..i + 4].copy_from_slice(&bytes);
+                }
+                word
+            }
             _ => view.merged(offset, val, shift),
         }
     }
@@ -543,6 +772,16 @@ impl Behavior for AesBehavior {
                     self.dout_i += 1;
                 }
                 word
+            }
+            // Suspend state reads back live (see the write arm).
+            SUSPR0..=0x5c => {
+                let (src, base) = if offset < 0x50 {
+                    (&self.chain, SUSPR0)
+                } else {
+                    (&self.ghash, 0x50)
+                };
+                let i = ((offset - base) / 4) as usize * 4;
+                u32::from_be_bytes([src[i], src[i + 1], src[i + 2], src[i + 3]])
             }
             _ => value,
         }
@@ -1055,10 +1294,12 @@ mod tests {
 
     #[test]
     fn gcm_mode_completes_with_zeros() {
+        // Init phase output is never consumed (the IV block only seeds
+        // `H`/`J0`); zeros document that stance.
         let (mut a, base) = aes256();
         let key = hex(b"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
         let out = block(&mut a, base, &key, (1 << 18) | (3 << 5), None, &[0u8; 16]);
-        assert_eq!(out, vec![0, 0, 0, 0], "unmodeled GCM zeroes DOUTR");
+        assert_eq!(out, vec![0, 0, 0, 0], "init phase zeroes DOUTR");
     }
 
     #[test]
@@ -1155,5 +1396,311 @@ mod tests {
             bytes.extend(w.to_be_bytes());
         }
         assert_eq!(bytes, hex(b"69c4e0d86a7b0430d8cdb78070b4c55a"));
+    }
+
+    /// Push one 16-byte block, pop the 16-byte result.
+    fn push16(a: &mut Aes, base: u32, bytes: &[u8]) -> Vec<u8> {
+        assert_eq!(bytes.len(), 16);
+        for c in bytes.chunks_exact(4) {
+            wr(a, base, DINR, u32::from_be_bytes([c[0], c[1], c[2], c[3]]));
+        }
+        let mut out = Vec::new();
+        for _ in 0..4 {
+            out.extend(rd(a, base, DOUTR).to_be_bytes());
+        }
+        out
+    }
+
+    /// Full GCM/GMAC run through the phases: init (12-byte IV), header
+    /// (AAD, zero-padded per GCM), payload (enc/dec), final (lengths
+    /// block) → `(output, tag)`. `u5` selects `GCMPH[14:13]` over the
+    /// classic `[17:16]`.
+    #[allow(clippy::too_many_arguments)]
+    fn gcm_run(
+        a: &mut Aes,
+        base: u32,
+        u5: bool,
+        key: &[u8],
+        iv12: &[u8],
+        aad: &[u8],
+        pt: &[u8],
+        dec: bool,
+    ) -> (Vec<u8>, Vec<u8>) {
+        let gph = |ph: u32| if u5 { ph << 13 } else { ph << 16 };
+        wr(a, base, CR, 0); // fresh session
+        for (i, w) in words(key).iter().enumerate() {
+            wr(a, base, KEYR0 + 4 * i as u32, *w);
+        }
+        let mut cr = 1 | (3 << 5); // EN + GCM
+        if dec {
+            cr |= 2 << 3;
+        }
+        // Init: IV block (96-bit IV + pad, rest ignored).
+        wr(a, base, CR, cr | gph(0));
+        let mut ivblk = vec![0u8; 16];
+        ivblk[..12].copy_from_slice(iv12);
+        push16(a, base, &ivblk);
+        // Header: AAD blocks.
+        wr(a, base, CR, cr | gph(1));
+        for chunk in aad.chunks(16) {
+            let mut b = vec![0u8; 16];
+            b[..chunk.len()].copy_from_slice(chunk);
+            push16(a, base, &b);
+        }
+        // Payload.
+        wr(a, base, CR, cr | gph(2));
+        let mut out = Vec::new();
+        for chunk in pt.chunks_exact(16) {
+            out.extend(push16(a, base, chunk));
+        }
+        // Final: AAD/cipher bit lengths, tag out.
+        wr(a, base, CR, cr | gph(3));
+        let alen = (aad.len() as u64 * 8).to_be_bytes();
+        let clen = (pt.len() as u64 * 8).to_be_bytes();
+        let mut lenblk = Vec::new();
+        lenblk.extend(alen);
+        lenblk.extend(clen);
+        let tag = push16(a, base, &lenblk);
+        (out, tag)
+    }
+
+    fn unhex(s: &str) -> Vec<u8> {
+        assert_eq!(s.len() % 2, 0, "even hex length");
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
+    }
+
+    /// NIST SP 800-38D Case 1 (empty) and Case 2 (one block, no AAD).
+    #[test]
+    fn gcm_nist_cases_1_and_2() {
+        let (mut a, base) = aes();
+        // Case 1: everything empty; the tag is `E(K,J0)`.
+        let (c, t) = gcm_run(&mut a, base, false, &[], &[0u8; 12], &[], &[], false);
+        assert!(c.is_empty());
+        assert_eq!(t, unhex("58e2fccefa7e3061367f1d57a4e7455a"), "empty tag");
+        // Case 2: one zero block. The ciphertext below is the 32-nibble
+        // value (some transcriptions drop a nibble); it also equals the
+        // ECB encryption of counter 2, checked separately.
+        let (c, t) = gcm_run(&mut a, base, false, &[], &[0u8; 12], &[], &[0u8; 16], false);
+        assert_eq!(c, unhex("0388dace60b6a392f328c2b971b2fe78"), "ciphertext");
+        assert_eq!(t, unhex("ab6e47d42cec13bdf53a67b21257bddf"), "tag");
+        // Decrypt round-trip: plaintext zeros back, same tag to compare.
+        let (p, t2) = gcm_run(
+            &mut a,
+            base,
+            false,
+            &[],
+            &[0u8; 12],
+            &[],
+            &unhex("0388dace60b6a392f328c2b971b2fe78"),
+            true,
+        );
+        assert_eq!(p, vec![0u8; 16], "decrypt");
+        assert_eq!(t2, unhex("ab6e47d42cec13bdf53a67b21257bddf"), "verify tag");
+    }
+
+    /// NIST SP 800-38D Case 3 (NSS bltest cross-check): four payload
+    /// blocks, no AAD, nonzero key.
+    #[test]
+    fn gcm_nist_case_3_no_aad() {
+        let (mut a, base) = aes();
+        let key = unhex("feffe9928665731c6d6a8f9467308308");
+        let iv = unhex("cafebabefacedbaddecaf888");
+        let pt = unhex(
+            "d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a72\
+             1c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b391aafd255",
+        );
+        let (c, t) = gcm_run(&mut a, base, false, &key, &iv, &[], &pt, false);
+        assert_eq!(
+            c,
+            unhex(
+                "42831ec2217774244b7221b784d0d49ce3aa212f2c02a4e035c17e23\
+                 29aca12e21d514b25466931c7d8f6a5aac84aa051ba30b396a0aac97\
+                 3d58e091473f5985"
+            ),
+            "ciphertext"
+        );
+        assert_eq!(t, unhex("4d5c2af327cd64a62cf35abd2ba6fab4"), "tag");
+    }
+
+    /// Case 4 inputs (20-byte AAD over the Case 3 run): the ciphertext is
+    /// AAD-independent (matches Case 3); the tag is cross-checked against
+    /// an independent GCM implementation (Python `cryptography`), since
+    /// the public transcriptions of this tag disagree.
+    #[test]
+    fn gcm_case_4_with_aad() {
+        let (mut a, base) = aes();
+        let key = unhex("feffe9928665731c6d6a8f9467308308");
+        let iv = unhex("cafebabefacedbaddecaf888");
+        let aad = unhex("feedfacedeadbeeffeedfacedeadbeefabaddad2");
+        let pt = unhex(
+            "d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a72\
+             1c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b391aafd255",
+        );
+        let (c, t) = gcm_run(&mut a, base, false, &key, &iv, &aad, &pt, false);
+        assert_eq!(
+            c,
+            unhex(
+                "42831ec2217774244b7221b784d0d49ce3aa212f2c02a4e035c17e23\
+                 29aca12e21d514b25466931c7d8f6a5aac84aa051ba30b396a0aac97\
+                 3d58e091473f5985"
+            ),
+            "ciphertext ignores AAD"
+        );
+        assert_eq!(t, unhex("da80ce830cfda02da2a218a1744f4c76"), "tag");
+    }
+
+    /// The same Case 2 through the U5 layout (`GCMPH[14:13]`).
+    #[test]
+    fn gcm_u5_phase_position() {
+        let (mut a, base) = aes256();
+        let (c, t) = gcm_run(&mut a, base, true, &[], &[0u8; 12], &[], &[0u8; 16], false);
+        assert_eq!(c, unhex("0388dace60b6a392f328c2b971b2fe78"), "ciphertext");
+        assert_eq!(t, unhex("ab6e47d42cec13bdf53a67b21257bddf"), "tag");
+    }
+
+    /// CMAC (U5 only): the message runs as CBC except the last block,
+    /// which runs as CMAC (`CHMOD_2`, `NPBLB` pads partial tails).
+    /// Zero-length messages are out of scope: `NPBLB` cannot express 16
+    /// pad bytes, so no register sequence drives the empty K2 block.
+    fn cmac(a: &mut Aes, base: u32, key: &[u8], msg: &[u8]) -> Vec<u8> {
+        assert!(!msg.is_empty(), "empty CMAC is inexpressible (documented)");
+        wr(a, base, CR, 0);
+        for (i, w) in words(key).iter().enumerate() {
+            wr(a, base, KEYR0 + 4 * i as u32, *w);
+        }
+        let full = msg.len() / 16;
+        let rem = msg.len() % 16;
+        let (n_cbc, last, npblb) = if rem == 0 {
+            (full - 1, msg[(full - 1) * 16..].to_vec(), 0)
+        } else {
+            let mut b = vec![0u8; 16];
+            b[..rem].copy_from_slice(&msg[full * 16..]);
+            (full, b, 16 - rem)
+        };
+        wr(a, base, CR, 1 | (1 << 5)); // EN CBC encrypt
+        for chunk in msg.chunks_exact(16).take(n_cbc) {
+            push16(a, base, chunk);
+        }
+        wr(a, base, CR, 1 | (1 << 16) | ((npblb as u32) << 20)); // EN CMAC
+        push16(a, base, &last)
+    }
+
+    /// NIST SP 800-38B Appendix D AES-128 examples 2-4 (example 1, the
+    /// empty message, is inexpressible — see `cmac`).
+    #[test]
+    fn cmac_nist_aes128_examples() {
+        let (mut a, base) = aes256();
+        let key = unhex("2b7e151628aed2a6abf7158809cf4f3c");
+        let m64 = unhex(
+            "6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e51\
+             30c81c46a35ce411e5fbc1191a0a52eff69f2445df4f9b17ad2b417be66c3710",
+        );
+        assert_eq!(
+            cmac(&mut a, base, &key, &m64[..16]),
+            unhex("070a16b46b4d4144f79bdd9dd04a287c"),
+            "one block"
+        );
+        assert_eq!(
+            cmac(&mut a, base, &key, &m64[..40]),
+            unhex("dfa66747de9ae63030ca32611497c827"),
+            "40 bytes"
+        );
+        assert_eq!(
+            cmac(&mut a, base, &key, &m64),
+            unhex("51f0bebf7e3b9d92fc49741779363cfe"),
+            "64 bytes"
+        );
+    }
+
+    /// Suspend/resume across a CBC run: save `SUSPR0-3` mid-stream,
+    /// clobber, restore, and the tail matches an uninterrupted run.
+    #[test]
+    fn suspr_saves_cbc_chain() {
+        let key = unhex("000102030405060708090a0b0c0d0e0f");
+        let pt = unhex("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff");
+        let run = |saboteur: bool| {
+            let (mut a, base) = aes256();
+            wr(&mut a, base, CR, 0);
+            for (i, w) in words(&key).iter().enumerate() {
+                wr(&mut a, base, KEYR0 + 4 * i as u32, *w);
+            }
+            wr(&mut a, base, CR, 1 | (1 << 5)); // EN CBC
+            let o1 = push16(&mut a, base, &pt[..16]);
+            let _ = o1;
+            let mut saved = Vec::new();
+            for i in 0..4 {
+                saved.push(rd(&mut a, base, 0x40 + 4 * i));
+            }
+            if saboteur {
+                for i in 0..4 {
+                    wr(&mut a, base, 0x40 + 4 * i, 0xDEAD_BEEF);
+                }
+                for i in 0..4 {
+                    wr(&mut a, base, 0x40 + 4 * i, saved[i as usize]);
+                }
+            }
+            push16(&mut a, base, &pt[16..])
+        };
+        assert_eq!(run(false), run(true), "resume matches");
+    }
+
+    /// Suspend/resume across a GCM payload run (Case 3): counter and tag
+    /// accumulator survive a clobber+restore.
+    #[test]
+    fn suspr_saves_gcm_stream() {
+        let key = unhex("feffe9928665731c6d6a8f9467308308");
+        let iv = unhex("cafebabefacedbaddecaf888");
+        let pt = unhex(
+            "d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a72\
+             1c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b391aafd255",
+        );
+        let run = |saboteur: bool| {
+            let (mut a, base) = aes256();
+            wr(&mut a, base, CR, 0);
+            for (i, w) in words(&key).iter().enumerate() {
+                wr(&mut a, base, KEYR0 + 4 * i as u32, *w);
+            }
+            let gph = |ph: u32| ph << 13;
+            let cr = 1 | (3 << 5);
+            wr(&mut a, base, CR, cr | gph(0));
+            let mut ivblk = vec![0u8; 16];
+            ivblk[..12].copy_from_slice(&iv);
+            push16(&mut a, base, &ivblk);
+            wr(&mut a, base, CR, cr | gph(2));
+            let mut out = Vec::new();
+            for (n, chunk) in pt.chunks_exact(16).enumerate() {
+                out.extend(push16(&mut a, base, chunk));
+                if saboteur && n == 1 {
+                    let mut saved = Vec::new();
+                    for i in 0..8 {
+                        saved.push(rd(&mut a, base, 0x40 + 4 * i));
+                    }
+                    for i in 0..8 {
+                        wr(&mut a, base, 0x40 + 4 * i, 0xDEAD_BEEF);
+                    }
+                    for i in 0..8 {
+                        wr(&mut a, base, 0x40 + 4 * i, saved[i as usize]);
+                    }
+                }
+            }
+            wr(&mut a, base, CR, cr | gph(3));
+            let alen = (0u64).to_be_bytes();
+            let clen = (out.len() as u64 * 8).to_be_bytes();
+            let mut lenblk = Vec::new();
+            lenblk.extend(alen);
+            lenblk.extend(clen);
+            let tag = push16(&mut a, base, &lenblk);
+            (out, tag)
+        };
+        let (c0, t0) = run(false);
+        assert_eq!(
+            t0,
+            unhex("4d5c2af327cd64a62cf35abd2ba6fab4"),
+            "reference tag"
+        );
+        assert_eq!(run(true), (c0, t0), "resume matches");
     }
 }

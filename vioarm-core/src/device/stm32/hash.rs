@@ -11,11 +11,16 @@
 //! per word (firmware byte-reverses words for the byte stream, as the HAL
 //! does with `__REV`).
 //!
-//! Deliberate limits, all documented: MD5 (`ALGO` 01) and HMAC (`MODE`)
-//! complete with a zeroed digest (broken-by-design and staged-key flows
-//! are out of scope); the context-swap bank (`CSR0-53`, multi-context
-//! streaming stacks) stays a table latch — those flows keep working only
-//! through the registers they share; `DMAE`/`MDMAT` latch without effect.
+//! Deliberate limits, all documented: MD5 (`ALGO` 01, and HMAC-MD5)
+//! completes with a zeroed digest (broken-by-design is out of scope);
+//! HMAC long keys (`LKEY`) hash the key first per the HMAC spec, short
+//! keys pad with zeros; the context-swap bank (`CSR0-53`) streams plain
+//! hashes only — swapping mid-HMAC is out of scope (the key is not in the
+//! bank); `DMAE`/`MDMAT` latch without effect. CSR layout (our contract,
+//! after the HAL save/restore shape): `CSR0-7` live digest state, `CSR8-23`
+//! partial-block buffer (BE words), `CSR24` buffered bytes, `CSR25-26`
+//! total message bytes (lo/hi), `CSR27` flags (`ALGO[1:0]`, `INIT` bit 2,
+//! `MODE` bit 3).
 
 use crate::device::svd::{Behavior, Device, PeripheralDef, RegisterFile, Registers};
 use crate::device::{InterruptSource, Peripheral};
@@ -36,6 +41,8 @@ const INIT: u32 = 1 << 2;
 const DATATYPE_SHIFT: u32 = 4;
 const MODE: u32 = 1 << 6;
 const ALGO_SHIFT: u32 = 17;
+/// `CR.LKEY`: the HMAC key is longer than one block (HAL `LONGKEY`).
+const LKEY: u32 = 1 << 16;
 // ALGO encodings (HAL table: SHA1 00, MD5 01, SHA224 10, SHA256 11).
 const ALGO_SHA1: u32 = 0;
 const ALGO_SHA224: u32 = 2;
@@ -203,6 +210,77 @@ fn sha1(message: &[u8]) -> [u32; 5] {
     h
 }
 
+/// HMAC with SHA-256 (`key`: raw first-segment bytes; `LKEY` hashes keys
+/// longer than one block, short keys zero-pad — the HAL contract).
+fn hmac_sha256(key: &[u8], msg: &[u8], lkey: bool) -> [u32; 8] {
+    hmac_inner(key, msg, lkey, sha256, 8)
+}
+
+/// HMAC with SHA-1 (20-byte digest in words 0-4).
+fn hmac_sha1(key: &[u8], msg: &[u8], lkey: bool) -> [u32; 8] {
+    let full = hmac_inner(key, msg, lkey, sha1full, 5);
+    let mut out = [0u32; 8];
+    out[..5].copy_from_slice(&full[..5]);
+    out
+}
+
+/// HMAC with SHA-224 (28-byte digest in words 0-6).
+fn hmac_sha224(key: &[u8], msg: &[u8], lkey: bool) -> [u32; 8] {
+    let full = hmac_inner(key, msg, lkey, sha224full, 7);
+    let mut out = [0u32; 8];
+    out[..7].copy_from_slice(&full[..7]);
+    out
+}
+
+/// Generic HMAC over a hash primitive returning words: pad/truncate the
+/// key to one block, hash the inner pad + message, hash the outer pad +
+/// inner digest bytes.
+fn hmac_inner(
+    key: &[u8],
+    msg: &[u8],
+    lkey: bool,
+    hash: fn(&[u8]) -> [u32; 8],
+    words: usize,
+) -> [u32; 8] {
+    let mut k = [0u8; 64];
+    if lkey && key.len() > 64 {
+        let d = sha256(key);
+        for (i, w) in d.iter().enumerate() {
+            k[i * 4..i * 4 + 4].copy_from_slice(&w.to_be_bytes());
+        }
+    } else {
+        k[..key.len().min(64)].copy_from_slice(&key[..key.len().min(64)]);
+    }
+    let mut inner = vec![0x36u8; 64];
+    for (i, b) in inner.iter_mut().enumerate() {
+        *b ^= k[i];
+    }
+    inner.extend_from_slice(msg);
+    let d = hash(&inner);
+    let mut dbytes = Vec::with_capacity(words * 4);
+    for w in d.iter().take(words) {
+        dbytes.extend(w.to_be_bytes());
+    }
+    let mut outer = vec![0x5Cu8; 64];
+    for (i, b) in outer.iter_mut().enumerate() {
+        *b ^= k[i];
+    }
+    outer.extend_from_slice(&dbytes);
+    hash(&outer)
+}
+
+/// SHA-1 as 8 words (5 digest + 3 zero) for the HMAC helper.
+fn sha1full(msg: &[u8]) -> [u32; 8] {
+    let d = sha1(msg);
+    [d[0], d[1], d[2], d[3], d[4], 0, 0, 0]
+}
+
+/// SHA-224 as 8 words (7 digest + 1 zero) for the HMAC helper.
+fn sha224full(msg: &[u8]) -> [u32; 8] {
+    let d = sha224(msg);
+    [d[0], d[1], d[2], d[3], d[4], d[5], d[6], 0]
+}
+
 /// `DATATYPE` word swapping, symmetric with the AES peripheral.
 const fn datatype_swap(word: u32, datatype: u32) -> u32 {
     match datatype {
@@ -213,13 +291,47 @@ const fn datatype_swap(word: u32, datatype: u32) -> u32 {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+/// Initial digest words per algorithm (HAL table order).
+fn algo_iv(algo: u32) -> [u32; 8] {
+    match algo {
+        0 => [
+            0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0, 0, 0, 0,
+        ],
+        2 => [
+            0xc1059ed8, 0x367cd507, 0x3070dd17, 0xf70e5939, 0xffc00b31, 0x68581511, 0x64f98fa7,
+            0xbefa4fa4,
+        ],
+        _ => [
+            0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+            0x5be0cd19,
+        ],
+    }
+}
+
+#[derive(Clone, Debug)]
 struct HashBehavior {
     /// Split `ALGO0`/`ALGO1` encoding (F4/L5 tables) vs contiguous `ALGO`
     /// (U5 tables); the four values mean the same on both.
     algo_split: bool,
-    /// Message bytes accumulated since `INIT` (post-`DATATYPE` order).
-    msg: Vec<u8>,
+    /// `CSR0` base where the table carries the context-swap bank.
+    csr0: Option<u32>,
+    /// Algorithm/mode cached from every `CR` write (lanes converge on a
+    /// full word write; `INIT` lives in lane 0 while `ALGO`/`LKEY` ride
+    /// lane 2, so the digest IV applies lazily at first use).
+    algo: u32,
+    hmac_on: bool,
+    lkey: bool,
+    /// Digest IV not yet applied for this segment.
+    need_iv: bool,
+    /// Incremental plain-hash state: live digest, uncompressed tail,
+    /// message bytes this segment.
+    h: [u32; 8],
+    buf: Vec<u8>,
+    total: u64,
+    /// HMAC staging: the first-segment key, second-segment message.
+    key: Vec<u8>,
+    key_done: bool,
+    seg: Vec<u8>,
     /// Byte-lane assembler for partial `DIN` words.
     din_acc: u32,
     din_mask: u8,
@@ -230,6 +342,35 @@ struct HashBehavior {
     has_digest: bool,
     dcis: bool,
     inited: bool,
+    /// CSR mirror (byte-lane writes converge on full words).
+    csr: [u32; 54],
+}
+
+impl Default for HashBehavior {
+    fn default() -> Self {
+        Self {
+            algo_split: false,
+            csr0: None,
+            algo: ALGO_SHA256,
+            hmac_on: false,
+            lkey: false,
+            need_iv: true,
+            h: algo_iv(ALGO_SHA256),
+            buf: Vec::new(),
+            total: 0,
+            key: Vec::new(),
+            key_done: false,
+            seg: Vec::new(),
+            din_acc: 0,
+            din_mask: 0,
+            words_pushed: 0,
+            digest: [0; 8],
+            has_digest: false,
+            dcis: false,
+            inited: false,
+            csr: [0; 54],
+        }
+    }
 }
 
 impl Behavior for HashBehavior {
@@ -243,10 +384,26 @@ impl Behavior for HashBehavior {
         match offset {
             CR => {
                 let word = view.merged(CR, val, shift);
+                // Cache the algorithm/mode on every write (converges once
+                // all lanes land; `INIT` fires on lane 0 alone).
+                self.algo = if self.algo_split {
+                    (((word >> 18) & 1) << 1) | ((word >> 7) & 1)
+                } else {
+                    (word >> ALGO_SHIFT) & 0x3
+                };
+                self.hmac_on = word & MODE != 0;
+                self.lkey = word & LKEY != 0;
                 if word & INIT != 0 {
-                    // Fresh message: digest, flags, and count reset; `INIT`
-                    // is a pulse and reads back zero.
-                    self.msg.clear();
+                    // Fresh message: streaming state, digest, flags, and
+                    // count reset; the digest IV applies at first use.
+                    // `INIT` is a pulse and reads back zero.
+                    self.h = [0; 8];
+                    self.need_iv = true;
+                    self.buf.clear();
+                    self.total = 0;
+                    self.key.clear();
+                    self.key_done = false;
+                    self.seg.clear();
                     self.din_acc = 0;
                     self.din_mask = 0;
                     self.words_pushed = 0;
@@ -270,7 +427,14 @@ impl Behavior for HashBehavior {
                     // Words carry bytes big-endian (silicon convention, as
                     // with AES): the swap restores firmware byte order.
                     let swapped = datatype_swap(acc, datatype);
-                    self.msg.extend(swapped.to_be_bytes());
+                    let bytes = swapped.to_be_bytes();
+                    self.total += 4;
+                    if self.hmac_on {
+                        self.seg.extend_from_slice(&bytes);
+                    } else {
+                        self.buf.extend_from_slice(&bytes);
+                        self.compress();
+                    }
                     self.words_pushed = self.words_pushed.wrapping_add(1);
                 }
                 view.merged(DIN, val, shift)
@@ -282,6 +446,20 @@ impl Behavior for HashBehavior {
                 }
                 // `STR` holds no state: reads return the last `NBLW`.
                 word & NBLW_MASK
+            }
+            _ if self.csr_hit(offset) => {
+                // Context words merge lanes in the mirror, then apply to
+                // the live streaming state (converges on full-word writes).
+                let base = self.csr0.unwrap_or(u32::MAX);
+                let idx = usize::try_from((offset - base) / 4).unwrap_or(usize::MAX);
+                if idx >= self.csr.len() {
+                    return view.merged(offset, val, shift);
+                }
+                let cur = self.csr[idx];
+                let word = (cur & !(0xFF << shift)) | (u32::from(val) << shift);
+                self.csr[idx] = word;
+                self.csr_apply(idx, word);
+                word
             }
             _ => view.merged(offset, val, shift),
         }
@@ -319,6 +497,17 @@ impl Behavior for HashBehavior {
                     0
                 }
             }
+            _ if self.csr_hit(offset) => {
+                // Context reads synthesize live state into the mirror.
+                let base = self.csr0.unwrap_or(u32::MAX);
+                let idx = usize::try_from((offset - base) / 4).unwrap_or(usize::MAX);
+                if idx >= self.csr.len() {
+                    return value;
+                }
+                let word = self.csr_read(idx);
+                self.csr[idx] = word;
+                word
+            }
             _ => value,
         }
     }
@@ -332,8 +521,10 @@ impl Behavior for HashBehavior {
 
     fn reset(&mut self) {
         let algo_split = self.algo_split;
+        let csr0 = self.csr0;
         *self = Self {
             algo_split,
+            csr0,
             ..Self::default()
         };
     }
@@ -344,11 +535,44 @@ impl Behavior for HashBehavior {
 }
 
 impl HashBehavior {
-    /// `STR.DCAL`: pad per `NBLW` and run the selected algorithm. MD5 and
-    /// HMAC complete with a zeroed digest (documented limits).
+    /// Apply the digest IV for this segment (once the full `CR` word with
+    /// `ALGO` has converged in the cache).
+    fn ensure_iv(&mut self) {
+        if self.need_iv {
+            self.h = algo_iv(self.algo);
+            self.need_iv = false;
+        }
+    }
+
+    /// Compress full 64-byte blocks from the tail buffer into the digest
+    /// state (nothing for MD5: its digest stays zeroed by design).
+    fn compress(&mut self) {
+        self.ensure_iv();
+        while self.buf.len() >= 64 {
+            let mut blk = [0u8; 64];
+            blk.copy_from_slice(&self.buf[..64]);
+            match self.algo {
+                0 => {
+                    let mut h5 = [self.h[0], self.h[1], self.h[2], self.h[3], self.h[4]];
+                    sha1_block(&mut h5, &blk);
+                    self.h[..5].copy_from_slice(&h5);
+                }
+                2 | 3 => sha256_block(&mut self.h, &blk),
+                _ => {}
+            }
+            self.buf.drain(..64);
+        }
+    }
+
+    /// `STR.DCAL`: pad per `NBLW` and run the selected algorithm. HMAC
+    /// consumes the first segment as the key (no digest yet) and hashes
+    /// the second; MD5 completes zeroed (documented limits).
     fn finalize(&mut self, view: &Registers<&mut [u32]>) {
-        // Flush a partially-written last word (lane order), then cut the
-        // message to the valid bits (`NBLW` 0 means a full word).
+        // Flush a partially-written last word (lane order) into the
+        // current accumulation, then cut the segment to the valid bits
+        // (`NBLW` 0 means a full word). HMAC keys and messages stage in
+        // `seg`; plain hashes stream through the incremental state.
+        let hmac = self.hmac_on;
         if self.din_mask != 0 {
             let datatype = (view.get(CR) >> 4) & 0x3;
             let swapped = datatype_swap(self.din_acc, datatype);
@@ -356,46 +580,162 @@ impl HashBehavior {
             // are the big-endian prefix (see the full-word path).
             let bytes = swapped.to_be_bytes();
             let k = self.din_mask.count_ones() as usize;
-            self.msg.extend(&bytes[..k.min(4)]);
+            let tail = &bytes[..k.min(4)];
+            self.total += tail.len() as u64;
+            if hmac {
+                self.seg.extend_from_slice(tail);
+            } else {
+                self.buf.extend_from_slice(tail);
+            }
             self.din_acc = 0;
             self.din_mask = 0;
         }
         let str_word = view.get(STR);
         let nblw = str_word & NBLW_MASK;
-        let cr = view.get(CR);
-        let algo = if self.algo_split {
-            (((cr >> 18) & 1) << 1) | ((cr >> 7) & 1)
-        } else {
-            (cr >> ALGO_SHIFT) & 0x3
-        };
-        let hmac = cr & MODE != 0;
-        let mut msg = core::mem::take(&mut self.msg);
+        if hmac {
+            // HMAC staging (HAL two-step flow): the first `DCAL` segment
+            // is the key (no digest yet), the second is the message.
+            let n = self.seg.len();
+            if nblw != 0 {
+                let valid = n.saturating_sub(4) + nblw as usize / 8;
+                self.seg.truncate(valid.min(n));
+            }
+            if !self.key_done {
+                self.key = core::mem::take(&mut self.seg);
+                self.key_done = true;
+                return;
+            }
+            let msg = core::mem::take(&mut self.seg);
+            let lkey = self.lkey;
+            self.digest = match self.algo {
+                0 => hmac_sha1(&self.key, &msg, lkey),
+                2 => hmac_sha224(&self.key, &msg, lkey),
+                3 => hmac_sha256(&self.key, &msg, lkey),
+                _ => [0; 8],
+            };
+            self.has_digest = true;
+            self.dcis = true;
+            return;
+        }
+        // Plain hash: trim the tail, pad with the valid length, compress.
+        let n = self.buf.len();
         if nblw != 0 {
             // `NBLW` counts valid bits in the last word; byte multiples only
             // (bit-string tails are out of scope, documented).
-            let valid = msg.len().saturating_sub(4) + nblw as usize / 8;
-            msg.truncate(valid.min(msg.len()));
+            let valid = n.saturating_sub(4) + nblw as usize / 8;
+            let valid = valid.min(n);
+            self.total -= (n - valid) as u64;
+            self.buf.truncate(valid);
         }
+        self.ensure_iv();
+        let bit_len = self.total * 8;
+        self.buf.push(0x80);
+        while self.buf.len() % 64 != 56 {
+            self.buf.push(0);
+        }
+        self.buf.extend(bit_len.to_be_bytes());
+        self.compress_all();
         // The digest is stored numerically per word (firmware byte-reverses
         // words for the byte stream, as the HAL does with `__REV`).
-        if !hmac && algo == ALGO_SHA256 {
-            self.digest = sha256(&msg);
-            self.has_digest = true;
-        } else if !hmac && algo == ALGO_SHA224 {
-            let short = sha224(&msg);
-            self.digest[..7].copy_from_slice(&short);
-            self.digest[7] = 0;
-            self.has_digest = true;
-        } else if !hmac && algo == ALGO_SHA1 {
-            let short = sha1(&msg);
-            self.digest[..5].copy_from_slice(&short);
-            self.digest[5..].fill(0);
-            self.has_digest = true;
-        } else {
-            self.digest = [0; 8];
-            self.has_digest = true;
+        match self.algo {
+            3 => {
+                self.digest = self.h;
+                self.has_digest = true;
+            }
+            2 => {
+                self.digest[..7].copy_from_slice(&self.h[..7]);
+                self.digest[7] = 0;
+                self.has_digest = true;
+            }
+            0 => {
+                self.digest[..5].copy_from_slice(&self.h[..5]);
+                self.digest[5..].fill(0);
+                self.has_digest = true;
+            }
+            _ => {
+                self.digest = [0; 8];
+                self.has_digest = true;
+            }
         }
         self.dcis = true;
+    }
+
+    /// Whether `offset` names a context-swap word on this table.
+    fn csr_hit(&self, offset: u32) -> bool {
+        match self.csr0 {
+            Some(base) => offset >= base && offset < base + 54 * 4 && offset % 4 == 0,
+            None => false,
+        }
+    }
+
+    /// Synthesize a context word from live streaming state.
+    fn csr_read(&self, idx: usize) -> u32 {
+        match idx {
+            0..8 => self.h[idx],
+            8..24 => {
+                let o = (idx - 8) * 4;
+                let mut w = [0u8; 4];
+                for (i, b) in w.iter_mut().enumerate() {
+                    *b = *self.buf.get(o + i).unwrap_or(&0);
+                }
+                u32::from_be_bytes(w)
+            }
+            24 => u32::try_from(self.buf.len()).unwrap_or(u32::MAX),
+            25 => u32::try_from(self.total & 0xFFFF_FFFF).unwrap_or(u32::MAX),
+            26 => u32::try_from(self.total >> 32).unwrap_or(u32::MAX),
+            27 => self.algo & 3 | (u32::from(self.inited) << 2) | (u32::from(self.hmac_on) << 3),
+            _ => 0,
+        }
+    }
+
+    /// Restore streaming state from a context word (byte lanes converge
+    /// on full-word writes, like AES `SUSPR`).
+    fn csr_apply(&mut self, idx: usize, word: u32) {
+        match idx {
+            0..8 => {
+                self.h[idx] = word;
+                self.need_iv = false;
+            }
+            8..24 => {
+                let o = (idx - 8) * 4;
+                if self.buf.len() < o + 4 {
+                    self.buf.resize(o + 4, 0);
+                }
+                self.buf[o..o + 4].copy_from_slice(&word.to_be_bytes());
+            }
+            24 => {
+                let n = usize::try_from(word).unwrap_or(usize::MAX).min(64);
+                self.buf.truncate(n);
+            }
+            25 => self.total = (self.total & !0xFFFF_FFFF) | u64::from(word),
+            26 => self.total = (self.total & 0xFFFF_FFFF) | (u64::from(word) << 32),
+            27 => {
+                self.algo = word & 3;
+                self.inited = word & (1 << 2) != 0;
+                self.hmac_on = word & (1 << 3) != 0;
+                self.words_pushed = u32::try_from(self.total / 4).unwrap_or(u32::MAX);
+            }
+            _ => {}
+        }
+    }
+
+    /// Compress every full block left in the tail buffer (the padding left
+    /// a whole number of blocks by construction).
+    fn compress_all(&mut self) {
+        while self.buf.len() >= 64 {
+            let mut blk = [0u8; 64];
+            blk.copy_from_slice(&self.buf[..64]);
+            match self.algo {
+                0 => {
+                    let mut h5 = [self.h[0], self.h[1], self.h[2], self.h[3], self.h[4]];
+                    sha1_block(&mut h5, &blk);
+                    self.h[..5].copy_from_slice(&h5);
+                }
+                2 | 3 => sha256_block(&mut self.h, &blk),
+                _ => {}
+            }
+            self.buf.drain(..64);
+        }
     }
 }
 
@@ -451,11 +791,17 @@ impl Hash {
         if !Self::layout_matches(def) {
             return None;
         }
+        let csr0 = def
+            .registers
+            .iter()
+            .find(|r| r.name == "CSR0")
+            .map(|r| r.offset);
         Some(Self {
             inner: RegisterFile::new(
                 def,
                 HashBehavior {
                     algo_split: Self::algo_split(def).unwrap_or(false),
+                    csr0,
                     ..HashBehavior::default()
                 },
             ),
@@ -637,9 +983,10 @@ mod tests {
     }
 
     #[test]
-    fn hmac_and_md5_complete_with_zeros() {
+    fn hmac_key_segment_yields_no_digest_yet() {
         let (mut h, base) = hash();
-        // HMAC mode (documented: staged-key flows unmodeled).
+        // HMAC staging: the first `DCAL` segment is the key — no digest
+        // latches until the message segment closes (see `hmac_sha256_*`).
         wr(&mut h, base, CR, SHA256 | (2 << 4) | (1 << 6) | (1 << 2));
         wr(&mut h, base, DIN, 0x61626380);
         wr(&mut h, base, STR, (1 << 8) | 24);
@@ -648,7 +995,7 @@ mod tests {
                 .map(|i| rd(&mut h, base, HR0 + 4 * i))
                 .collect::<Vec<_>>(),
             vec![0; 8],
-            "HMAC zeroes the digest"
+            "key segment latches no digest"
         );
         // MD5 ALGO (documented: broken-by-design, unmodeled).
         assert_eq!(
@@ -720,5 +1067,198 @@ mod tests {
             Stm32wba55::peripheral("HASH").is_some_and(|p| !Hash::layout_matches(p)),
             "WBA stays a latch"
         );
+    }
+
+    fn unhex(s: &str) -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
+    }
+
+    fn words32(bytes: &[u8]) -> Vec<u32> {
+        bytes
+            .chunks_exact(4)
+            .map(|c| u32::from_be_bytes([c[0], c[1], c[2], c[3]]))
+            .collect()
+    }
+
+    /// One HMAC run (HAL two-step flow): `INIT` with `MODE` (+`LKEY`),
+    /// key words, `DCAL` with the key tail, message words, `DCAL` with
+    /// the message tail → digest words. Same LE packing as `digest`.
+    fn hmac(h: &mut Hash, base: u32, algo: u32, lkey: bool, key: &[u8], msg: &[u8]) -> Vec<u32> {
+        let mut cr = (1 << 6) | algo | (2 << 4) | (1 << 2); // MODE ALGO DATATYPE INIT
+        if lkey {
+            cr |= 1 << 16;
+        }
+        wr(h, base, CR, cr);
+        let mut chunks = key.chunks_exact(4);
+        for c in &mut chunks {
+            wr(h, base, DIN, u32::from_le_bytes([c[0], c[1], c[2], c[3]]));
+        }
+        let rem = chunks.remainder();
+        if !rem.is_empty() {
+            let mut last = [0u8; 4];
+            last[..rem.len()].copy_from_slice(rem);
+            wr(h, base, DIN, u32::from_le_bytes(last));
+        }
+        let nblw = if rem.is_empty() {
+            0
+        } else {
+            rem.len() as u32 * 8
+        };
+        wr(h, base, STR, (1 << 8) | nblw); // key segment DCAL
+        let mut chunks = msg.chunks_exact(4);
+        for c in &mut chunks {
+            wr(h, base, DIN, u32::from_le_bytes([c[0], c[1], c[2], c[3]]));
+        }
+        let rem = chunks.remainder();
+        if !rem.is_empty() {
+            let mut last = [0u8; 4];
+            last[..rem.len()].copy_from_slice(rem);
+            wr(h, base, DIN, u32::from_le_bytes(last));
+        }
+        let nblw = if rem.is_empty() {
+            0
+        } else {
+            rem.len() as u32 * 8
+        };
+        wr(h, base, STR, (1 << 8) | nblw); // message DCAL
+        assert_ne!(rd(h, base, SR) & (1 << 1), 0, "DCIS");
+        (0..8).map(|i| rd(h, base, HR0 + 4 * i)).collect()
+    }
+
+    /// RFC 4231 HMAC-SHA-256 cases 1 (20-byte key), 2 (short key), and 6
+    /// (131-byte key with `LKEY`: the key hashes first).
+    #[test]
+    fn hmac_sha256_rfc4231() {
+        let (mut h, base) = hash();
+        assert_eq!(
+            hmac(
+                &mut h,
+                base,
+                SHA256,
+                false,
+                &unhex("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"),
+                b"Hi There"
+            ),
+            words32(&unhex(
+                "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"
+            )),
+            "case 1"
+        );
+        assert_eq!(
+            hmac(
+                &mut h,
+                base,
+                SHA256,
+                false,
+                b"Jefe",
+                b"what do ya want for nothing?"
+            ),
+            words32(&unhex(
+                "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+            )),
+            "case 2"
+        );
+        let long_key = vec![0xAAu8; 131];
+        assert_eq!(
+            hmac(
+                &mut h,
+                base,
+                SHA256,
+                true,
+                &long_key,
+                b"Test Using Larger Than Block-Size Key - Hash Key First"
+            ),
+            words32(&unhex(
+                "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"
+            )),
+            "case 6 long key"
+        );
+    }
+
+    /// RFC 2202 HMAC-SHA-1 case 1 and RFC 4231 HMAC-SHA-224 case 1.
+    #[test]
+    fn hmac_sha1_sha224_vectors() {
+        let (mut h, base) = hash();
+        assert_eq!(
+            hmac(
+                &mut h,
+                base,
+                SHA1,
+                false,
+                &unhex("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"),
+                b"Hi There"
+            )[..5]
+                .to_vec(),
+            words32(&unhex("b617318655057264e28bc0b6fb378c8ef146be00")),
+            "HMAC-SHA-1"
+        );
+        assert_eq!(
+            hmac(
+                &mut h,
+                base,
+                SHA224,
+                false,
+                &unhex("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"),
+                b"Hi There"
+            )[..7]
+                .to_vec(),
+            words32(&unhex(
+                "896fb1128abbdf196832107cd49df33f47b4b1169912ba4f53684b22"
+            )),
+            "HMAC-SHA-224"
+        );
+    }
+
+    /// Context suspend/resume (HAL save/restore shape): hash half a
+    /// multi-block message, save `CSR0-27`, preempt with a full second
+    /// message, restore, finish the first → uninterrupted digest.
+    #[test]
+    fn csr_suspend_resume_preempts() {
+        let (mut h, base) = hash();
+        let msg1: Vec<u8> = (0..100).map(|i| (i * 3 + 1) as u8).collect();
+        let reference = digest(&mut h, base, SHA256, &msg1);
+        // Fresh run, stopped after 68 bytes (one block compressed live,
+        // 4 bytes buffered).
+        wr(&mut h, base, CR, SHA256 | (2 << 4) | (1 << 2));
+        for c in msg1[..68].chunks_exact(4) {
+            wr(
+                &mut h,
+                base,
+                DIN,
+                u32::from_le_bytes([c[0], c[1], c[2], c[3]]),
+            );
+        }
+        let csr0 = 0xF8;
+        let mut saved = Vec::new();
+        for i in 0..28u32 {
+            saved.push(rd(&mut h, base, csr0 + 4 * i));
+        }
+        assert_ne!(saved[8], 0, "buffered tail visible");
+        // Preempt with a complete second message.
+        assert_eq!(
+            digest(&mut h, base, SHA256, b"abc")[0],
+            0xba7816bf,
+            "preempting message"
+        );
+        // Restore the first context and finish it.
+        wr(&mut h, base, CR, SHA256 | (2 << 4)); // ALGO back, no INIT
+        for (i, w) in saved.iter().enumerate() {
+            wr(&mut h, base, csr0 + 4 * i as u32, *w);
+        }
+        for c in msg1[68..].chunks_exact(4) {
+            wr(
+                &mut h,
+                base,
+                DIN,
+                u32::from_le_bytes([c[0], c[1], c[2], c[3]]),
+            );
+        }
+        wr(&mut h, base, STR, 1 << 8); // DCAL, full tail
+        assert_ne!(rd(&mut h, base, SR) & (1 << 1), 0, "DCIS");
+        let got: Vec<u32> = (0..8).map(|i| rd(&mut h, base, HR0 + 4 * i)).collect();
+        assert_eq!(got, reference, "resumed digest matches");
     }
 }

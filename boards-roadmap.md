@@ -75,8 +75,7 @@ board e2e with real firmware → `arch.md` + CHANGELOG.
 - [x] **Ethernet full (H7)**: TX `FD`..`LD` chaining + RX scatter, checksum insertion (`TDES3.CIC`) + validation (`MACCR.IPC`, `IPCB`/`IPHE`/`IPCE`+`ES`), MMC TX-good/unicast-RX counters; VLAN/TSO, MTL, MMC control, PMT wakeup stay documented non-goals. Proof: 1400-byte UDP echo with wire-verified checksums + scatter + error-flag + MMC on `h743` (`tests/eth_h7_checksum_mmc.rs`).
 - [x] **CAN/FDCAN timing**: bxCAN `TEC`/`REC` + `EWGF`/`EPVF`/`BOFF` + sticky `LEC` + `TERR` + bus-off freeze/recovery (timing stays `BTR`-derived, proven tick-exact); FDCAN `ECR`/`PSR` (destructive reads), error-destroyed RX, `DAR` abort/retry, TX event FIFO, `TXBCR` cancellation. Proof: error-injection suites in `can.rs`/`fdcan.rs` lib tests (escalation to bus-off and recovery both controllers).
 - [x] **SDIO/SDMMC full speed paths**: paced data path (`CLKCR` divisor/width, `CMD6` HS doubling, tick-exact), `CMD18`/`CMD25` multi-block with `CMD12` end, per-block CRCs, `DTIMER` deadline (`DTIMEOUT`), `CTIMEOUT` on clash, `CMD13` polling. Proof: 4-block write→read byte-compare + pacing + timeout/clash lib tests (`sdio.rs`).
-- [ ] **Crypto completion**: GCM/GMAC/CMAC, HMAC, suspend/resume banks
-      (currently zeroed/latch). Proof: NIST vectors per mode.
+- [x] **Crypto completion**: AES GCM/GMAC/CMAC (GHASH, phased `GCMPH`, subkeys, `SUSPR`), HASH HMAC-SHA1/224/256 (two-step `DCAL`, `LKEY`) + `CSR` suspend/resume; MD5/empty-CMAC/non-96-bit-IV stay documented non-goals. Proof: NIST vectors per mode + board proofs on `u585`/`u575` (`aes.rs`/`hash.rs` lib tests, `crypto_boards.rs`).
 - [ ] **Display/camera (LTDC/DMA2D/DSI/DCMI/JPEG)**: descoped in B6;
       handshake behavior first, then data paths. Proof: frame-IRQ e2e.
 - [ ] **Analog extras (DFSDM/SAI/SPDIFRX/OPAMP maps)**: currently

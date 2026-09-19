@@ -136,6 +136,74 @@ fn u575_hash_upgraded_from_latch() {
 }
 
 #[test]
+fn u585_aes_gcm_nist_case_2() {
+    // U5 layout: GCM phased by `GCMPH[14:13]`; zero key/IV, one block.
+    let mut mem = board::stm32u585();
+    const AES: u32 = 0x420C_0000;
+    mem.write_word(AES + AES_CR, 0).unwrap();
+    mem.write_word(AES + AES_CR, 1 | (3 << 5)).unwrap(); // EN GCM init
+    for _ in 0..4 {
+        mem.write_word(AES + AES_DINR, 0).unwrap();
+    }
+    // The init output must be drained before payload words: staging over
+    // an unread result latches `WRERR` and drops, like silicon.
+    for _ in 0..4 {
+        mem.read_word(AES + AES_DOUTR).unwrap();
+    }
+    mem.write_word(AES + AES_CR, 1 | (3 << 5) | (2 << 13))
+        .unwrap(); // payload
+    let mut c = Vec::new();
+    for _ in 0..4 {
+        mem.write_word(AES + AES_DINR, 0).unwrap();
+    }
+    for _ in 0..4 {
+        c.extend(mem.read_word(AES + AES_DOUTR).unwrap().to_be_bytes());
+    }
+    assert_eq!(c, hex(b"0388dace60b6a392f328c2b971b2fe78"), "C");
+    mem.write_word(AES + AES_CR, 1 | (3 << 5) | (3 << 13))
+        .unwrap(); // final
+    for w in [0u32, 0, 0, 0x80] {
+        mem.write_word(AES + AES_DINR, w).unwrap();
+    }
+    let mut t = Vec::new();
+    for _ in 0..4 {
+        t.extend(mem.read_word(AES + AES_DOUTR).unwrap().to_be_bytes());
+    }
+    assert_eq!(t, hex(b"ab6e47d42cec13bdf53a67b21257bddf"), "tag");
+}
+
+#[test]
+fn u575_hash_hmac_sha256_rfc4231_case_1() {
+    // HAL HMAC flow: INIT with MODE, key words, key DCAL, message, DCAL.
+    let mut mem = board::stm32u575();
+    const HASH: u32 = 0x420C_0400;
+    mem.write_word(HASH, (1 << 6) | (3 << 17) | (2 << 4) | (1 << 2))
+        .unwrap();
+    for _ in 0..5 {
+        mem.write_word(HASH + HASH_DIN, 0x0b0b_0b0b).unwrap();
+    }
+    mem.write_word(HASH + HASH_STR, 1 << 8).unwrap(); // key DCAL, full tail
+    for c in b"Hi There".chunks_exact(4) {
+        mem.write_word(
+            HASH + HASH_DIN,
+            u32::from_le_bytes([c[0], c[1], c[2], c[3]]),
+        )
+        .unwrap();
+    }
+    mem.write_word(HASH + HASH_STR, 1 << 8).unwrap();
+    let got: Vec<u32> = (0..8)
+        .map(|i| mem.read_word(HASH + HASH_HR0 + 4 * i).unwrap())
+        .collect();
+    assert_eq!(
+        got,
+        be_words(&hex(
+            b"b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"
+        )),
+        "HMAC-SHA-256"
+    );
+}
+
+#[test]
 fn l476_aes_ecb() {
     let mut mem = board::stm32l476();
     let key = hex(b"000102030405060708090a0b0c0d0e0f");
