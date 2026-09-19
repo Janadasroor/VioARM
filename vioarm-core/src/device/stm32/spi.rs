@@ -13,6 +13,14 @@
 //! [`Peripheral::drain_output`]; the slave's `MISO` byte is injected through
 //! [`Peripheral::drive_inputs`].
 //!
+//! Error flags follow silicon: a frame completing (or arriving, in slave
+//! mode) while `RXNE` is still set latches `OVR` and the newcomer is lost;
+//! a controller frame arriving with nothing staged since the previous one
+//! latches `UDR`. Both clear with the `SR`-then-`DR` read sequence and
+//! assert the IRQ line via `CR2.ERRIE` (shared with `MODF`/`CRCERR`).
+//! Deliberately unmodeled: master `SSOE` NSS output (host-invisible),
+//! slave `TXE` consume (stays ready by design — see unit tests).
+//!
 //! `CR1.DFF` selects the 8-bit (`DR` byte lane 0) or 16-bit (lane 1) frame the
 //! firmware completes with its final data-register write; `CR1.BR` scales the
 //! transfer latency like the baud-rate prescaler it is.
@@ -52,12 +60,20 @@ const RXNEIE: u32 = 1 << 6;
 const RXDMAEN: u32 = 1 << 0;
 const TXDMAEN: u32 = 1 << 1;
 const SSOE: u32 = 1 << 2;
+/// `CR2.ERRIE` (bit 5): error interrupt enable (`MODF`/`OVR`/`UDR`/`CRCERR`).
+const ERRIE: u32 = 1 << 5;
 
 /// `SR` bits.
 const RXNE: u32 = 1 << 0;
 const TXE: u32 = 1 << 1;
+/// `SR.UDR` (bit 3): slave underrun — a controller frame arrived with
+/// nothing staged since the previous one.
+const UDR: u32 = 1 << 3;
 const CRCERR: u32 = 1 << 4;
 const MODF: u32 = 1 << 5;
+/// `SR.OVR` (bit 6): overrun — a frame completed while `RXNE` was set;
+/// the new data is lost, the old byte kept.
+const OVR: u32 = 1 << 6;
 const BSY: u32 = 1 << 7;
 
 /// `I2SCFGR.I2SMOD`: the peripheral is in audio mode.
@@ -105,6 +121,10 @@ struct SpiTransfer {
 struct SpiBehavior {
     /// The byte a connected slave will present on the next frame.
     rx_byte: u8,
+    /// Last received byte (the `DR` readback): `DR` doubles as the TX
+    /// staging slot on writes, so the RX image lives here and is restored
+    /// into `DR` on overrun, when silicon keeps the old byte visible.
+    rx_data: u8,
     /// An in-progress master frame, if the shift register is busy.
     transfer: Option<SpiTransfer>,
     /// Bytes the master shifted out, for host draining.
@@ -114,6 +134,12 @@ struct SpiBehavior {
     nss_asserted: bool,
     /// One CRC frame is queued: after the current byte, `TXCRCR` shifts out.
     crc_send_pending: bool,
+    /// A `DR` write in slave mode staged a byte since the previous
+    /// controller frame; a frame arriving unstaged is an underrun.
+    slave_staged: bool,
+    /// F1 clear sequence arm: set by an `SR` read, consumed by the next
+    /// `DR` read. `OVR`/`UDR` clear only inside the sequence.
+    sr_armed: bool,
     /// Running TX/RX CRC shadows (`TXCRCR`/`RXCRCR` are read-only in the SVD
     /// so the engine keeps its own state and synthesizes reads).
     tx_crc: u16,
@@ -126,6 +152,7 @@ impl Default for SpiBehavior {
     fn default() -> Self {
         Self {
             rx_byte: 0,
+            rx_data: 0,
             transfer: None,
             mosi: Vec::new(),
             nss_asserted: false,
@@ -134,6 +161,8 @@ impl Default for SpiBehavior {
             rx_crc: 0xFFFF,
             dma_tx: None,
             dma_rx: None,
+            slave_staged: false,
+            sr_armed: false,
         }
     }
 }
@@ -197,6 +226,7 @@ impl Behavior for SpiBehavior {
             // controller's clocks, reception flags below.
             if !i2s && cr1 & (SPE | MSTR) == SPE && shift == Self::frame_lane(cr1) {
                 self.mosi.push(val);
+                self.slave_staged = true;
                 return word;
             }
             // A frame starts only in master mode with the peripheral enabled,
@@ -238,9 +268,19 @@ impl Behavior for SpiBehavior {
     }
 
     fn on_read(&mut self, view: &mut Registers<&mut [u32]>, offset: u32, value: u32) -> u32 {
+        if offset == SR {
+            // Reading the status register arms the error-clear sequence.
+            self.sr_armed = true;
+        }
         if offset == DR {
-            // Reading the data register acknowledges `RXNE`.
-            view.set(SR, view.get(SR) & !RXNE);
+            // Reading the data register acknowledges `RXNE`. `OVR`/`UDR`
+            // clear only inside the `SR`-then-`DR` sequence.
+            let mut sr = view.get(SR) & !RXNE;
+            if self.sr_armed {
+                sr &= !(OVR | UDR);
+            }
+            view.set(SR, sr);
+            self.sr_armed = false;
         }
         if offset == TXCRCR {
             return u32::from(self.tx_crc);
@@ -269,7 +309,9 @@ impl Behavior for SpiBehavior {
             self.transfer = Some(transfer);
             return;
         }
-        // The frame completes: the sampled MISO byte lands in DR.
+        // The frame completes: the sampled MISO byte lands in DR — unless
+        // the previous byte is still unread, in which case it overruns:
+        // `OVR` latches and the newcomer is lost.
         self.transfer = None;
         let cr1 = view.get(CR1);
         let dff16 = cr1 & DFF != 0;
@@ -278,8 +320,17 @@ impl Behavior for SpiBehavior {
             self.tx_crc = crc_step(self.tx_crc, transfer.tx_byte, poly, dff16);
             self.rx_crc = crc_step(self.rx_crc, self.rx_byte, poly, dff16);
         }
-        view.set(DR, u32::from(self.rx_byte));
-        view.set(SR, (view.get(SR) & !BSY) | RXNE | TXE);
+        let overrun = view.get(SR) & RXNE != 0;
+        if overrun {
+            // The old byte stays visible; the newcomer is lost.
+            view.set(SR, view.get(SR) | OVR);
+            view.set(DR, u32::from(self.rx_data));
+        } else {
+            self.rx_data = self.rx_byte;
+            view.set(DR, u32::from(self.rx_byte));
+            view.set(SR, view.get(SR) | RXNE);
+        }
+        view.set(SR, (view.get(SR) & !BSY) | TXE);
         self.mosi.push(transfer.tx_byte);
         // DMA requests for TXE/RXNE
         let cr2 = view.get(CR2);
@@ -304,18 +355,21 @@ impl Behavior for SpiBehavior {
     fn pending(&self, view: &Registers<&[u32]>) -> u32 {
         let sr = view.get(SR);
         let cr2 = view.get(CR2);
-        u32::from(
-            view.get(CR1) & SPE != 0
-                && ((sr & TXE != 0 && cr2 & TXEIE != 0) || (sr & RXNE != 0 && cr2 & RXNEIE != 0)),
-        )
+        let spe = view.get(CR1) & SPE != 0;
+        let data = (sr & TXE != 0 && cr2 & TXEIE != 0) || (sr & RXNE != 0 && cr2 & RXNEIE != 0);
+        let err = cr2 & ERRIE != 0 && sr & (OVR | MODF | UDR | CRCERR) != 0;
+        u32::from(spe && (data || err))
     }
 
     fn reset(&mut self) {
         self.transfer = None;
         self.mosi.clear();
         self.rx_byte = 0;
+        self.rx_data = 0;
         self.nss_asserted = false;
         self.crc_send_pending = false;
+        self.slave_staged = false;
+        self.sr_armed = false;
     }
 
     fn drive_inputs(&mut self, view: &mut Registers<&mut [u32]>, value: u32) {
@@ -323,10 +377,21 @@ impl Behavior for SpiBehavior {
         self.nss_asserted = value & (1 << 8) != 0;
         let cr1 = view.get(CR1);
         if cr1 & (SPE | MSTR) == SPE {
-            // Slave mode: the byte is an incoming controller frame — store
-            // it and flag it, exactly like a completed shift would.
-            view.set(DR, value & 0xFF);
-            view.set(SR, view.get(SR) | RXNE);
+            // Slave mode: the byte is an incoming controller frame. An
+            // unread previous byte overruns (kept, newcomer lost); a frame
+            // arriving with nothing staged underruns.
+            if view.get(SR) & RXNE != 0 {
+                view.set(SR, view.get(SR) | OVR);
+                view.set(DR, u32::from(self.rx_data));
+            } else {
+                self.rx_data = (value & 0xFF) as u8;
+                view.set(DR, value & 0xFF);
+                view.set(SR, view.get(SR) | RXNE);
+            }
+            if !self.slave_staged {
+                view.set(SR, view.get(SR) | UDR);
+            }
+            self.slave_staged = false;
         } else {
             // Master (or disabled): the low byte is the slave's response
             // on the next frame.
@@ -803,5 +868,87 @@ mod tests {
         write_word(&mut spi, DR, 0x55);
         spi.tick(16);
         assert_ne!(read_word(&mut spi, SR) & RXNE, 0);
+    }
+
+    /// Master overrun: a frame completing while `RXNE` is set latches
+    /// `OVR` and keeps the first byte.
+    #[test]
+    fn master_overrun_latches_ovr_and_keeps_first_byte() {
+        let mut spi = enabled_master();
+        spi.drive_inputs(0xAB);
+        write_word(&mut spi, DR, 0x55);
+        spi.tick(16);
+        assert_eq!(read_word(&mut spi, SR) & RXNE, RXNE);
+        // Second frame without reading: overrun.
+        spi.drive_inputs(0xCD);
+        write_word(&mut spi, DR, 0x66);
+        spi.tick(16);
+        assert_eq!(read_word(&mut spi, SR) & super::OVR, super::OVR);
+        assert_eq!(read_word(&mut spi, DR) & 0xFF, 0xAB, "first kept");
+    }
+
+    /// `OVR` survives a bare `DR` read and clears in the `SR`-then-`DR`
+    /// sequence.
+    #[test]
+    fn ovr_clears_only_via_sr_then_dr_sequence() {
+        let mut spi = enabled_master();
+        spi.drive_inputs(0xAB);
+        write_word(&mut spi, DR, 0x55);
+        spi.tick(16);
+        spi.drive_inputs(0xCD);
+        write_word(&mut spi, DR, 0x66);
+        spi.tick(16);
+        let _ = read_word(&mut spi, DR);
+        assert_eq!(read_word(&mut spi, SR) & super::OVR, super::OVR, "kept");
+        let _ = read_word(&mut spi, SR);
+        let _ = read_word(&mut spi, DR);
+        assert_eq!(read_word(&mut spi, SR) & super::OVR, 0, "cleared");
+    }
+
+    /// Slave overrun: a frame arriving with `RXNE` set keeps the first
+    /// frame and latches `OVR`.
+    #[test]
+    fn slave_overrun_keeps_first_frame() {
+        let mut spi = Spi::spi1();
+        write_word(&mut spi, CR1, SPE | SSM);
+        spi.drive_inputs(0x5A);
+        spi.drive_inputs(0x6B);
+        assert_eq!(read_word(&mut spi, SR) & super::OVR, super::OVR);
+        assert_eq!(read_word(&mut spi, DR) & 0xFF, 0x5A, "first kept");
+    }
+
+    /// Slave underrun: a frame arriving with nothing staged latches `UDR`;
+    /// staging first avoids it.
+    #[test]
+    fn slave_underrun_without_staged_byte() {
+        let mut spi = Spi::spi1();
+        write_word(&mut spi, CR1, SPE | SSM);
+        spi.drive_inputs(0x5A);
+        assert_eq!(read_word(&mut spi, SR) & super::UDR, super::UDR);
+        // Clear via the sequence, stage a byte, next frame is clean.
+        let _ = read_word(&mut spi, SR);
+        let _ = read_word(&mut spi, DR);
+        write_word(&mut spi, DR, 0xB0);
+        spi.drive_inputs(0x5B);
+        assert_eq!(read_word(&mut spi, SR) & super::UDR, 0, "staged: no UDR");
+        assert_eq!(read_word(&mut spi, DR) & 0xFF, 0x5B);
+    }
+
+    /// Error IRQ: `OVR` is silent without `CR2.ERRIE` and asserts with it.
+    #[test]
+    fn error_interrupt_needs_errie() {
+        let mut spi = enabled_master();
+        spi.drive_inputs(0xAB);
+        write_word(&mut spi, DR, 0x55);
+        spi.tick(16);
+        spi.drive_inputs(0xCD);
+        write_word(&mut spi, DR, 0x66);
+        spi.tick(16);
+        assert_eq!(spi.pending(), 0, "masked without ERRIE");
+        write_word(&mut spi, CR2, super::ERRIE);
+        assert_eq!(spi.pending(), 1, "line via ERRIE");
+        let _ = read_word(&mut spi, SR);
+        let _ = read_word(&mut spi, DR);
+        assert_eq!(spi.pending(), 0, "sequence drops the line");
     }
 }

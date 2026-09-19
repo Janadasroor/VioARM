@@ -59,6 +59,7 @@ Work is per unique IP, not per board. Each item: model → lib tests →
 board e2e with real firmware → `arch.md` + CHANGELOG.
 
 - [x] **USART RX + full duplex**: RX error model (`ORE` on overrun, `FE`/`PE` stimulus bits, F1 `SR`-then-`DR` sequence, new-gen `ICR`, error IRQs via `EIE`/`PEIE`); `RE` gating deliberately unenforced (documented). Proof: 5 lib tests + loopback firmware on `f103` + `h743` (`tests/usart_loopback.rs`).
+- [x] **SPI slave + full duplex master**: `OVR` (old byte kept via `rx_data` shadow) + `UDR` (unstaged frames) + `SR`-then-`DR` clear sequence + `ERRIE` IRQ; `SSOE` output and slave `TXE` consume deliberately unmodeled (documented). Proof: 5 lib tests + real C-firmware pair over `Fabric::link_spi` (`f103`+`f107`, both directions, `UDR`/`OVR` asserted — `tests/spi_pair_hand.rs`). The pair wire itself was already proven (`fabric_spi_pair.rs`).
 - [ ] **SPI slave + full duplex master**: master TX exists; add slave
       capture both directions, NSS handling, IRQ/DMA paths. Proof:
       fabric master/slave ping-pong both directions.
