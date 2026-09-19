@@ -68,6 +68,14 @@ pub trait Peripheral: Send {
         ""
     }
 
+    /// Audit hook (boards-roadmap Phase 0): `"latch"` for pure
+    /// register-file windows with no behavior behind them,
+    /// `"behavioral"` for everything else. The default suits
+    /// hand-written devices; `RegisterFile` forwards its `Behavior`.
+    fn behavior_kind(&self) -> &'static str {
+        "behavioral"
+    }
+
     /// Host-side output channel: bytes this device emitted since the last
     /// drain (e.g. UART transmissions). The machine never touches this; tools
     /// (CLI, tests, a future debugger) call it to observe what the firmware

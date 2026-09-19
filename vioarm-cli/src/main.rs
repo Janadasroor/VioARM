@@ -3785,7 +3785,7 @@ mod pin_catalog_tests {
     }
 
     #[test]
-    fn all_renders_thirteen_tables() {
+    fn all_renders_twenty_tables() {
         let text = render_pin_tables("all").expect("all tables");
         for board in vioarm_core::pins::PIN_BOARDS {
             assert!(text.contains(&format!("board {board}")), "{board}");
@@ -3794,7 +3794,7 @@ mod pin_catalog_tests {
             text.lines()
                 .filter(|line| line.starts_with("board "))
                 .count(),
-            13
+            20
         );
     }
 

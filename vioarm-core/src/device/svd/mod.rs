@@ -243,6 +243,11 @@ pub trait Behavior: Send {
     /// prescaler phases, analog settle delays).
     fn tick(&mut self, _view: &mut Registers<&mut [u32]>, _delta: u64) {}
 
+    /// Audit hook (boards-roadmap Phase 0): `"latch"` when this behavior
+    /// is a pure register latch with no hardware behind it. Defaults to
+    /// `"behavioral"`.
+    const KIND: &'static str = "behavioral";
+
     /// Whether `tick` can do anything. The default stays `true` (safe: an
     /// unknown behavior keeps ticking); behaviors with a provably empty
     /// `tick` override this to `false` so the bus skips the dispatch, the
@@ -286,6 +291,7 @@ pub struct NoBehavior;
 
 impl Behavior for NoBehavior {
     // Pure latch: no counters, no phases, nothing time-driven.
+    const KIND: &'static str = "latch";
     fn needs_tick() -> bool {
         false
     }
@@ -400,6 +406,10 @@ impl<B: Behavior> Peripheral for RegisterFile<B> {
 
     fn name(&self) -> &'static str {
         self.def.name
+    }
+
+    fn behavior_kind(&self) -> &'static str {
+        B::KIND
     }
 
     fn drive_inputs(&mut self, value: u32) {

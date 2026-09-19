@@ -16,7 +16,7 @@
 //! dependency, no SVD schema change: `const` tables beside the board
 //! constructors.
 
-/// Boards carrying a pin-label table (13 headline full boards).
+/// Boards carrying a pin-label table (20: 13 headline + 7 Phase-0 boards).
 pub const PIN_BOARDS: &[&str] = &[
     "stm32f103",
     "stm32f107",
@@ -24,6 +24,13 @@ pub const PIN_BOARDS: &[&str] = &[
     "stm32f401",
     "stm32f072",
     "stm32f030",
+    "stm32f031",
+    "stm32f042",
+    "stm32f091",
+    "stm32f100",
+    "stm32f101",
+    "stm32f102",
+    "stm32f105",
     "stm32f303xe",
     "stm32l476",
     "stm32g474xx",
@@ -275,6 +282,108 @@ const STM32L552_PINS: &[(&str, &str)] = &[
     ("PC13", "GPIO_I"),
 ];
 
+/// Nucleo-32 `stm32f031`: ST-Link VCP on `PA9/PA10` (USART1), LD3 on
+/// `PB3`; no user button on Nucleo-32.
+const STM32F031_PINS: &[(&str, &str)] = &[
+    ("PA9", "USART1_TX"),
+    ("PA10", "USART1_RX"),
+    ("PA13", "SWDIO"),
+    ("PA14", "SWCLK"),
+    ("PB3", "GPIO_O"),
+    ("PB6", "I2C1_SCL"),
+    ("PB7", "I2C1_SDA"),
+];
+
+/// Nucleo-32 `stm32f042`: like `f031` plus crystal-less USB device on
+/// `PA11/PA12`.
+const STM32F042_PINS: &[(&str, &str)] = &[
+    ("PA9", "USART1_TX"),
+    ("PA10", "USART1_RX"),
+    ("PA11", "USB_DM"),
+    ("PA12", "USB_DP"),
+    ("PA13", "SWDIO"),
+    ("PA14", "SWCLK"),
+    ("PB3", "GPIO_O"),
+    ("PB6", "I2C1_SCL"),
+    ("PB7", "I2C1_SDA"),
+];
+
+/// Nucleo-64 `stm32f091`: `PA5` LD2, `PC13` B1, VCP on `PA2/PA3`
+/// (USART2), full-speed USB on `PA11/PA12`.
+const STM32F091_PINS: &[(&str, &str)] = &[
+    ("PA0", "GPIO_I"),
+    ("PA2", "USART2_TX"),
+    ("PA3", "USART2_RX"),
+    ("PA5", "GPIO_O"),
+    ("PA9", "USART1_TX"),
+    ("PA10", "USART1_RX"),
+    ("PA11", "USB_DM"),
+    ("PA12", "USB_DP"),
+    ("PA13", "SWDIO"),
+    ("PA14", "SWCLK"),
+    ("PB6", "I2C1_SCL"),
+    ("PB7", "I2C1_SDA"),
+    ("PC13", "GPIO_I"),
+];
+
+/// Value-line Discovery (`STM32VLDISCOVERY`, `stm32f100`): LEDs
+/// `PC8` (blue) / `PC9` (green), user button `PA0`.
+const STM32F100_PINS: &[(&str, &str)] = &[
+    ("PA0", "GPIO_I"),
+    ("PA9", "USART1_TX"),
+    ("PA10", "USART1_RX"),
+    ("PA13", "SWDIO"),
+    ("PA14", "SWCLK"),
+    ("PB6", "I2C1_SCL"),
+    ("PB7", "I2C1_SDA"),
+    ("PC8", "GPIO_O"),
+    ("PC9", "GPIO_O"),
+];
+
+/// High-density `stm32f101`: generic F1 defaults (`PA9/PA10` USART1,
+/// `PA2/PA3` USART2, SWD pair); no board-LED claim, no canonical
+/// discovery board for this die.
+const STM32F101_PINS: &[(&str, &str)] = &[
+    ("PA0", "GPIO_I"),
+    ("PA2", "USART2_TX"),
+    ("PA3", "USART2_RX"),
+    ("PA9", "USART1_TX"),
+    ("PA10", "USART1_RX"),
+    ("PA13", "SWDIO"),
+    ("PA14", "SWCLK"),
+    ("PB6", "I2C1_SCL"),
+    ("PB7", "I2C1_SDA"),
+];
+
+/// `stm32f102` (USB + CAN, no ETH): `PA11/PA12` USB device pair on top
+/// of the generic F1 defaults.
+const STM32F102_PINS: &[(&str, &str)] = &[
+    ("PA0", "GPIO_I"),
+    ("PA9", "USART1_TX"),
+    ("PA10", "USART1_RX"),
+    ("PA11", "USB_DM"),
+    ("PA12", "USB_DP"),
+    ("PA13", "SWDIO"),
+    ("PA14", "SWCLK"),
+    ("PB6", "I2C1_SCL"),
+    ("PB7", "I2C1_SDA"),
+];
+
+/// Connectivity-line `stm32f105` (USB OTG + dual CAN): OTG FS on
+/// `PA11/PA12`, otherwise the F1 defaults.
+const STM32F105_PINS: &[(&str, &str)] = &[
+    ("PA0", "GPIO_I"),
+    ("PA9", "USART1_TX"),
+    ("PA10", "USART1_RX"),
+    ("PA11", "USB_OTG_FS_DM"),
+    ("PA12", "USB_OTG_FS_DP"),
+    ("PA13", "SWDIO"),
+    ("PA14", "SWCLK"),
+    ("PB6", "I2C1_SCL"),
+    ("PB7", "I2C1_SDA"),
+    ("PC13", "GPIO_O"),
+];
+
 /// Pin-label table for `board` (case-insensitive short name, e.g.
 /// `"stm32f103"`): `None` for unknown boards.
 #[must_use]
@@ -294,6 +403,13 @@ pub fn pin_labels(board: &str) -> Option<&'static [(&'static str, &'static str)]
         b"stm32f401" => Some(STM32F401_PINS),
         b"stm32f072" => Some(STM32F072_PINS),
         b"stm32f030" => Some(STM32F030_PINS),
+        b"stm32f031" => Some(STM32F031_PINS),
+        b"stm32f042" => Some(STM32F042_PINS),
+        b"stm32f091" => Some(STM32F091_PINS),
+        b"stm32f100" => Some(STM32F100_PINS),
+        b"stm32f101" => Some(STM32F101_PINS),
+        b"stm32f102" => Some(STM32F102_PINS),
+        b"stm32f105" => Some(STM32F105_PINS),
         b"stm32f303xe" => Some(STM32F303XE_PINS),
         b"stm32l476" => Some(STM32L476_PINS),
         b"stm32g474xx" => Some(STM32G474XX_PINS),
@@ -317,8 +433,8 @@ mod tests {
     }
 
     #[test]
-    fn all_thirteen_boards_carry_tables() {
-        assert_eq!(PIN_BOARDS.len(), 13);
+    fn all_twenty_boards_carry_tables() {
+        assert_eq!(PIN_BOARDS.len(), 20);
         for board in PIN_BOARDS {
             let table = pin_labels(board);
             assert!(table.is_some(), "{board} carries a table");
