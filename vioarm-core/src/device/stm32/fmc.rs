@@ -2096,6 +2096,14 @@ impl Hrtim {
             inner: RegisterFile::new(def, HrtimBehavior::default()),
         }
     }
+    /// HRTIM timer F.
+    #[must_use]
+    pub fn timf_for<D: Device>() -> Self {
+        let def = D::peripheral("HRTIM_TIMF").expect("generated tables contain HRTIM_TIMF");
+        Self {
+            inner: RegisterFile::new(def, HrtimBehavior::default()),
+        }
+    }
     /// HRTIM common registers.
     #[must_use]
     pub fn common_for<D: Device>() -> Self {

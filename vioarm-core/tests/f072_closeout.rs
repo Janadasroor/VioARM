@@ -294,7 +294,7 @@ const CR_C: u32 = 0x00;
 const ISR_C: u32 = 0x08;
 const ICR: u32 = 0x0C;
 const CEN_C: u32 = 1 << 5;
-const AUTOTRIMEN: u32 = 1 << 7;
+const AUTOTRIMEN: u32 = 1 << 6;
 const SYNCOKF: u32 = 1 << 0;
 
 #[test]

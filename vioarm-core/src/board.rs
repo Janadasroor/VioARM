@@ -21,7 +21,9 @@ use crate::device::stm32::afio::Afio;
 use crate::device::stm32::bkp::Bkp;
 use crate::device::stm32::can::Can;
 use crate::device::stm32::cec::Cec;
+use crate::device::stm32::cordic::Cordic;
 use crate::device::stm32::crc::Crc;
+use crate::device::stm32::crs::Crs;
 use crate::device::stm32::cryp::Cryp;
 use crate::device::stm32::dac::Dac;
 use crate::device::stm32::dbgmcu::Dbgmcu;
@@ -40,6 +42,7 @@ use crate::device::stm32::gpio::Gpio as StmGpio;
 use crate::device::stm32::gpio_f4::GpioF4;
 use crate::device::stm32::hash::Hash;
 use crate::device::stm32::i2c::I2c;
+use crate::device::stm32::opamp::Opamp;
 use crate::device::stm32::pwr::Pwr;
 use crate::device::stm32::rcc::{ClockState, Rcc};
 use crate::device::stm32::rng::Rng;
@@ -51,6 +54,7 @@ use crate::device::stm32::timer::Timer;
 use crate::device::stm32::usart::Usart;
 use crate::device::stm32::usb::Usb;
 use crate::device::stm32::usb_fs::UsbFs;
+use crate::device::stm32::vrefbuf::Vrefbuf;
 use crate::device::stm32::watchdog::{Iwdg, Wwdg};
 use crate::device::systick::SysTick;
 use crate::device::uart::UartTx;
@@ -9338,6 +9342,10 @@ pub fn stm32g474xx() -> BoardMemory {
         (0x4800_0000u32, "gpioa"),
         (0x4800_0400, "gpiob"),
         (0x4800_0800, "gpioc"),
+        (0x4800_0c00, "gpiod"),
+        (0x4800_1000, "gpioe"),
+        (0x4800_1400, "gpiof"),
+        (0x4800_1800, "gpiog"),
     ] {
         if <Stm32g474 as crate::device::svd::Device>::by_base(base).is_some() {
             mem.attach(Box::new(GpioF4::at_in::<Stm32g474>(base, name)));
@@ -9347,6 +9355,9 @@ pub fn stm32g474xx() -> BoardMemory {
         Usart::for_device::<Stm32g474> as fn() -> Usart,
         Usart::usart2_for::<Stm32g474>,
         Usart::usart3_for::<Stm32g474>,
+        Usart::uart4_for::<Stm32g474>,
+        Usart::uart5_for::<Stm32g474>,
+        Usart::lpuart1_for::<Stm32g474>,
     ] {
         let base = ctor().ranges()[0].base;
         if <Stm32g474 as crate::device::svd::Device>::by_base(base).is_some() {
@@ -9358,6 +9369,140 @@ pub fn stm32g474xx() -> BoardMemory {
         if <Stm32g474 as crate::device::svd::Device>::by_base(base).is_some() {
             mem.attach(Box::new(ctor()));
         }
+    }
+    if <Stm32g474 as crate::device::svd::Device>::peripheral("EXTI").is_some() {
+        mem.attach(Box::new(Exti::for_device::<Stm32g474>()));
+    }
+    if <Stm32g474 as crate::device::svd::Device>::peripheral("SYSCFG").is_some() {
+        mem.attach(Box::new(Syscfg::for_device::<Stm32g474>()));
+    }
+    if <Stm32g474 as crate::device::svd::Device>::peripheral("VREFBUF").is_some() {
+        mem.attach(Box::new(Vrefbuf::new_for::<Stm32g474>()));
+    }
+    for ctor in [
+        Spi::spi1_for::<Stm32g474> as fn() -> Spi,
+        Spi::spi2_for::<Stm32g474>,
+        Spi::spi3_for::<Stm32g474>,
+        Spi::spi4_for::<Stm32g474>,
+    ] {
+        let base = ctor().ranges()[0].base;
+        if <Stm32g474 as crate::device::svd::Device>::by_base(base).is_some() {
+            mem.attach(Box::new(ctor()));
+        }
+    }
+    if <Stm32g474 as crate::device::svd::Device>::peripheral("I2C1").is_some() {
+        mem.attach(Box::new(I2c::for_device::<Stm32g474>()));
+    }
+    if <Stm32g474 as crate::device::svd::Device>::peripheral("I2C2").is_some() {
+        mem.attach(Box::new(I2c::i2c2_for::<Stm32g474>()));
+    }
+    if <Stm32g474 as crate::device::svd::Device>::peripheral("I2C3").is_some() {
+        mem.attach(Box::new(I2c::i2c3_for::<Stm32g474>()));
+    }
+    if <Stm32g474 as crate::device::svd::Device>::peripheral("I2C4").is_some() {
+        mem.attach(Box::new(I2c::i2c4_for::<Stm32g474>()));
+    }
+    let adc12_state = std::sync::Arc::new(std::sync::Mutex::new(AdcCommonState::default()));
+    if <Stm32g474 as crate::device::svd::Device>::peripheral("ADC12_Common").is_some() {
+        mem.attach(Box::new(AdcCommon::adc12_common_for::<Stm32g474>(
+            adc12_state.clone(),
+        )));
+    }
+    if <Stm32g474 as crate::device::svd::Device>::peripheral("ADC1").is_some() {
+        mem.attach(Box::new(
+            Adc::adc1_for::<Stm32g474>().with_common(adc12_state.clone()),
+        ));
+    }
+    if <Stm32g474 as crate::device::svd::Device>::peripheral("ADC2").is_some() {
+        mem.attach(Box::new(
+            Adc::adc2_for::<Stm32g474>().with_common(adc12_state.clone()),
+        ));
+    }
+    let adc345_state = std::sync::Arc::new(std::sync::Mutex::new(AdcCommonState::default()));
+    if <Stm32g474 as crate::device::svd::Device>::peripheral("ADC345_Common").is_some() {
+        mem.attach(Box::new(AdcCommon::adc345_common_for::<Stm32g474>(
+            adc345_state.clone(),
+        )));
+    }
+    if <Stm32g474 as crate::device::svd::Device>::peripheral("ADC3").is_some() {
+        mem.attach(Box::new(
+            Adc::adc3_for::<Stm32g474>().with_common(adc345_state.clone()),
+        ));
+    }
+    if <Stm32g474 as crate::device::svd::Device>::peripheral("ADC4").is_some() {
+        mem.attach(Box::new(
+            Adc::adc4_for::<Stm32g474>().with_common(adc345_state.clone()),
+        ));
+    }
+    if <Stm32g474 as crate::device::svd::Device>::peripheral("ADC5").is_some() {
+        mem.attach(Box::new(
+            Adc::adc5_for::<Stm32g474>().with_common(adc345_state.clone()),
+        ));
+    }
+    for (name, host) in [
+        ("DAC1", "dac1"),
+        ("DAC2", "dac2"),
+        ("DAC3", "dac3"),
+        ("DAC4", "dac4"),
+    ] {
+        if <Stm32g474 as crate::device::svd::Device>::peripheral(name).is_some() {
+            mem.attach(Box::new(Dac::dac_for::<Stm32g474>(name, host)));
+        }
+    }
+    if <Stm32g474 as crate::device::svd::Device>::peripheral("COMP").is_some() {
+        // COMP1 aligns with the shared engine (EN@0/OUT@30); C2–C7 latch.
+        mem.attach(Box::new(crate::device::stm32::comp::Comp::new_for::<
+            Stm32g474,
+        >()));
+    }
+    if <Stm32g474 as crate::device::svd::Device>::peripheral("OPAMP").is_some() {
+        mem.attach(Box::new(Opamp::new_for::<Stm32g474>()));
+    }
+    for op in [
+        Hrtim::master_for::<Stm32g474> as fn() -> Hrtim,
+        Hrtim::tima_for::<Stm32g474>,
+        Hrtim::timb_for::<Stm32g474>,
+        Hrtim::timc_for::<Stm32g474>,
+        Hrtim::timd_for::<Stm32g474>,
+        Hrtim::time_for::<Stm32g474>,
+        Hrtim::timf_for::<Stm32g474>,
+        Hrtim::common_for::<Stm32g474>,
+    ] {
+        mem.attach(Box::new(op()));
+    }
+    if <Stm32g474 as crate::device::svd::Device>::peripheral("QUADSPI").is_some() {
+        mem.attach(Box::new(Qspi::new_for::<Stm32g474>()));
+    }
+    if <Stm32g474 as crate::device::svd::Device>::peripheral("CRS").is_some() {
+        mem.attach(Box::new(Crs::new_for::<Stm32g474>()));
+    }
+    if <Stm32g474 as crate::device::svd::Device>::peripheral("CORDIC").is_some() {
+        mem.attach(Box::new(Cordic::new_for::<Stm32g474>()));
+    }
+    for name in ["LPTIMER1", "LPTIM1"] {
+        if <Stm32g474 as crate::device::svd::Device>::peripheral(name).is_some() {
+            mem.attach(Box::new(crate::device::stm32::lptim::Lptim::new_for::<
+                Stm32g474,
+            >(name)));
+            break;
+        }
+    }
+    if <Stm32g474 as crate::device::svd::Device>::peripheral("RNG").is_some() {
+        mem.attach(Box::new(Rng::new_for::<Stm32g474>()));
+    }
+    if <Stm32g474 as crate::device::svd::Device>::peripheral("RTC").is_some() {
+        mem.attach(Box::new(Rtc::new_for::<Stm32g474>()));
+    }
+    if <Stm32g474 as crate::device::svd::Device>::peripheral("FMC").is_some()
+        || <Stm32g474 as crate::device::svd::Device>::peripheral("FSMC").is_some()
+    {
+        mem.attach(Box::new(Fsmc::new_for::<Stm32g474>()));
+    }
+    mem.attach(Box::new(Sai4::new_for_name::<Stm32g474>("SAI")));
+    if <Stm32g474 as crate::device::svd::Device>::peripheral("USB_FS_device").is_some()
+        || <Stm32g474 as crate::device::svd::Device>::peripheral("USB").is_some()
+    {
+        mem.attach(Box::new(UsbFs::new_for::<Stm32g474>()));
     }
     for name in [
         "TIM1", "TIM3", "TIM4", "TIM5", "TIM7", "TIM8", "TIM15", "TIM16", "TIM17", "TIM20",
@@ -9372,6 +9517,29 @@ pub fn stm32g474xx() -> BoardMemory {
                 }
             }
         }
+    }
+    if <Stm32g474 as crate::device::svd::Device>::peripheral("DMAMUX").is_some() {
+        mem.attach(Box::new(Dmamux::new_for::<Stm32g474>()));
+    }
+    // DMA controllers share one mailbox; no peripheral DMA routes are
+    // wired on this board (CPU paths only, documented). G4 DMA is the
+    // F1-style channel engine (CCR/CNDTR), not F4 streams.
+    let dma_requests = Arc::new(Mutex::new(DmaRequests::new()));
+    let dma = Arc::new(Mutex::new(Vec::new()));
+    mem.set_dma_mailbox(dma.clone());
+    if <Stm32g474 as crate::device::svd::Device>::peripheral("DMA1").is_some() {
+        mem.attach(Box::new(DmaF1::dma_for::<Stm32g474>(
+            "DMA1",
+            dma.clone(),
+            dma_requests.clone(),
+        )));
+    }
+    if <Stm32g474 as crate::device::svd::Device>::peripheral("DMA2").is_some() {
+        mem.attach(Box::new(DmaF1::dma_for::<Stm32g474>(
+            "DMA2",
+            dma,
+            dma_requests,
+        )));
     }
     let watchdog = Arc::new(Mutex::new(false));
     mem.set_watchdog_reset(watchdog.clone());

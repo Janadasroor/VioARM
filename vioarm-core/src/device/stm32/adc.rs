@@ -666,6 +666,11 @@ impl Adc {
     pub fn adc4_for<D: Device>() -> Self {
         Self::for_device::<D>("ADC4", "adc4")
     }
+    /// A new `ADC5` on another chip's device tables.
+    #[must_use]
+    pub fn adc5_for<D: Device>() -> Self {
+        Self::for_device::<D>("ADC5", "adc5")
+    }
     fn for_device<D: Device>(peripheral: &str, name: &'static str) -> Self {
         let def = D::peripheral(peripheral)
             .unwrap_or_else(|| panic!("generated tables contain {peripheral}"));
@@ -673,6 +678,8 @@ impl Adc {
             "ADC1" => 1,
             "ADC2" => 2,
             "ADC3" => 3,
+            "ADC4" => 4,
+            "ADC5" => 5,
             _ => 1,
         };
         let mut beh = AdcBehavior::new(config_from(def));
@@ -833,6 +840,19 @@ impl AdcCommon {
     #[must_use]
     pub fn adc3_common_for<D: Device>(state: Arc<Mutex<AdcCommonState>>) -> Self {
         Self::for_device::<D>("ADC3_Common", "adc3_common", state)
+    }
+    /// A new `ADC345_Common` on another chip's device tables (G4 name).
+    ///
+    /// # Panics
+    /// Panics if `D`'s generated tables contain neither `ADC345_Common`
+    /// nor `ADC3_Common`.
+    #[must_use]
+    pub fn adc345_common_for<D: Device>(state: Arc<Mutex<AdcCommonState>>) -> Self {
+        if D::peripheral("ADC345_Common").is_some() {
+            Self::for_device::<D>("ADC345_Common", "adc345_common", state)
+        } else {
+            Self::adc3_common_for::<D>(state)
+        }
     }
 
     /// A new `ADC3_4` common block (F3 value-line name for the same unit).

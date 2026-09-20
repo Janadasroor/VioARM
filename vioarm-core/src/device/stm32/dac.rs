@@ -335,6 +335,21 @@ impl Dac {
         }
     }
 
+    /// A `DACn` on another chip's device tables, found by SVD name with a
+    /// host-side `name` (covers G4's `DAC1`–`DAC4` split instances, which
+    /// share one register layout).
+    ///
+    /// # Panics
+    /// Panics if `D`'s generated tables do not contain `peripheral`.
+    #[must_use]
+    pub fn dac_for<D: Device>(peripheral: &str, name: &'static str) -> Self {
+        let def = D::peripheral(peripheral)
+            .unwrap_or_else(|| panic!("generated tables contain {peripheral}"));
+        Self {
+            inner: RegisterFile::new(def, DacBehavior::default()),
+        }
+    }
+
     /// A new peripheral with DMA request lines.
     #[must_use]
     pub fn new_with_dma<D: Device>(requests: Arc<Mutex<DmaRequests>>) -> Self {

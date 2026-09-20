@@ -18,6 +18,7 @@ pub mod ble;
 pub mod can;
 pub mod cec;
 pub mod comp;
+pub mod cordic;
 pub mod crc;
 pub mod crs;
 pub mod cryp;

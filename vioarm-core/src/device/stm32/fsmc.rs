@@ -96,6 +96,8 @@ enum Bank {
 pub struct Fsmc {
     inner: RegisterFile<FsmcBehavior>,
     windows: [Region; 8],
+    /// FMC variant (single NAND bank); see `new_for`.
+    fmc: bool,
 }
 
 impl Fsmc {
@@ -106,7 +108,12 @@ impl Fsmc {
     /// peripheral.
     #[must_use]
     pub fn new_for<D: Device>() -> Self {
-        let def = D::peripheral("FSMC").expect("generated tables contain FSMC");
+        // G4 names it `FMC`: same NOR core, one NAND bank at `PCR@0x80`
+        // (marked by `PCSCNTR`) instead of `PCR2/3`.
+        let def = D::peripheral("FSMC")
+            .or_else(|| D::peripheral("FMC"))
+            .expect("generated tables contain FSMC");
+        let fmc = def.registers.iter().any(|r| r.name == "PCSCNTR");
         // Tight control span: some tables grant a nonsense window
         // (`0xfffff400` on the F1 value line), which would swallow the
         // whole upper address space including the core block.
@@ -134,13 +141,17 @@ impl Fsmc {
         Self {
             inner: RegisterFile::new(def, FsmcBehavior),
             windows,
+            fmc,
         }
     }
 
     fn bank_enabled(&mut self, bank: Bank) -> bool {
+        let fmc = self.fmc;
         self.inner.with_view(|view, _| match bank {
             Bank::Nor(n) => FsmcBehavior::nor_enabled(view, n),
-            Bank::Nand(pcr) => FsmcBehavior::nand_enabled(view, pcr),
+            // FMC has one NAND controller (`PCR@0x80`) behind all three
+            // NAND-ish windows; FSMC has `PCR2/3` per bank.
+            Bank::Nand(pcr) => FsmcBehavior::nand_enabled(view, if fmc { 0x80 } else { pcr }),
         })
     }
 }

@@ -1,5 +1,6 @@
-//! CRS (clock recovery system, F0 `0x40006C00` from the tables).
-//! `CR.AUTOTRIMEN@7` + `CR.CEN@5` enable, `ISR.SYNCOKF@0` latches after 1 tick, `ICR` clears.
+//! CRS (clock recovery system; base address from the tables).
+//! `CR.AUTOTRIMEN` (bit 7 on F0, 6 on G4 — resolved from the table) +
+//! `CR.CEN@5` enable, `ISR.SYNCOKF@0` latches after 1 tick, `ICR` clears.
 
 use crate::device::svd::{Behavior, Device, RegisterFile, Registers};
 use crate::device::{InterruptSource, Peripheral};
@@ -7,12 +8,23 @@ use crate::error::BusError;
 use crate::mem::bus::Region;
 
 const CR_CEN: u32 = 1 << 5;
-const CR_AUTOTRIMEN: u32 = 1 << 7;
 const ISR_SYNCOKF: u32 = 1 << 0;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 struct CrsBehavior {
     pending: bool,
+    /// `AUTOTRIMEN` bit position (7 on F0, 6 on G4): resolved from the
+    /// table, since it shares the enable half-word.
+    autotrimen: u32,
+}
+
+impl Default for CrsBehavior {
+    fn default() -> Self {
+        Self {
+            pending: false,
+            autotrimen: 1 << 7,
+        }
+    }
 }
 
 impl Behavior for CrsBehavior {
@@ -26,7 +38,7 @@ impl Behavior for CrsBehavior {
         let word = view.merged(offset, val, shift);
         if offset == 0x00 {
             let cen = word & CR_CEN != 0;
-            let auto = word & CR_AUTOTRIMEN != 0;
+            let auto = word & self.autotrimen != 0;
             if cen && auto {
                 self.pending = true;
             }
@@ -74,8 +86,25 @@ impl Crs {
         let def = D::peripheral("CRS")
             .or_else(|| D::peripheral("CRS1"))
             .expect("CRS");
+        let autotrimen = def
+            .registers
+            .iter()
+            .find(|r| r.offset == 0x00)
+            .and_then(|cr| {
+                cr.fields
+                    .iter()
+                    .find(|f| f.name == "AUTOTRIMEN")
+                    .map(|f| 1u32 << f.offset)
+            })
+            .unwrap_or(1 << 7);
         Self {
-            inner: RegisterFile::new(def, CrsBehavior::default()),
+            inner: RegisterFile::new(
+                def,
+                CrsBehavior {
+                    autotrimen,
+                    ..Default::default()
+                },
+            ),
         }
     }
 }
@@ -132,7 +161,8 @@ mod tests {
     #[test]
     fn crs_syncok_latches() {
         let mut c = Crs::new_for::<Stm32f042>();
-        w(&mut c, 0x00, CR_CEN | CR_AUTOTRIMEN);
+        // AUTOTRIMEN lives at bit 6 on these tables (resolved, not 7).
+        w(&mut c, 0x00, CR_CEN | (1 << 6));
         assert_eq!(r(&mut c, 0x08) & ISR_SYNCOKF, 0);
         c.tick(1);
         assert_ne!(r(&mut c, 0x08) & ISR_SYNCOKF, 0);

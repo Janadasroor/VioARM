@@ -66,6 +66,7 @@ impl UsbFs {
     pub fn new_for<D: Device>() -> Self {
         let def = D::peripheral("USB")
             .or_else(|| D::peripheral("USB_FS"))
+            .or_else(|| D::peripheral("USB_FS_device"))
             .expect("USB");
         Self {
             inner: RegisterFile::new(def, UsbFsBehavior),
