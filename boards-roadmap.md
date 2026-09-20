@@ -94,7 +94,8 @@ record result in `docs/src/boards.md`. All pending.
       (shared-driver mounts + 13 direct-poke proofs; record in `docs/src/boards.md`).
 - [x] `stm32f072` (43) — closed: 42/42 behavioral, zero latch
       (new `usart4_for` + shared-driver mounts + 10 proofs; record in `docs/src/boards.md`).
-- [ ] `stm32f091` (46)
+- [x] `stm32f091` (46) — closed: 45/45 behavioral, zero latch
+      (new `usart7/8_for` + shared-driver mounts + 11 proofs; record in `docs/src/boards.md`).
 - [ ] `stm32f0x0` (39)
 - [ ] `stm32f0x1` (49)
 - [ ] `stm32f0x2` (44)
