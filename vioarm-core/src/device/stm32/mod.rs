@@ -61,6 +61,7 @@ pub mod spi;
 pub mod subghz;
 pub mod swpmi;
 pub mod syscfg;
+pub mod tamp;
 pub mod timer;
 pub mod tsc;
 pub mod usart;
