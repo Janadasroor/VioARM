@@ -1,5 +1,5 @@
-//! CEC `0x40007800` (F0 F091) — minimal TXEND latch.
-//! `CR.CECEN@0` enable, `TXDR@0x04` write starts TX, `ISR.TXEND@1` latches next tick, `ICR` clears.
+//! CEC `0x40007800` (F0) — minimal TXEND latch.
+//! `CR.CECEN@0` enable, `TXDR@0x08` write starts TX, `ISR.TXEND` latches next tick, `ICR` clears.
 
 use crate::device::svd::{Behavior, Device, RegisterFile, Registers};
 use crate::device::{InterruptSource, Peripheral};

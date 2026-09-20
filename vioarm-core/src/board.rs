@@ -2062,7 +2062,9 @@ pub fn stm32f031() -> BoardMemory {
     mem.set_flash_gate(gate.clone());
     let clock = ClockState::shared();
     mem.set_clock(clock.clone());
-    if <Stm32f031 as crate::device::svd::Device>::peripheral("FLASH").is_some() {
+    if <Stm32f031 as crate::device::svd::Device>::peripheral("FLASH").is_some()
+        || <Stm32f031 as crate::device::svd::Device>::peripheral("Flash").is_some()
+    {
         mem.attach(Box::new(FlashF1::for_device::<Stm32f031>(gate)));
     }
     mem.attach(Box::new(
@@ -2080,6 +2082,7 @@ pub fn stm32f031() -> BoardMemory {
         (0x4800_0000u32, "gpioa"),
         (0x4800_0400, "gpiob"),
         (0x4800_0800, "gpioc"),
+        (0x4800_1400, "gpiof"),
     ] {
         if <Stm32f031 as crate::device::svd::Device>::by_base(base).is_some() {
             mem.attach(Box::new(GpioF4::at_in::<Stm32f031>(base, name)));
@@ -2088,20 +2091,17 @@ pub fn stm32f031() -> BoardMemory {
     if <Stm32f031 as crate::device::svd::Device>::peripheral("USART1").is_some() {
         mem.attach(Box::new(Usart::for_device::<Stm32f031>()));
     }
-    for ctor in [Timer::tim1_for::<Stm32f031>, Timer::tim2_for::<Stm32f031>] {
+    for ctor in [
+        Timer::tim1_for::<Stm32f031>,
+        Timer::tim2_for::<Stm32f031>,
+        Timer::tim3_for::<Stm32f031>,
+        Timer::tim14_for::<Stm32f031>,
+        Timer::tim16_for::<Stm32f031>,
+        Timer::tim17_for::<Stm32f031>,
+    ] {
         let base = ctor().ranges()[0].base;
         if <Stm32f031 as crate::device::svd::Device>::by_base(base).is_some() {
             mem.attach(Box::new(ctor()));
-        }
-    }
-    // TIM14 etc via fallback latch
-    if <Stm32f031 as crate::device::svd::Device>::peripheral("TIM14").is_some() {
-        if let Some(def) = crate::device::svd::stm32f031::peripheral("TIM14") {
-            mem.attach(Box::new(crate::device::svd::RegisterFile::<
-                crate::device::svd::NoBehavior,
-            >::new(
-                def, crate::device::svd::NoBehavior
-            )));
         }
     }
     if <Stm32f031 as crate::device::svd::Device>::peripheral("EXTI").is_some() {
@@ -2121,6 +2121,24 @@ pub fn stm32f031() -> BoardMemory {
     }
     if <Stm32f031 as crate::device::svd::Device>::peripheral("I2C1").is_some() {
         mem.attach(Box::new(I2c::for_device::<Stm32f031>()));
+    }
+    if <Stm32f031 as crate::device::svd::Device>::peripheral("RTC").is_some() {
+        mem.attach(Box::new(Rtc::new_for::<Stm32f031>()));
+    }
+    if <Stm32f031 as crate::device::svd::Device>::peripheral("TSC").is_some() {
+        mem.attach(Box::new(
+            crate::device::stm32::tsc::Tsc::new_for::<Stm32f031>(),
+        ));
+    }
+    if <Stm32f031 as crate::device::svd::Device>::peripheral("CEC").is_some() {
+        mem.attach(Box::new(
+            crate::device::stm32::cec::Cec::new_for::<Stm32f031>(),
+        ));
+    }
+    if <Stm32f031 as crate::device::svd::Device>::peripheral("DBGMCU").is_some() {
+        // DEV_ID 0x444 covers F031x4/x6 (stm32flash/AN2606 list, OpenOCD
+        // table); REV_ID 0x1000 first silicon, as on f030.
+        mem.attach(Box::new(Dbgmcu::new_for::<Stm32f031>(0x1000_0444)));
     }
     if <Stm32f031 as crate::device::svd::Device>::peripheral("DMA1").is_some()
         || <Stm32f031 as crate::device::svd::Device>::peripheral("DMA").is_some()

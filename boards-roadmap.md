@@ -88,7 +88,8 @@ record result in `docs/src/boards.md`. All pending.
 
 - [x] `stm32f030` (31) — F0 baseline closed: 30/30 behavioral, zero latch
       (new `DBGMCU` + I2C new-gen engine; record in `docs/src/boards.md`).
-- [ ] `stm32f031` (28)
+- [x] `stm32f031` (28) — closed: 27/27 behavioral, zero latch
+      (shared-driver mounts + direct-poke proofs; record in `docs/src/boards.md`).
 - [ ] `stm32f042` (34)
 - [ ] `stm32f072` (43)
 - [ ] `stm32f091` (46)

@@ -42,8 +42,8 @@ T2-or-better) vs `latch` (pure `NoBehavior` register file, T1).
 System-block windows (`0xE000_0000+`: NVIC/SCB/SysTick) are `core`
 modeled in the CPU, not on the bus. Variants (`stm32f030c6`, …)
 delegate to their family constructor, so the 21 families below are the
-complete behavioral picture (1,046 bus windows: **568 behavioral**,
-478 latch, plus 60 core-owned — re-audited after the address-coverage
+complete behavioral picture (1,046 bus windows: **578 behavioral**,
+468 latch, plus 60 core-owned — re-audited after the address-coverage
 fix, which also closed shared-name `I2C` and sub-window `ETH`/`USB`
 instances on their boards).
 
@@ -56,7 +56,7 @@ boards — the real F0 boards are `f030/f031/f042/f072/f091`.
 | Board | Bus windows | Behavioral | Latch | Core |
 |---|---|---|---|---|
 | stm32f030 | 30 | 30 | 0 | 1 |
-| stm32f031 | 27 | 17 | 10 | 1 |
+| stm32f031 | 27 | 27 | 0 | 1 |
 | stm32f042 | 33 | 16 | 17 | 1 |
 | stm32f072 | 42 | 29 | 13 | 1 |
 | stm32f091 | 45 | 25 | 20 | 1 |
@@ -87,8 +87,13 @@ Per-board detail (latch lists are the Phase C work items):
    elsewhere). Documented limits: UART/SPI/I2C DMA unwired on this density; I2C 10-bit/`RELOAD`/
    SMBus unmodeled; FSMC/SDIO absent from the die (not in table). Pins verified (`boards --pins
    stm32f030`: `PA9: USART1_TX`, `PA5: GPIO_O`, …).
-- `stm32f031` behavioral: CRC GPIOC GPIOB GPIOA SPI1 PWR I2C1 IWDG WWDG TIM1 TIM2 EXTI DMA RCC
-   SYSCFG ADC USART1 · latch: GPIOF TIM3 TIM14 RTC TIM16 TIM17 TSC CEC Flash DBGMCU
+- `stm32f031` — **closed (Phase C): 27/27 behavioral, zero latch.** No firmware touches this board
+   yet, so all T2, including direct-poke proofs (`f031_closeout.rs`) for GPIOF, TIM3/14/16/17, RTC
+   calendar + alarm A, TSC acquisition, CEC transmit-end, Flash erase + program, and DBGMCU
+   `IDCODE 0x10000444`. New mounts reuse shared drivers (`TSC`/`CEC` handshake models,
+   `tim15+` constructors from the f030 round). Documented limits: same F0 set as f030 (no DMA for
+   UART/SPI/I2C, I2C 10-bit/`RELOAD`/SMBus unmodeled). Pins verified (`boards --pins stm32f031`:
+   `PA9: USART1_TX`, `PB6/7: I2C1`, …).
 - `stm32f042` behavioral: CRC GPIOB GPIOA SPI1 PWR I2C1 IWDG WWDG TIM1 TIM2 EXTI RCC SYSCFG USART1
    COMP CRS · latch: GPIOF GPIOC SPI2 TIM3 TIM14 DMA ADC USART2 RTC TIM16 TIM17 TSC CEC Flash DBGMCU
    USB CAN
