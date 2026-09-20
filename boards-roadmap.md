@@ -90,7 +90,8 @@ record result in `docs/src/boards.md`. All pending.
       (new `DBGMCU` + I2C new-gen engine; record in `docs/src/boards.md`).
 - [x] `stm32f031` (28) — closed: 27/27 behavioral, zero latch
       (shared-driver mounts + direct-poke proofs; record in `docs/src/boards.md`).
-- [ ] `stm32f042` (34)
+- [x] `stm32f042` (34) — closed: 33/33 behavioral, zero latch
+      (shared-driver mounts + 13 direct-poke proofs; record in `docs/src/boards.md`).
 - [ ] `stm32f072` (43)
 - [ ] `stm32f091` (46)
 - [ ] `stm32f0x0` (39)

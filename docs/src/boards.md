@@ -42,8 +42,8 @@ T2-or-better) vs `latch` (pure `NoBehavior` register file, T1).
 System-block windows (`0xE000_0000+`: NVIC/SCB/SysTick) are `core`
 modeled in the CPU, not on the bus. Variants (`stm32f030c6`, …)
 delegate to their family constructor, so the 21 families below are the
-complete behavioral picture (1,046 bus windows: **578 behavioral**,
-468 latch, plus 60 core-owned — re-audited after the address-coverage
+complete behavioral picture (1,046 bus windows: **595 behavioral**,
+451 latch, plus 60 core-owned — re-audited after the address-coverage
 fix, which also closed shared-name `I2C` and sub-window `ETH`/`USB`
 instances on their boards).
 
@@ -57,7 +57,7 @@ boards — the real F0 boards are `f030/f031/f042/f072/f091`.
 |---|---|---|---|---|
 | stm32f030 | 30 | 30 | 0 | 1 |
 | stm32f031 | 27 | 27 | 0 | 1 |
-| stm32f042 | 33 | 16 | 17 | 1 |
+| stm32f042 | 33 | 33 | 0 | 1 |
 | stm32f072 | 42 | 29 | 13 | 1 |
 | stm32f091 | 45 | 25 | 20 | 1 |
 | stm32f0x0 | 36 | 7 | 29 | 3 |
@@ -94,9 +94,14 @@ Per-board detail (latch lists are the Phase C work items):
    `tim15+` constructors from the f030 round). Documented limits: same F0 set as f030 (no DMA for
    UART/SPI/I2C, I2C 10-bit/`RELOAD`/SMBus unmodeled). Pins verified (`boards --pins stm32f031`:
    `PA9: USART1_TX`, `PB6/7: I2C1`, …).
-- `stm32f042` behavioral: CRC GPIOB GPIOA SPI1 PWR I2C1 IWDG WWDG TIM1 TIM2 EXTI RCC SYSCFG USART1
-   COMP CRS · latch: GPIOF GPIOC SPI2 TIM3 TIM14 DMA ADC USART2 RTC TIM16 TIM17 TSC CEC Flash DBGMCU
-   USB CAN
+- `stm32f042` — **closed (Phase C): 33/33 behavioral, zero latch.** T3 (firmware-proven on this
+   board): COMP hysteresis (`comp_hyst.rs`); everything else T2, including 13 direct-poke proofs
+   (`f042_closeout.rs`): GPIOC/F, USART2 loopback, SPI2 shift, ADC convert, DMA M2M, TIM3/14/16/17,
+   RTC calendar + alarm, TSC acquisition, CEC transmit-end, CAN init + filter + injected RX, USB
+   enumeration tick, Flash erase + program, DBGMCU `IDCODE 0x10000445` (`DEV_ID 0x445`). No new
+   models (shared drivers throughout; explicit USB latch replaced by `UsbFs`). Documented limits:
+   same F0 set as f030/f031. Pins verified (`boards --pins stm32f042`: `PA9: USART1_TX`,
+   `PA11/12: USB_DM/DP`, …).
 - `stm32f072` behavioral: CRC GPIOF GPIOD GPIOC GPIOB GPIOE GPIOA SPI1 SPI2 DAC PWR I2C1 I2C2 IWDG
    WWDG TIM1 TIM2 TIM3 TIM6 TIM7 EXTI DMA RCC SYSCFG USART1 USART2 USART3 COMP TSC · latch: TIM14
    ADC USART4 RTC TIM15 TIM16 TIM17 CEC Flash DBGMCU USB CRS CAN
