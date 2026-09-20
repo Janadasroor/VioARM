@@ -107,7 +107,20 @@ impl Fsmc {
     #[must_use]
     pub fn new_for<D: Device>() -> Self {
         let def = D::peripheral("FSMC").expect("generated tables contain FSMC");
-        let ctrl = Region::new(def.base, def.window);
+        // Tight control span: some tables grant a nonsense window
+        // (`0xfffff400` on the F1 value line), which would swallow the
+        // whole upper address space including the core block.
+        let mut lo = u32::MAX;
+        let mut hi = 0u32;
+        for r in def.registers {
+            lo = lo.min(r.offset);
+            hi = hi.max(r.offset + u32::from(r.width) / 8);
+        }
+        let ctrl = if lo <= hi {
+            Region::new(def.base + lo, hi - lo)
+        } else {
+            Region::new(def.base, def.window)
+        };
         let mut windows = [Region::default(); 8];
         windows[0] = ctrl;
         for (i, w) in windows.iter_mut().enumerate().skip(1).take(4) {

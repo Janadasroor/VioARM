@@ -106,7 +106,8 @@ record result in `docs/src/boards.md`. All pending.
       (layout identical to `f0x1`; record in `docs/src/boards.md`).
 - [x] `stm32f0xx` (37) — generic donor closed: 36/36 behavioral, zero latch
       (shared-driver mounts + 17 proofs; record in `docs/src/boards.md`).
-- [ ] `stm32f100` (48)
+- [x] `stm32f100` (48) — value-line closed: 46/46 behavioral, zero latch
+      (F1 `CEC` engine + `FSMC` trim + 10 proofs; record in `docs/src/boards.md`).
 - [ ] `stm32f101` (46)
 - [ ] `stm32f102` (25)
 - [x] `stm32f103` (53) — scoreboard board; closed first: 51/51 behavioral, zero latch
