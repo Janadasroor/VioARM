@@ -450,6 +450,18 @@ impl Spi {
         Self::for_device::<D>("SPI2", "spi2")
     }
 
+    /// An SPI-compatible window on another chip's device tables, found by
+    /// SVD name with a host-side `name` (covers the `I2Sxext` full-duplex
+    /// blocks, which decode the full SPI register set; I2S protocol
+    /// itself stays unmodeled).
+    ///
+    /// # Panics
+    /// Panics if `D`'s generated tables do not contain `peripheral`.
+    #[must_use]
+    pub fn spi_for<D: Device>(peripheral: &str, name: &'static str) -> Self {
+        Self::for_device::<D>(peripheral, name)
+    }
+
     /// The F103 `SPI3` at `0x4000_3C00`: IRQ 51.
     ///
     /// # Panics

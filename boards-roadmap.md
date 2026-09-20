@@ -118,7 +118,8 @@ record result in `docs/src/boards.md`. All pending.
       (USB guard fix + shared-driver mounts + 10 proofs; record in `docs/src/boards.md`).
 - [x] `stm32f107` (49) — scoreboard + fabric board; closed second: 47/47 behavioral, zero latch
       (audit-only close-out; record in `docs/src/boards.md`).
-- [ ] `stm32f303xe` (59)
+- [x] `stm32f303xe` (59) — closed: 56/56 behavioral, zero latch
+      (ADC-common fallback + SPI-for-I2S + 7 proofs; record in `docs/src/boards.md`).
 - [ ] `stm32f407` (91) — DMA/FPU reference board
 - [ ] `stm32g474xx` (91)
 - [ ] `stm32h743` (119) — largest table; close last, complex IPs land here

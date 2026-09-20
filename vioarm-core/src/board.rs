@@ -8905,8 +8905,10 @@ pub fn stm32f303xe() -> BoardMemory {
     mem.set_flash_gate(gate.clone());
     let clock = ClockState::shared();
     mem.set_clock(clock.clone());
-    // F3 flash is F1-gated at 0x40022000
-    if <Stm32f303xe as crate::device::svd::Device>::peripheral("FLASH").is_some() {
+    // F3 flash is F1-gated at 0x40022000 (`Flash` on these tables).
+    if <Stm32f303xe as crate::device::svd::Device>::peripheral("FLASH").is_some()
+        || <Stm32f303xe as crate::device::svd::Device>::peripheral("Flash").is_some()
+    {
         mem.attach(Box::new(FlashF1::for_device::<Stm32f303xe>(gate)));
     }
     mem.attach(Box::new(
@@ -8937,6 +8939,8 @@ pub fn stm32f303xe() -> BoardMemory {
         (0x4800_0c00, "gpiod"),
         (0x4800_1000, "gpioe"),
         (0x4800_1400, "gpiof"),
+        (0x4800_1800, "gpiog"),
+        (0x4800_1c00, "gpioh"),
     ] {
         if <Stm32f303xe as crate::device::svd::Device>::by_base(base).is_some() {
             mem.attach(Box::new(
@@ -8949,6 +8953,8 @@ pub fn stm32f303xe() -> BoardMemory {
         Usart::for_device::<Stm32f303xe> as fn() -> Usart,
         Usart::usart2_for::<Stm32f303xe>,
         Usart::usart3_for::<Stm32f303xe>,
+        Usart::uart4_for::<Stm32f303xe>,
+        Usart::uart5_for::<Stm32f303xe>,
     ] {
         let base = ctor().ranges()[0].base;
         if <Stm32f303xe as crate::device::svd::Device>::by_base(base).is_some() {
@@ -9011,15 +9017,27 @@ pub fn stm32f303xe() -> BoardMemory {
                 .with_analog_bus(mem.analog_handle()),
         ));
     }
+    let adc34_state = std::sync::Arc::new(std::sync::Mutex::new(AdcCommonState::default()));
     if <Stm32f303xe as crate::device::svd::Device>::peripheral("ADC3").is_some() {
         mem.attach(Box::new(
-            Adc::adc3_for::<Stm32f303xe>().with_analog_bus(mem.analog_handle()),
+            Adc::adc3_for::<Stm32f303xe>()
+                .with_common(adc34_state.clone())
+                .with_analog_bus(mem.analog_handle()),
         ));
     }
     if <Stm32f303xe as crate::device::svd::Device>::peripheral("ADC4").is_some() {
         mem.attach(Box::new(
-            Adc::adc4_for::<Stm32f303xe>().with_analog_bus(mem.analog_handle()),
+            Adc::adc4_for::<Stm32f303xe>()
+                .with_common(adc34_state.clone())
+                .with_analog_bus(mem.analog_handle()),
         ));
+    }
+    if <Stm32f303xe as crate::device::svd::Device>::peripheral("ADC3_4").is_some()
+        || <Stm32f303xe as crate::device::svd::Device>::peripheral("ADC3_Common").is_some()
+    {
+        mem.attach(Box::new(AdcCommon::adc34_common_for::<Stm32f303xe>(
+            adc34_state,
+        )));
     }
     if <Stm32f303xe as crate::device::svd::Device>::peripheral("COMP").is_some() {
         mem.attach(Box::new(
@@ -9044,11 +9062,31 @@ pub fn stm32f303xe() -> BoardMemory {
     if <Stm32f303xe as crate::device::svd::Device>::peripheral("SPI2").is_some() {
         mem.attach(Box::new(Spi::spi2_for::<Stm32f303xe>()));
     }
+    if <Stm32f303xe as crate::device::svd::Device>::peripheral("SPI3").is_some() {
+        mem.attach(Box::new(Spi::spi3_for::<Stm32f303xe>()));
+    }
+    if <Stm32f303xe as crate::device::svd::Device>::peripheral("SPI4").is_some() {
+        mem.attach(Box::new(Spi::spi4_for::<Stm32f303xe>()));
+    }
+    // I2S full-duplex extensions decode the SPI register set; I2S
+    // protocol itself stays unmodeled.
+    if <Stm32f303xe as crate::device::svd::Device>::peripheral("I2S2ext").is_some() {
+        mem.attach(Box::new(Spi::spi_for::<Stm32f303xe>("I2S2ext", "i2s2ext")));
+    }
+    if <Stm32f303xe as crate::device::svd::Device>::peripheral("I2S3ext").is_some() {
+        mem.attach(Box::new(Spi::spi_for::<Stm32f303xe>("I2S3ext", "i2s3ext")));
+    }
+    if <Stm32f303xe as crate::device::svd::Device>::peripheral("RTC").is_some() {
+        mem.attach(Box::new(Rtc::new_for::<Stm32f303xe>()));
+    }
     if <Stm32f303xe as crate::device::svd::Device>::peripheral("I2C1").is_some() {
         mem.attach(Box::new(I2c::for_device::<Stm32f303xe>()));
     }
     if <Stm32f303xe as crate::device::svd::Device>::peripheral("I2C2").is_some() {
         mem.attach(Box::new(I2c::i2c2_for::<Stm32f303xe>()));
+    }
+    if <Stm32f303xe as crate::device::svd::Device>::peripheral("I2C3").is_some() {
+        mem.attach(Box::new(I2c::i2c3_for::<Stm32f303xe>()));
     }
     if <Stm32f303xe as crate::device::svd::Device>::peripheral("CAN").is_some()
         || <Stm32f303xe as crate::device::svd::Device>::peripheral("CAN1").is_some()
@@ -10249,6 +10287,8 @@ pub fn stm32h743() -> BoardMemory {
             (0x4800_0c00, "gpiod"),
             (0x4800_1000, "gpioe"),
             (0x4800_1400, "gpiof"),
+            (0x4800_1800, "gpiog"),
+            (0x4800_1c00, "gpioh"),
         ] {
             if <Stm32f303xe as crate::device::svd::Device>::by_base(base).is_some() {
                 mem.attach(Box::new(GpioF4::at_in::<Stm32f303xe>(base, name)));

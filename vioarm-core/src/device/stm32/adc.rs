@@ -834,6 +834,20 @@ impl AdcCommon {
     pub fn adc3_common_for<D: Device>(state: Arc<Mutex<AdcCommonState>>) -> Self {
         Self::for_device::<D>("ADC3_Common", "adc3_common", state)
     }
+
+    /// A new `ADC3_4` common block (F3 value-line name for the same unit).
+    ///
+    /// # Panics
+    /// Panics if `D`'s generated tables contain neither `ADC3_4` nor
+    /// `ADC3_Common`.
+    #[must_use]
+    pub fn adc34_common_for<D: Device>(state: Arc<Mutex<AdcCommonState>>) -> Self {
+        if D::peripheral("ADC3_4").is_some() {
+            Self::for_device::<D>("ADC3_4", "adc3_common", state)
+        } else {
+            Self::adc3_common_for::<D>(state)
+        }
+    }
     /// A new `ADC1_2_Common` on another chip's device tables.
     #[must_use]
     pub fn adc1_2_common_for<D: Device>(state: Arc<Mutex<AdcCommonState>>) -> Self {

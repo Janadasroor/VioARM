@@ -42,8 +42,8 @@ T2-or-better) vs `latch` (pure `NoBehavior` register file, T1).
 System-block windows (`0xE000_0000+`: NVIC/SCB/SysTick) are `core`
 modeled in the CPU, not on the bus. Variants (`stm32f030c6`, …)
 delegate to their family constructor, so the 21 families below are the
-complete behavioral picture (1,046 bus windows: **893 behavioral**,
-153 latch, plus 60 core-owned — re-audited after the address-coverage
+complete behavioral picture (1,046 bus windows: **905 behavioral**,
+141 latch, plus 60 core-owned — re-audited after the address-coverage
 fix, which also closed shared-name `I2C` and sub-window `ETH`/`USB`
 instances on their boards).
 
@@ -71,7 +71,7 @@ boards — the real F0 boards are `f030/f031/f042/f072/f091`.
 | stm32f103 | 51 | 51 | 0 | 2 |
 | stm32f105 | 43 | 43 | 0 | 2 |
 | stm32f107 | 47 | 47 | 0 | 2 |
-| stm32f303xe | 56 | 44 | 12 | 3 |
+| stm32f303xe | 56 | 56 | 0 | 3 |
 | stm32f407 | 82 | 54 | 28 | 9 |
 | stm32g474xx | 82 | 24 | 58 | 9 |
 | stm32h743 | 119 | 107 | 12 | 0 |
@@ -184,10 +184,13 @@ Per-board detail (latch lists are the Phase C work items):
    with real C firmware), CAN (fabric arbitration + `RX0` ISR dispatch), ETH and USB_OTG_FS (ISR
    dispatch; data paths lib-proven on f107 tables). Everything else T2 on shared drivers. Pins
    verified (`boards --pins stm32f107`: `PA9: USART1_TX`, `PA11/12: USB_DM/DP`, …).
-- `stm32f303xe` behavioral: GPIOA GPIOB GPIOC GPIOD GPIOE GPIOF TSC CRC RCC DMA1 DMA2 TIM2 TIM3 TIM4
-   TIM15 TIM16 TIM17 USART1 USART2 USART3 SPI1 SPI2 EXTI COMP PWR CAN USB_FS I2C1 I2C2 IWDG WWDG
-   TIM6 TIM7 DAC TIM1 TIM20 TIM8 ADC1 ADC2 ADC3 ADC4 ADC1_2 SYSCFG OPAMP · latch: GPIOG GPIOH Flash
-   UART4 UART5 SPI3 I2S2ext I2S3ext SPI4 I2C3 RTC ADC3_4
+- `stm32f303xe` — **closed (Phase C): 56/56 behavioral, zero latch.** T3 (firmware-proven on this
+   board): CRC + DAC1/2 (gap-fill), GPIO, plus GPIO/USART/TIM/ADC (`chip_cmsis_500`); everything
+   else T2, including 7 direct-poke proofs (`f303xe_closeout.rs`): GPIOG/H, UART4/5 loopbacks, RTC
+   calendar + alarm, SPI3/4 + I2Sext shift, I2C3 new-gen NACK, ADC3 convert + `ADC3_4` common,
+   Flash erase + program (2 KiB pages). New work: `adc34_common_for` fallback, `Spi::spi_for`
+   (I2Sext windows), `ADC3`/`4` joined to the common state. Documented limits: I2S protocol,
+   UART4/5 DMA. Pins verified (`boards --pins stm32f303xe`).
 - `stm32f407` behavioral: DMA2 DMA1 RCC GPIOE GPIOD GPIOC GPIOB GPIOA SYSCFG SPI1 SPI2 SPI3 SDIO
    ADC1 ADC2 ADC3 USART6 USART1 USART2 USART3 DAC PWR I2C3 I2C2 I2C1 IWDG WWDG RTC UART4 UART5 C_ADC
    TIM1 TIM2 TIM4 TIM5 TIM6 TIM7 Ethernet_MAC Ethernet_MMC Ethernet_PTP Ethernet_DMA CRC
