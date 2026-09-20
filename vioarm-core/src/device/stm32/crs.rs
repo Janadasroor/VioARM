@@ -1,4 +1,4 @@
-//! CRS `0x4000C400` (F0) — clock recovery system.
+//! CRS (clock recovery system, F0 `0x40006C00` from the tables).
 //! `CR.AUTOTRIMEN@7` + `CR.CEN@5` enable, `ISR.SYNCOKF@0` latches after 1 tick, `ICR` clears.
 
 use crate::device::svd::{Behavior, Device, RegisterFile, Registers};

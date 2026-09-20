@@ -42,8 +42,8 @@ T2-or-better) vs `latch` (pure `NoBehavior` register file, T1).
 System-block windows (`0xE000_0000+`: NVIC/SCB/SysTick) are `core`
 modeled in the CPU, not on the bus. Variants (`stm32f030c6`, …)
 delegate to their family constructor, so the 21 families below are the
-complete behavioral picture (1,046 bus windows: **595 behavioral**,
-451 latch, plus 60 core-owned — re-audited after the address-coverage
+complete behavioral picture (1,046 bus windows: **608 behavioral**,
+438 latch, plus 60 core-owned — re-audited after the address-coverage
 fix, which also closed shared-name `I2C` and sub-window `ETH`/`USB`
 instances on their boards).
 
@@ -58,7 +58,7 @@ boards — the real F0 boards are `f030/f031/f042/f072/f091`.
 | stm32f030 | 30 | 30 | 0 | 1 |
 | stm32f031 | 27 | 27 | 0 | 1 |
 | stm32f042 | 33 | 33 | 0 | 1 |
-| stm32f072 | 42 | 29 | 13 | 1 |
+| stm32f072 | 42 | 42 | 0 | 1 |
 | stm32f091 | 45 | 25 | 20 | 1 |
 | stm32f0x0 | 36 | 7 | 29 | 3 |
 | stm32f0x1 | 46 | 3 | 43 | 3 |
@@ -102,9 +102,14 @@ Per-board detail (latch lists are the Phase C work items):
    models (shared drivers throughout; explicit USB latch replaced by `UsbFs`). Documented limits:
    same F0 set as f030/f031. Pins verified (`boards --pins stm32f042`: `PA9: USART1_TX`,
    `PA11/12: USB_DM/DP`, …).
-- `stm32f072` behavioral: CRC GPIOF GPIOD GPIOC GPIOB GPIOE GPIOA SPI1 SPI2 DAC PWR I2C1 I2C2 IWDG
-   WWDG TIM1 TIM2 TIM3 TIM6 TIM7 EXTI DMA RCC SYSCFG USART1 USART2 USART3 COMP TSC · latch: TIM14
-   ADC USART4 RTC TIM15 TIM16 TIM17 CEC Flash DBGMCU USB CRS CAN
+- `stm32f072` — **closed (Phase C): 42/42 behavioral, zero latch.** T3 (firmware-proven on this
+   board): CRC + DAC (`full_soc_gap_fill`), GPIO (`toggles_gpio`), SPI (`shifts_spi`); everything
+   else T2, including 10 direct-poke proofs (`f072_closeout.rs`): USART4 loopback, ADC convert,
+   TIM14–17, RTC calendar + alarm, CEC transmit-end, CAN init + filter + injected RX, USB
+   enumeration tick, CRS sync-ok, Flash erase + program, DBGMCU `IDCODE 0x10000448`
+   (`DEV_ID 0x448`). New work: `usart4_for` constructor (F0 names the 4th port `USART4`); also
+   synced the dead `f0_full_board` template. Documented limits: same F0 set as f030–f042. Pins
+   verified (`boards --pins stm32f072`: `PA9: USART1_TX`, `PA2/3: USART2`, …).
 - `stm32f091` behavioral: CRC GPIOF GPIOD GPIOC GPIOB GPIOA SPI1 SPI2 DAC PWR I2C1 I2C2 IWDG WWDG
    TIM1 TIM2 TIM3 EXTI DMA RCC SYSCFG USART1 USART2 COMP CEC · latch: GPIOE TIM14 TIM6 TIM7 ADC
    USART3 USART4 USART6 USART7 USART8 RTC TIM15 TIM16 TIM17 TSC Flash DBGMCU USB CRS CAN

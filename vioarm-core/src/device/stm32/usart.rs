@@ -517,6 +517,17 @@ impl Usart {
         Self::for_device_with::<D>("UART4", "uart4", None, None)
     }
 
+    /// A new `USART4` on another chip's device tables (F0/F3 name the
+    /// fourth port `USART4` rather than `UART4`).
+    ///
+    /// # Panics
+    /// Panics if `D`'s generated tables do not contain the `USART4`
+    /// peripheral.
+    #[must_use]
+    pub fn usart4_for<D: Device>() -> Self {
+        Self::for_device_with::<D>("USART4", "usart4", None, None)
+    }
+
     /// A new `UART5` on another chip's device tables.
     ///
     /// # Panics
