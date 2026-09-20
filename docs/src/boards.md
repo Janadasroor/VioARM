@@ -42,8 +42,8 @@ T2-or-better) vs `latch` (pure `NoBehavior` register file, T1).
 System-block windows (`0xE000_0000+`: NVIC/SCB/SysTick) are `core`
 modeled in the CPU, not on the bus. Variants (`stm32f030c6`, …)
 delegate to their family constructor, so the 21 families below are the
-complete behavioral picture (1,046 bus windows: **657 behavioral**,
-389 latch, plus 60 core-owned — re-audited after the address-coverage
+complete behavioral picture (1,046 bus windows: **700 behavioral**,
+346 latch, plus 60 core-owned — re-audited after the address-coverage
 fix, which also closed shared-name `I2C` and sub-window `ETH`/`USB`
 instances on their boards).
 
@@ -61,7 +61,7 @@ boards — the real F0 boards are `f030/f031/f042/f072/f091`.
 | stm32f072 | 42 | 42 | 0 | 1 |
 | stm32f091 | 45 | 45 | 0 | 1 |
 | stm32f0x0 | 36 | 36 | 0 | 3 |
-| stm32f0x1 | 46 | 3 | 43 | 3 |
+| stm32f0x1 | 46 | 46 | 0 | 3 |
 | stm32f0x2 | 41 | 3 | 38 | 3 |
 | stm32f0x8 | 46 | 3 | 43 | 3 |
 | stm32f0xx | 36 | 3 | 33 | 1 |
@@ -123,9 +123,14 @@ Per-board detail (latch lists are the Phase C work items):
    EXTI software interrupt, DMA1 M2M, ADC convert, PWR/CRC windows, RTC calendar + alarm, USB tick,
    Flash erase + program, DBGMCU placeholder `IDCODE`. New work: `usart5_for` constructor; removed a
    dead `SYSCFG_COMP` latch pin. No pin table (generics aren't headline boards).
-- `stm32f0x1` behavioral: IWDG WWDG RCC · latch: CRC GPIOF GPIOD GPIOC GPIOB GPIOE GPIOA SPI1 SPI2
-   PWR I2C1 I2C2 TIM1 TIM2 TIM3 TIM14 TIM6 TIM7 EXTI DMA1 DMA2 SYSCFG_COMP ADC USART1 USART2 USART3
-   USART4 USART6 USART7 USART8 USART5 RTC TIM15 TIM16 TIM17 TSC CEC Flash DBGMCU USB CRS CAN DAC
+- `stm32f0x1` — **closed (Phase C): 46/46 behavioral, zero latch.** Generic donor table (no single
+   silicon; intentionally minimal), so all T2 by construction, with 19 direct-poke proofs
+   (`f0x1_closeout.rs`): 6 GPIOs, 8 USART loopbacks, SPI1 shift, I2C1 new-gen NACK, 9 timers, EXTI
+   software interrupt, DMA1 + DMA2 M2M, `SYSCFG_COMP` routing latch, ADC convert, DAC convert,
+   PWR/CRC windows, RTC calendar + alarm, TSC acquisition, CEC transmit-end, CAN init + filter +
+   injected RX, USB tick, CRS sync-ok, Flash erase + program, DBGMCU placeholder `IDCODE`.
+   `SYSCFG_COMP` mounts through the `Syscfg` fallback (COMP CSR latches; unmodeled). No pin table
+   (generics aren't headline boards).
 - `stm32f0x2` behavioral: IWDG WWDG RCC · latch: CRC GPIOF GPIOD GPIOC GPIOB GPIOE GPIOA SPI1 SPI2
    DAC PWR I2C1 I2C2 TIM1 TIM2 TIM3 TIM14 TIM6 TIM7 EXTI DMA1 SYSCFG_COMP ADC USART1 USART2 USART3
    USART4 RTC TIM15 TIM16 TIM17 TSC CEC Flash DBGMCU USB CRS CAN

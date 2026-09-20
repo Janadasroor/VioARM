@@ -37,7 +37,11 @@ impl Syscfg {
     /// peripheral.
     #[must_use]
     pub fn for_device<D: Device>() -> Self {
-        let def = D::peripheral("SYSCFG").expect("generated tables contain SYSCFG");
+        // Generic F0 donor tables merge SYSCFG (+COMP CSR) into one
+        // `SYSCFG_COMP` window; same latch contract either way.
+        let def = D::peripheral("SYSCFG")
+            .or_else(|| D::peripheral("SYSCFG_COMP"))
+            .expect("generated tables contain SYSCFG");
         Self {
             inner: RegisterFile::new(def, NoBehavior),
         }

@@ -98,7 +98,8 @@ record result in `docs/src/boards.md`. All pending.
       (new `usart7/8_for` + shared-driver mounts + 11 proofs; record in `docs/src/boards.md`).
 - [x] `stm32f0x0` (39) — generic donor closed: 36/36 behavioral, zero latch
       (new `usart5_for` + shared-driver mounts + 13 proofs; record in `docs/src/boards.md`).
-- [ ] `stm32f0x1` (49)
+- [x] `stm32f0x1` (49) — generic donor closed: 46/46 behavioral, zero latch
+      (`Syscfg` fallback for `SYSCFG_COMP` + 19 proofs; record in `docs/src/boards.md`).
 - [ ] `stm32f0x2` (44)
 - [ ] `stm32f0x8` (49)
 - [ ] `stm32f0xx` (37)
