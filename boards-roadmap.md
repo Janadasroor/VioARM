@@ -114,7 +114,8 @@ record result in `docs/src/boards.md`. All pending.
       (shared-driver mounts + 4 proofs; record in `docs/src/boards.md`).
 - [x] `stm32f103` (53) — scoreboard board; closed first: 51/51 behavioral, zero latch
       (`f103_closeout.rs` 11 tests + `fsmc` lib tests; record in `docs/src/boards.md`).
-- [ ] `stm32f105` (45)
+- [x] `stm32f105` (45) — connectivity closed: 43/43 behavioral, zero latch
+      (USB guard fix + shared-driver mounts + 10 proofs; record in `docs/src/boards.md`).
 - [x] `stm32f107` (49) — scoreboard + fabric board; closed second: 47/47 behavioral, zero latch
       (audit-only close-out; record in `docs/src/boards.md`).
 - [ ] `stm32f303xe` (59)

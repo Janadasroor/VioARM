@@ -3985,10 +3985,20 @@ pub fn stm32f105() -> BoardMemory {
     mem.attach(Box::new(
         Rcc::for_device::<Stm32f105>().with_clock(clock.clone()),
     ));
+    if <Stm32f105 as crate::device::svd::Device>::peripheral("PWR").is_some() {
+        mem.attach(Box::new(
+            Pwr::new_for::<Stm32f105>().with_vdd(mem.vdd_handle()),
+        ));
+    }
+    if <Stm32f105 as crate::device::svd::Device>::peripheral("CRC").is_some() {
+        mem.attach(Box::new(Crc::new_for::<Stm32f105>()));
+    }
     for (base, name) in [
         (0x40010800u32, "gpioa"),
         (0x40010C00, "gpiob"),
         (0x40011000, "gpioc"),
+        (0x40011400, "gpiod"),
+        (0x40011800, "gpioe"),
     ] {
         if <Stm32f105 as crate::device::svd::Device>::by_base(base).is_some() {
             mem.attach(Box::new(StmGpio::at_in::<Stm32f105>(base, name)));
@@ -4003,11 +4013,30 @@ pub fn stm32f105() -> BoardMemory {
     if <Stm32f105 as crate::device::svd::Device>::peripheral("USART3").is_some() {
         mem.attach(Box::new(Usart::usart3_for::<Stm32f105>()));
     }
+    // UART4/5 CPU-only on this line (DMA routes stay unwired, as on F1).
+    if <Stm32f105 as crate::device::svd::Device>::peripheral("UART4").is_some() {
+        mem.attach(Box::new(Usart::uart4_for::<Stm32f105>()));
+    }
+    if <Stm32f105 as crate::device::svd::Device>::peripheral("UART5").is_some() {
+        mem.attach(Box::new(Usart::uart5_for::<Stm32f105>()));
+    }
     if <Stm32f105 as crate::device::svd::Device>::peripheral("TIM2").is_some() {
         mem.attach(Box::new(Timer::tim2_for::<Stm32f105>()));
     }
     if <Stm32f105 as crate::device::svd::Device>::peripheral("TIM3").is_some() {
         mem.attach(Box::new(Timer::tim3_for::<Stm32f105>()));
+    }
+    for ctor in [
+        Timer::tim1_for::<Stm32f105>,
+        Timer::tim4_for::<Stm32f105>,
+        Timer::tim5_for::<Stm32f105>,
+        Timer::tim6_for::<Stm32f105>,
+        Timer::tim7_for::<Stm32f105>,
+    ] {
+        let base = ctor().ranges()[0].base;
+        if <Stm32f105 as crate::device::svd::Device>::by_base(base).is_some() {
+            mem.attach(Box::new(ctor()));
+        }
     }
     if <Stm32f105 as crate::device::svd::Device>::peripheral("CAN1").is_some() {
         mem.attach(Box::new(Can::can1_for::<Stm32f105>()));
@@ -4015,7 +4044,7 @@ pub fn stm32f105() -> BoardMemory {
     if <Stm32f105 as crate::device::svd::Device>::peripheral("CAN2").is_some() {
         mem.attach(Box::new(Can::can2_for::<Stm32f105>()));
     }
-    if <Stm32f105 as crate::device::svd::Device>::peripheral("USB_OTG_FS").is_some() {
+    if <Stm32f105 as crate::device::svd::Device>::peripheral("USB_OTG_GLOBAL").is_some() {
         mem.attach(Box::new(Usb::otg_fs_for::<Stm32f105>()));
     }
     if <Stm32f105 as crate::device::svd::Device>::peripheral("EXTI").is_some() {
@@ -4027,8 +4056,32 @@ pub fn stm32f105() -> BoardMemory {
     if <Stm32f105 as crate::device::svd::Device>::peripheral("ADC1").is_some() {
         mem.attach(Box::new(Adc::adc1_for::<Stm32f105>()));
     }
+    if <Stm32f105 as crate::device::svd::Device>::peripheral("ADC2").is_some() {
+        mem.attach(Box::new(Adc::adc2_for::<Stm32f105>()));
+    }
     if <Stm32f105 as crate::device::svd::Device>::peripheral("SPI1").is_some() {
         mem.attach(Box::new(Spi::spi1_for::<Stm32f105>()));
+    }
+    if <Stm32f105 as crate::device::svd::Device>::peripheral("SPI2").is_some() {
+        mem.attach(Box::new(Spi::spi2_for::<Stm32f105>()));
+    }
+    if <Stm32f105 as crate::device::svd::Device>::peripheral("SPI3").is_some() {
+        mem.attach(Box::new(Spi::spi3_for::<Stm32f105>()));
+    }
+    if <Stm32f105 as crate::device::svd::Device>::peripheral("I2C1").is_some() {
+        mem.attach(Box::new(I2c::for_device::<Stm32f105>()));
+    }
+    if <Stm32f105 as crate::device::svd::Device>::peripheral("I2C2").is_some() {
+        mem.attach(Box::new(I2c::i2c2_for::<Stm32f105>()));
+    }
+    if <Stm32f105 as crate::device::svd::Device>::peripheral("DAC").is_some() {
+        mem.attach(Box::new(Dac::new_for::<Stm32f105>()));
+    }
+    if <Stm32f105 as crate::device::svd::Device>::peripheral("RTC").is_some() {
+        mem.attach(Box::new(Rtc::new_for::<Stm32f105>()));
+    }
+    if <Stm32f105 as crate::device::svd::Device>::peripheral("BKP").is_some() {
+        mem.attach(Box::new(Bkp::new_for::<Stm32f105>()));
     }
     let dma_requests = Arc::new(Mutex::new(DmaRequests::new()));
     let dma = Arc::new(Mutex::new(Vec::new()));

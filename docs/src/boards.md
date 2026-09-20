@@ -42,8 +42,8 @@ T2-or-better) vs `latch` (pure `NoBehavior` register file, T1).
 System-block windows (`0xE000_0000+`: NVIC/SCB/SysTick) are `core`
 modeled in the CPU, not on the bus. Variants (`stm32f030c6`, …)
 delegate to their family constructor, so the 21 families below are the
-complete behavioral picture (1,046 bus windows: **870 behavioral**,
-176 latch, plus 60 core-owned — re-audited after the address-coverage
+complete behavioral picture (1,046 bus windows: **893 behavioral**,
+153 latch, plus 60 core-owned — re-audited after the address-coverage
 fix, which also closed shared-name `I2C` and sub-window `ETH`/`USB`
 instances on their boards).
 
@@ -69,7 +69,7 @@ boards — the real F0 boards are `f030/f031/f042/f072/f091`.
 | stm32f101 | 44 | 44 | 0 | 2 |
 | stm32f102 | 23 | 23 | 0 | 2 |
 | stm32f103 | 51 | 51 | 0 | 2 |
-| stm32f105 | 43 | 20 | 23 | 2 |
+| stm32f105 | 43 | 43 | 0 | 2 |
 | stm32f107 | 47 | 47 | 0 | 2 |
 | stm32f303xe | 56 | 44 | 12 | 3 |
 | stm32f407 | 82 | 54 | 28 | 9 |
@@ -171,10 +171,12 @@ Per-board detail (latch lists are the Phase C work items):
    transfers unmodeled and the vendored table lists only the WKUP IRQ; FSMC transfers/ECC
    unmodeled; CAN loopback/silent unmodeled. Memory stays medium-density (64 KiB/20 KiB) against
    the full 53-entry table.
-- `stm32f105` behavioral: GPIOA GPIOB GPIOC AFIO EXTI DMA1 DMA2 IWDG WWDG TIM2 TIM3 SPI1 USART1
-   USART2 USART3 ADC1 CAN2 CAN1 FLASH RCC · latch: PWR GPIOD GPIOE RTC BKP TIM1 TIM4 TIM5 TIM6 TIM7
-   I2C1 I2C2 SPI2 SPI3 ADC2 USB_OTG_GLOBAL USB_OTG_HOST USB_OTG_DEVICE USB_OTG_PWRCLK DAC UART4
-   UART5 CRC
+- `stm32f105` — **closed (Phase C): 43/43 behavioral, zero latch.** T3 (firmware-proven on this
+   board): CAN1 fabric arbitration (`fabric_uart_can.rs`); everything else T2, including 10
+   direct-poke proofs (`f105_closeout.rs`): GPIOD/E, UART4/5 loopbacks, 5 timers, I2C1 `AF`, SPI2/3
+   shift, ADC2 convert, DAC convert, BKP round-trip, USB-OTG-FS init path, PWR/CRC windows.
+   Documented limits: UART4/5 CPU-only; USB host paths lib-proven (B1 on F4 tables). Pins verified
+   (`boards --pins stm32f105`: `PA9: USART1_TX`, `PA11/12: USB_DM/DP`, …).
 - `stm32f107` — **closed (Phase C): 47/47 behavioral, zero latch** (nothing to mount; the
    address-coverage re-audit credits the shared-name `I2Cx` and sub-window `ETH`/`USB_OTG` instances
    the name matcher missed). T3 (firmware-proven on this board): Embench-IoT 19/19 + TFLM
