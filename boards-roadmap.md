@@ -110,7 +110,8 @@ record result in `docs/src/boards.md`. All pending.
       (F1 `CEC` engine + `FSMC` trim + 10 proofs; record in `docs/src/boards.md`).
 - [x] `stm32f101` (46) — value-line closed: 44/44 behavioral, zero latch
       (shared-driver mounts + 10 proofs; record in `docs/src/boards.md`).
-- [ ] `stm32f102` (25)
+- [x] `stm32f102` (25) — value-line closed: 23/23 behavioral, zero latch
+      (shared-driver mounts + 4 proofs; record in `docs/src/boards.md`).
 - [x] `stm32f103` (53) — scoreboard board; closed first: 51/51 behavioral, zero latch
       (`f103_closeout.rs` 11 tests + `fsmc` lib tests; record in `docs/src/boards.md`).
 - [ ] `stm32f105` (45)

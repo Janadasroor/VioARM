@@ -42,8 +42,8 @@ T2-or-better) vs `latch` (pure `NoBehavior` register file, T1).
 System-block windows (`0xE000_0000+`: NVIC/SCB/SysTick) are `core`
 modeled in the CPU, not on the bus. Variants (`stm32f030c6`, …)
 delegate to their family constructor, so the 21 families below are the
-complete behavioral picture (1,046 bus windows: **864 behavioral**,
-182 latch, plus 60 core-owned — re-audited after the address-coverage
+complete behavioral picture (1,046 bus windows: **870 behavioral**,
+176 latch, plus 60 core-owned — re-audited after the address-coverage
 fix, which also closed shared-name `I2C` and sub-window `ETH`/`USB`
 instances on their boards).
 
@@ -67,7 +67,7 @@ boards — the real F0 boards are `f030/f031/f042/f072/f091`.
 | stm32f0xx | 36 | 36 | 0 | 1 |
 | stm32f100 | 46 | 46 | 0 | 2 |
 | stm32f101 | 44 | 44 | 0 | 2 |
-| stm32f102 | 23 | 17 | 6 | 2 |
+| stm32f102 | 23 | 23 | 0 | 2 |
 | stm32f103 | 51 | 51 | 0 | 2 |
 | stm32f105 | 43 | 20 | 23 | 2 |
 | stm32f107 | 47 | 47 | 0 | 2 |
@@ -159,8 +159,9 @@ Per-board detail (latch lists are the Phase C work items):
    9 timers, I2C2 `AF`, SPI2/3 shift, DAC convert, BKP round-trip, PWR/CRC windows, DMA2 M2M, FSMC
    gating with DWT/SysTick reachability guards. Documented limits: F1 `DBGMCU` unmodeled;
    UART4/5 CPU-only.
-- `stm32f102` behavioral: RCC GPIOA GPIOB GPIOC AFIO EXTI DMA1 IWDG WWDG TIM2 TIM3 I2C1 SPI1 USART1
-   USART2 ADC1 FLASH · latch: PWR GPIOD DMA2 RTC CRC BKP
+- `stm32f102` — **closed (Phase C): 23/23 behavioral, zero latch.** No firmware touches this board
+   yet, so all T2, including 4 direct-poke proofs (`f102_closeout.rs`): GPIOD, DMA2 M2M, BKP
+   round-trip + RTC config mode, PWR/CRC windows. Smallest table of the line (23 windows).
 - `stm32f103` — **closed (Phase C): 51/51 behavioral, zero latch.** T3 (firmware-proven on this
    board): Dhrystone, CoreMark, SPI, USART1, ADC1, DAC, I2C1, DMA1, RTC/BKP, IWDG/WWDG; everything
    else T2, including direct-poke proofs (`f103_closeout.rs`) for GPIO D–G, UART4/5, TIM5/8–14
