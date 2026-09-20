@@ -3690,10 +3690,22 @@ pub fn stm32f101() -> BoardMemory {
     mem.attach(Box::new(
         Rcc::for_device::<Stm32f101>().with_clock(clock.clone()),
     ));
+    if <Stm32f101 as crate::device::svd::Device>::peripheral("PWR").is_some() {
+        mem.attach(Box::new(
+            Pwr::new_for::<Stm32f101>().with_vdd(mem.vdd_handle()),
+        ));
+    }
+    if <Stm32f101 as crate::device::svd::Device>::peripheral("CRC").is_some() {
+        mem.attach(Box::new(Crc::new_for::<Stm32f101>()));
+    }
     for (base, name) in [
         (0x40010800u32, "gpioa"),
         (0x40010C00, "gpiob"),
         (0x40011000, "gpioc"),
+        (0x40011400, "gpiod"),
+        (0x40011800, "gpioe"),
+        (0x40011C00, "gpiof"),
+        (0x40012000, "gpiog"),
     ] {
         if <Stm32f101 as crate::device::svd::Device>::by_base(base).is_some() {
             mem.attach(Box::new(StmGpio::at_in::<Stm32f101>(base, name)));
@@ -3708,6 +3720,13 @@ pub fn stm32f101() -> BoardMemory {
     if <Stm32f101 as crate::device::svd::Device>::peripheral("USART3").is_some() {
         mem.attach(Box::new(Usart::usart3_for::<Stm32f101>()));
     }
+    // UART4/5 have no DMA on the value line (cf. SPI2/3 on F1); CPU paths.
+    if <Stm32f101 as crate::device::svd::Device>::peripheral("UART4").is_some() {
+        mem.attach(Box::new(Usart::uart4_for::<Stm32f101>()));
+    }
+    if <Stm32f101 as crate::device::svd::Device>::peripheral("UART5").is_some() {
+        mem.attach(Box::new(Usart::uart5_for::<Stm32f101>()));
+    }
     if <Stm32f101 as crate::device::svd::Device>::peripheral("TIM2").is_some() {
         mem.attach(Box::new(Timer::tim2_for::<Stm32f101>()));
     }
@@ -3716,6 +3735,22 @@ pub fn stm32f101() -> BoardMemory {
     }
     if <Stm32f101 as crate::device::svd::Device>::peripheral("TIM4").is_some() {
         mem.attach(Box::new(Timer::tim4_for::<Stm32f101>()));
+    }
+    for ctor in [
+        Timer::tim5_for::<Stm32f101>,
+        Timer::tim6_for::<Stm32f101>,
+        Timer::tim7_for::<Stm32f101>,
+        Timer::tim9_for::<Stm32f101>,
+        Timer::tim10_for::<Stm32f101>,
+        Timer::tim11_for::<Stm32f101>,
+        Timer::tim12_for::<Stm32f101>,
+        Timer::tim13_for::<Stm32f101>,
+        Timer::tim14_for::<Stm32f101>,
+    ] {
+        let base = ctor().ranges()[0].base;
+        if <Stm32f101 as crate::device::svd::Device>::by_base(base).is_some() {
+            mem.attach(Box::new(ctor()));
+        }
     }
     if <Stm32f101 as crate::device::svd::Device>::peripheral("EXTI").is_some() {
         mem.attach(Box::new(Exti::for_device::<Stm32f101>()));
@@ -3729,8 +3764,29 @@ pub fn stm32f101() -> BoardMemory {
     if <Stm32f101 as crate::device::svd::Device>::peripheral("SPI1").is_some() {
         mem.attach(Box::new(Spi::spi1_for::<Stm32f101>()));
     }
+    if <Stm32f101 as crate::device::svd::Device>::peripheral("SPI2").is_some() {
+        mem.attach(Box::new(Spi::spi2_for::<Stm32f101>()));
+    }
+    if <Stm32f101 as crate::device::svd::Device>::peripheral("SPI3").is_some() {
+        mem.attach(Box::new(Spi::spi3_for::<Stm32f101>()));
+    }
     if <Stm32f101 as crate::device::svd::Device>::peripheral("I2C1").is_some() {
         mem.attach(Box::new(I2c::for_device::<Stm32f101>()));
+    }
+    if <Stm32f101 as crate::device::svd::Device>::peripheral("I2C2").is_some() {
+        mem.attach(Box::new(I2c::i2c2_for::<Stm32f101>()));
+    }
+    if <Stm32f101 as crate::device::svd::Device>::peripheral("DAC").is_some() {
+        mem.attach(Box::new(Dac::new_for::<Stm32f101>()));
+    }
+    if <Stm32f101 as crate::device::svd::Device>::peripheral("RTC").is_some() {
+        mem.attach(Box::new(Rtc::new_for::<Stm32f101>()));
+    }
+    if <Stm32f101 as crate::device::svd::Device>::peripheral("BKP").is_some() {
+        mem.attach(Box::new(Bkp::new_for::<Stm32f101>()));
+    }
+    if <Stm32f101 as crate::device::svd::Device>::peripheral("FSMC").is_some() {
+        mem.attach(Box::new(Fsmc::new_for::<Stm32f101>()));
     }
     let dma_requests = Arc::new(Mutex::new(DmaRequests::new()));
     let dma = Arc::new(Mutex::new(Vec::new()));
@@ -3738,6 +3794,13 @@ pub fn stm32f101() -> BoardMemory {
     if <Stm32f101 as crate::device::svd::Device>::peripheral("DMA1").is_some() {
         mem.attach(Box::new(DmaF1::dma_for::<Stm32f101>(
             "DMA1",
+            dma.clone(),
+            dma_requests.clone(),
+        )));
+    }
+    if <Stm32f101 as crate::device::svd::Device>::peripheral("DMA2").is_some() {
+        mem.attach(Box::new(DmaF1::dma_for::<Stm32f101>(
+            "DMA2",
             dma,
             dma_requests,
         )));
