@@ -33,6 +33,7 @@ use crate::device::stm32::eth::{Eth, EthH7, EthMailbox};
 use crate::device::stm32::exti::Exti;
 use crate::device::stm32::fdcan::{Fdcan, FdcanCut, FdcanMailbox, FdcanRam, FdcanStub};
 use crate::device::stm32::flash::{FlashF1, FlashF4, FlashGate};
+use crate::device::stm32::fmac::Fmac;
 use crate::device::stm32::fmc::{
     Bdma, Dfsdm, Dma2d, Dma2dMailbox, Dmamux, DmamuxRoutes, Fmc, Hrtim, Ltdc, Mdma, Qspi, QspiGate,
     Sai4,
@@ -9475,6 +9476,9 @@ pub fn stm32g474xx() -> BoardMemory {
     }
     if <Stm32g474 as crate::device::svd::Device>::peripheral("CRS").is_some() {
         mem.attach(Box::new(Crs::new_for::<Stm32g474>()));
+    }
+    if <Stm32g474 as crate::device::svd::Device>::peripheral("FMAC").is_some() {
+        mem.attach(Box::new(Fmac::new_for::<Stm32g474>()));
     }
     if <Stm32g474 as crate::device::svd::Device>::peripheral("CORDIC").is_some() {
         mem.attach(Box::new(Cordic::new_for::<Stm32g474>()));

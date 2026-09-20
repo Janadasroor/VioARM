@@ -31,6 +31,7 @@ pub mod eth;
 pub mod exti;
 pub mod fdcan;
 pub mod flash;
+pub mod fmac;
 pub mod fmc;
 pub mod fsmc;
 pub mod gpio;
