@@ -42,8 +42,8 @@ T2-or-better) vs `latch` (pure `NoBehavior` register file, T1).
 System-block windows (`0xE000_0000+`: NVIC/SCB/SysTick) are `core`
 modeled in the CPU, not on the bus. Variants (`stm32f030c6`, …)
 delegate to their family constructor, so the 21 families below are the
-complete behavioral picture (1,046 bus windows: **738 behavioral**,
-308 latch, plus 60 core-owned — re-audited after the address-coverage
+complete behavioral picture (1,046 bus windows: **781 behavioral**,
+265 latch, plus 60 core-owned — re-audited after the address-coverage
 fix, which also closed shared-name `I2C` and sub-window `ETH`/`USB`
 instances on their boards).
 
@@ -63,7 +63,7 @@ boards — the real F0 boards are `f030/f031/f042/f072/f091`.
 | stm32f0x0 | 36 | 36 | 0 | 3 |
 | stm32f0x1 | 46 | 46 | 0 | 3 |
 | stm32f0x2 | 41 | 41 | 0 | 3 |
-| stm32f0x8 | 46 | 3 | 43 | 3 |
+| stm32f0x8 | 46 | 46 | 0 | 3 |
 | stm32f0xx | 36 | 3 | 33 | 1 |
 | stm32f100 | 46 | 21 | 25 | 2 |
 | stm32f101 | 44 | 19 | 25 | 2 |
@@ -138,9 +138,9 @@ Per-board detail (latch lists are the Phase C work items):
    windows, RTC calendar + alarm, TSC acquisition, CEC transmit-end, CAN init + filter +
    injected RX, USB tick, CRS sync-ok, Flash erase + program, DBGMCU placeholder `IDCODE`. No pin
    table (generics aren't headline boards).
-- `stm32f0x8` behavioral: IWDG WWDG RCC · latch: CRC GPIOF GPIOD GPIOC GPIOB GPIOE GPIOA SPI1 SPI2
-   PWR I2C1 I2C2 TIM1 TIM2 TIM3 TIM14 TIM6 TIM7 EXTI DMA1 DMA2 SYSCFG_COMP ADC USART1 USART2 USART3
-   USART4 USART6 USART7 USART8 USART5 RTC TIM15 TIM16 TIM17 TSC CEC Flash DBGMCU USB CRS CAN DAC
+- `stm32f0x8` — **closed (Phase C): 46/46 behavioral, zero latch.** Generic donor table (layout
+   identical to `f0x1`; no single silicon), so all T2 by construction, with 19 direct-poke proofs
+   (`f0x8_closeout.rs`, mirroring `f0x1`). No pin table (generics aren't headline boards).
 - `stm32f0xx` behavioral: IWDG WWDG RCC · latch: CRC GPIOF GPIOD GPIOC GPIOB GPIOE GPIOA SPI1 SPI2
    DAC PWR I2C1 I2C2 TIM1 TIM2 TIM3 TIM14 TIM6 EXTI DMA SYSCFG ADC USART1 USART2 COMP RTC TIM15
    TIM16 TIM17 TSC CEC Flash DBGMCU

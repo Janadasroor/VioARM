@@ -102,7 +102,8 @@ record result in `docs/src/boards.md`. All pending.
       (`Syscfg` fallback for `SYSCFG_COMP` + 19 proofs; record in `docs/src/boards.md`).
 - [x] `stm32f0x2` (44) — generic donor closed: 41/41 behavioral, zero latch
       (shared-driver mounts + 19 proofs; record in `docs/src/boards.md`).
-- [ ] `stm32f0x8` (49)
+- [x] `stm32f0x8` (49) — generic donor closed: 46/46 behavioral, zero latch
+      (layout identical to `f0x1`; record in `docs/src/boards.md`).
 - [ ] `stm32f0xx` (37)
 - [ ] `stm32f100` (48)
 - [ ] `stm32f101` (46)
