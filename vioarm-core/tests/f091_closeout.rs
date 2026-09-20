@@ -135,6 +135,23 @@ fn adc_converts_driven_channel() {
     assert_eq!(rw(mem, ADC + DR_A) & 0xFFF, 208, "driven code lands");
 }
 
+// --- EXTI (also guards the COMP-window overlap) ---
+
+const EXTI: u32 = 0x4001_0400;
+const SWIER: u32 = 0x10;
+const PR: u32 = 0x14;
+
+#[test]
+fn exti_software_interrupt_pends() {
+    let mut m = Machine::armv7m(board::stm32f091());
+    let mem = m.core.mem();
+    ww(mem, EXTI + SWIER, 0x0000_0001);
+    pump(mem, 4);
+    assert_ne!(rw(mem, EXTI + PR) & 0x1, 0, "PR latches from SWIER");
+    ww(mem, EXTI + PR, 0x0000_0001);
+    assert_eq!(rw(mem, EXTI + PR) & 0x1, 0, "PR clears on write");
+}
+
 // --- Timers ---
 
 const TIM6: u32 = 0x4000_1000;
@@ -290,6 +307,22 @@ fn usb_fs_enumeration_tick() {
     assert_ne!(rw(mem, USB + ISTR) & CTR, 0, "CTR latches after EF");
     ww(mem, USB + ISTR, 0);
     assert_eq!(rw(mem, USB + ISTR) & CTR, 0, "CTR clears");
+}
+
+// --- COMP ---
+
+const COMP: u32 = 0x4001_001C;
+const CSR: u32 = 0x00;
+const EN_C: u32 = 1 << 0;
+const OUT_C: u32 = 1 << 14;
+
+#[test]
+fn comp_output_synthesizes() {
+    let mut m = Machine::armv7m(board::stm32f091());
+    let mem = m.core.mem();
+    ww(mem, COMP + CSR, EN_C);
+    pump(mem, 4);
+    assert_ne!(rw(mem, COMP + CSR) & OUT_C, 0, "OUT sets after enable");
 }
 
 // --- CRS ---

@@ -193,6 +193,23 @@ fn dma_mem2mem_copy() {
     assert_ne!(rw(mem, DMA + ISR_D) & TCIF1, 0, "TCIF1 latches");
 }
 
+// --- EXTI (also guards the COMP-window overlap) ---
+
+const EXTI: u32 = 0x4001_0400;
+const SWIER: u32 = 0x10;
+const PR: u32 = 0x14;
+
+#[test]
+fn exti_software_interrupt_pends() {
+    let mut m = Machine::armv7m(board::stm32f042());
+    let mem = m.core.mem();
+    ww(mem, EXTI + SWIER, 0x0000_0001);
+    pump(mem, 4);
+    assert_ne!(rw(mem, EXTI + PR) & 0x1, 0, "PR latches from SWIER");
+    ww(mem, EXTI + PR, 0x0000_0001);
+    assert_eq!(rw(mem, EXTI + PR) & 0x1, 0, "PR clears on write");
+}
+
 // --- Timers ---
 
 const TIM3: u32 = 0x4000_0400;

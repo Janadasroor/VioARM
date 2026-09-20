@@ -17,6 +17,12 @@ use crate::mem::bus::Region;
 #[derive(Debug)]
 pub struct Syscfg {
     inner: RegisterFile<NoBehavior>,
+    /// Tight window over the declared registers. Tables grant fat windows
+    /// that swallow neighbors (F0 `SYSCFG@0x40010000/0x400` covers
+    /// `COMP@0x4001001C` and reaches toward `EXTI`), and dispatch stops at
+    /// the first claimant — so the latch must not advertise address space
+    /// beyond its registers.
+    window: [Region; 1],
 }
 
 impl Syscfg {
@@ -42,8 +48,20 @@ impl Syscfg {
         let def = D::peripheral("SYSCFG")
             .or_else(|| D::peripheral("SYSCFG_COMP"))
             .expect("generated tables contain SYSCFG");
+        let mut lo = u32::MAX;
+        let mut hi = 0u32;
+        for r in def.registers {
+            lo = lo.min(r.offset);
+            hi = hi.max(r.offset + u32::from(r.width) / 8);
+        }
+        let window = if lo <= hi {
+            [Region::new(def.base + lo, hi - lo)]
+        } else {
+            [Region::new(def.base, def.window)]
+        };
         Self {
             inner: RegisterFile::new(def, NoBehavior),
+            window,
         }
     }
 }
@@ -56,15 +74,23 @@ impl Default for Syscfg {
 
 impl Peripheral for Syscfg {
     fn ranges(&self) -> &[Region] {
-        self.inner.ranges()
+        &self.window
     }
 
     fn read(&mut self, addr: u32) -> Result<u8, BusError> {
-        self.inner.read(addr)
+        if self.window[0].contains(addr) {
+            self.inner.read(addr)
+        } else {
+            Err(BusError::Reserved)
+        }
     }
 
     fn write(&mut self, addr: u32, val: u8) -> Result<(), BusError> {
-        self.inner.write(addr, val)
+        if self.window[0].contains(addr) {
+            self.inner.write(addr, val)
+        } else {
+            Err(BusError::Reserved)
+        }
     }
 
     fn reset(&mut self) {

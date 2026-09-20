@@ -243,6 +243,11 @@ impl Behavior for CompBehavior {
 pub struct Comp {
     inner: RegisterFile<CompBehavior>,
     name: &'static str,
+    /// Tight window over the declared registers. Tables often grant a fat
+    /// window (F0 `COMP@0x4001001C/0x400` swallows `EXTI@0x40010400`), and
+    /// dispatch stops at the first claimant — so the device must not
+    /// advertise address space it does not decode.
+    window: [Region; 1],
 }
 
 impl Comp {
@@ -257,9 +262,21 @@ impl Comp {
             is_h7,
             ..CompBehavior::default()
         };
+        let mut lo = u32::MAX;
+        let mut hi = 0u32;
+        for r in def.registers {
+            lo = lo.min(r.offset);
+            hi = hi.max(r.offset + u32::from(r.width) / 8);
+        }
+        let window = if lo <= hi {
+            [Region::new(def.base + lo, hi - lo)]
+        } else {
+            [Region::new(def.base, def.window)]
+        };
         Self {
             inner: RegisterFile::new(def, beh),
             name: "comp",
+            window,
         }
     }
     /// A new `COMP` on another chip's device tables.
@@ -280,13 +297,21 @@ impl Comp {
 
 impl Peripheral for Comp {
     fn ranges(&self) -> &[Region] {
-        self.inner.ranges()
+        &self.window
     }
     fn read(&mut self, addr: u32) -> Result<u8, BusError> {
-        self.inner.read(addr)
+        if self.window[0].contains(addr) {
+            self.inner.read(addr)
+        } else {
+            Err(BusError::Reserved)
+        }
     }
     fn write(&mut self, addr: u32, val: u8) -> Result<(), BusError> {
-        self.inner.write(addr, val)
+        if self.window[0].contains(addr) {
+            self.inner.write(addr, val)
+        } else {
+            Err(BusError::Reserved)
+        }
     }
     fn reset(&mut self) {
         self.inner.reset();

@@ -104,7 +104,8 @@ record result in `docs/src/boards.md`. All pending.
       (shared-driver mounts + 19 proofs; record in `docs/src/boards.md`).
 - [x] `stm32f0x8` (49) — generic donor closed: 46/46 behavioral, zero latch
       (layout identical to `f0x1`; record in `docs/src/boards.md`).
-- [ ] `stm32f0xx` (37)
+- [x] `stm32f0xx` (37) — generic donor closed: 36/36 behavioral, zero latch
+      (shared-driver mounts + 17 proofs; record in `docs/src/boards.md`).
 - [ ] `stm32f100` (48)
 - [ ] `stm32f101` (46)
 - [ ] `stm32f102` (25)

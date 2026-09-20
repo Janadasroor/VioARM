@@ -1864,6 +1864,11 @@ pub fn stm32f072() -> BoardMemory {
             crate::device::stm32::cec::Cec::new_for::<Stm32f072>(),
         ));
     }
+    if <Stm32f072 as crate::device::svd::Device>::peripheral("COMP").is_some() {
+        mem.attach(Box::new(crate::device::stm32::comp::Comp::new_for::<
+            Stm32f072,
+        >()));
+    }
     if <Stm32f072 as crate::device::svd::Device>::peripheral("CRS").is_some() {
         mem.attach(Box::new(
             crate::device::stm32::crs::Crs::new_for::<Stm32f072>(),
@@ -2680,6 +2685,11 @@ pub fn stm32f091() -> BoardMemory {
             crate::device::stm32::tsc::Tsc::new_for::<Stm32f091>(),
         ));
     }
+    if <Stm32f091 as crate::device::svd::Device>::peripheral("COMP").is_some() {
+        mem.attach(Box::new(crate::device::stm32::comp::Comp::new_for::<
+            Stm32f091,
+        >()));
+    }
     if <Stm32f091 as crate::device::svd::Device>::peripheral("CAN").is_some()
         || <Stm32f091 as crate::device::svd::Device>::peripheral("CAN1").is_some()
     {
@@ -3337,12 +3347,122 @@ pub fn stm32f0xx() -> BoardMemory {
     mem.set_flash_gate(gate.clone());
     let clock = ClockState::shared();
     mem.set_clock(clock.clone());
-    if <Stm32f0 as crate::device::svd::Device>::peripheral("FLASH").is_some() {
+    if <Stm32f0 as crate::device::svd::Device>::peripheral("FLASH").is_some()
+        || <Stm32f0 as crate::device::svd::Device>::peripheral("Flash").is_some()
+    {
         mem.attach(Box::new(FlashF1::for_device::<Stm32f0>(gate)));
     }
     mem.attach(Box::new(
         Rcc::for_device::<Stm32f0>().with_clock(clock.clone()),
     ));
+    if <Stm32f0 as crate::device::svd::Device>::peripheral("PWR").is_some() {
+        mem.attach(Box::new(
+            Pwr::new_for::<Stm32f0>().with_vdd(mem.vdd_handle()),
+        ));
+    }
+    if <Stm32f0 as crate::device::svd::Device>::peripheral("CRC").is_some() {
+        mem.attach(Box::new(Crc::new_for::<Stm32f0>()));
+    }
+    if <Stm32f0 as crate::device::svd::Device>::peripheral("DAC").is_some() {
+        mem.attach(Box::new(
+            Dac::new_for::<Stm32f0>().with_analog_bus(mem.analog_handle()),
+        ));
+    }
+    if <Stm32f0 as crate::device::svd::Device>::peripheral("COMP").is_some() {
+        mem.attach(Box::new(
+            crate::device::stm32::comp::Comp::new_for::<Stm32f0>()
+                .with_analog_bus(mem.analog_handle()),
+        ));
+    }
+    for (base, name) in [
+        (0x4800_0000u32, "gpioa"),
+        (0x4800_0400, "gpiob"),
+        (0x4800_0800, "gpioc"),
+        (0x4800_0c00, "gpiod"),
+        (0x4800_1000, "gpioe"),
+        (0x4800_1400, "gpiof"),
+    ] {
+        if <Stm32f0 as crate::device::svd::Device>::by_base(base).is_some() {
+            mem.attach(Box::new(GpioF4::at_in::<Stm32f0>(base, name)));
+        }
+    }
+    if <Stm32f0 as crate::device::svd::Device>::peripheral("USART1").is_some() {
+        mem.attach(Box::new(Usart::for_device::<Stm32f0>()));
+    }
+    if <Stm32f0 as crate::device::svd::Device>::peripheral("USART2").is_some() {
+        mem.attach(Box::new(Usart::usart2_for::<Stm32f0>()));
+    }
+    for ctor in [
+        Timer::tim1_for::<Stm32f0>,
+        Timer::tim2_for::<Stm32f0>,
+        Timer::tim3_for::<Stm32f0>,
+        Timer::tim6_for::<Stm32f0>,
+        Timer::tim14_for::<Stm32f0>,
+        Timer::tim15_for::<Stm32f0>,
+        Timer::tim16_for::<Stm32f0>,
+        Timer::tim17_for::<Stm32f0>,
+    ] {
+        let base = ctor().ranges()[0].base;
+        if <Stm32f0 as crate::device::svd::Device>::by_base(base).is_some() {
+            mem.attach(Box::new(ctor()));
+        }
+    }
+    if <Stm32f0 as crate::device::svd::Device>::peripheral("EXTI").is_some() {
+        mem.attach(Box::new(Exti::for_device::<Stm32f0>()));
+    }
+    if <Stm32f0 as crate::device::svd::Device>::peripheral("SYSCFG").is_some()
+        || <Stm32f0 as crate::device::svd::Device>::peripheral("SYSCFG_COMP").is_some()
+    {
+        mem.attach(Box::new(Syscfg::for_device::<Stm32f0>()));
+    }
+    if crate::device::svd::stm32f0xx::peripheral("ADC")
+        .or(crate::device::svd::stm32f0xx::peripheral("ADC1"))
+        .is_some()
+    {
+        mem.attach(Box::new(Adc::new_for::<Stm32f0>()));
+    }
+    if <Stm32f0 as crate::device::svd::Device>::peripheral("SPI1").is_some() {
+        mem.attach(Box::new(Spi::spi1_for::<Stm32f0>()));
+    }
+    if <Stm32f0 as crate::device::svd::Device>::peripheral("SPI2").is_some() {
+        mem.attach(Box::new(Spi::spi2_for::<Stm32f0>()));
+    }
+    if <Stm32f0 as crate::device::svd::Device>::peripheral("I2C1").is_some() {
+        mem.attach(Box::new(I2c::for_device::<Stm32f0>()));
+    }
+    if <Stm32f0 as crate::device::svd::Device>::peripheral("I2C2").is_some() {
+        mem.attach(Box::new(I2c::i2c2_for::<Stm32f0>()));
+    }
+    if <Stm32f0 as crate::device::svd::Device>::peripheral("DMA1").is_some()
+        || <Stm32f0 as crate::device::svd::Device>::peripheral("DMA").is_some()
+    {
+        let name = if crate::device::svd::stm32f0xx::peripheral("DMA1").is_some() {
+            "DMA1"
+        } else {
+            "DMA"
+        };
+        let dma_requests = Arc::new(Mutex::new(DmaRequests::new()));
+        let dma = Arc::new(Mutex::new(Vec::new()));
+        mem.set_dma_mailbox(dma.clone());
+        mem.attach(Box::new(DmaF1::dma_for::<Stm32f0>(name, dma, dma_requests)));
+    }
+    if <Stm32f0 as crate::device::svd::Device>::peripheral("RTC").is_some() {
+        mem.attach(Box::new(Rtc::new_for::<Stm32f0>()));
+    }
+    if <Stm32f0 as crate::device::svd::Device>::peripheral("TSC").is_some() {
+        mem.attach(Box::new(
+            crate::device::stm32::tsc::Tsc::new_for::<Stm32f0>(),
+        ));
+    }
+    if <Stm32f0 as crate::device::svd::Device>::peripheral("CEC").is_some() {
+        mem.attach(Box::new(
+            crate::device::stm32::cec::Cec::new_for::<Stm32f0>(),
+        ));
+    }
+    if <Stm32f0 as crate::device::svd::Device>::peripheral("DBGMCU").is_some() {
+        // Generic donor table: F030-family placeholder, not a device claim.
+        mem.attach(Box::new(Dbgmcu::new_for::<Stm32f0>(0x1000_0444)));
+    }
     for p in crate::device::svd::stm32f0xx::PERIPHERALS {
         if p.base >= 0xE000_0000 {
             continue;
