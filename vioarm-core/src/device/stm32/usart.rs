@@ -528,6 +528,17 @@ impl Usart {
         Self::for_device_with::<D>("USART4", "usart4", None, None)
     }
 
+    /// A new `USART5` on another chip's device tables (generic F0 donor
+    /// tables name it `USART5` rather than `UART5`).
+    ///
+    /// # Panics
+    /// Panics if `D`'s generated tables do not contain the `USART5`
+    /// peripheral.
+    #[must_use]
+    pub fn usart5_for<D: Device>() -> Self {
+        Self::for_device_with::<D>("USART5", "usart5", None, None)
+    }
+
     /// A new `UART5` on another chip's device tables.
     ///
     /// # Panics
