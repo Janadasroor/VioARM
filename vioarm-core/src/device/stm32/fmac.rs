@@ -120,16 +120,14 @@ impl FmacBehavior {
     fn push_output(&mut self, view: &mut Registers<&mut [u32]>, acc: i64) {
         let (_, _, r) = Self::params(view);
         let v = acc >> (15 + r);
-        let clipped = v.clamp(-0x8000, 0x7FFF);
-        if clipped != v {
-            if view.get(CR) & CR_CLIPEN != 0 {
+        let out = if view.get(CR) & CR_CLIPEN != 0 {
+            let clipped = v.clamp(-0x8000, 0x7FFF);
+            if clipped != v {
                 Self::set_sr(view, SR_SAT);
             }
-        }
-        let out = if view.get(CR) & CR_CLIPEN != 0 {
             clipped
         } else {
-            (v & 0xFFFF) as i64
+            v & 0xFFFF
         };
         self.y.push_back(out as i16);
         self.update_flags(view);
@@ -243,16 +241,8 @@ impl Behavior for FmacBehavior {
                         FUNC_LOAD_Y => {
                             self.y_hist.push_back(sample);
                         }
-                        FUNC_FIR => {
-                            if self.started {
-                                self.fir_step(view, sample);
-                            }
-                        }
-                        FUNC_IIR => {
-                            if self.started {
-                                self.iir_step(view, sample);
-                            }
-                        }
+                        FUNC_FIR if self.started => self.fir_step(view, sample),
+                        FUNC_IIR if self.started => self.iir_step(view, sample),
                         _ => {}
                     }
                 }
@@ -410,7 +400,7 @@ mod tests {
 
     /// Program buffer sizes (8 in / 8 coeff / 8 out) and `func`+`P/Q/R`.
     fn setup(f: &mut Fmac, func: u32, p: u32, q: u32, r: u32) {
-        w(f, X1BUFCFG_O, (8 << 8) | (0 << 24));
+        w(f, X1BUFCFG_O, 8 << 8);
         w(f, X2BUFCFG_O, 8 << 8);
         w(f, PARAM_O, (func << 24) | (r << 16) | (q << 8) | p);
     }
