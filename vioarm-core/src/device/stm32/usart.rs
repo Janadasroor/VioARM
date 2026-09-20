@@ -539,6 +539,26 @@ impl Usart {
         Self::for_device_with::<D>("USART5", "usart5", None, None)
     }
 
+    /// A new `UART7` on another chip's device tables (F4 value line).
+    ///
+    /// # Panics
+    /// Panics if `D`'s generated tables do not contain the `UART7`
+    /// peripheral.
+    #[must_use]
+    pub fn uart7_for<D: Device>() -> Self {
+        Self::for_device_with::<D>("UART7", "uart7", None, None)
+    }
+
+    /// A new `UART8` on another chip's device tables (F4 value line).
+    ///
+    /// # Panics
+    /// Panics if `D`'s generated tables do not contain the `UART8`
+    /// peripheral.
+    #[must_use]
+    pub fn uart8_for<D: Device>() -> Self {
+        Self::for_device_with::<D>("UART8", "uart8", None, None)
+    }
+
     /// A new `UART5` on another chip's device tables.
     ///
     /// # Panics

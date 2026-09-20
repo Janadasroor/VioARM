@@ -20,6 +20,7 @@ pub mod cec;
 pub mod comp;
 pub mod crc;
 pub mod crs;
+pub mod cryp;
 pub mod dac;
 pub mod dbgmcu;
 pub mod dcmi;

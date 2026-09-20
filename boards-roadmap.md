@@ -120,7 +120,8 @@ record result in `docs/src/boards.md`. All pending.
       (audit-only close-out; record in `docs/src/boards.md`).
 - [x] `stm32f303xe` (59) — closed: 56/56 behavioral, zero latch
       (ADC-common fallback + SPI-for-I2S + 7 proofs; record in `docs/src/boards.md`).
-- [ ] `stm32f407` (91) — DMA/FPU reference board
+- [x] `stm32f407` (91) — DMA/FPU reference closed: 82/82 behavioral, zero latch
+      (F4 `CRYP` engine + `uart7/8_for` + SAI reuse + 11 proofs; record in `docs/src/boards.md`).
 - [ ] `stm32g474xx` (91)
 - [ ] `stm32h743` (119) — largest table; close last, complex IPs land here
 - [ ] `stm32l476` (80)

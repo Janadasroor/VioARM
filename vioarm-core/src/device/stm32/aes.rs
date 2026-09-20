@@ -192,8 +192,9 @@ fn gmul(mut a: u8, mut b: u8) -> u8 {
     p
 }
 
-/// Expand a 16- or 32-byte key into round-key words (big-endian per FIPS).
-fn key_expand(key: &[u8]) -> Vec<u32> {
+/// Expand a 16-, 24- or 32-byte key into round-key words (big-endian per
+/// FIPS). Shared with the F4 `CRYP` engine.
+pub(crate) fn key_expand(key: &[u8]) -> Vec<u32> {
     let nk = key.len() / 4;
     let rounds = nk + 6;
     let mut w = vec![0u32; 4 * (rounds + 1)];
@@ -231,7 +232,7 @@ fn add_round_key(state: &mut [u8; 16], rk: &[u32], round: usize) {
     }
 }
 
-fn cipher_block(block: &[u8; 16], rk: &[u32], rounds: usize) -> [u8; 16] {
+pub(crate) fn cipher_block(block: &[u8; 16], rk: &[u32], rounds: usize) -> [u8; 16] {
     let mut s = *block;
     add_round_key(&mut s, rk, 0);
     for round in 1..rounds {
@@ -268,7 +269,7 @@ fn cipher_block(block: &[u8; 16], rk: &[u32], rounds: usize) -> [u8; 16] {
     s
 }
 
-fn inv_cipher_block(block: &[u8; 16], rk: &[u32], rounds: usize) -> [u8; 16] {
+pub(crate) fn inv_cipher_block(block: &[u8; 16], rk: &[u32], rounds: usize) -> [u8; 16] {
     let mut s = *block;
     add_round_key(&mut s, rk, rounds);
     for round in (1..rounds).rev() {

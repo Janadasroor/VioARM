@@ -42,8 +42,8 @@ T2-or-better) vs `latch` (pure `NoBehavior` register file, T1).
 System-block windows (`0xE000_0000+`: NVIC/SCB/SysTick) are `core`
 modeled in the CPU, not on the bus. Variants (`stm32f030c6`, …)
 delegate to their family constructor, so the 21 families below are the
-complete behavioral picture (1,046 bus windows: **905 behavioral**,
-141 latch, plus 60 core-owned — re-audited after the address-coverage
+complete behavioral picture (1,046 bus windows: **933 behavioral**,
+113 latch, plus 60 core-owned — re-audited after the address-coverage
 fix, which also closed shared-name `I2C` and sub-window `ETH`/`USB`
 instances on their boards).
 
@@ -72,7 +72,7 @@ boards — the real F0 boards are `f030/f031/f042/f072/f091`.
 | stm32f105 | 43 | 43 | 0 | 2 |
 | stm32f107 | 47 | 47 | 0 | 2 |
 | stm32f303xe | 56 | 56 | 0 | 3 |
-| stm32f407 | 82 | 54 | 28 | 9 |
+| stm32f407 | 82 | 82 | 0 | 9 |
 | stm32g474xx | 82 | 24 | 58 | 9 |
 | stm32h743 | 119 | 107 | 12 | 0 |
 | stm32l476 | 71 | 28 | 43 | 9 |
@@ -191,13 +191,14 @@ Per-board detail (latch lists are the Phase C work items):
    Flash erase + program (2 KiB pages). New work: `adc34_common_for` fallback, `Spi::spi_for`
    (I2Sext windows), `ADC3`/`4` joined to the common state. Documented limits: I2S protocol,
    UART4/5 DMA. Pins verified (`boards --pins stm32f303xe`).
-- `stm32f407` behavioral: DMA2 DMA1 RCC GPIOE GPIOD GPIOC GPIOB GPIOA SYSCFG SPI1 SPI2 SPI3 SDIO
-   ADC1 ADC2 ADC3 USART6 USART1 USART2 USART3 DAC PWR I2C3 I2C2 I2C1 IWDG WWDG RTC UART4 UART5 C_ADC
-   TIM1 TIM2 TIM4 TIM5 TIM6 TIM7 Ethernet_MAC Ethernet_MMC Ethernet_PTP Ethernet_DMA CRC
-   OTG_FS_GLOBAL OTG_FS_HOST OTG_FS_DEVICE OTG_FS_PWRCLK CAN1 CAN2 FLASH EXTI OTG_HS_GLOBAL
-   OTG_HS_HOST OTG_HS_DEVICE OTG_HS_PWRCLK · latch: RNG DCMI FSMC GPIOI GPIOH GPIOG GPIOF GPIOJ
-   GPIOK I2S2ext I2S3ext SPI4 SPI5 SPI6 UART7 UART8 TIM8 TIM3 TIM9 TIM12 TIM10 TIM13 TIM14 TIM11
-   SAI1 LTDC HASH CRYP
+- `stm32f407` — **closed (Phase C): 82/82 behavioral, zero latch.** T3 (firmware-proven on this
+   board): GPIO/USART/TIM2, `ADC1_2` interrupt conversion, Flash programming, DMA M2M, USB host
+   HID (`usb_host_hid_split.rs`); everything else T2, including 11 direct-poke proofs
+   (`f407_closeout.rs`): GPIOF–K, UART7/8 loopbacks, 8 timers, RNG stream, DCMI capture, FSMC
+   gating, LTDC reload, SHA-1 vector, SPI4–6 + I2Sext shift, SAI1 FIFO, CRYP AES-128-ECB vector.
+   New work: F4 `CRYP` AES engine (shared FIPS core; TDES/DES/GCM documented unmodeled),
+   `uart7/8_for` constructors, `SAI1` via the shared SAI engine. Documented limits: UART7/8
+   CPU-only; F1 `DBGMCU` unmodeled. Pins verified (`boards --pins stm32f407`).
 - `stm32g474xx` behavioral: CRC IWDG WWDG FLASH RCC PWR GPIOA GPIOB
   GPIOC TIM15 TIM16 TIM17 TIM1 TIM20 TIM8 TIM2 TIM3 TIM4 TIM5 TIM6 TIM7
   USART1 USART2 USART3 · latch: I2C1 I2C2 I2C3 I2C4 RNG GPIOD GPIOE

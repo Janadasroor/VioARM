@@ -22,6 +22,7 @@ use crate::device::stm32::bkp::Bkp;
 use crate::device::stm32::can::Can;
 use crate::device::stm32::cec::Cec;
 use crate::device::stm32::crc::Crc;
+use crate::device::stm32::cryp::Cryp;
 use crate::device::stm32::dac::Dac;
 use crate::device::stm32::dbgmcu::Dbgmcu;
 use crate::device::stm32::dma::{DmaF1, DmaRequests};
@@ -477,6 +478,12 @@ pub fn stm32f407() -> BoardMemory {
     mem.attach(Box::new(GpioF4::at_in::<Stm32f407>(0x4002_0800, "gpioc")));
     mem.attach(Box::new(GpioF4::at_in::<Stm32f407>(0x4002_0C00, "gpiod")));
     mem.attach(Box::new(GpioF4::at_in::<Stm32f407>(0x4002_1000, "gpioe")));
+    mem.attach(Box::new(GpioF4::at_in::<Stm32f407>(0x4002_1400, "gpiof")));
+    mem.attach(Box::new(GpioF4::at_in::<Stm32f407>(0x4002_1800, "gpiog")));
+    mem.attach(Box::new(GpioF4::at_in::<Stm32f407>(0x4002_1C00, "gpioh")));
+    mem.attach(Box::new(GpioF4::at_in::<Stm32f407>(0x4002_2000, "gpioi")));
+    mem.attach(Box::new(GpioF4::at_in::<Stm32f407>(0x4002_2400, "gpioj")));
+    mem.attach(Box::new(GpioF4::at_in::<Stm32f407>(0x4002_2800, "gpiok")));
     // DMA request routing (board convention, streams as channels; CHSEL
     // remapping is not modeled): DMA1 S0/S1 SPI1 RX/TX, S2/S3 USART3 RX/TX
     // (+USART2 shared), S4/S5 UART4 RX/TX, S6 TIM update, S7 ADC; DMA2 S0/S1
@@ -519,6 +526,9 @@ pub fn stm32f407() -> BoardMemory {
         3,
         2,
     )));
+    // UART7/8 CPU-only (their DMA streams stay unwired, documented).
+    mem.attach(Box::new(Usart::uart7_for::<Stm32f407>()));
+    mem.attach(Box::new(Usart::uart8_for::<Stm32f407>()));
     mem.attach(Box::new(Timer::tim2_for::<Stm32f407>().with_dma_update(
         dma_requests.clone(),
         0,
@@ -533,6 +543,36 @@ pub fn stm32f407() -> BoardMemory {
     mem.attach(Box::new(Timer::tim5_for::<Stm32f407>()));
     mem.attach(Box::new(Timer::tim6_for::<Stm32f407>()));
     mem.attach(Box::new(Timer::tim7_for::<Stm32f407>()));
+    mem.attach(Box::new(Timer::tim3_for::<Stm32f407>()));
+    mem.attach(Box::new(Timer::tim8_for::<Stm32f407>()));
+    mem.attach(Box::new(Timer::tim9_for::<Stm32f407>()));
+    mem.attach(Box::new(Timer::tim10_for::<Stm32f407>()));
+    mem.attach(Box::new(Timer::tim11_for::<Stm32f407>()));
+    mem.attach(Box::new(Timer::tim12_for::<Stm32f407>()));
+    mem.attach(Box::new(Timer::tim13_for::<Stm32f407>()));
+    mem.attach(Box::new(Timer::tim14_for::<Stm32f407>()));
+    // F4-only IPs (kept together: the shared template below duplicates the
+    // common blocks, so these live on the explicit-TIM anchor).
+    mem.attach(Box::new(Rng::new_for::<Stm32f407>()));
+    mem.attach(Box::new(crate::device::stm32::dcmi::Dcmi::new_for::<
+        Stm32f407,
+    >()));
+    mem.attach(Box::new(Fsmc::new_for::<Stm32f407>()));
+    mem.attach(Box::new(Ltdc::new_for::<Stm32f407>()));
+    if let Some(hash) = Hash::new_for_opt::<Stm32f407>() {
+        mem.attach(Box::new(hash));
+    }
+    mem.attach(Box::new(Spi::spi4_for::<Stm32f407>()));
+    mem.attach(Box::new(Spi::spi5_for::<Stm32f407>()));
+    mem.attach(Box::new(Spi::spi6_for::<Stm32f407>()));
+    // I2S full-duplex extensions decode the SPI register set; I2S
+    // protocol itself stays unmodeled.
+    mem.attach(Box::new(Spi::spi_for::<Stm32f407>("I2S2ext", "i2s2ext")));
+    mem.attach(Box::new(Spi::spi_for::<Stm32f407>("I2S3ext", "i2s3ext")));
+    // F4 CRYP, AES modes only (TDES/DES/GCM documented unmodeled).
+    mem.attach(Box::new(Cryp::new_for::<Stm32f407>()));
+    // F4 SAI1 blocks share the H7 SAI4 register layout; same engine.
+    mem.attach(Box::new(Sai4::new_for_name::<Stm32f407>("SAI1")));
     mem.attach(Box::new(Exti::for_device::<Stm32f407>()));
     mem.attach(Box::new(Syscfg::for_device::<Stm32f407>()));
     let adc_common = Arc::new(Mutex::new(AdcCommonState::default()));
