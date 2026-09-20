@@ -64,6 +64,7 @@ pub mod syscfg;
 pub mod tamp;
 pub mod timer;
 pub mod tsc;
+pub mod ucpd;
 pub mod usart;
 pub mod usb;
 pub mod usb_fs;

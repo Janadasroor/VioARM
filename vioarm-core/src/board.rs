@@ -53,6 +53,7 @@ use crate::device::stm32::spi::Spi;
 use crate::device::stm32::syscfg::Syscfg;
 use crate::device::stm32::tamp::Tamp;
 use crate::device::stm32::timer::Timer;
+use crate::device::stm32::ucpd::Ucpd;
 use crate::device::stm32::usart::Usart;
 use crate::device::stm32::usb::Usb;
 use crate::device::stm32::usb_fs::UsbFs;
@@ -9480,6 +9481,9 @@ pub fn stm32g474xx() -> BoardMemory {
     }
     if <Stm32g474 as crate::device::svd::Device>::peripheral("TAMP").is_some() {
         mem.attach(Box::new(Tamp::new_for::<Stm32g474>()));
+    }
+    if <Stm32g474 as crate::device::svd::Device>::peripheral("UCPD1").is_some() {
+        mem.attach(Box::new(Ucpd::new_for::<Stm32g474>()));
     }
     if <Stm32g474 as crate::device::svd::Device>::peripheral("FMAC").is_some() {
         mem.attach(Box::new(Fmac::new_for::<Stm32g474>()));
