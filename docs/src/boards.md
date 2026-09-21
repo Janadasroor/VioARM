@@ -42,8 +42,8 @@ T2-or-better) vs `latch` (pure `NoBehavior` register file, T1).
 System-block windows (`0xE000_0000+`: NVIC/SCB/SysTick) are `core`
 modeled in the CPU, not on the bus. Variants (`stm32f030c6`, …)
 delegate to their family constructor, so the 21 families below are the
-complete behavioral picture (1,046 bus windows: **937 behavioral**,
-109 latch, plus 60 core-owned — re-audited after the address-coverage
+complete behavioral picture (1,046 bus windows: **949 behavioral**,
+97 latch, plus 60 core-owned — re-audited after the address-coverage
 fix, which also closed shared-name `I2C` and sub-window `ETH`/`USB`
 instances on their boards).
 
@@ -74,7 +74,7 @@ boards — the real F0 boards are `f030/f031/f042/f072/f091`.
 | stm32f303xe | 56 | 56 | 0 | 3 |
 | stm32f407 | 82 | 82 | 0 | 9 |
 | stm32g474xx | 82 | 82 | 0 | 9 |
-| stm32h743 | 119 | 107 | 12 | 0 |
+| stm32h743 | 119 | 118 | 1 | 0 |
 | stm32l476 | 71 | 28 | 43 | 9 |
 
 Per-board detail (latch lists are the Phase C work items):
@@ -211,16 +211,20 @@ Per-board detail (latch lists are the Phase C work items):
   duplicate `FDCAN` window there is shadowed by the RAM attach); the tables' G4 FDCAN1/2/3
   carry every register the cut engine touches. Documented limits: CORDIC sqrt/ln, FMAC DMA,
   UCPD Type-C analog state machine, FDCAN bit-timing/error-frames unmodeled.
-- `stm32h743` behavioral: COMP1 CRS DAC BDMA DMA2D DMAMUX1 DMAMUX2 FMC CEC HSEM I2C1 I2C2 I2C3 I2C4
-   GPIOA GPIOB GPIOC GPIOD GPIOE GPIOF GPIOG GPIOH GPIOI GPIOJ GPIOK JPEG MDMA QUADSPI RNG SAI4 SAI1
-   SAI2 SAI3 SDMMC1 SDMMC2 VREFBUF IWDG WWDG PWR SPI1 SPI2 SPI3 SPI4 SPI5 SPI6 LTDC SPDIFRX ADC3
-   ADC1 ADC2 ADC3_Common ADC12_Common CRC RCC LPTIM1 LPTIM2 LPTIM3 LPTIM4 LPTIM5 LPUART1 SYSCFG EXTI
-   DCMI OTG1_HS_GLOBAL OTG2_HS_GLOBAL OTG1_HS_HOST OTG2_HS_HOST OTG1_HS_DEVICE OTG2_HS_DEVICE
-   OTG1_HS_PWRCLK OTG2_HS_PWRCLK Ethernet_DMA Ethernet_MTL Ethernet_MAC DMA1 DMA2 HRTIM_Master
-   HRTIM_TIMA HRTIM_TIMB HRTIM_TIMC HRTIM_TIMD HRTIM_TIME HRTIM_Common DFSDM TIM16 TIM17 TIM15
-   USART1 USART2 USART3 USART6 TIM1 TIM8 FDCAN1 FDCAN2 MDIOS OPAMP SWPMI TIM2 TIM3 TIM4 TIM5 TIM12
-   TIM13 TIM14 TIM6 TIM7 · latch: RTC DELAY_Block_SDMMC1 DELAY_Block_QUADSPI DELAY_Block_SDMMC2
-   Flash AXI UART4 UART5 UART7 UART8 CAN_CCU DBGMCU
+- `stm32h743` — **closed (Phase C): 118/119 behavioral, one documented latch.** T3:
+  ETH checksum/MMC (`eth_h7_echo.rs`), USB host (`usb_host_enumeration.rs`), FDCAN full loopback
+  (`fdcan_boards.rs`); everything else T2, including 8 direct-poke proofs (`h743_closeout.rs`):
+  RTC calendar + alarm A, UART4/5/7/8 CPU loopbacks, SYSCFG comp-cell `READY`, Flash bank-1
+  program + sector erase, 3 delay-block `LNGF` reports, CCU calibration walk + watchdog,
+  DBGMCU `IDC 0x10006450`. New models: H7 `SYSCFG` (comp-cell `EN→READY` timing),
+  `FlashH7` (dual-bank unlock/program/sector-erase over the shared gate, per-bank `EOP`/
+  `WRPERR` attribution; bank 2 stays locked — the table marks `KEYR2` read-only),
+  `DLYB`×3 (`LNGF` = enabled path), `CAN_CCU` (`CALS` walk per HAL state encodings,
+  calibration watchdog, W1C `IR`), H7 `DBGMCU` (`DEV_ID 0x450`); shared mounts for new-gen
+  `RTC` (PRLH gate retired), `UART4`/`5`/`7`/`8`, `Flash` name fallback. Documented limits:
+  `AXI` stays a latch (interconnect issuing/QoS tuning, no firmware-observable dynamics —
+  T2 by the contract-driver rule); option-byte reload, WPSN protection, flash CRC/ECC,
+  OTP, CALS counters, DLYB phase granularity unmodeled.
 - `stm32l476` behavioral: CRC IWDG WWDG FLASH RCC PWR SYSCFG AES GPIOA
   GPIOB GPIOC GPIOD GPIOE TIM2 TIM3 TIM4 TIM5 TIM15 TIM16 TIM17 TIM1
   TIM8 TIM6 TIM7 USART1 USART2 USART3 EXTI · latch: DAC DMA1 DMA2 LCD

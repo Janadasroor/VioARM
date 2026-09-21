@@ -20,6 +20,7 @@ use crate::device::stm32::aes::Aes;
 use crate::device::stm32::afio::Afio;
 use crate::device::stm32::bkp::Bkp;
 use crate::device::stm32::can::Can;
+use crate::device::stm32::ccu::Ccu;
 use crate::device::stm32::cec::Cec;
 use crate::device::stm32::cordic::Cordic;
 use crate::device::stm32::crc::Crc;
@@ -27,12 +28,13 @@ use crate::device::stm32::crs::Crs;
 use crate::device::stm32::cryp::Cryp;
 use crate::device::stm32::dac::Dac;
 use crate::device::stm32::dbgmcu::Dbgmcu;
+use crate::device::stm32::dlyb::Dlyb;
 use crate::device::stm32::dma::{DmaF1, DmaRequests};
 use crate::device::stm32::dma_f4::DmaF4;
 use crate::device::stm32::eth::{Eth, EthH7, EthMailbox};
 use crate::device::stm32::exti::Exti;
 use crate::device::stm32::fdcan::{Fdcan, FdcanCut, FdcanMailbox, FdcanRam, FdcanStub};
-use crate::device::stm32::flash::{FlashF1, FlashF4, FlashGate};
+use crate::device::stm32::flash::{FlashF1, FlashF4, FlashGate, FlashH7};
 use crate::device::stm32::fmac::Fmac;
 use crate::device::stm32::fmc::{
     Bdma, Dfsdm, Dma2d, Dma2dMailbox, Dmamux, DmamuxRoutes, Fmc, Hrtim, Ltdc, Mdma, Qspi, QspiGate,
@@ -51,6 +53,7 @@ use crate::device::stm32::rtc::Rtc;
 use crate::device::stm32::sdio::Sdio;
 use crate::device::stm32::spi::Spi;
 use crate::device::stm32::syscfg::Syscfg;
+use crate::device::stm32::syscfg::SyscfgH7;
 use crate::device::stm32::tamp::Tamp;
 use crate::device::stm32::timer::Timer;
 use crate::device::stm32::ucpd::Ucpd;
@@ -9657,10 +9660,13 @@ pub fn stm32h743() -> BoardMemory {
             OTP_LEN,
         ],
     );
-    let gate = Arc::new(Mutex::new(FlashGate::new(
-        Region::new(STM32_MAIN_FLASH, STM32_H743_FLASH_LEN),
-        32 * 1024,
-    )));
+    let gate = Arc::new(Mutex::new(
+        FlashGate::new(
+            Region::new(STM32_MAIN_FLASH, STM32_H743_FLASH_LEN),
+            32 * 1024,
+        )
+        .dual_bank(),
+    ));
     let qspi_gate = Arc::new(Mutex::new(QspiGate::new(Region::new(QSPI_BASE, QSPI_LEN))));
     let octospi2_gate = Arc::new(Mutex::new(QspiGate::new(Region::new(
         OCTOSPI2_BASE,
@@ -9673,8 +9679,10 @@ pub fn stm32h743() -> BoardMemory {
     mem.set_clock(clock.clone());
     mem.set_qspi_gate(qspi_gate.clone());
     mem.set_qspi_gate2(octospi2_gate.clone());
-    if <Stm32h743 as crate::device::svd::Device>::peripheral("FLASH").is_some() {
-        mem.attach(Box::new(FlashF1::for_device::<Stm32h743>(gate)));
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("Flash").is_some()
+        || <Stm32h743 as crate::device::svd::Device>::peripheral("FLASH").is_some()
+    {
+        mem.attach(Box::new(FlashH7::for_device::<Stm32h743>(gate)));
     }
     mem.attach(Box::new(
         Rcc::for_device::<Stm32h743>().with_clock(clock.clone()),
@@ -9694,14 +9702,9 @@ pub fn stm32h743() -> BoardMemory {
     if <Stm32h743 as crate::device::svd::Device>::peripheral("WWDG").is_some() {
         mem.attach(Box::new(Wwdg::for_device::<Stm32h743>(watchdog)));
     }
-    // RTC - H743 RTC at 0x58004000 is new RTC (TR/DR/CR), not PRL/CNT, skip old behavior
-    if <Stm32h743 as crate::device::svd::Device>::peripheral("RTC").is_some()
-        && <Stm32h743 as crate::device::svd::Device>::peripheral("RTC")
-            .unwrap()
-            .registers
-            .iter()
-            .any(|r| r.name == "PRLH")
-    {
+    // RTC - H7 carries the new-gen calendar (TR/DR/CR), covered by the
+    // shared new-generation engine (PRLH gate retired with the F0 round).
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("RTC").is_some() {
         mem.attach(Box::new(Rtc::new_for::<Stm32h743>()));
     }
     // BKP only on F1
@@ -9753,6 +9756,10 @@ pub fn stm32h743() -> BoardMemory {
         (Usart::usart2_for::<Stm32h743>, (0, 3, 2)),
         (Usart::usart3_for::<Stm32h743>, (0, 3, 2)),
         (Usart::usart6_for::<Stm32h743>, (1, 3, 2)),
+        (Usart::uart4_for::<Stm32h743>, (1, 3, 2)),
+        (Usart::uart5_for::<Stm32h743>, (1, 3, 2)),
+        (Usart::uart7_for::<Stm32h743>, (1, 3, 2)),
+        (Usart::uart8_for::<Stm32h743>, (1, 3, 2)),
     ] {
         let base = ctor().ranges()[0].base;
         if <Stm32h743 as crate::device::svd::Device>::by_base(base).is_some() {
@@ -10072,7 +10079,25 @@ pub fn stm32h743() -> BoardMemory {
         mem.attach(Box::new(Exti::for_device::<Stm32h743>()));
     }
     if <Stm32h743 as crate::device::svd::Device>::peripheral("SYSCFG").is_some() {
-        mem.attach(Box::new(Syscfg::for_device::<Stm32h743>()));
+        mem.attach(Box::new(SyscfgH7::new_for::<Stm32h743>()));
+    }
+    // DBGMCU reports the table-reset IDC 0x10006450 (DEV_ID 0x450).
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("DBGMCU").is_some() {
+        mem.attach(Box::new(Dbgmcu::new_for::<Stm32h743>(0x1000_6450)));
+    }
+    // Delay blocks: SDMMC1/2 + QUADSPI tuning windows.
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("DELAY_Block_SDMMC1").is_some() {
+        mem.attach(Box::new(Dlyb::sdmmc1_for::<Stm32h743>()));
+    }
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("DELAY_Block_SDMMC2").is_some() {
+        mem.attach(Box::new(Dlyb::sdmmc2_for::<Stm32h743>()));
+    }
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("DELAY_Block_QUADSPI").is_some() {
+        mem.attach(Box::new(Dlyb::quadspi_for::<Stm32h743>()));
+    }
+    // FDCAN clock-calibration unit.
+    if <Stm32h743 as crate::device::svd::Device>::peripheral("CAN_CCU").is_some() {
+        mem.attach(Box::new(Ccu::new_for::<Stm32h743>()));
     }
     // LPTIM1-5 behavioral (one by one)
     for name in ["LPTIM1", "LPTIM2", "LPTIM3", "LPTIM4", "LPTIM5"] {

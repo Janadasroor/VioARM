@@ -8,7 +8,7 @@
 //! is the Cortex-M4 successor to the F1 `AFIO`.
 
 use crate::device::svd::stm32f407;
-use crate::device::svd::{Device, NoBehavior, RegisterFile};
+use crate::device::svd::{Behavior, Device, NoBehavior, RegisterFile, Registers};
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
 use crate::mem::bus::Region;
@@ -116,6 +116,124 @@ impl InterruptSource for Syscfg {
     }
 }
 
+/// H7 I/O compensation cell startup, in ticks (silicon needs on the
+/// order of milliseconds; the delay itself is idealized, its existence
+/// is not).
+const H7_READY_TICKS: u64 = 8;
+
+const H7_CCCSR: u32 = 0x20;
+const H7_CCCSR_EN: u32 = 1 << 0;
+const H7_CCCSR_READY: u32 = 1 << 8;
+
+#[derive(Clone, Debug, Default)]
+struct SyscfgH7Behavior {
+    ready_at: Option<u64>,
+}
+
+impl Behavior for SyscfgH7Behavior {
+    fn on_write(
+        &mut self,
+        view: &mut Registers<&mut [u32]>,
+        offset: u32,
+        val: u8,
+        shift: u32,
+    ) -> u32 {
+        let new = view.merged(offset, val, shift);
+        if offset == H7_CCCSR {
+            if new & H7_CCCSR_EN == 0 {
+                // Cell off: READY drops and any pending startup cancels.
+                self.ready_at = None;
+                return new & !H7_CCCSR_READY;
+            }
+            if new & H7_CCCSR_READY == 0 && self.ready_at.is_none() {
+                self.ready_at = Some(H7_READY_TICKS);
+            }
+        }
+        new
+    }
+
+    fn tick(&mut self, view: &mut Registers<&mut [u32]>, delta: u64) {
+        if let Some(left) = self.ready_at {
+            let left = left.saturating_sub(delta);
+            self.ready_at = Some(left);
+            if left == 0 {
+                self.ready_at = None;
+                view.set(H7_CCCSR, view.get(H7_CCCSR) | H7_CCCSR_READY);
+            }
+        }
+    }
+
+    fn reset(&mut self) {
+        self.ready_at = None;
+    }
+}
+
+/// H7 system configuration controller (`SYSCFG@0x58000400`).
+///
+/// `PMCR`, `EXTICR1..4`, `PWRCR`, `CCCR`, and the writable `URx` latch
+/// from the tables (routing accepted but not acted on, like the F4
+/// latch); `CCVR`/`PKGR`/read-only `URx` are table values. The one live
+/// circuit is the I/O compensation cell: setting `CCCSR.EN` raises
+/// `READY` after [`H7_READY_TICKS`] ticks, clearing `EN` drops it —
+/// the handshake firmware polls before using high-speed I/O.
+#[derive(Debug)]
+pub struct SyscfgH7 {
+    inner: RegisterFile<SyscfgH7Behavior>,
+}
+
+impl SyscfgH7 {
+    /// A new H7 `SYSCFG` on another chip's device tables.
+    ///
+    /// # Panics
+    /// Panics if `D`'s generated tables do not contain the `SYSCFG`
+    /// peripheral.
+    #[must_use]
+    pub fn new_for<D: Device>() -> Self {
+        let def = D::peripheral("SYSCFG").expect("generated tables contain SYSCFG");
+        Self {
+            inner: RegisterFile::new(def, SyscfgH7Behavior::default()),
+        }
+    }
+}
+
+impl Peripheral for SyscfgH7 {
+    fn ranges(&self) -> &[Region] {
+        self.inner.ranges()
+    }
+
+    fn read(&mut self, addr: u32) -> Result<u8, BusError> {
+        self.inner.read(addr)
+    }
+
+    fn write(&mut self, addr: u32, val: u8) -> Result<(), BusError> {
+        self.inner.write(addr, val)
+    }
+
+    fn reset(&mut self) {
+        self.inner.reset();
+    }
+
+    fn tick(&mut self, delta: u64) {
+        self.inner.tick(delta);
+    }
+
+    fn name(&self) -> &'static str {
+        "syscfg"
+    }
+}
+
+impl InterruptSource for SyscfgH7 {
+    fn exception_number(&self) -> Option<u8> {
+        self.inner.exception_number()
+    }
+
+    fn pending(&self) -> u32 {
+        self.inner.pending()
+    }
+
+    fn acknowledge(&mut self, _lines: u32) {}
+}
+
 #[cfg(test)]
 mod tests {
     use super::{NoBehavior, RegisterFile, Syscfg};
@@ -176,5 +294,81 @@ mod tests {
         }
         let rf = RegisterFile::<NoBehavior>::new(def, NoBehavior);
         assert_eq!(rf.irq_exception("SYSCFG_IRQn"), None);
+    }
+
+    #[test]
+    fn h7_table_matches_silicon_layout() {
+        use crate::device::svd::stm32h743;
+        let def = stm32h743::peripheral("SYSCFG").unwrap();
+        for (name, offset) in [
+            ("PMCR", 0x04),
+            ("EXTICR1", 0x08),
+            ("EXTICR4", 0x14),
+            ("CCCSR", 0x20),
+            ("CCVR", 0x24),
+            ("CCCR", 0x28),
+            ("PWRCR", 0x2C),
+            ("PKGR", 0x124),
+        ] {
+            let r = def
+                .registers
+                .iter()
+                .find(|r| r.name == name)
+                .unwrap_or_else(|| panic!("SYSCFG:{name} present"));
+            assert_eq!(r.offset, offset, "SYSCFG:{name} offset");
+        }
+    }
+
+    #[test]
+    fn h7_comp_cell_ready_handshake() {
+        use super::SyscfgH7;
+        use crate::device::svd::stm32h743;
+        const BASE: u32 = 0x5800_0400;
+        const CCCSR: u32 = 0x20;
+        let mut s = SyscfgH7::new_for::<stm32h743::Stm32h743>();
+        s.reset();
+        #[allow(clippy::cast_possible_truncation)]
+        fn w(s: &mut SyscfgH7, off: u32, val: u32) {
+            for (i, b) in val.to_le_bytes().iter().enumerate() {
+                s.write(BASE + off + i as u32, *b).unwrap();
+            }
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        fn r(s: &mut SyscfgH7, off: u32) -> u32 {
+            let mut bytes = [0u8; 4];
+            for (i, b) in bytes.iter_mut().enumerate() {
+                *b = s.read(BASE + off + i as u32).unwrap();
+            }
+            u32::from_le_bytes(bytes)
+        }
+        w(&mut s, CCCSR, 1); // EN
+        assert_eq!(r(&mut s, CCCSR) & (1 << 8), 0, "READY waits");
+        s.tick(4);
+        assert_eq!(r(&mut s, CCCSR) & (1 << 8), 0, "still starting");
+        s.tick(4);
+        assert_ne!(r(&mut s, CCCSR) & (1 << 8), 0, "READY latches");
+        w(&mut s, CCCSR, 0);
+        assert_eq!(r(&mut s, CCCSR) & (1 << 8), 0, "EN off drops READY");
+    }
+
+    #[test]
+    fn h7_exticr_roundtrips() {
+        use super::SyscfgH7;
+        use crate::device::svd::stm32h743;
+        const BASE: u32 = 0x5800_0400;
+        let mut s = SyscfgH7::new_for::<stm32h743::Stm32h743>();
+        s.reset();
+        for (i, b) in 0x3210_7654u32.to_le_bytes().iter().enumerate() {
+            #[allow(clippy::cast_possible_truncation)]
+            let off = i as u32;
+            s.write(BASE + 0x08 + off, *b).unwrap();
+        }
+        let mut bytes = [0u8; 4];
+        for (i, b) in bytes.iter_mut().enumerate() {
+            #[allow(clippy::cast_possible_truncation)]
+            let off = i as u32;
+            *b = s.read(BASE + 0x08 + off).unwrap();
+        }
+        assert_eq!(u32::from_le_bytes(bytes), 0x3210_7654);
     }
 }

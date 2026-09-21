@@ -126,7 +126,10 @@ record result in `docs/src/boards.md`. All pending.
       (CORDIC + FMAC + TAMP + UCPD engines, FDCAN1/2/3 cut mounts on CMSIS
       SRAMCAN with HAL stride, shared-mailbox owner-tag fix, `fdcan3_for`,
       8 proofs in `g474_closeout.rs`; record in `docs/src/boards.md`).
-- [ ] `stm32h743` (119) — largest table; close last, complex IPs land here
+- [x] `stm32h743` (119) — closed: 118/119 behavioral, one documented latch
+      (H7 SYSCFG comp-cell + FlashH7 dual-bank + DLYB×3 + CAN_CCU models,
+      H7 DBGMCU, RTC gate retired, UART4/5/7/8 mounts, 8 proofs in
+      `h743_closeout.rs`; AXI stays a config latch; record in `docs/src/boards.md`).
 - [ ] `stm32l476` (80)
 
 ## Phase D — proof upgrade (T2 → T3 where firmware demands)

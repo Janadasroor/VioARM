@@ -993,13 +993,22 @@ impl<M: Bus> SystemMemory<M> {
         let page_index = (addr - guard.region.base) / guard.page_size.max(1);
         if guard.wrpr & (1 << page_index.min(31)) == 0 {
             guard.wrprterr = true;
+            guard.err_bank = guard.bank_of(addr);
             drop(guard);
             return Ok(());
         }
-        if guard.unlocked && guard.program {
+        let bank = guard.bank_of(addr);
+        let open = if bank == 0 {
+            guard.unlocked && guard.program
+        } else {
+            guard.unlocked2 && guard.program2
+        };
+        if open {
             drop(guard);
             let result = self.backing.write(addr, val);
-            gate.lock().unwrap_or_else(|e| e.into_inner()).eop = true;
+            let mut gate = gate.lock().unwrap_or_else(|e| e.into_inner());
+            gate.eop = true;
+            gate.eop_bank = bank;
             // Direct backing write (bypasses `write`): bump the generation
             // by hand so JIT content validation sees the new bytes (a
             // missed bump here is silent stale-code execution).
@@ -1009,6 +1018,7 @@ impl<M: Bus> SystemMemory<M> {
             result
         } else {
             guard.wrprterr = true;
+            guard.err_bank = bank;
             drop(guard);
             Ok(())
         }

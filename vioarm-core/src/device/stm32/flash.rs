@@ -91,8 +91,19 @@ pub struct FlashGate {
     pub erase: Option<FlashErase>,
     /// Latched `EOP`: a program or erase completed.
     pub eop: bool,
+    /// Bank that latched `eop` (`0`/`1`; single-bank parts always `0`).
+    pub eop_bank: u8,
     /// Latched `WRPRTERR`: a gated write was rejected.
     pub wrprterr: bool,
+    /// Bank that latched `wrprterr` (`0`/`1`; single-bank parts always `0`).
+    pub err_bank: u8,
+    /// Dual-bank controller (H7): the upper half of `region` answers to
+    /// `unlocked2`/`program2` instead of `unlocked`/`program`.
+    pub dual_bank: bool,
+    /// Bank-2 unlock / program enables (dual-bank only).
+    pub unlocked2: bool,
+    /// Bank-2 program enable (dual-bank only).
+    pub program2: bool,
     /// The write-protection register (`WRPR`, F1): one bit per page, a
     /// cleared bit protects its page. All-ones (unprotected) at reset,
     /// matching default option bytes.
@@ -110,14 +121,34 @@ impl FlashGate {
             program: false,
             erase: None,
             eop: false,
+            eop_bank: 0,
             wrprterr: false,
+            err_bank: 0,
+            dual_bank: false,
+            unlocked2: false,
+            program2: false,
             wrpr: u32::MAX,
         }
     }
 
+    /// Dual-bank mode (H7): upper-half writes answer to bank-2 enables.
+    #[must_use]
+    pub const fn dual_bank(mut self) -> Self {
+        self.dual_bank = true;
+        self
+    }
+
     /// Restore the post-reset state: locked, no mode bits, no latched status.
     pub fn reset(&mut self) {
+        let dual = self.dual_bank;
         *self = Self::new(self.region, self.page_size);
+        self.dual_bank = dual;
+    }
+
+    /// Which bank owns `addr` (`1` = upper half in dual-bank mode).
+    #[must_use]
+    pub fn bank_of(&self, addr: u32) -> u8 {
+        u8::from(self.dual_bank && addr.wrapping_sub(self.region.base) >= self.region.len / 2)
     }
 }
 
@@ -637,6 +668,298 @@ impl InterruptSource for FlashF4 {
     }
 }
 
+/// H7 `KEYR1` lives at register offset `0x04` (`KEYR2` at `0x104`).
+const H7_KEYR1: u32 = 0x04;
+/// H7 bank-1 control/status/clear at `0x0C`/`0x10`/`0x14` (bank 2 +`0x100`).
+const H7_CR1: u32 = 0x0C;
+const H7_SR1: u32 = 0x10;
+const H7_CCR1: u32 = 0x14;
+const H7_CR2: u32 = 0x10C;
+const H7_SR2: u32 = 0x110;
+const H7_CCR2: u32 = 0x114;
+/// H7 `CR` bits: `LOCK` 0, `PG` 1, `SER` 2, `BER` 3, `START` 7, `SNB` 8:3,
+/// `EOPIE` 16, `WRPERRIE` 17.
+const H7_LOCK: u32 = 1 << 0;
+const H7_PG: u32 = 1 << 1;
+const H7_SER: u32 = 1 << 2;
+const H7_BER: u32 = 1 << 3;
+const H7_START: u32 = 1 << 7;
+const H7_EOPIE: u32 = 1 << 16;
+const H7_WRPERRIE: u32 = 1 << 17;
+/// H7 `SR` bits: `EOP` 16, `WRPERR` 17 (`BSY` reads 0: instant completion).
+const H7_EOP: u32 = 1 << 16;
+const H7_WRPERR: u32 = 1 << 17;
+
+/// The H7 flash controller's register side effects (dual bank).
+#[derive(Debug)]
+struct FlashH7Behavior {
+    gate: Arc<Mutex<FlashGate>>,
+    /// The `KEYR1` word being assembled from byte-lane writes.
+    key_word: u32,
+    /// Which key of the unlock sequence has been seen (`0`, `1`, or `2`).
+    key_step: u8,
+}
+
+impl FlashH7Behavior {
+    const fn new(gate: Arc<Mutex<FlashGate>>) -> Self {
+        Self {
+            gate,
+            key_word: 0,
+            key_step: 0,
+        }
+    }
+
+    fn unlock_write(&mut self, word: u32) {
+        match (self.key_step, word) {
+            (0, KEY1) => self.key_step = 1,
+            (1, KEY2) => {
+                self.gate.lock().unwrap_or_else(|e| e.into_inner()).unlocked = true;
+                self.key_step = 0;
+            }
+            _ => self.key_step = 0,
+        }
+    }
+
+    /// Program/erase control for bank `bank` (`0`/`1`): returns the word to
+    /// store. Locked banks ignore `CR` writes entirely (bank 2 is always
+    /// locked: the table marks `KEYR2` read-only so its unlock sequence
+    /// never reaches the model — documented).
+    fn cr_write(&mut self, view: &mut Registers<&mut [u32]>, bank: u8, word: u32) -> u32 {
+        let mut gate = self.gate.lock().unwrap_or_else(|e| e.into_inner());
+        let unlocked = if bank == 0 {
+            gate.unlocked
+        } else {
+            gate.unlocked2
+        };
+        if !unlocked {
+            drop(gate);
+            return if bank == 0 {
+                view.get(H7_CR1)
+            } else {
+                view.get(H7_CR2)
+            };
+        }
+        if word & H7_LOCK != 0 {
+            if bank == 0 {
+                gate.unlocked = false;
+            } else {
+                gate.unlocked2 = false;
+            }
+        }
+        if bank == 0 {
+            gate.program = word & H7_PG != 0;
+        } else {
+            gate.program2 = word & H7_PG != 0;
+        }
+        if word & H7_START != 0 {
+            // Sectors are `region/16` (`H743` 2 MiB: 8×128 KiB per bank).
+            let sector = gate.region.len / 16;
+            let bank_base = gate.region.base + u32::from(bank) * gate.region.len / 2;
+            if word & H7_BER != 0 {
+                gate.eop = true;
+                gate.eop_bank = bank;
+                gate.erase = Some(FlashErase::Range(bank_base, gate.region.len / 2));
+            } else if word & H7_SER != 0 {
+                let snb = (word >> 8) & 0x7;
+                gate.eop = true;
+                gate.eop_bank = bank;
+                gate.erase = Some(FlashErase::Range(bank_base + snb * sector, sector));
+            }
+            // `START` self-clears on silicon.
+            let stored = word & !H7_START;
+            drop(gate);
+            stored
+        } else {
+            drop(gate);
+            word
+        }
+    }
+
+    /// Clear-on-write status for bank `bank`: `CCR` clears the gate's
+    /// latched flags when they belong to this bank; the register reads 0.
+    fn ccr_write(&mut self, bank: u8, mask: u32) {
+        let mut gate = self.gate.lock().unwrap_or_else(|e| e.into_inner());
+        if mask & H7_EOP != 0 && gate.eop_bank == bank {
+            gate.eop = false;
+        }
+        if mask & H7_WRPERR != 0 && gate.err_bank == bank {
+            gate.wrprterr = false;
+        }
+    }
+}
+
+impl Behavior for FlashH7Behavior {
+    // Unlock/program/erase complete synchronously; timing is latency math.
+    fn needs_tick() -> bool {
+        false
+    }
+
+    fn on_write(
+        &mut self,
+        view: &mut Registers<&mut [u32]>,
+        offset: u32,
+        val: u8,
+        shift: u32,
+    ) -> u32 {
+        match offset {
+            H7_KEYR1 => {
+                // Reassemble the full 32-bit key word from the byte lanes.
+                self.key_word = (self.key_word & !(0xFF << shift)) | (u32::from(val) << shift);
+                if shift == 24 {
+                    let word = self.key_word;
+                    self.unlock_write(word);
+                }
+                view.merged(H7_KEYR1, val, shift)
+            }
+            H7_CR1 => {
+                // `SNB` (byte 1) arrives after `START` (byte 0) in a word
+                // store, so side effects apply on word completion (lane 3)
+                // when the full control word is assembled; HAL control
+                // writes are word-wide.
+                let word = view.merged(H7_CR1, val, shift);
+                if shift == 24 {
+                    self.cr_write(view, 0, word)
+                } else {
+                    word
+                }
+            }
+            H7_CR2 => {
+                let word = view.merged(H7_CR2, val, shift);
+                if shift == 24 {
+                    self.cr_write(view, 1, word)
+                } else {
+                    word
+                }
+            }
+            H7_SR1 | H7_SR2 => {
+                // Status clears through `CCR`; `SR` writes are swallowed.
+                view.get(offset)
+            }
+            H7_CCR1 => {
+                let mask = u32::from(val) << shift;
+                self.ccr_write(0, mask);
+                0
+            }
+            H7_CCR2 => {
+                let mask = u32::from(val) << shift;
+                self.ccr_write(1, mask);
+                0
+            }
+            _ => view.merged(offset, val, shift),
+        }
+    }
+
+    fn on_read(&mut self, _view: &mut Registers<&mut [u32]>, offset: u32, value: u32) -> u32 {
+        let gate = self.gate.lock().unwrap_or_else(|e| e.into_inner());
+        let synth = match offset {
+            H7_SR1 | H7_SR2 => {
+                let bank = u8::from(offset != H7_SR1);
+                value
+                    | if gate.eop && gate.eop_bank == bank {
+                        H7_EOP
+                    } else {
+                        0
+                    }
+                    | if gate.wrprterr && gate.err_bank == bank {
+                        H7_WRPERR
+                    } else {
+                        0
+                    }
+            }
+            H7_CR1 | H7_CR2 => {
+                // `LOCK` reflects the gate and `START` never reads back set.
+                let bank = u8::from(offset != H7_CR1);
+                let unlocked = if bank == 0 {
+                    gate.unlocked
+                } else {
+                    gate.unlocked2
+                };
+                (value & !(H7_START | H7_LOCK)) | if unlocked { 0 } else { H7_LOCK }
+            }
+            _ => value,
+        };
+        drop(gate);
+        synth
+    }
+
+    fn pending(&self, view: &Registers<&[u32]>) -> u32 {
+        let gate = self.gate.lock().unwrap_or_else(|e| e.into_inner());
+        let bank_pending = |cr: u32, bank: u8| {
+            let error = gate.wrprterr && gate.err_bank == bank && cr & H7_WRPERRIE != 0;
+            let done = gate.eop && gate.eop_bank == bank && cr & H7_EOPIE != 0;
+            error || done
+        };
+        let hit = bank_pending(view.get(H7_CR1), 0) | bank_pending(view.get(H7_CR2), 1);
+        drop(gate);
+        u32::from(hit)
+    }
+
+    fn reset(&mut self) {
+        self.gate.lock().unwrap_or_else(|e| e.into_inner()).reset();
+        self.key_word = 0;
+        self.key_step = 0;
+    }
+}
+
+/// The H7 `Flash` register file, table-driven from the SVD.
+#[derive(Debug)]
+pub struct FlashH7 {
+    inner: RegisterFile<FlashH7Behavior>,
+}
+
+impl FlashH7 {
+    /// A new H7 `Flash` controller on another chip's device tables.
+    ///
+    /// # Panics
+    /// Panics if `D`'s generated tables do not contain the `Flash`
+    /// peripheral.
+    #[must_use]
+    pub fn for_device<D: Device>(gate: Arc<Mutex<FlashGate>>) -> Self {
+        let def = D::peripheral("Flash")
+            .or_else(|| D::peripheral("FLASH"))
+            .expect("generated tables contain Flash");
+        Self {
+            inner: RegisterFile::new(def, FlashH7Behavior::new(gate)),
+        }
+    }
+}
+
+impl Peripheral for FlashH7 {
+    fn ranges(&self) -> &[Region] {
+        self.inner.ranges()
+    }
+
+    fn read(&mut self, addr: u32) -> Result<u8, BusError> {
+        self.inner.read(addr)
+    }
+
+    fn write(&mut self, addr: u32, val: u8) -> Result<(), BusError> {
+        self.inner.write(addr, val)
+    }
+
+    fn reset(&mut self) {
+        self.inner.reset();
+    }
+
+    fn name(&self) -> &'static str {
+        "flash"
+    }
+}
+
+impl InterruptSource for FlashH7 {
+    fn exception_number(&self) -> Option<u8> {
+        self.inner.exception_number()
+    }
+
+    fn pending(&self) -> u32 {
+        self.inner.pending()
+    }
+
+    fn acknowledge(&mut self, lines: u32) {
+        self.inner.acknowledge(lines);
+    }
+}
+
 #[cfg(test)]
 mod f4_tests {
     use super::{FlashErase, FlashF4, FlashGate, Region, KEY1, KEY2};
@@ -996,5 +1319,163 @@ mod tests {
         assert!(!g.lock().unwrap_or_else(|e| e.into_inner()).eop);
         assert_eq!(g.lock().unwrap_or_else(|e| e.into_inner()).erase, None);
         assert_eq!(read_word(&mut f, BASE + CR), 0x80);
+    }
+}
+
+#[cfg(test)]
+mod h7_tests {
+    use super::{FlashErase, FlashGate, FlashH7, Region, KEY1, KEY2};
+    use crate::device::svd::stm32h743::Stm32h743;
+    use crate::device::svd::Device;
+    use crate::device::{InterruptSource, Peripheral};
+    use std::sync::{Arc, Mutex};
+
+    const BASE: u32 = 0x5200_2000;
+    const KEYR1: u32 = 0x04;
+    const CR1: u32 = 0x0C;
+    const SR1: u32 = 0x10;
+    const CCR1: u32 = 0x14;
+    const CR2: u32 = 0x10C;
+    const SR2: u32 = 0x110;
+    const CCR2: u32 = 0x114;
+    const FLASH_BASE: u32 = 0x0800_0000;
+    const FLASH_LEN: u32 = 0x20_0000;
+
+    fn gate() -> Arc<Mutex<FlashGate>> {
+        Arc::new(Mutex::new(
+            FlashGate::new(Region::new(FLASH_BASE, FLASH_LEN), 32 * 1024).dual_bank(),
+        ))
+    }
+
+    fn device(g: Arc<Mutex<FlashGate>>) -> FlashH7 {
+        FlashH7::for_device::<Stm32h743>(g)
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
+    fn write_word(f: &mut FlashH7, addr: u32, val: u32) {
+        for (i, b) in val.to_le_bytes().iter().enumerate() {
+            f.write(addr.wrapping_add(i as u32), *b).unwrap();
+        }
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
+    fn read_word(f: &mut FlashH7, addr: u32) -> u32 {
+        let mut bytes = [0u8; 4];
+        for (i, b) in bytes.iter_mut().enumerate() {
+            *b = f.read(addr.wrapping_add(i as u32)).unwrap();
+        }
+        u32::from_le_bytes(bytes)
+    }
+
+    fn unlock(f: &mut FlashH7) {
+        write_word(f, BASE + KEYR1, KEY1);
+        write_word(f, BASE + KEYR1, KEY2);
+    }
+
+    #[test]
+    fn table_matches_silicon_layout() {
+        let def = Stm32h743::peripheral("Flash").unwrap();
+        assert_eq!(def.base, BASE, "Flash base");
+        for (name, offset) in [
+            ("ACR", 0x00),
+            ("KEYR1", 0x04),
+            ("CR1", 0x0C),
+            ("SR1", 0x10),
+            ("CCR1", 0x14),
+            ("CR2", 0x10C),
+            ("SR2", 0x110),
+            ("CCR2", 0x114),
+        ] {
+            let r = def
+                .registers
+                .iter()
+                .find(|r| r.name == name)
+                .unwrap_or_else(|| panic!("Flash:{name} present"));
+            assert_eq!(r.offset, offset, "Flash:{name} offset");
+        }
+    }
+
+    #[test]
+    fn locked_at_reset_ignores_cr() {
+        let mut f = device(gate());
+        f.reset();
+        assert_ne!(read_word(&mut f, BASE + CR1) & 1, 0, "LOCK reads set");
+        write_word(&mut f, BASE + CR1, 0x0002_0002); // PG + SER
+        assert_ne!(read_word(&mut f, BASE + CR1) & 1, 0, "still locked");
+    }
+
+    #[test]
+    fn unlock_and_program_mode() {
+        let g = gate();
+        let mut f = device(g.clone());
+        f.reset();
+        unlock(&mut f);
+        assert!(g.lock().unwrap_or_else(|e| e.into_inner()).unlocked);
+        assert_eq!(read_word(&mut f, BASE + CR1) & 1, 0, "LOCK clears");
+        write_word(&mut f, BASE + CR1, 0x02); // PG
+        assert!(g.lock().unwrap_or_else(|e| e.into_inner()).program);
+        write_word(&mut f, BASE + CR1, 0x01); // LOCK
+        assert!(!g.lock().unwrap_or_else(|e| e.into_inner()).unlocked);
+    }
+
+    #[test]
+    fn sector_erase_queues_range_and_eop() {
+        let g = gate();
+        let mut f = device(g.clone());
+        f.reset();
+        unlock(&mut f);
+        // SER + SNB=2 + START (START self-clears).
+        write_word(&mut f, BASE + CR1, (2 << 8) | (1 << 2) | (1 << 7));
+        let sector = FLASH_LEN / 16;
+        assert_eq!(
+            g.lock().unwrap_or_else(|e| e.into_inner()).erase,
+            Some(FlashErase::Range(FLASH_BASE + 2 * sector, sector))
+        );
+        assert_eq!(read_word(&mut f, BASE + CR1) & (1 << 7), 0, "START clears");
+        assert_ne!(read_word(&mut f, BASE + SR1) & (1 << 16), 0, "EOP1");
+        write_word(&mut f, BASE + CCR1, 1 << 16);
+        assert_eq!(read_word(&mut f, BASE + SR1) & (1 << 16), 0, "CCR clears");
+    }
+
+    #[test]
+    fn bank_erase_covers_half() {
+        let g = gate();
+        let mut f = device(g.clone());
+        f.reset();
+        unlock(&mut f);
+        write_word(&mut f, BASE + CR1, (1 << 3) | (1 << 7)); // BER + START
+        assert_eq!(
+            g.lock().unwrap_or_else(|e| e.into_inner()).erase,
+            Some(FlashErase::Range(FLASH_BASE, FLASH_LEN / 2))
+        );
+    }
+
+    #[test]
+    fn bank2_stays_locked() {
+        let g = gate();
+        let mut f = device(g.clone());
+        f.reset();
+        // KEYR2 is read-only in the tables: no unlock sequence can land.
+        assert_ne!(read_word(&mut f, BASE + CR2) & 1, 0, "LOCK2 reads set");
+        write_word(&mut f, BASE + CR2, 0x02); // PG ignored while locked
+        assert!(!g.lock().unwrap_or_else(|e| e.into_inner()).program2);
+        // A locked START is ignored, not an error.
+        write_word(&mut f, BASE + CR2, (1 << 2) | (1 << 7));
+        assert_eq!(g.lock().unwrap_or_else(|e| e.into_inner()).erase, None);
+    }
+
+    #[test]
+    fn irq_follows_eopie_per_bank() {
+        let mut f = device(gate());
+        f.reset();
+        unlock(&mut f);
+        write_word(
+            &mut f,
+            BASE + CR1,
+            (1 << 16) | (2 << 8) | (1 << 2) | (1 << 7),
+        );
+        assert_eq!(f.pending(), 1, "EOP1 + EOPIE1 raises the line");
+        write_word(&mut f, BASE + CCR1, 1 << 16);
+        assert_eq!(f.pending(), 0, "cleared");
     }
 }
