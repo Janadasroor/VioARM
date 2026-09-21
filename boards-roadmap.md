@@ -143,7 +143,7 @@ record result in `docs/src/boards.md`. All pending.
 - [ ] New famous firmware per quarter (Zephyr sample, MicroPython port,
       or similar): each either passes (evidence) or files the next work
       item with a reproducer.
-- [ ] Trust-scope page (`docs/src/trust-scope.md`): claimed vs
+- [x] Trust-scope page (`docs/src/trust-scope.md`): claimed vs
       non-claimed, versioned with this roadmap.
 
 ## Final acceptance gate (the definition of done)
