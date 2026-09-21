@@ -15,7 +15,7 @@ the same commit.
 - **T1 (latch)**: a pure register file. Only two remain across 1,046 bus
   windows, both documented below — everything else is T2+.
 - **Audit**: `cargo run -p vioarm-core --example board_audit`
-  (address-coverage matching). Current matrix: **952 behavioral, 94 latch,
+  (address-coverage matching). Current matrix: **1,045 behavioral, 1 latch,
   60 core-owned**, in `boards.md`.
 
 ## Per-board claims (21/21 closed)

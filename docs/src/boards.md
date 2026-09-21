@@ -42,8 +42,8 @@ T2-or-better) vs `latch` (pure `NoBehavior` register file, T1).
 System-block windows (`0xE000_0000+`: NVIC/SCB/SysTick) are `core`
 modeled in the CPU, not on the bus. Variants (`stm32f030c6`, …)
 delegate to their family constructor, so the 21 families below are the
-complete behavioral picture (1,046 bus windows: **952 behavioral**,
-94 latch, plus 60 core-owned — re-audited after the address-coverage
+complete behavioral picture (1,046 bus windows: **1,045 behavioral**,
+1 latch, plus 60 core-owned — re-audited after the address-coverage
 fix, which also closed shared-name `I2C` and sub-window `ETH`/`USB`
 instances on their boards).
 
