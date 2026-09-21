@@ -91,6 +91,8 @@ Board is `stm32f103` @8 MHz unless noted; second opinion is QEMU
 | Embench-IoT | embench-iot @`09c2ed8` (2026-02), `stm32f107` | **19/19 `correct=1`** |
 | FreeRTOS 10/11 kernel | FreeRTOS-Kernel, 2 tasks + `vTaskDelayUntil` | **9/9 periods exactly 2000000 cycles (250.000 ms)** |
 | mbedTLS 4.2.0 + TF-PSA-Crypto | `v4.2.0` + submodule | **OVERALL: PASSED** (AES + SHA-256) |
+| Eclipse ThreadX 6.x | Eclipse ThreadX, stock `demo_threadx` (100 Hz tick) | **2020 ticks, ~645K messages, all counters grow, backlog ≤ cap**; QEMU concurs on all tick-driven counters |
+| TFLite Micro | tflite-micro, `hello_world` float + int8, 8 goldens | **8/8 PASS, raw prediction bits bit-exact vs x86-64 reference** |
 
 Two harness notes, both root-caused, neither a simulator defect: the
 Dhrystone figure needs a tuned `strcmp` (a byte-loop libc measures 7.27 —
