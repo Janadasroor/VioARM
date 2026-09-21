@@ -32,6 +32,7 @@ pub mod dma_f4;
 pub mod eth;
 pub mod exti;
 pub mod fdcan;
+pub mod firewall;
 pub mod flash;
 pub mod fmac;
 pub mod fmc;
@@ -44,6 +45,7 @@ pub mod i2c;
 /// STM32 I3C peripheral.
 pub mod i3c;
 pub mod jpeg;
+pub mod lcd;
 pub mod lptim;
 pub mod mdios;
 /// STM32 OCTOSPI peripheral.

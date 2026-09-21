@@ -34,7 +34,7 @@ use crate::device::stm32::dma_f4::DmaF4;
 use crate::device::stm32::eth::{Eth, EthH7, EthMailbox};
 use crate::device::stm32::exti::Exti;
 use crate::device::stm32::fdcan::{Fdcan, FdcanCut, FdcanMailbox, FdcanRam, FdcanStub};
-use crate::device::stm32::flash::{FlashF1, FlashF4, FlashGate, FlashH7};
+use crate::device::stm32::flash::{FlashF1, FlashF4, FlashGate, FlashH7, FlashL4};
 use crate::device::stm32::fmac::Fmac;
 use crate::device::stm32::fmc::{
     Bdma, Dfsdm, Dma2d, Dma2dMailbox, Dmamux, DmamuxRoutes, Fmc, Hrtim, Ltdc, Mdma, Qspi, QspiGate,
@@ -9218,9 +9218,9 @@ pub fn stm32l476() -> BoardMemory {
     mem.set_flash_gate(gate.clone());
     let clock = ClockState::shared();
     mem.set_clock(clock.clone());
-    // L4 flash is at 0x40022000 like F1, use FlashF1
+    // L4 flash has its own register layout (KEYR@0x08, page erase).
     if <Stm32l476 as crate::device::svd::Device>::peripheral("FLASH").is_some() {
-        mem.attach(Box::new(FlashF1::for_device::<Stm32l476>(gate)));
+        mem.attach(Box::new(FlashL4::for_device::<Stm32l476>(gate)));
     }
     mem.attach(Box::new(
         Rcc::for_device::<Stm32l476>().with_clock(clock.clone()),
@@ -9289,6 +9289,169 @@ pub fn stm32l476() -> BoardMemory {
     }
     if <Stm32l476 as crate::device::svd::Device>::peripheral("AES").is_some() {
         mem.attach(Box::new(Aes::new_for::<Stm32l476>()));
+    }
+    // L4 GPIO F/G/H complete the bank set.
+    for (base, name) in [
+        (0x4800_1400u32, "gpiof"),
+        (0x4800_1800, "gpiog"),
+        (0x4800_1C00, "gpioh"),
+    ] {
+        if <Stm32l476 as crate::device::svd::Device>::by_base(base).is_some() {
+            mem.attach(Box::new(GpioF4::at_in::<Stm32l476>(base, name)));
+        }
+    }
+    // Remaining serial ports (CPU paths; DMA unwired on this board).
+    for ctor in [
+        Usart::uart4_for::<Stm32l476> as fn() -> Usart,
+        Usart::uart5_for::<Stm32l476>,
+        Usart::lpuart1_for::<Stm32l476>,
+    ] {
+        let base = ctor().ranges()[0].base;
+        if <Stm32l476 as crate::device::svd::Device>::by_base(base).is_some() {
+            mem.attach(Box::new(ctor()));
+        }
+    }
+    for ctor in [
+        Spi::spi1_for::<Stm32l476> as fn() -> Spi,
+        Spi::spi2_for::<Stm32l476>,
+        Spi::spi3_for::<Stm32l476>,
+    ] {
+        let base = ctor().ranges()[0].base;
+        if <Stm32l476 as crate::device::svd::Device>::by_base(base).is_some() {
+            mem.attach(Box::new(ctor()));
+        }
+    }
+    // DMA1/2 (F1-style channels) on the shared request fabric.
+    {
+        let dma_requests = Arc::new(Mutex::new(DmaRequests::new()));
+        let dma = Arc::new(Mutex::new(Vec::new()));
+        mem.set_dma_mailbox(dma.clone());
+        if <Stm32l476 as crate::device::svd::Device>::peripheral("DMA1").is_some() {
+            mem.attach(Box::new(DmaF1::dma_for::<Stm32l476>(
+                "DMA1",
+                dma.clone(),
+                dma_requests.clone(),
+            )));
+        }
+        if <Stm32l476 as crate::device::svd::Device>::peripheral("DMA2").is_some() {
+            mem.attach(Box::new(DmaF1::dma_for::<Stm32l476>(
+                "DMA2",
+                dma,
+                dma_requests,
+            )));
+        }
+    }
+    // New-generation I2C (L4 matches the F0 engine).
+    if <Stm32l476 as crate::device::svd::Device>::peripheral("I2C1").is_some() {
+        mem.attach(Box::new(I2c::for_device::<Stm32l476>()));
+    }
+    if <Stm32l476 as crate::device::svd::Device>::peripheral("I2C2").is_some() {
+        mem.attach(Box::new(I2c::i2c2_for::<Stm32l476>()));
+    }
+    if <Stm32l476 as crate::device::svd::Device>::peripheral("I2C3").is_some() {
+        mem.attach(Box::new(I2c::i2c3_for::<Stm32l476>()));
+    }
+    // Analog + friends.
+    if <Stm32l476 as crate::device::svd::Device>::peripheral("ADC_Common").is_some() {
+        let adc_common = Arc::new(Mutex::new(AdcCommonState::default()));
+        mem.attach(Box::new(AdcCommon::adc_common_for::<Stm32l476>(
+            adc_common.clone(),
+        )));
+        for (ctor, peripheral) in [
+            (Adc::adc1_for::<Stm32l476> as fn() -> Adc, "ADC1"),
+            (Adc::adc2_for::<Stm32l476>, "ADC2"),
+            (Adc::adc3_for::<Stm32l476>, "ADC3"),
+        ] {
+            if <Stm32l476 as crate::device::svd::Device>::peripheral(peripheral).is_some() {
+                mem.attach(Box::new(ctor().with_common(adc_common.clone())));
+            }
+        }
+    }
+    if <Stm32l476 as crate::device::svd::Device>::peripheral("DAC").is_some() {
+        mem.attach(Box::new(
+            Dac::new_for::<Stm32l476>().with_analog_bus(mem.analog_handle()),
+        ));
+    }
+    if <Stm32l476 as crate::device::svd::Device>::peripheral("COMP").is_some() {
+        mem.attach(Box::new(crate::device::stm32::comp::Comp::new_for::<
+            Stm32l476,
+        >()));
+    }
+    if <Stm32l476 as crate::device::svd::Device>::peripheral("OPAMP").is_some() {
+        mem.attach(Box::new(Opamp::new_for::<Stm32l476>()));
+    }
+    if <Stm32l476 as crate::device::svd::Device>::peripheral("TSC").is_some() {
+        mem.attach(Box::new(
+            crate::device::stm32::tsc::Tsc::new_for::<Stm32l476>(),
+        ));
+    }
+    if <Stm32l476 as crate::device::svd::Device>::peripheral("RNG").is_some() {
+        mem.attach(Box::new(Rng::new_for::<Stm32l476>()));
+    }
+    if <Stm32l476 as crate::device::svd::Device>::peripheral("VREFBUF").is_some() {
+        mem.attach(Box::new(Vrefbuf::new_for::<Stm32l476>()));
+    }
+    if <Stm32l476 as crate::device::svd::Device>::peripheral("CRS").is_some() {
+        mem.attach(Box::new(Crs::new_for::<Stm32l476>()));
+    }
+    if <Stm32l476 as crate::device::svd::Device>::peripheral("RTC").is_some() {
+        mem.attach(Box::new(Rtc::new_for::<Stm32l476>()));
+    }
+    if <Stm32l476 as crate::device::svd::Device>::peripheral("CAN1").is_some() {
+        mem.attach(Box::new(Can::can1_for::<Stm32l476>()));
+    }
+    if <Stm32l476 as crate::device::svd::Device>::peripheral("SDMMC1").is_some() {
+        mem.attach(Box::new(Sdio::new_for::<Stm32l476>()));
+    }
+    if <Stm32l476 as crate::device::svd::Device>::peripheral("QUADSPI").is_some() {
+        mem.attach(Box::new(Qspi::new_for::<Stm32l476>()));
+    }
+    if <Stm32l476 as crate::device::svd::Device>::peripheral("FMC").is_some() {
+        mem.attach(Box::new(Fmc::new_for::<Stm32l476>()));
+    }
+    if <Stm32l476 as crate::device::svd::Device>::peripheral("DCMI").is_some() {
+        mem.attach(Box::new(crate::device::stm32::dcmi::Dcmi::new_for::<
+            Stm32l476,
+        >()));
+    }
+    if <Stm32l476 as crate::device::svd::Device>::peripheral("SWPMI1").is_some()
+        || <Stm32l476 as crate::device::svd::Device>::peripheral("SWPMI").is_some()
+    {
+        mem.attach(Box::new(crate::device::stm32::swpmi::Swpmi::new_for::<
+            Stm32l476,
+        >()));
+    }
+    for name in ["SAI1", "SAI2"] {
+        if <Stm32l476 as crate::device::svd::Device>::peripheral(name).is_some() {
+            mem.attach(Box::new(Sai4::new_for_name::<Stm32l476>(name)));
+        }
+    }
+    for name in ["LPTIM1", "LPTIM2"] {
+        if <Stm32l476 as crate::device::svd::Device>::peripheral(name).is_some() {
+            mem.attach(Box::new(crate::device::stm32::lptim::Lptim::new_for::<
+                Stm32l476,
+            >(name)));
+        }
+    }
+    if <Stm32l476 as crate::device::svd::Device>::peripheral("OTG_FS_GLOBAL").is_some()
+        || <Stm32l476 as crate::device::svd::Device>::peripheral("USB_OTG_FS").is_some()
+    {
+        mem.attach(Box::new(Usb::otg_fs_for::<Stm32l476>()));
+    }
+    if <Stm32l476 as crate::device::svd::Device>::peripheral("DFSDM1").is_some() {
+        mem.attach(Box::new(
+            Dfsdm::new_for_name::<Stm32l476>("DFSDM1").with_bus(mem.analog_handle()),
+        ));
+    }
+    if <Stm32l476 as crate::device::svd::Device>::peripheral("LCD").is_some() {
+        mem.attach(Box::new(
+            crate::device::stm32::lcd::Lcd::new_for::<Stm32l476>(),
+        ));
+    }
+    if <Stm32l476 as crate::device::svd::Device>::peripheral("FIREWALL").is_some() {
+        mem.attach(Box::new(
+            crate::device::stm32::firewall::Firewall::new_for::<Stm32l476>(),
+        ));
     }
     for p in crate::device::svd::stm32l476::PERIPHERALS {
         if p.base >= 0xE000_0000 {

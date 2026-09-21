@@ -67,7 +67,9 @@ impl Swpmi {
     /// A new `Swpmi` on another chip's device tables.
     #[must_use]
     pub fn new_for<D: Device>() -> Self {
-        let def = D::peripheral("SWPMI").expect("SWPMI");
+        let def = D::peripheral("SWPMI")
+            .or_else(|| D::peripheral("SWPMI1"))
+            .expect("SWPMI");
         Self {
             inner: RegisterFile::new(def, SwpmiBehavior::default()),
         }

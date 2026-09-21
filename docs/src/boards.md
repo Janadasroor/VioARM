@@ -42,8 +42,8 @@ T2-or-better) vs `latch` (pure `NoBehavior` register file, T1).
 System-block windows (`0xE000_0000+`: NVIC/SCB/SysTick) are `core`
 modeled in the CPU, not on the bus. Variants (`stm32f030c6`, …)
 delegate to their family constructor, so the 21 families below are the
-complete behavioral picture (1,046 bus windows: **949 behavioral**,
-97 latch, plus 60 core-owned — re-audited after the address-coverage
+complete behavioral picture (1,046 bus windows: **952 behavioral**,
+94 latch, plus 60 core-owned — re-audited after the address-coverage
 fix, which also closed shared-name `I2C` and sub-window `ETH`/`USB`
 instances on their boards).
 
@@ -75,7 +75,7 @@ boards — the real F0 boards are `f030/f031/f042/f072/f091`.
 | stm32f407 | 82 | 82 | 0 | 9 |
 | stm32g474xx | 82 | 82 | 0 | 9 |
 | stm32h743 | 119 | 118 | 1 | 0 |
-| stm32l476 | 71 | 28 | 43 | 9 |
+| stm32l476 | 71 | 71 | 0 | 9 |
 
 Per-board detail (latch lists are the Phase C work items):
 
@@ -225,10 +225,15 @@ Per-board detail (latch lists are the Phase C work items):
   `AXI` stays a latch (interconnect issuing/QoS tuning, no firmware-observable dynamics —
   T2 by the contract-driver rule); option-byte reload, WPSN protection, flash CRC/ECC,
   OTP, CALS counters, DLYB phase granularity unmodeled.
-- `stm32l476` behavioral: CRC IWDG WWDG FLASH RCC PWR SYSCFG AES GPIOA
-  GPIOB GPIOC GPIOD GPIOE TIM2 TIM3 TIM4 TIM5 TIM15 TIM16 TIM17 TIM1
-  TIM8 TIM6 TIM7 USART1 USART2 USART3 EXTI · latch: DAC DMA1 DMA2 LCD
-  TSC COMP FIREWALL I2C1 I2C2 I2C3 QUADSPI DFSDM1 RNG ADC1 ADC2 ADC3
-  ADC_Common GPIOF GPIOG GPIOH SAI1 SAI2 LPTIM1 LPTIM2 UART4 UART5
-  LPUART1 SPI1 SPI2 SPI3 SDMMC1 VREFBUF CAN1 RTC OTG_FS_GLOBAL
-  OTG_FS_HOST OTG_FS_DEVICE OTG_FS_PWRCLK SWPMI1 OPAMP FMC CRS DCMI
+- `stm32l476` — **closed (Phase C): 71/71 behavioral, zero latch.** No firmware aboard so
+  all T2, including 14 direct-poke proofs (`l476_closeout.rs`): GPIOF/G/H `BSRR`, UART4 CPU
+  loopback, SPI1 shift, I2C1 NACK, ADC1 conversion, DAC1 hold, DMA1 M2M, RTC calendar + alarm,
+  LCD enable + update handshake, firewall arm + freeze, CAN1 filter + RX, Flash page-erase +
+  program, TSC acquisition, RNG stream. New models: L4 `FLASH` (own offsets, `PNB`/`BKER`
+  page erase, bank mass; table-reset `LOCK` re-lock hazard fixed like F4), `LCD` (segment
+  RAM, `UDD`/`UDR` handshake, `FCRSF` sync, `SOF` ticks), `FIREWALL` (segment descriptors
+  freeze at `FPA` arm); `Dfsdm::new_for_name`, `SWPMI1` fallback; shared mounts throughout
+  (DMA1/2 on the request fabric, ADC1–3 joined to `ADC_Common`, SAI1/2, LPTIM1/2, OTG_FS,
+  QUADSPI, FMC, DCMI, CAN1, SDMMC1, VREFBUF, CRS, OPAMP, TSC, COMP, RNG). Documented
+  limits: ADC/DAC/serial DMA unwired (CPU-only); option bytes, PCROP, flash ECC, LCD blink
+  timing, firewall violation trapping unmodeled.

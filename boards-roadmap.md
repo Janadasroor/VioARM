@@ -130,7 +130,10 @@ record result in `docs/src/boards.md`. All pending.
       (H7 SYSCFG comp-cell + FlashH7 dual-bank + DLYB×3 + CAN_CCU models,
       H7 DBGMCU, RTC gate retired, UART4/5/7/8 mounts, 8 proofs in
       `h743_closeout.rs`; AXI stays a config latch; record in `docs/src/boards.md`).
-- [ ] `stm32l476` (80)
+- [x] `stm32l476` (80) — closed: 71/71 behavioral, zero latch
+      (L4 FLASH + LCD + FIREWALL models, Dfsdm named ctor, SWPMI1 fallback,
+      shared-driver mounts incl. DMA/ADC-common, 14 proofs in `l476_closeout.rs`;
+      record in `docs/src/boards.md`).
 
 ## Phase D — proof upgrade (T2 → T3 where firmware demands)
 

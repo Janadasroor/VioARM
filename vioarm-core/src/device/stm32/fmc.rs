@@ -1926,6 +1926,15 @@ impl Dfsdm {
         self.inner.behavior_mut().analog_bus = Some(bus);
         self
     }
+
+    /// A new `Dfsdm` from an explicitly named window (L4 `DFSDM1`).
+    #[must_use]
+    pub fn new_for_name<D: Device>(name: &str) -> Self {
+        let def = D::peripheral(name).expect("generated tables contain DFSDM");
+        Self {
+            inner: RegisterFile::new(def, DfsdmBehavior::default()),
+        }
+    }
 }
 
 impl Peripheral for Dfsdm {
