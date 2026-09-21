@@ -1893,27 +1893,28 @@ mod tests {
     #[test]
     fn prigroup_blocks_same_group_preemption() {
         let mut sys = SystemMemory::new(ram());
-        // PRIGROUP = 2: two subpriority bits.
-        sys.write_word(0xE000_ED0C, 0x05FA_0200).unwrap();
-        // IRQ0 (exc 16) priority 0x3C, IRQ7 (exc 23) priority 0x3F. Under
-        // grouping both are group 0x0F, so IRQ0 may not preempt the running
-        // IRQ7 even though its raw priority byte is numerically higher.
-        sys.write(0xE000_E400, 0x3C).unwrap();
-        sys.write(0xE000_E407, 0x3F).unwrap();
+        // PRIGROUP = 4: the top nibble is the group. IRQ0 (0x3F, masked to
+        // 0x30) and IRQ7 (0x30) share group 0x03, so IRQ0 may not preempt
+        // the running IRQ7 even though its written byte differs.
+        sys.write_word(0xE000_ED0C, 0x05FA_0400).unwrap();
+        sys.write(0xE000_E400, 0x3F).unwrap();
+        sys.write(0xE000_E407, 0x30).unwrap();
         sys.write_word(0xE000_E100, (1 << 0) | (1 << 7)).unwrap();
         sys.write_word(0xE000_E200, (1 << 0) | (1 << 7)).unwrap();
         assert_eq!(sys.next_exception(false, false, 0, 23), None);
-        // In thread mode the higher subpriority in the group is served first.
+        // In thread mode the lower exception number in the group is served.
         assert_eq!(sys.next_exception(false, false, 0, 0), Some(16));
     }
 
     #[test]
     fn prigroup_subpriority_orders_same_group() {
         let mut sys = SystemMemory::new(ram());
-        sys.write_word(0xE000_ED0C, 0x05FA_0200).unwrap();
-        // IRQ0 has subpriority 3, IRQ7 subpriority 0 within group 0x0F.
-        sys.write(0xE000_E400, 0x3F).unwrap();
-        sys.write(0xE000_E407, 0x3C).unwrap();
+        // PRIGROUP = 5: group is bits[7:5], subpriority bits[4:0] — bit 4 is
+        // the only implemented subpriority bit. IRQ0 (group 7, sub 0x10) and
+        // IRQ7 (group 7, sub 0x00): same group, IRQ7's lower subpriority wins.
+        sys.write_word(0xE000_ED0C, 0x05FA_0500).unwrap();
+        sys.write(0xE000_E400, 0xF0).unwrap();
+        sys.write(0xE000_E407, 0xE0).unwrap();
         sys.write_word(0xE000_E100, (1 << 0) | (1 << 7)).unwrap();
         sys.write_word(0xE000_E200, (1 << 0) | (1 << 7)).unwrap();
         assert_eq!(sys.next_exception(false, false, 0, 0), Some(23));
@@ -1922,10 +1923,10 @@ mod tests {
     #[test]
     fn without_prigroup_full_byte_preempts() {
         let mut sys = SystemMemory::new(ram());
-        // Default PRIGROUP 0: the raw byte arbitrates, so IRQ0 (0x3C)
-        // preempts the running IRQ7 (0x3F).
-        sys.write(0xE000_E400, 0x3C).unwrap();
-        sys.write(0xE000_E407, 0x3F).unwrap();
+        // Default PRIGROUP 0: the implemented top nibble arbitrates, so
+        // IRQ0 (0x30) preempts the running IRQ7 (0xF0).
+        sys.write(0xE000_E400, 0x30).unwrap();
+        sys.write(0xE000_E407, 0xF0).unwrap();
         sys.write_word(0xE000_E100, (1 << 0) | (1 << 7)).unwrap();
         sys.write_word(0xE000_E200, (1 << 0) | (1 << 7)).unwrap();
         assert_eq!(sys.next_exception(false, false, 0, 23), Some(16));

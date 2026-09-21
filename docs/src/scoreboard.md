@@ -75,3 +75,27 @@ with a cycle budget, `uart:` output drained at the end. QEMU
 second opinion on functional output wherever it can run the binary —
 with one honest caveat: QEMU does not model `DWT_CYCCNT`, so all cycle
 numbers are VioARM-only by construction.
+
+## Re-verification (2026-09-21)
+
+The headliners above were re-proven end to end after the Phase C board
+work, rebuilt from upstream (harnesses are intentionally not vendored).
+Board is `stm32f103` @8 MHz unless noted; second opinion is QEMU
+`mps2-an385` (functional text byte-identical wherever compared).
+
+| Firmware | Sources | Re-verified result |
+|---|---|---|
+| Dhrystone 2.1 | netlib `dhry-c` shar | 20/20 checks, **9.124 DMIPS** (1.14/MHz); VioARM ≡ QEMU |
+| CoreMark 2K perf | eembc/coremark, 40 iters | CRCs `e714/1fd7/8e3a`, **2.058/MHz**; VioARM ≡ QEMU |
+| CoreMark 2K perf | same, 200 iters | 12 s (≥10 s rule), **"Correct operation validated"**, 16 it/s |
+| Embench-IoT | embench-iot @`09c2ed8` (2026-02), `stm32f107` | **19/19 `correct=1`** |
+| FreeRTOS 10/11 kernel | FreeRTOS-Kernel, 2 tasks + `vTaskDelayUntil` | **9/9 periods exactly 2000000 cycles (250.000 ms)** |
+| mbedTLS 4.2.0 + TF-PSA-Crypto | `v4.2.0` + submodule | **OVERALL: PASSED** (AES + SHA-256) |
+
+Two harness notes, both root-caused, neither a simulator defect: the
+Dhrystone figure needs a tuned `strcmp` (a byte-loop libc measures 7.27 —
+same binary, same sim); Embench cycle counts are pinned to the February
+snapshot and differ from the September table on retuned benches
+(`tarfind`, `statemate`, `md5sum`), with `correct=1` throughout. The
+cycle model itself is confirmed by the band matches (Dhrystone 1.14 vs
+1.0–1.25 published, CoreMark 2.058 vs ~2.05–2.1 published).

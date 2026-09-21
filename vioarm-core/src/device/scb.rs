@@ -38,9 +38,12 @@
 //!
 //! Priority encoding follows the architecture: lower value == higher
 //! priority, with the `SVCall` byte in `SHPR2` and the `PendSV`/`SysTick`
-//! bytes in `SHPR3` (CMSIS `SCB->SHP[7]`, `SHP[10]`, `SHP[11]`).
+//! bytes in `SHPR3` (CMSIS `SCB->SHP[7]`, `SHP[10]`, `SHP[11]`). Priority
+//! bytes are top-aligned like the NVIC `IPR`: four bits implemented
+//! (`0xF0`), unimplemented low bits read zero (see `nvic::PRIO_MASK`).
 
 use crate::cpu::FpuCtx;
+use crate::device::nvic::PRIO_MASK;
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
 use crate::mem::bus::{MpuAccess, MpuLookup, Region, SauHit};
@@ -1173,15 +1176,18 @@ impl Scb {
             }
             SHPR1 => {
                 let shift = 8 * offset;
-                self.shpr1 = (self.shpr1 & !(0xFF << shift)) | (u32::from(val) << shift);
+                self.shpr1 =
+                    (self.shpr1 & !(0xFF << shift)) | (u32::from(val & PRIO_MASK) << shift);
             }
             SHPR2 => {
                 let shift = 8 * offset;
-                self.shpr2 = (self.shpr2 & !(0xFF << shift)) | (u32::from(val) << shift);
+                self.shpr2 =
+                    (self.shpr2 & !(0xFF << shift)) | (u32::from(val & PRIO_MASK) << shift);
             }
             SHPR3 => {
                 let shift = 8 * offset;
-                self.shpr3 = (self.shpr3 & !(0xFF << shift)) | (u32::from(val) << shift);
+                self.shpr3 =
+                    (self.shpr3 & !(0xFF << shift)) | (u32::from(val & PRIO_MASK) << shift);
             }
             SHCSR => {
                 // The enable and pend bits are plain read/write storage (matching

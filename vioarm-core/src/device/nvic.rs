@@ -20,6 +20,15 @@ const ICPR: u32 = 0xE000_E280;
 const ITNS: u32 = 0xE000_E380;
 const IPR: u32 = 0xE000_E400;
 
+/// Implemented priority bits: ARMv7-M implements priority bytes
+/// most-significant-bit first, and every STM32 in the board list wires four
+/// (`0xF0`; a `0xFF` write reads back `0xF0`). Cortex-M0 parts only wire two
+/// (`0xC0`) — this shared model keeps four, so an M0 read-back probe still
+/// sees four bits; real M0 firmware writes top-aligned values (`0x00`,
+/// `0x40`, `0x80`, `0xC0`), which survive either mask, so arbitration is
+/// unaffected.
+pub(crate) const PRIO_MASK: u8 = 0xF0;
+
 /// Three 32-bit words cover lines 0..95 (the range the F1/F4 lines need).
 const WORDS: u32 = 3;
 const BANK_LEN: u32 = WORDS * 4;
@@ -156,8 +165,9 @@ impl Peripheral for Nvic {
                 let shift = shift(ITNS);
                 self.itns = (self.itns & !(0xFFu128 << shift)) | (u128::from(val) << shift);
             }
-            // IPR: one priority byte per line, low nibble significant on M3/M4.
-            IPR..IPR_END => self.priority[(addr - IPR) as usize] = val,
+            // IPR: one priority byte per line, implemented bits kept
+            // (top-aligned `PRIO_MASK`; unimplemented low bits read zero).
+            IPR..IPR_END => self.priority[(addr - IPR) as usize] = val & PRIO_MASK,
             _ => return Err(BusError::Reserved),
         }
         Ok(())
@@ -231,6 +241,18 @@ mod tests {
         assert_eq!(read_word(&mut n, 0xE000_E400), 0xC0C0_C0C0);
         assert_eq!(n.priority(0), 0xC0);
         assert_eq!(n.priority(3), 0xC0);
+    }
+
+    #[test]
+    fn priority_bytes_keep_only_implemented_top_bits() {
+        let mut n = Nvic::new();
+        write_word(&mut n, 0xE000_E400, 0xFFFF_FFFF);
+        assert_eq!(read_word(&mut n, 0xE000_E400), 0xF0F0_F0F0);
+        assert_eq!(n.priority(0), 0xF0);
+        n.write(0xE000_E400, 0xBF).unwrap();
+        assert_eq!(n.priority(0), 0xB0);
+        n.write(0xE000_E401, 0x0F).unwrap();
+        assert_eq!(n.priority(1), 0x00);
     }
 
     #[test]
