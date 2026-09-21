@@ -1553,6 +1553,21 @@ mod tests {
         assert_eq!(t, unhex("da80ce830cfda02da2a218a1744f4c76"), "tag");
     }
 
+    /// GMAC is the GCM flow without a payload phase (init, header-only,
+    /// final): AAD authenticates, no ciphertext. Tag cross-checked against
+    /// an independent GCM implementation (Python `cryptography`, AESGCM
+    /// with empty plaintext).
+    #[test]
+    fn gmac_aad_only_tag() {
+        let (mut a, base) = aes();
+        let key = unhex("feffe9928665731c6d6a8f9467308308");
+        let iv = unhex("cafebabefacedbaddecaf888");
+        let aad = unhex("feedfacedeadbeeffeedfacedeadbeefabaddad2");
+        let (c, t) = gcm_run(&mut a, base, false, &key, &iv, &aad, &[], false);
+        assert!(c.is_empty(), "GMAC emits no ciphertext");
+        assert_eq!(t, unhex("346434fd51d5cd0c5887ec63e39b907a"), "tag");
+    }
+
     /// The same Case 2 through the U5 layout (`GCMPH[14:13]`).
     #[test]
     fn gcm_u5_phase_position() {

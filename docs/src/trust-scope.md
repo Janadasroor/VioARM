@@ -61,8 +61,12 @@ These are true of the simulator and out of scope by design:
   no number here is calibrated against hardware.
 - **Analog**: one ideal bus voltage shared by ADC/COMP/GPIO/EXTI/TIM;
   no noise, impedance, temperature, or supply ramp.
-- **Crypto**: AES/SAES/HASH only where attached; GCM/GMAC/CMAC, MD5,
-  HMAC, suspend/context-swap banks are absent or zeroed-output stubs.
+- **Crypto**: AES ECB/CBC/CTR, GCM (96-bit IVs, NIST 800-38D), GMAC,
+  CMAC (800-38B), suspend/resume, and SHA-1/224/256 + HMAC (RFC 2202/4231)
+  are behavioral with register-driven vectors, where attached (L4/G0/U5
+  tables, G041 classic, U585 AES/SAES+RNG). Out of scope by design:
+  MD5/HMAC-MD5 (zeroed digest), non-96-bit GCM IVs, empty CMAC,
+  classic-table suspend, DMA requests, device-unique key hiding.
 - **USB**: FS-device PMA transfers unmodeled; isochronous host channels
   STALL; HS high-bandwidth paths handshake-only.
 - **Ethernet**: checksum/CPC pass-through (bytes never modified); MTL/MMC/
