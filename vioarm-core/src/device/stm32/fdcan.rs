@@ -146,6 +146,9 @@ pub struct FdcanRead {
     pub kind: u8,
     /// Element index (TX buffer number; filters always start at 0).
     pub index: u32,
+    /// Requesting controller's message-RAM base: results carry this back
+    /// so instances sharing one mailbox only consume their own traffic.
+    pub owner: u32,
 }
 
 /// A completed message-RAM read, correlated by kind and index.
@@ -155,6 +158,8 @@ pub struct FdcanResult {
     pub kind: u8,
     /// Echo of [`FdcanRead::index`].
     pub index: u32,
+    /// Echo of [`FdcanRead::owner`].
+    pub owner: u32,
     /// The bytes read.
     pub bytes: Vec<u8>,
 }
@@ -378,6 +383,7 @@ impl FdcanBehavior {
                     len: (lss * 4).min(255) as u8,
                     kind: 1,
                     index: 0,
+                    owner: self.msg_ram_base,
                 });
             self.filters_outstanding = true;
         }
@@ -387,7 +393,7 @@ impl FdcanBehavior {
     fn drain_filter_results(&mut self, mb: &mut FdcanMailbox) {
         let mut i = 0;
         while i < mb.results.len() {
-            if mb.results[i].kind != 1 {
+            if mb.results[i].kind != 1 || mb.results[i].owner != self.msg_ram_base {
                 i += 1;
                 continue;
             }
@@ -797,6 +803,7 @@ impl Behavior for FdcanBehavior {
                         len: elen.min(255) as u8,
                         kind: 0,
                         index: bit,
+                        owner: self.msg_ram_base,
                     });
                     self.tx_outstanding |= 1 << bit.min(31);
                 }
@@ -809,8 +816,9 @@ impl Behavior for FdcanBehavior {
             let mut mb = mb.lock().unwrap_or_else(|e| e.into_inner());
             self.drain_filter_results(&mut mb);
             let mut done = Vec::new();
+            let mine = self.msg_ram_base;
             mb.results.retain(|r| {
-                if r.kind != 0 || r.bytes.len() < 8 {
+                if r.kind != 0 || r.owner != mine || r.bytes.len() < 8 {
                     return true;
                 }
                 let t0 = u32::from_le_bytes([r.bytes[0], r.bytes[1], r.bytes[2], r.bytes[3]]);
@@ -1287,6 +1295,7 @@ impl FdcanCutBehavior {
                     len: (lss * 4 + lse * 8).min(255) as u8,
                     kind: 2,
                     index: ((lss as u32) << 16) | lse as u32,
+                    owner: self.msg_ram_base,
                 });
             self.filters_outstanding = true;
         }
@@ -1296,7 +1305,7 @@ impl FdcanCutBehavior {
     fn drain_filter_results(&mut self, mb: &mut FdcanMailbox) {
         let mut i = 0;
         while i < mb.results.len() {
-            if mb.results[i].kind != 2 {
+            if mb.results[i].kind != 2 || mb.results[i].owner != self.msg_ram_base {
                 i += 1;
                 continue;
             }
@@ -1519,6 +1528,7 @@ impl Behavior for FdcanCutBehavior {
                             len: CUT_ELEN.min(255) as u8,
                             kind: 0,
                             index: bit,
+                            owner: self.msg_ram_base,
                         });
                         self.tx_outstanding |= 1 << bit.min(31);
                     }
@@ -1531,8 +1541,9 @@ impl Behavior for FdcanCutBehavior {
             let mut mb = mb.lock().unwrap_or_else(|e| e.into_inner());
             self.drain_filter_results(&mut mb);
             let mut done = Vec::new();
+            let mine = self.msg_ram_base;
             mb.results.retain(|r| {
-                if r.kind != 0 || r.bytes.len() < 8 {
+                if r.kind != 0 || r.owner != mine || r.bytes.len() < 8 {
                     return true;
                 }
                 let t0 = u32::from_le_bytes([r.bytes[0], r.bytes[1], r.bytes[2], r.bytes[3]]);
@@ -1635,6 +1646,12 @@ impl FdcanCut {
     #[must_use]
     pub fn fdcan2_for<D: Device>(mailbox: Arc<Mutex<FdcanMailbox>>, msg_ram_base: u32) -> Self {
         Self::for_device::<D>("FDCAN2", "fdcan2", Some(mailbox), msg_ram_base)
+    }
+
+    /// A cut-down `FDCAN3` with message RAM at `msg_ram_base` (G4 only).
+    #[must_use]
+    pub fn fdcan3_for<D: Device>(mailbox: Arc<Mutex<FdcanMailbox>>, msg_ram_base: u32) -> Self {
+        Self::for_device::<D>("FDCAN3", "fdcan3", Some(mailbox), msg_ram_base)
     }
 
     /// Queue a host-side received frame (tests, debugger inject).
@@ -1741,6 +1758,7 @@ mod tests {
             mb.results.push_back(FdcanResult {
                 kind: r.kind,
                 index: r.index,
+                owner: r.owner,
                 bytes: ram[off..off + r.len as usize].to_vec(),
             });
         }
@@ -1827,6 +1845,7 @@ mod tests {
             mb.results.push_back(FdcanResult {
                 kind: 1,
                 index: 0,
+                owner: 0x2000_0000,
                 bytes: vec![0x00, 0x01, 0x88, 0x48],
             });
         }
@@ -1870,6 +1889,7 @@ mod tests {
             mb.results.push_back(FdcanResult {
                 kind: r.kind,
                 index: r.index,
+                owner: r.owner,
                 bytes: ram[off..off + r.len as usize].to_vec(),
             });
         }

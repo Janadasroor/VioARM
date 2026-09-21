@@ -42,8 +42,8 @@ T2-or-better) vs `latch` (pure `NoBehavior` register file, T1).
 System-block windows (`0xE000_0000+`: NVIC/SCB/SysTick) are `core`
 modeled in the CPU, not on the bus. Variants (`stm32f030c6`, …)
 delegate to their family constructor, so the 21 families below are the
-complete behavioral picture (1,046 bus windows: **933 behavioral**,
-113 latch, plus 60 core-owned — re-audited after the address-coverage
+complete behavioral picture (1,046 bus windows: **937 behavioral**,
+109 latch, plus 60 core-owned — re-audited after the address-coverage
 fix, which also closed shared-name `I2C` and sub-window `ETH`/`USB`
 instances on their boards).
 
@@ -73,7 +73,7 @@ boards — the real F0 boards are `f030/f031/f042/f072/f091`.
 | stm32f107 | 47 | 47 | 0 | 2 |
 | stm32f303xe | 56 | 56 | 0 | 3 |
 | stm32f407 | 82 | 82 | 0 | 9 |
-| stm32g474xx | 82 | 24 | 58 | 9 |
+| stm32g474xx | 82 | 82 | 0 | 9 |
 | stm32h743 | 119 | 107 | 12 | 0 |
 | stm32l476 | 71 | 28 | 43 | 9 |
 
@@ -199,15 +199,18 @@ Per-board detail (latch lists are the Phase C work items):
    New work: F4 `CRYP` AES engine (shared FIPS core; TDES/DES/GCM documented unmodeled),
    `uart7/8_for` constructors, `SAI1` via the shared SAI engine. Documented limits: UART7/8
    CPU-only; F1 `DBGMCU` unmodeled. Pins verified (`boards --pins stm32f407`).
-- `stm32g474xx` behavioral: CRC IWDG WWDG FLASH RCC PWR GPIOA GPIOB
-  GPIOC TIM15 TIM16 TIM17 TIM1 TIM20 TIM8 TIM2 TIM3 TIM4 TIM5 TIM6 TIM7
-  USART1 USART2 USART3 · latch: I2C1 I2C2 I2C3 I2C4 RNG GPIOD GPIOE
-  GPIOF GPIOG LPTIMER1 UART4 UART5 LPUART1 SPI1 SPI4 SPI3 SPI2 EXTI RTC
-  FMC DMA1 DMA2 DMAMUX SYSCFG VREFBUF COMP OPAMP HRTIM_Master HRTIM_TIMA
-  HRTIM_TIMB HRTIM_TIMC HRTIM_TIMD HRTIM_TIME HRTIM_TIMF HRTIM_Common
-  QUADSPI DAC1 DAC2 DAC3 DAC4 ADC1 ADC2 ADC3 ADC4 ADC5 ADC12_Common
-  ADC345_Common FMAC CORDIC SAI TAMP FDCAN FDCAN1 FDCAN2 FDCAN3 UCPD1
-  USB_FS_device CRS
+- `stm32g474xx` — **closed (Phase C): 82/82 behavioral, zero latch.** No firmware aboard so
+  all T2, including 8 direct-poke proofs (`g474_closeout.rs`): FDCAN1/2/3 loopback round-trips
+  over the shared message RAM, CORDIC cos60/sin60, FMAC FIR moving average, TAMP backup +
+  tamper-wipe, UCPD frame send + drain, GPIOA `BSRR`. New models: integer `CORDIC` (circular +
+  hyperbolic q31), `FMAC` FIR/IIR polling filter, `TAMP` (backup domain survives reset),
+  `UCPD` PD message engine, `FdcanCut::fdcan3_for`; plus a real cross-instance find —
+  controllers sharing one `FdcanMailbox` stole each other's results, now tagged by owner
+  (`FDCAN1` worked alone and masked it; `FDCAN2/3` proved it). Mount notes: message RAM is
+  CMSIS `SRAMCAN_BASE 0x4000A400` with the HAL 848-byte per-instance stride (the SVD's
+  duplicate `FDCAN` window there is shadowed by the RAM attach); the tables' G4 FDCAN1/2/3
+  carry every register the cut engine touches. Documented limits: CORDIC sqrt/ln, FMAC DMA,
+  UCPD Type-C analog state machine, FDCAN bit-timing/error-frames unmodeled.
 - `stm32h743` behavioral: COMP1 CRS DAC BDMA DMA2D DMAMUX1 DMAMUX2 FMC CEC HSEM I2C1 I2C2 I2C3 I2C4
    GPIOA GPIOB GPIOC GPIOD GPIOE GPIOF GPIOG GPIOH GPIOI GPIOJ GPIOK JPEG MDMA QUADSPI RNG SAI4 SAI1
    SAI2 SAI3 SDMMC1 SDMMC2 VREFBUF IWDG WWDG PWR SPI1 SPI2 SPI3 SPI4 SPI5 SPI6 LTDC SPDIFRX ADC3

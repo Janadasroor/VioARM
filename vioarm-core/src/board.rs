@@ -9561,6 +9561,33 @@ pub fn stm32g474xx() -> BoardMemory {
     if <Stm32g474 as crate::device::svd::Device>::peripheral("WWDG").is_some() {
         mem.attach(Box::new(Wwdg::for_device::<Stm32g474>(watchdog)));
     }
+    // Cut-down FDCAN1/2/3 on verified CAN RAM (CMSIS SRAMCAN_BASE
+    // 0x4000A400; per-instance stride SRAMCAN_SIZE=848 from the HAL
+    // `FDCAN_CalcultateRamBlockAddresses`). Mounted before the fallback
+    // loop so the RAM shadows the duplicate `FDCAN` window there (a copy
+    // of the controller map, not a controller — 3 FDCANs per datasheet)
+    // and the three controllers skip their latches.
+    if <Stm32g474 as crate::device::svd::Device>::peripheral("FDCAN1").is_some() {
+        let fdcan = std::sync::Arc::new(std::sync::Mutex::new(FdcanMailbox::default()));
+        mem.set_fdcan_mailbox(fdcan.clone());
+        mem.attach(Box::new(FdcanRam::at(0x4000_A400, 0xA00)));
+        mem.attach(Box::new(FdcanCut::fdcan1_for::<Stm32g474>(
+            fdcan.clone(),
+            0x4000_A400,
+        )));
+        if <Stm32g474 as crate::device::svd::Device>::peripheral("FDCAN2").is_some() {
+            mem.attach(Box::new(FdcanCut::fdcan2_for::<Stm32g474>(
+                fdcan.clone(),
+                0x4000_A400 + 848,
+            )));
+        }
+        if <Stm32g474 as crate::device::svd::Device>::peripheral("FDCAN3").is_some() {
+            mem.attach(Box::new(FdcanCut::fdcan3_for::<Stm32g474>(
+                fdcan,
+                0x4000_A400 + 2 * 848,
+            )));
+        }
+    }
     for p in crate::device::svd::stm32g474xx::PERIPHERALS {
         if p.base >= 0xE000_0000 {
             continue;

@@ -122,7 +122,10 @@ record result in `docs/src/boards.md`. All pending.
       (ADC-common fallback + SPI-for-I2S + 7 proofs; record in `docs/src/boards.md`).
 - [x] `stm32f407` (91) — DMA/FPU reference closed: 82/82 behavioral, zero latch
       (F4 `CRYP` engine + `uart7/8_for` + SAI reuse + 11 proofs; record in `docs/src/boards.md`).
-- [ ] `stm32g474xx` (91)
+- [x] `stm32g474xx` (91) — closed: 82/82 behavioral, zero latch
+      (CORDIC + FMAC + TAMP + UCPD engines, FDCAN1/2/3 cut mounts on CMSIS
+      SRAMCAN with HAL stride, shared-mailbox owner-tag fix, `fdcan3_for`,
+      8 proofs in `g474_closeout.rs`; record in `docs/src/boards.md`).
 - [ ] `stm32h743` (119) — largest table; close last, complex IPs land here
 - [ ] `stm32l476` (80)
 
