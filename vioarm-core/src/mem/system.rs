@@ -653,6 +653,7 @@ impl<M: Bus> SystemMemory<M> {
                 .push_back(FdcanResult {
                     kind: r.kind,
                     index: r.index,
+                    owner: r.owner,
                     bytes,
                 });
         }
