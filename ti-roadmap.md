@@ -65,6 +65,12 @@ Each model lands with the standard treatment; TivaWare is the oracle,
 QEMU has no Tiva machine — second opinions come from TivaWare examples
 run as golden pairs where feasible, else VioARM-only locked tests.
 
+Status 2026-09-22: P2 core set done — SYSCTL, GPIO, UART, GPTM, SSI,
+I2C, WDT, ADC, PWM, QEI, CAN, USB, EEPROM, FLASH_CTRL, HIB, COMP
+(audit 56/58 behavioral). `UDMA` stays latch by decision (a real engine
+needs bus-master reads; behaviors own their window only) and `SYSEXC`
+stays latch (zero-correct: no faults occur in simulation).
+
 ## Phase P3 — Boards + closeout (~1 week)
 
 - 1–2 boards per family, audit to zero latch, `tiva_closeout.rs`-style

@@ -2,7 +2,11 @@
 
 pub mod adc;
 pub mod can;
+pub mod comp;
+pub mod eeprom;
+pub mod flash;
 pub mod gpio;
+pub mod hib;
 pub mod i2c;
 pub mod pwm;
 pub mod qei;
