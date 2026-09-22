@@ -22,6 +22,7 @@ pub mod scb;
 pub mod stm32;
 pub mod svd;
 pub mod systick;
+pub mod ti;
 pub mod uart;
 pub mod vdd;
 

@@ -8358,8 +8358,14 @@ pub fn tm4c123gh6pm() -> BoardMemory {
     let mut mem = SystemMemory::new(backing);
     let clock = ClockState::shared();
     mem.set_clock(clock.clone());
+    mem.attach(Box::new(
+        crate::device::ti::sysctl::Sysctl::for_device::<
+            crate::device::svd::tm4c123gh6pm::Tm4c123gh6pm,
+        >()
+        .with_clock(clock.clone()),
+    ));
     for p in crate::device::svd::tm4c123gh6pm::PERIPHERALS {
-        if p.base >= 0xE000_0000 {
+        if p.base >= 0xE000_0000 || p.base == crate::device::ti::sysctl::SYSCTL_BASE {
             continue;
         }
         mem.attach(Box::new(crate::device::svd::RegisterFile::<
