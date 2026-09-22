@@ -68,6 +68,8 @@ famous firmware), and the kings harness ports in days.
 - **129 P2d (done 2026-09-22): native 129 flash** (`device/ti/
   flash129.rs`, 7 lib tests, mounted with the EEPROM link, audit
   59/64): `FMC2` buffered program, 16× protection, `PP`/`SSIZE` ID.
+- **129 P3 (done 2026-09-22): closeout** (`vioarm-core/tests/
+  tm4c129_closeout.rs`, 18/18): 129 natives + fleet on the real board.
 
 ## Phase P2 — Peripheral models (~2–3 weeks, the bulk)
 
