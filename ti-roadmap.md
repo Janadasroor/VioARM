@@ -74,7 +74,8 @@ stays latch (zero-correct: no faults occur in simulation).
 ## Phase P3 — Boards + closeout (~1 week)
 
 - 1–2 boards per family, audit to zero latch, `tiva_closeout.rs`-style
-  direct-poke proofs per board.
+  direct-poke proofs per board. DONE 2026-09-22 for `tm4c123gh6pm`
+  (`vioarm-core/tests/tiva_closeout.rs`, 17 tests, 56/58 behavioral).
 - T3 firmware: CoreMark + Dhrystone retargets via `scripts/kings/`
   (new port dir, same method), plus a UART/GPIO/Timer e2e.
 - `boards.md` + `trust-scope.md` rows for the new boards.

@@ -382,6 +382,14 @@ impl Peripheral for Gpio {
     }
 
     fn tick(&mut self, _delta: u64) {}
+
+    fn name(&self) -> &'static str {
+        self.port
+    }
+
+    fn drive_inputs(&mut self, value: u32) {
+        Gpio::drive_inputs(self, value as u8);
+    }
 }
 
 impl InterruptSource for Gpio {

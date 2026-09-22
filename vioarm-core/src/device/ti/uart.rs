@@ -406,6 +406,18 @@ impl Peripheral for Uart {
     }
 
     fn tick(&mut self, _delta: u64) {}
+
+    fn name(&self) -> &'static str {
+        self.inner.def().name
+    }
+
+    fn drain_output(&mut self) -> Vec<u8> {
+        Uart::drain_output(self)
+    }
+
+    fn drive_inputs(&mut self, value: u32) {
+        self.inject_rx(&[value as u8]);
+    }
 }
 
 impl InterruptSource for Uart {
