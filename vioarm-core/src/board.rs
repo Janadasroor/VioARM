@@ -8364,6 +8364,23 @@ pub fn tm4c123gh6pm() -> BoardMemory {
         >()
         .with_clock(clock.clone()),
     ));
+    // Six GPIO ports, APB + AHB apertures sharing one port core each.
+    for (port, apb, ahb) in [
+        ("GPIOA", "GPIOA", "GPIOA_AHB"),
+        ("GPIOB", "GPIOB", "GPIOB_AHB"),
+        ("GPIOC", "GPIOC", "GPIOC_AHB"),
+        ("GPIOD", "GPIOD", "GPIOD_AHB"),
+        ("GPIOE", "GPIOE", "GPIOE_AHB"),
+        ("GPIOF", "GPIOF", "GPIOF_AHB"),
+    ] {
+        let shared = crate::device::ti::gpio::Gpio::new_shared();
+        mem.attach(Box::new(crate::device::ti::gpio::Gpio::for_aperture::<
+            crate::device::svd::tm4c123gh6pm::Tm4c123gh6pm,
+        >(apb, port, shared.clone())));
+        mem.attach(Box::new(crate::device::ti::gpio::Gpio::for_aperture::<
+            crate::device::svd::tm4c123gh6pm::Tm4c123gh6pm,
+        >(ahb, port, shared)));
+    }
     for p in crate::device::svd::tm4c123gh6pm::PERIPHERALS {
         if p.base >= 0xE000_0000 || p.base == crate::device::ti::sysctl::SYSCTL_BASE {
             continue;
