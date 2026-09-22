@@ -1418,8 +1418,8 @@ mod tests {
     #[test]
     fn per_dname_deltas_are_consistent() {
         use super::per_dname::{donor_peripherals, PER_DNAMES};
-        // 508 Dnames, every donor resolves, every removal names a real donor peripheral.
-        assert_eq!(PER_DNAMES.len(), 508);
+        // 526 Dnames, every donor resolves, every removal names a real donor peripheral.
+        assert_eq!(PER_DNAMES.len(), 526);
         let mut total = 0usize;
         for e in PER_DNAMES {
             assert!(e.flash_len > 0 && e.ram_len > 0, "sizes of {}", e.dname);
@@ -1441,8 +1441,9 @@ mod tests {
         // (40062 with 21 donors; 35691 after F2/F7/G0 moved to own-generation
         // donors; 36722 after U5/H5/WBA/L5 moved to theirs; 36780 with the
         // TM4C123GH6PM Tiva donor, +58; 36844 with the TM4C1294NCPDT donor, +64;
-        // 36916 with the TM4C129XNCZAD donor, +72.)
-        assert_eq!(total, 36916);
+        // 36916 with the TM4C129XNCZAD donor, +72; 38129 with the 18
+        // remaining 129 dice as XNCZAD `removed` subsets, +1213.)
+        assert_eq!(total, 38129);
         // Spot checks: known deltas from the (deleted) per-variant tables.
         let f405 = PER_DNAMES.iter().find(|e| e.dname == "STM32F405").unwrap();
         assert!(f405.peripheral("GPIOA").is_some());

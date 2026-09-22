@@ -76,6 +76,10 @@ famous firmware), and the kings harness ports in days.
   gates in `expected.sh`/`run_all.sh` (weekly CI).
 - **Second 129 donor (done 2026-09-22): TM4C129XNCZAD** (72 periphs,
   audit 62/72): maximal superset + full 129 mounts; 508 Dnames.
+- **Full 129 family (done 2026-09-22): 20/20 Dnames** (526 total):
+  every remaining die proved a peripheral-subset of XNCZAD and wired
+  via `removed` (PDSC sizes); register residuals inventoried in
+  `per_dname.rs` (Known limitations).
 
 ## Phase P2 — Peripheral models (~2–3 weeks, the bulk)
 
