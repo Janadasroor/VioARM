@@ -8369,7 +8369,41 @@ pub fn tm4c1294ncpdt() -> BoardMemory {
         if p.name == "SYSCTL" {
             continue;
         }
+        // GPIO windows mount below with the 129 reset rows; skip latches.
+        if p.name.starts_with("GPIO") {
+            continue;
+        }
         mem.attach(Box::new(RegisterFile::<NoBehavior>::new(p, NoBehavior)));
+    }
+    // Fifteen GPIO ports: AHB-only A–J plus single-aperture K–Q (no
+    // GPIOHBCTL on this family), each with the 129 Table 10-7 rows.
+    for (aperture, port) in [
+        ("GPIOA_AHB", "GPIOA"),
+        ("GPIOB_AHB", "GPIOB"),
+        ("GPIOC_AHB", "GPIOC"),
+        ("GPIOD_AHB", "GPIOD"),
+        ("GPIOE_AHB", "GPIOE"),
+        ("GPIOF_AHB", "GPIOF"),
+        ("GPIOG_AHB", "GPIOG"),
+        ("GPIOH_AHB", "GPIOH"),
+        ("GPIOJ_AHB", "GPIOJ"),
+        ("GPIOK", "GPIOK"),
+        ("GPIOL", "GPIOL"),
+        ("GPIOM", "GPIOM"),
+        ("GPION", "GPION"),
+        ("GPIOP", "GPIOP"),
+        ("GPIOQ", "GPIOQ"),
+    ] {
+        mem.attach(Box::new(
+            crate::device::ti::gpio::Gpio::for_aperture_with::<
+                crate::device::svd::tm4c1294ncpdt::Tm4c1294ncpdt,
+            >(
+                aperture,
+                port,
+                crate::device::ti::gpio::Gpio::new_shared(),
+                crate::device::ti::gpio::PORT_DEFAULTS_129,
+            ),
+        ));
     }
     mem.attach(Box::new(Dwt::new()));
     mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));

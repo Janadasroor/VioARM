@@ -56,17 +56,39 @@ const PCTL_OFF: u32 = 0x52C;
 const ADCCTL_OFF: u32 = 0x530;
 const DMACTL_OFF: u32 = 0x534;
 
-/// Per-port reset words from Table 10-7: `(AFSEL, PUR, DEN, PCTL, CR)`.
-/// `PC[3:0]` reset to JTAG/SWD (committed AF + pull-up, `CR=0`),
-/// `PD7`/`PF0` reset to locked GPIO (`CR` bit clear), all other pins to
-/// plain tri-stated GPIO.
-const PORT_DEFAULTS: &[(&str, u32, u32, u32, u32, u32)] = &[
+/// Per-port reset words: `(port, AFSEL, PUR, DEN, PCTL, CR)`.
+/// Table 10-7 (TM4C123GH6PM): `PC[3:0]` reset to JTAG/SWD (committed AF +
+/// pull-up, `CR=0`), `PD7`/`PF0` reset to locked GPIO (`CR` bit clear),
+/// all other pins to plain tri-stated GPIO.
+const PORT_DEFAULTS_123: &[(&str, u32, u32, u32, u32, u32)] = &[
     ("GPIOA", 0x00, 0x00, 0x00, 0x0000_0000, 0xFF),
     ("GPIOB", 0x00, 0x00, 0x00, 0x0000_0000, 0xFF),
     ("GPIOC", 0x0F, 0x0F, 0x0F, 0x0000_1111, 0xF0),
     ("GPIOD", 0x00, 0x00, 0x00, 0x0000_0000, 0x7F),
     ("GPIOE", 0x00, 0x00, 0x00, 0x0000_0000, 0xFF),
     ("GPIOF", 0x00, 0x00, 0x00, 0x0000_0000, 0xFE),
+];
+
+/// Per-port reset words from Table 10-7 (TM4C1294NCPDT, SPMS433B):
+/// `PC[3:0]` JTAG/SWD, `PD7` (NMI) and `PE7` locked GPIO, everything else
+/// plain. Ports `A`–`J` are AHB-only, `K`–`Q` single-aperture (no
+/// `GPIOHBCTL` on this family).
+pub(crate) const PORT_DEFAULTS_129: &[(&str, u32, u32, u32, u32, u32)] = &[
+    ("GPIOA", 0x00, 0x00, 0x00, 0x0000_0000, 0xFF),
+    ("GPIOB", 0x00, 0x00, 0x00, 0x0000_0000, 0xFF),
+    ("GPIOC", 0x0F, 0x0F, 0x0F, 0x0000_1111, 0xF0),
+    ("GPIOD", 0x00, 0x00, 0x00, 0x0000_0000, 0x7F),
+    ("GPIOE", 0x00, 0x00, 0x00, 0x0000_0000, 0x7F),
+    ("GPIOF", 0x00, 0x00, 0x00, 0x0000_0000, 0xFF),
+    ("GPIOG", 0x00, 0x00, 0x00, 0x0000_0000, 0xFF),
+    ("GPIOH", 0x00, 0x00, 0x00, 0x0000_0000, 0xFF),
+    ("GPIOJ", 0x00, 0x00, 0x00, 0x0000_0000, 0xFF),
+    ("GPIOK", 0x00, 0x00, 0x00, 0x0000_0000, 0xFF),
+    ("GPIOL", 0x00, 0x00, 0x00, 0x0000_0000, 0xFF),
+    ("GPIOM", 0x00, 0x00, 0x00, 0x0000_0000, 0xFF),
+    ("GPION", 0x00, 0x00, 0x00, 0x0000_0000, 0xFF),
+    ("GPIOP", 0x00, 0x00, 0x00, 0x0000_0000, 0xFF),
+    ("GPIOQ", 0x00, 0x00, 0x00, 0x0000_0000, 0xFF),
 ];
 
 /// Shared port state behind both apertures: one register set plus the pin
@@ -90,6 +112,7 @@ pub struct GpioCore {
 pub struct GpioBehavior {
     def: &'static PeripheralDef,
     shared: Arc<Mutex<GpioCore>>,
+    defaults: &'static [(&'static str, u32, u32, u32, u32, u32)],
 }
 
 impl GpioBehavior {
@@ -171,7 +194,7 @@ impl GpioBehavior {
 
     fn stamp_defaults(&self, core: &mut GpioCore, port: &str) {
         let Some((_, afsel, pur, den, pctl, cr)) =
-            PORT_DEFAULTS.iter().find(|(name, ..)| *name == port)
+            self.defaults.iter().find(|(name, ..)| *name == port)
         else {
             return;
         };
@@ -213,8 +236,23 @@ impl Gpio {
         port: &'static str,
         shared: Arc<Mutex<GpioCore>>,
     ) -> Self {
+        Self::for_aperture_with::<D>(aperture, port, shared, PORT_DEFAULTS_123)
+    }
+
+    /// A new aperture with an explicit Table 10-7 reset table (129-family
+    /// ports use [`PORT_DEFAULTS_129`]).
+    ///
+    /// # Panics
+    /// Panics if `D`'s tables lack `aperture`, or the port has no reset row.
+    #[must_use]
+    pub fn for_aperture_with<D: Device>(
+        aperture: &str,
+        port: &'static str,
+        shared: Arc<Mutex<GpioCore>>,
+        defaults: &'static [(&'static str, u32, u32, u32, u32, u32)],
+    ) -> Self {
         assert!(
-            PORT_DEFAULTS.iter().any(|(name, ..)| *name == port),
+            defaults.iter().any(|(name, ..)| *name == port),
             "GPIO port {port} has no Table 10-7 reset row"
         );
         let def = D::peripheral(aperture).expect("generated tables contain GPIO aperture");
@@ -232,6 +270,7 @@ impl Gpio {
             inner: Mutex::new(GpioBehavior {
                 def,
                 shared: shared.clone(),
+                defaults,
             }),
         };
         gpio.reset();
@@ -455,6 +494,43 @@ mod tests {
         assert_eq!(read_word(&mut c, GPIOC_APB, PUR_OFF), 0x0F);
         assert_eq!(read_word(&mut c, GPIOC_APB, PCTL_OFF), 0x0000_1111);
         assert_eq!(read_word(&mut c, GPIOC_APB, CR_OFF), 0xF0);
+    }
+
+    /// Table 10-7 (TM4C1294NCPDT): same JTAG rows on port C, `PD7` (NMI)
+    /// and `PE7` locked, late ports plain; AHB-only apertures serve.
+    #[test]
+    fn table_10_7_resets_129() {
+        use crate::device::svd::tm4c1294ncpdt::Tm4c1294ncpdt;
+        const GPIOC_AHB: u32 = 0x4005_A000;
+        const GPIOD_AHB: u32 = 0x4005_B000;
+        const GPIOE_AHB: u32 = 0x4005_C000;
+        const GPIOQ: u32 = 0x4006_6000;
+        fn port129(aperture: &str, port: &'static str) -> Gpio {
+            Gpio::for_aperture_with::<Tm4c1294ncpdt>(
+                aperture,
+                port,
+                Gpio::new_shared(),
+                PORT_DEFAULTS_129,
+            )
+        }
+        let mut c = port129("GPIOC_AHB", "GPIOC");
+        assert_eq!(read_word(&mut c, GPIOC_AHB, AFSEL_OFF), 0x0F);
+        assert_eq!(read_word(&mut c, GPIOC_AHB, DEN_OFF), 0x0F);
+        assert_eq!(read_word(&mut c, GPIOC_AHB, CR_OFF), 0xF0);
+        let mut d = port129("GPIOD_AHB", "GPIOD");
+        assert_eq!(read_word(&mut d, GPIOD_AHB, CR_OFF), 0x7F);
+        let mut e = port129("GPIOE_AHB", "GPIOE");
+        assert_eq!(read_word(&mut e, GPIOE_AHB, CR_OFF), 0x7F);
+        // Late single-aperture port: plain tri-state, unlocked.
+        let mut q = port129("GPIOQ", "GPIOQ");
+        assert_eq!(read_word(&mut q, GPIOQ, AFSEL_OFF), 0);
+        assert_eq!(read_word(&mut q, GPIOQ, DEN_OFF), 0);
+        assert_eq!(read_word(&mut q, GPIOQ, CR_OFF), 0xFF);
+        // Drive + output round-trip on the late port.
+        write_word(&mut q, GPIOQ, DIR_OFF, 0xFF);
+        write_word(&mut q, GPIOQ, DEN_OFF, 0xFF);
+        write_word(&mut q, GPIOQ, DATA_MASK_END - 4, 0xA5);
+        assert_eq!(read_word(&mut q, GPIOQ, DATA_MASK_END - 4), 0xA5);
     }
 
     /// `DATA` mask addressing: writes touch unmasked output bits only,

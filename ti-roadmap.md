@@ -59,6 +59,8 @@ famous firmware), and the kings harness ports in days.
 - **129 P2a (done 2026-09-22): native 129 SYSCTL** (`device/ti/
   sysctl129.rs`, 7 lib tests, mounted, audit 1/64): Table 5-11 stamps,
   129 PLL math with the 25 MHz LaunchPad MOSC modeled, 120 MHz proven.
+- **129 P2b (done 2026-09-22): 129 GPIO** (reset-table parameter, 15
+  ports mounted, audit 16/64).
 
 ## Phase P2 — Peripheral models (~2–3 weeks, the bulk)
 
