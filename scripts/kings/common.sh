@@ -13,27 +13,30 @@ export HARNESS="$H"
 CC_BASE="-mcpu=cortex-m3 -mthumb -O2 --specs=nano.specs -ffunction-sections -fdata-sections -w"
 export CC_BASE
 
-# kings_link <board:f103|f107> <out.elf> <objects...>
+# kings_link <board:f103|f107|tm4c> <out.elf> <objects...>
 # Links with the harness startup + board support. VioARM boots STM32
-# boards from the 0x0 flash alias, hence mem_f10*.ld at ORIGIN 0x0.
-# KINGS_STARTUP overrides the startup object (FreeRTOS/ThreadX bring
-# their own vector tables); -lm is always linked (wikisort needs sqrt).
+# boards from the 0x0 flash alias, hence mem_f10*.ld at ORIGIN 0x0;
+# the Tiva boots natively at 0x0 (mem_tm4c.ld). KINGS_STARTUP overrides
+# the startup object (FreeRTOS/ThreadX bring their own vector tables);
+# -lm is always linked (wikisort needs sqrt).
 kings_link() {
   local board=$1 out=$2
   shift 2
-  local ld startup
+  local ld board_src board_obj
   case $board in
-    f103) ld="$H/mem_f103.ld" ;;
-    f107) ld="$H/mem_f107.ld" ;;
+    f103) ld="$H/mem_f103.ld"; board_src="$H/board.c" ;;
+    f107) ld="$H/mem_f107.ld"; board_src="$H/board.c" ;;
+    tm4c) ld="$H/mem_tm4c.ld"; board_src="$H/board_tm4c.c" ;;
     *) echo "kings_link: unknown board $board" >&2; return 1 ;;
   esac
+  board_obj="$KINGSWORK/harness/$(basename "$board_src" .c).o"
   startup="${KINGS_STARTUP:-$KINGSWORK/harness/startup.o}"
   [ -f "$startup" ] || \
     arm-none-eabi-gcc $CC_BASE -c "$H/startup.s" -o "$startup"
-  [ -f "$KINGSWORK/harness/board.o" ] || \
-    arm-none-eabi-gcc $CC_BASE -I"$H" -c "$H/board.c" -o "$KINGSWORK/harness/board.o"
+  [ -f "$board_obj" ] || \
+    arm-none-eabi-gcc $CC_BASE -I"$H" -c "$board_src" -o "$board_obj"
   arm-none-eabi-gcc $CC_BASE -T "$ld" "$startup" \
-    "$KINGSWORK/harness/board.o" "$@" -o "$out" -Wl,--gc-sections -lm
+    "$board_obj" "$@" -o "$out" -Wl,--gc-sections -lm
 }
 
 # kings_run <board> <elf> <budget> — vioarm release binary expected on PATH

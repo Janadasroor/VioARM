@@ -38,6 +38,7 @@ the same commit.
 | stm32f103 | 51 | 51 | 0 | Dhrystone, CoreMark, FreeRTOS, Embench, GPIO/USART1/TIM2, fabric pairs, CAN arbitration |
 | stm32f105 | 43 | 43 | 0 | CAN1 fabric arbitration |
 | stm32f107 | 47 | 47 | 0 | Embench-IoT, TFLM `hello_world`, ETH/USB ISRs, SPI pairs |
+| tm4c123gh6pm | 58 | 56 | 2 | Dhrystone 9.124, CoreMark valid (400 it), UART/GPIO/Timer e2e (`scripts/kings/ports/tm4c`) |
 | stm32f303xe | 56 | 56 | 0 | CRC, DAC1/2, GPIO, chip_cmsis legs |
 | stm32f407 | 82 | 82 | 0 | GPIO/USART/TIM2, ADC IRQ, Flash, DMA, USB host |
 | stm32g474xx | 82 | 82 | 0 | — |

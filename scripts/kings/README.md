@@ -15,11 +15,15 @@ rule that T3 claims lapse if re-runs stop passing.
   CoreMark/FreeRTOS/ThreadX/TFLM/gemmlowp/ruy roll HEAD; Dhrystone is the
   netlib shar page, hash-verified on extract.
 - `harness/` — clean-room board support (mine): `startup.s`, `board.h/c`
-  (USART1 115200 + DWT CYCCNT + newlib syscalls), `mem_f103.ld`,
-  `mem_f107.ld`. No upstream code. Two rules documented in `board.c`:
-  `board_init()` before any output/timing, tuned newlib strings.
+  (USART1 115200 + DWT CYCCNT + newlib syscalls), `board_tm4c.c`
+  (UART0 115200 + DWT CYCCNT for tm4c123gh6pm @ 16 MHz PIOSC),
+  `mem_f103.ld`, `mem_f107.ld`, `mem_tm4c.ld`. No upstream code. Two
+  rules documented in `board.c`: `board_init()` before any
+  output/timing, tuned newlib strings.
 - `ports/<fw>/` — per-firmware port glue (mine) + `build.sh`. Upstream
   sources stay pristine; patches are build-time scripts with rationale.
+  `ports/tm4c/` holds the Tiva retargets (e2e + Dhrystone + CoreMark
+  40/400; the valid CoreMark run is 400 iterations — >=10 s at 16 MHz).
 - `expected.sh`, `expected_embench.tsv` — pinned tables. Re-pin only
   with a full manual re-verification, never to silence CI.
 - `run_all.sh` — builds everything, runs, checks, exits nonzero on any

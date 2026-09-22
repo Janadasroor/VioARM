@@ -535,6 +535,7 @@ enum Board {
     Stm32f303xe,
     Stm32g474xx,
     Stm32l476,
+    Tm4c123gh6pm,
 }
 
 impl Board {
@@ -1047,6 +1048,7 @@ impl Board {
             Board::Stm32f303xe => board::stm32f303xe(),
             Board::Stm32g474xx => board::stm32g474xx(),
             Board::Stm32l476 => board::stm32l476(),
+            Board::Tm4c123gh6pm => board::tm4c123gh6pm(),
         }
     }
     fn name(self) -> &'static str {
@@ -1558,6 +1560,7 @@ impl Board {
             Board::Stm32f303xe => "stm32f303xe",
             Board::Stm32g474xx => "stm32g474xx",
             Board::Stm32l476 => "stm32l476",
+            Board::Tm4c123gh6pm => "tm4c123gh6pm",
         }
     }
 }
