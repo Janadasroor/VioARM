@@ -77,7 +77,13 @@ stays latch (zero-correct: no faults occur in simulation).
   direct-poke proofs per board. DONE 2026-09-22 for `tm4c123gh6pm`
   (`vioarm-core/tests/tiva_closeout.rs`, 17 tests, 56/58 behavioral).
 - T3 firmware: CoreMark + Dhrystone retargets via `scripts/kings/`
-  (new port dir, same method), plus a UART/GPIO/Timer e2e.
+  (new port dir, same method), plus a UART/GPIO/Timer e2e. DONE
+  2026-09-22 (`scripts/kings/ports/tm4c/`): e2e 4/4 markers, Dhrystone
+  22 self-checks + DMIPS 9.124 (= STM32 pin), CoreMark-40 golden CRCs
+  `e714/1fd7/8e3a` at 2.062/MHz (= STM32 pin), CoreMark-400 valid run
+  (`Correct operation validated`, 12 s >= 10 s floor). Tiva pins live
+  in `expected.sh` (`DHRY_DMIPS_TM4C`, `COREMARK_MHZ_TM4C`) and ride
+  the weekly kings CI via `run_all.sh` (P4).
 - `boards.md` + `trust-scope.md` rows for the new boards.
 
 ## Phase P4 — Continuous proof
