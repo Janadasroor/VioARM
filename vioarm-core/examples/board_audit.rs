@@ -46,60 +46,70 @@ fn main() {
     println!("`behavioral` = real device mounted (T2-or-better); `latch` = pure `NoBehavior` window (T1).");
     println!();
     for fam in FAMILIES {
-        let ctor = ctors[fam];
-        let mem = ctor();
-        // Mounted behavioral windows: every (base, len) claimed by a real
-        // device. Matching by address coverage (not by name) so instances
-        // that share one driver name (`I2C1`/`I2C2` both live behind
-        // `I2c`) still classify honestly.
-        let mut beh_windows: Vec<(u32, u32)> = Vec::new();
-        for d in mem.devices() {
-            if d.behavior_kind() != "behavioral" {
-                continue;
-            }
-            for r in d.ranges() {
-                beh_windows.push((r.base, r.len));
-            }
-        }
-        let table = tables[fam];
-        let mut beh_names: Vec<&str> = Vec::new();
-        let mut latch_names: Vec<&str> = Vec::new();
-        let mut core_names: Vec<&str> = Vec::new();
-        for p in table {
-            // System block (NVIC/SCB/SysTick/...) is modeled in the Core,
-            // not on the bus — neither latch nor missing.
-            if p.base >= 0xE000_0000 {
-                core_names.push(p.name);
-                continue;
-            }
-            let covered = beh_windows
-                .iter()
-                .any(|(b, l)| p.base >= *b && p.base < b + l);
-            if covered {
-                beh_names.push(p.name);
-            } else {
-                latch_names.push(p.name);
-            }
-        }
-        let bus_total = (beh_names.len() + latch_names.len()) as u32;
-        println!(
-            "## {fam}: {b}/{t} behavioral ({c} core-owned)",
-            b = beh_names.len(),
-            t = bus_total,
-            c = core_names.len()
-        );
-        println!();
-        println!(
-            "behavioral ({n}): {list}",
-            n = beh_names.len(),
-            list = beh_names.join(" ")
-        );
-        println!();
-        println!(
-            "latch ({n}): {list}",
-            n = latch_names.len(),
-            list = latch_names.join(" ")
-        );
-        println!();
+        audit_one(&ctors, &tables, fam);
     }
+    // TI track (`ti-roadmap.md` P1): the Tiva C donor audits the same way.
+    audit_one(&ctors, &tables, "tm4c123gh6pm");
+}
+
+fn audit_one(
+    ctors: &HashMap<&str, fn() -> board::BoardMemory>,
+    tables: &HashMap<&str, &[vioarm_core::device::svd::PeripheralDef]>,
+    fam: &str,
+) {
+    let ctor = ctors[fam];
+    let mem = ctor();
+    // Mounted behavioral windows: every (base, len) claimed by a real
+    // device. Matching by address coverage (not by name) so instances
+    // that share one driver name (`I2C1`/`I2C2` both live behind
+    // `I2c`) still classify honestly.
+    let mut beh_windows: Vec<(u32, u32)> = Vec::new();
+    for d in mem.devices() {
+        if d.behavior_kind() != "behavioral" {
+            continue;
+        }
+        for r in d.ranges() {
+            beh_windows.push((r.base, r.len));
+        }
+    }
+    let table = tables[fam];
+    let mut beh_names: Vec<&str> = Vec::new();
+    let mut latch_names: Vec<&str> = Vec::new();
+    let mut core_names: Vec<&str> = Vec::new();
+    for p in table {
+        // System block (NVIC/SCB/SysTick/...) is modeled in the Core,
+        // not on the bus — neither latch nor missing.
+        if p.base >= 0xE000_0000 {
+            core_names.push(p.name);
+            continue;
+        }
+        let covered = beh_windows
+            .iter()
+            .any(|(b, l)| p.base >= *b && p.base < b + l);
+        if covered {
+            beh_names.push(p.name);
+        } else {
+            latch_names.push(p.name);
+        }
+    }
+    let bus_total = (beh_names.len() + latch_names.len()) as u32;
+    println!(
+        "## {fam}: {b}/{t} behavioral ({c} core-owned)",
+        b = beh_names.len(),
+        t = bus_total,
+        c = core_names.len()
+    );
+    println!();
+    println!(
+        "behavioral ({n}): {list}",
+        n = beh_names.len(),
+        list = beh_names.join(" ")
+    );
+    println!();
+    println!(
+        "latch ({n}): {list}",
+        n = latch_names.len(),
+        list = latch_names.join(" ")
+    );
+    println!();
 }

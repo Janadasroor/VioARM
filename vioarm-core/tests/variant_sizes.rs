@@ -12,7 +12,7 @@ fn every_per_dname_board_has_exact_flash_ram_extents() {
     for (dname, entry) in board::all_per_dnames() {
         let mut mem = board::core_only_board_per_dname(dname)
             .unwrap_or_else(|| panic!("{dname}: no per-dname board"));
-        let flash_top = 0x0800_0000u32 + entry.flash_len;
+        let flash_top = entry.flash_base + entry.flash_len;
         assert!(
             mem.read(flash_top - 1).is_ok(),
             "{dname}: flash top unreadable"

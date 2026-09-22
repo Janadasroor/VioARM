@@ -55,6 +55,7 @@ pub mod stm32u535;
 pub mod stm32u575;
 pub mod stm32u5g9;
 pub mod stm32wba55;
+pub mod tm4c123gh6pm;
 
 /// The register access vocabulary used by the supported SVD files.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1415,8 +1416,8 @@ mod tests {
     #[test]
     fn per_dname_deltas_are_consistent() {
         use super::per_dname::{donor_peripherals, PER_DNAMES};
-        // 505 Dnames, every donor resolves, every removal names a real donor peripheral.
-        assert_eq!(PER_DNAMES.len(), 505);
+        // 506 Dnames, every donor resolves, every removal names a real donor peripheral.
+        assert_eq!(PER_DNAMES.len(), 506);
         let mut total = 0usize;
         for e in PER_DNAMES {
             assert!(e.flash_len > 0 && e.ram_len > 0, "sizes of {}", e.dname);
@@ -1436,8 +1437,9 @@ mod tests {
         }
         // Regression anchor: sum of filtered peripheral instances over all Dnames.
         // (40062 with 21 donors; 35691 after F2/F7/G0 moved to own-generation
-        // donors; 36722 after U5/H5/WBA/L5 moved to theirs.)
-        assert_eq!(total, 36722);
+        // donors; 36722 after U5/H5/WBA/L5 moved to theirs; 36780 with the
+        // TM4C123GH6PM Tiva donor, +58.)
+        assert_eq!(total, 36780);
         // Spot checks: known deltas from the (deleted) per-variant tables.
         let f405 = PER_DNAMES.iter().find(|e| e.dname == "STM32F405").unwrap();
         assert!(f405.peripheral("GPIOA").is_some());

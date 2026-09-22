@@ -21,6 +21,7 @@ or to a public git history without scrubbing. `packs/` is gitignored `116M→2.4
 | Keil.STM32WBAxx_DFP | 2.2.0 | Keil.STM32WBAxx_DFP.2.2.0.pack | 2.7M slim | `sha256:629532e024093307f0a46e47abbf1fe7826923720d9ad108684b0955316ea51a` | `WBA23/25/50/52/54/55/62/63/64/65/6M` `11` |
 | Keil.STM32L5xx_DFP | 2.1.0 | Keil.STM32L5xx_DFP.2.1.0.pack | 968K slim | `sha256:190ebdd8615107f9be69cd7a8bd9710e4c4240ed69c5886a5d7694a6d8c74c31` | `L552/L562` `2` |
 | ARM.CMSIS | 5.9.0 | ARM.CMSIS.5.9.0.pack | 33M | `sha256:14b366f2821ee5d32f0d3bf48ef9657ca45347261d0531263580848e9d36f8f4` | `CMSIS/Core/Include` `1053` files `core_cm0/3/4/7.h` |
+| Keil.TM4C_DFP | 1.1.0 | Keil.TM4C_DFP.1.1.0.pack | 7.6M | `sha256:127dcaf64e1b64674ae902239b6afa612701d8a73031492d65205f9aee2a5e8e` | `SVD/TM4C123` + `SVD/TM4C129` `71` `TM4C123GH6PM` `TM4C1294` (see `ti-roadmap.md`) |
 
 Total `9 DFP 2.4G` `386 Dnames` `21 SVDs 197` union `500 alias 100%` `board.rs` `506` `all_boards()` `per_dname.rs` `505` `Dnames` `H7 DTCM` sum `board.rs:3920` `h7_full_board` `2` windows `FMC 0xC0000000` `AXI 0x24000000` `DTCM 0x20000000` `500` `FLASH/RAM` `IROM1/IRAM1` exact `41` `FLASH/RAM` corrected `F401RE 0x80000/0x18000` `6b5fd6e`.
 

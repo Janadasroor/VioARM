@@ -29,13 +29,20 @@ famous firmware), and the kings harness ports in days.
 
 ## Phase P1 — Ingestion (3–5 days)
 
-- SVD → donor tables via the existing generator; alias wiring for the
-  TM4C123x 51-device set (one die closes the family).
-- Board constructors: flash/RAM/memory map, boot alias, core follows
-  M4F (+FPU, already modeled).
+- SVD → donor tables via the existing generator; board constructors:
+  flash/RAM/memory map, boot at `0x00000000` (Tiva VTOR reset, no STM32
+  BOOT alias), M4F core (already modeled).
+- **Donor finding (verified 2026-09-23, pack SVD diff): the 51 TM4C123x
+  dice are NOT one die.** 18 peripheral-name clusters; 238
+  shared-peripheral register diffs (GPIO pin counts, UART/ADC instances,
+  SYSCTL/FLASH_CTRL fields). 50 true own-SVD donors needed for full
+  coverage. P1 wires exactly one die — TM4C123GH6PM (LaunchPad MCU),
+  true own-SVD donor + board. The other 50 dice stay unwired (no
+  wrong-donor aliases; cf. the WP4 F7/G0 lesson) until P2/P3 mints
+  their donors one cluster at a time.
 - `board_audit.rs` lists the new windows; pins entry.
-- Acceptance: audit shows the new boards with all windows at least
-  latched, zero Reserved.
+- Acceptance: audit shows `tm4c123gh6pm` 0/58 behavioral, 58 latch,
+  zero Reserved.
 
 ## Phase P2 — Peripheral models (~2–3 weeks, the bulk)
 

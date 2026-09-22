@@ -229,6 +229,10 @@ mod tests {
                 "packs/Keil.STM32L5xx_DFP/CMSIS/SVD/STM32L562.svd",
                 "vioarm-core/src/device/svd/stm32l562.rs",
             ),
+            (
+                "packs/Keil.TM4C_DFP/SVD/TM4C123/TM4C123GH6PM.svd",
+                "vioarm-core/src/device/svd/tm4c123gh6pm.rs",
+            ),
         ];
         let mut checked = 0;
         for (svd_rel, out_rel) in pairs {

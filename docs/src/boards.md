@@ -6,7 +6,8 @@
 | stm32f107 | M3 | 256 KiB | 64 KiB | +ETH+USB+CAN2 — 47/47 closed |
 | stm32f407 | M4 | 1 MiB | 128 KiB+CCM | +FPU+DMA F4 paced (TIM/ADC/SPI/USART request lines) |
 | stm32h743 | M7 | 2 MiB | 512 KiB | +FPU-DP+SDRAM+QSPI+DTCM/AXI 0x20000+0x60000+FDCAN1+LPTIM1-5 |
-| **505 Dnames** | M0/M3/M4/M7 | 16K–2M | 4K–512K | **506 boards `100%` `bootable` `32` `SVD` donors + removal deltas `505` `per_dname.rs` `true-generation` `F2`/`F7`/`G0` `IROM1/IRAM1` `H7` `DTCM` `all_boards()` `all_per_dnames()` `RCC` `HPRE/PPRE` → `APB` timer ratios `FLASH` `WS` fetch stalls |
+| **506 Dnames** | M0/M3/M4/M7 | 16K–2M | 4K–512K | **506 boards `100%` `bootable` `32` `SVD` donors + removal deltas `506` `per_dname.rs` `true-generation` `F2`/`F7`/`G0` `IROM1/IRAM1` `H7` `DTCM` `all_boards()` `all_per_dnames()` `RCC` `HPRE/PPRE` → `APB` timer ratios `FLASH` `WS` fetch stalls |
+| tm4c123gh6pm | M4F | 256 KiB | 32 KiB | Tiva C T1: 58/58 latch, flash at `0x0` (`ti-roadmap.md` P1; other 50 dice need own-SVD donors) |
 | stm32f207/f217 | M3 | 256K–1M | 64–128K | `F4`-gen set, no `FPU`, `ETH`/`DCMI` per die, paced DMA + `LPTIM1` |
 | stm32f722/f746/f767/f730 | M7 | 256K–2M | 64–512K | `F4`-gen set, `QUADSPI`/`FMC` latch, `F730` own donor, paced DMA + `LPTIM1` |
 | stm32g031/g081/g050/g061/g0c1 | M0+ | 16–512K | 4–144K | `G031` behaviors, `FLASH`/`I2C`/`EXTI`/`SYSCFG` latch, `G0` `RCC`, `FDCAN`-cut + `LPTIM` |

@@ -93,7 +93,7 @@ anything else malformed is `VIOARM_ERR_BAD_ARG`).
   with bus-error status (`VIOARM_ERR_BUS` on unmapped addresses —
   never panicking).
 - **Catalog**: `vioarm_cosim_device_count/device_name` (attached
-  devices), `vioarm_cosim_board_count/board_name` (the frozen 506),
+  devices), `vioarm_cosim_board_count/board_name` (the frozen 507),
   `vioarm_cosim_board_clock(board, hz_out)` (static clock config, no
   firmware needed), and `vioarm_cosim_board_pin(board, pin, out, cap)`
   over the R6 pin tables (case-insensitive). String outs are

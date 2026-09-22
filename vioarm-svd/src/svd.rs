@@ -107,6 +107,7 @@ const SCALARS: &[&[u8]] = &[
     b"resetValue",
     b"bitOffset",
     b"bitWidth",
+    b"bitRange",
     b"value",
 ];
 
@@ -139,6 +140,10 @@ struct PeripheralB {
     name: String,
     base: u32,
     window: u32,
+    /// CMSIS `<size>` default for registers, set by a peripheral-level
+    /// `<size>` outside `<addressBlock>` (STM32 packs only use addressBlock
+    /// sizes, which land in `window` instead).
+    reg_size: u32,
     irqs: Vec<IrqB>,
     registers: Vec<RegisterB>,
     derived_from: Option<String>,
@@ -167,13 +172,20 @@ pub fn parse(xml: &str) -> Result<Model, ParseError> {
     let mut text = String::new();
     let mut capturing = false;
     let mut buf = Vec::new();
+    // Device-level `<size>`: CMSIS register-size default for the whole file.
+    let mut device_size = 0u32;
+    let mut in_address_block = false;
+    // Element depth: a device-level `<size>` is a direct child of
+    // `<device>` (depth 2). Deeper `<size>` elements (`<memory>` sizes in
+    // `<vendorExtensions>`, …) must not clobber the register default.
+    let mut depth = 0u32;
 
     loop {
         buf.clear();
         match reader.read_event_into(&mut buf) {
             Err(e) => return Err(ParseError(format!("xml error: {e}"))),
             Ok(Event::Eof) => break,
-            Ok(Event::Start(e) | Event::Empty(e)) => {
+            Ok(Event::Empty(e)) => {
                 text.clear();
                 capturing = SCALARS.contains(&e.name().as_ref());
                 match e.name().as_ref() {
@@ -184,6 +196,25 @@ pub fn parse(xml: &str) -> Result<Model, ParseError> {
                             ..PeripheralB::default()
                         }));
                     }
+                    b"register" => nodes.push(Node::Register(RegisterB::default())),
+                    b"field" => nodes.push(Node::Field(FieldB::default())),
+                    b"interrupt" => nodes.push(Node::Irq(IrqB::default())),
+                    _ => {}
+                }
+            }
+            Ok(Event::Start(e)) => {
+                text.clear();
+                depth += 1;
+                capturing = SCALARS.contains(&e.name().as_ref());
+                match e.name().as_ref() {
+                    b"peripheral" => {
+                        let derived_from = attr(&e, b"derivedFrom");
+                        nodes.push(Node::Peripheral(PeripheralB {
+                            derived_from,
+                            ..PeripheralB::default()
+                        }));
+                    }
+                    b"addressBlock" => in_address_block = true,
                     b"register" => nodes.push(Node::Register(RegisterB::default())),
                     b"field" => nodes.push(Node::Field(FieldB::default())),
                     b"interrupt" => nodes.push(Node::Irq(IrqB::default())),
@@ -204,13 +235,17 @@ pub fn parse(xml: &str) -> Result<Model, ParseError> {
                 if name == b"name" && nodes.is_empty() && device.is_empty() {
                     device = text.trim().to_string();
                 } else if SCALARS.contains(&name) && capturing {
-                    if let Some(node) = nodes.last_mut() {
-                        assign(node, name, text.trim());
+                    if name == b"size" && nodes.is_empty() && depth == 2 {
+                        device_size = parse_u32(text.trim());
+                    } else if let Some(node) = nodes.last_mut() {
+                        assign(node, name, text.trim(), in_address_block);
                     }
                 }
                 text.clear();
                 capturing = false;
+                depth = depth.saturating_sub(1);
                 match name {
+                    b"addressBlock" => in_address_block = false,
                     b"peripheral" => {
                         let node = nodes
                             .pop()
@@ -270,7 +305,7 @@ pub fn parse(xml: &str) -> Result<Model, ParseError> {
         }
     }
 
-    resolve(device, &peripherals)
+    resolve(device, device_size, &peripherals)
 }
 
 /// Copy the value of attribute `key` from an element, if present.
@@ -300,11 +335,19 @@ fn push_irq(nodes: &mut [Node], irq: IrqB) {
     }
 }
 
-fn assign(node: &mut Node, tag: &[u8], value: &str) {
+fn assign(node: &mut Node, tag: &[u8], value: &str, in_address_block: bool) {
     match (node, tag) {
         (Node::Peripheral(p), b"name") => p.name = value.to_string(),
         (Node::Peripheral(p), b"baseAddress") => p.base = parse_u32(value),
-        (Node::Peripheral(p), b"size") => p.window = parse_u32(value),
+        // Peripheral-level `<size>`: the addressBlock size is the window;
+        // a bare peripheral `<size>` is the CMSIS register-size default.
+        (Node::Peripheral(p), b"size") => {
+            if in_address_block {
+                p.window = parse_u32(value);
+            } else {
+                p.reg_size = parse_u32(value);
+            }
+        }
         (Node::Register(r), b"name") => r.name = value.to_string(),
         (Node::Register(r), b"addressOffset") => r.offset = parse_u32(value),
         (Node::Register(r), b"size") => r.size = parse_u32(value),
@@ -313,6 +356,11 @@ fn assign(node: &mut Node, tag: &[u8], value: &str) {
         (Node::Field(f), b"name") => f.name = value.to_string(),
         (Node::Field(f), b"bitOffset") => f.offset = parse_u32(value),
         (Node::Field(f), b"bitWidth") => f.width = parse_u32(value),
+        (Node::Field(f), b"bitRange") => {
+            let (offset, width) = parse_bit_range(value);
+            f.offset = offset;
+            f.width = width;
+        }
         (Node::Field(f), b"access") => f.access = Some(parse_access(value)),
         (Node::Irq(i), b"name") => i.name = value.to_string(),
         (Node::Irq(i), b"value") => {
@@ -320,6 +368,15 @@ fn assign(node: &mut Node, tag: &[u8], value: &str) {
         }
         _ => {}
     }
+}
+
+/// Parse a CMSIS `<bitRange>` (`[msb:lsb]` or `[bit]`) into (offset, width).
+fn parse_bit_range(s: &str) -> (u32, u32) {
+    let inner = s.trim().trim_start_matches('[').trim_end_matches(']');
+    let mut parts = inner.split(':');
+    let hi: u32 = parts.next().unwrap_or("0").trim().parse().unwrap_or(0);
+    let lo: u32 = parts.next().unwrap_or("0").trim().parse().unwrap_or(hi);
+    (lo, hi.saturating_sub(lo) + 1)
 }
 
 fn parse_u32(s: &str) -> u32 {
@@ -340,7 +397,7 @@ fn parse_access(s: &str) -> Access {
     }
 }
 
-fn resolve(device: String, parts: &[PeripheralB]) -> Result<Model, ParseError> {
+fn resolve(device: String, device_size: u32, parts: &[PeripheralB]) -> Result<Model, ParseError> {
     let mut out = Vec::with_capacity(parts.len());
     for p in parts {
         let src = match &p.derived_from {
@@ -350,6 +407,16 @@ fn resolve(device: String, parts: &[PeripheralB]) -> Result<Model, ParseError> {
                 .find(|q| &q.name == d)
                 .ok_or_else(|| ParseError(format!("derivedFrom {d} has no definition")))?,
         };
+        // CMSIS size inheritance: register → peripheral default →
+        // device default → 32 bits.
+        let reg_default = if p.reg_size != 0 {
+            p.reg_size
+        } else if device_size != 0 {
+            device_size
+        } else {
+            32
+        };
+        let finish = |r: &RegisterB| finish_register(r, reg_default);
         out.push(Peripheral {
             name: p.name.clone(),
             base: p.base,
@@ -360,9 +427,9 @@ fn resolve(device: String, parts: &[PeripheralB]) -> Result<Model, ParseError> {
                 p.irqs.iter().cloned().map(finish_irq).collect()
             },
             registers: if p.registers.is_empty() {
-                src.registers.iter().cloned().map(finish_register).collect()
+                src.registers.iter().map(finish).collect()
             } else {
-                p.registers.iter().cloned().map(finish_register).collect()
+                p.registers.iter().map(finish).collect()
             },
         });
     }
@@ -372,20 +439,22 @@ fn resolve(device: String, parts: &[PeripheralB]) -> Result<Model, ParseError> {
     })
 }
 
-fn finish_register(r: RegisterB) -> Register {
+fn finish_register(r: &RegisterB, reg_default: u32) -> Register {
+    let size = if r.size != 0 { r.size } else { reg_default };
     Register {
-        name: r.name,
+        name: r.name.clone(),
         offset: r.offset,
-        size: r.size,
+        size,
         access: r.access.unwrap_or(Access::ReadWrite),
         reset: r.reset,
         fields: r
             .fields
-            .into_iter()
+            .iter()
             .map(|f| Field {
-                name: f.name,
+                name: f.name.clone(),
                 offset: f.offset,
-                width: f.width,
+                // A field without bit info spans the whole register.
+                width: if f.width != 0 { f.width } else { size },
                 access: f.access.unwrap_or(Access::ReadWrite),
             })
             .collect(),

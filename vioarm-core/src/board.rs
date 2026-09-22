@@ -8342,6 +8342,34 @@ pub const STM32WBA55A1_RAM_LEN: u32 = 0x0001_0000;
 pub fn stm32wba55a1() -> BoardMemory {
     stm32wba55()
 }
+/// TM4C123GH6PM flash length in bytes (PDSC IROM1).
+pub const TM4C123GH6PM_FLASH_LEN: u32 = 0x0004_0000;
+/// TM4C123GH6PM RAM length in bytes (PDSC IRAM1).
+pub const TM4C123GH6PM_RAM_LEN: u32 = 0x0000_8000;
+#[must_use]
+/// Construct the `tm4c123gh6pm` (M4F) board memory: flash at 0x0 + RAM plus its peripheral set.
+/// T1 standing: every window is a `NoBehavior` latch; no TI behaviors mount yet (see `ti-roadmap.md` P2).
+pub fn tm4c123gh6pm() -> BoardMemory {
+    // Tiva C boots at 0x00000000 (VTOR reset); no STM32 BOOT alias, no flash gate.
+    let backing = FlatMemory::with_layout(
+        &[0x0000_0000, RAM],
+        &[TM4C123GH6PM_FLASH_LEN, TM4C123GH6PM_RAM_LEN],
+    );
+    let mut mem = SystemMemory::new(backing);
+    let clock = ClockState::shared();
+    mem.set_clock(clock.clone());
+    for p in crate::device::svd::tm4c123gh6pm::PERIPHERALS {
+        if p.base >= 0xE000_0000 {
+            continue;
+        }
+        mem.attach(Box::new(crate::device::svd::RegisterFile::<
+            crate::device::svd::NoBehavior,
+        >::new(p, crate::device::svd::NoBehavior)));
+    }
+    mem.attach(Box::new(Dwt::new()));
+    mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
+    mem
+}
 /// STM32F030B0 flash length in bytes.
 pub const STM32F030B0_FLASH_LEN: u32 = 0x0000_8000;
 /// STM32F030B0 RAM length in bytes.
@@ -10962,6 +10990,7 @@ pub fn all_chip_tables() -> Vec<(&'static str, &'static [crate::device::svd::Per
         ("stm32g474xx", svd::stm32g474xx::PERIPHERALS),
         ("stm32h743", svd::stm32h743::PERIPHERALS),
         ("stm32l476", svd::stm32l476::PERIPHERALS),
+        ("tm4c123gh6pm", svd::tm4c123gh6pm::PERIPHERALS),
     ]
 }
 
@@ -11005,7 +11034,12 @@ pub fn all_chips() -> Vec<Chip> {
         .into_iter()
         .map(|(name, peripherals)| Chip {
             name,
-            flash_base: 0x0800_0000,
+            // Tiva C boots at 0x00000000; STM32 boots at the 0x08000000 alias.
+            flash_base: if name.starts_with("tm4c") {
+                0x0000_0000
+            } else {
+                0x0800_0000
+            },
             peripherals,
         })
         .collect()
@@ -11014,7 +11048,7 @@ pub fn all_chips() -> Vec<Chip> {
 /// One enumerated board: its short name plus its constructor.
 pub type BoardEntry = (&'static str, fn() -> BoardMemory);
 
-/// Every board function (506) enumerated for 500-chip CMSIS coverage.
+/// Every board function (557) enumerated for 500-chip CMSIS coverage.
 #[must_use]
 pub fn all_boards() -> Vec<BoardEntry> {
     vec![
@@ -11524,10 +11558,11 @@ pub fn all_boards() -> Vec<BoardEntry> {
         ("stm32l476", stm32l476),
         ("stm32g474xx", stm32g474xx),
         ("stm32h743", stm32h743),
+        ("tm4c123gh6pm", tm4c123gh6pm),
     ]
 }
 
-/// Per-Dname committed tables exact: 505 Dnames with flash/ram exact via PDSC IROM1/IRAM1.
+/// Per-Dname committed tables exact: 556 Dnames with flash/ram/base exact via PDSC IROM1/IRAM1.
 /// Uses `per_dname::PER_DNAMES` 21-donor-plus-removal views with per-Dname flash/ram.
 pub fn core_only_board_per_dname(dname: &str) -> Option<BoardMemory> {
     use crate::device::svd::per_dname::{H7_DTCM, PER_DNAMES};
@@ -11553,7 +11588,7 @@ pub fn core_only_board_per_dname(dname: &str) -> Option<BoardMemory> {
             )
         }
     } else {
-        FlatMemory::with_layout(&[0x0800_0000, RAM], &[entry.flash_len, entry.ram_len])
+        FlatMemory::with_layout(&[entry.flash_base, RAM], &[entry.flash_len, entry.ram_len])
     };
     let mut mem = SystemMemory::new(backing);
     let clock = ClockState::shared();
@@ -11571,7 +11606,7 @@ pub fn core_only_board_per_dname(dname: &str) -> Option<BoardMemory> {
     Some(mem)
 }
 
-/// All 505 Dnames with per-Dname flash/ram exact (donor + removal deltas over 32 SVD donors)
+/// All 556 Dnames with per-Dname flash/ram/base exact (donor + removal deltas over 33 SVD donors)
 pub fn all_per_dnames() -> Vec<(
     &'static str,
     &'static crate::device::svd::per_dname::PerDname,
