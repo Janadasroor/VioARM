@@ -13,7 +13,7 @@ export HARNESS="$H"
 CC_BASE="-mcpu=cortex-m3 -mthumb -O2 --specs=nano.specs -ffunction-sections -fdata-sections -w"
 export CC_BASE
 
-# kings_link <board:f103|f107|tm4c> <out.elf> <objects...>
+# kings_link <board:f103|f107|tm4c|tm4c129> <out.elf> <objects...>
 # Links with the harness startup + board support. VioARM boots STM32
 # boards from the 0x0 flash alias, hence mem_f10*.ld at ORIGIN 0x0;
 # the Tiva boots natively at 0x0 (mem_tm4c.ld). KINGS_STARTUP overrides
@@ -27,6 +27,7 @@ kings_link() {
     f103) ld="$H/mem_f103.ld"; board_src="$H/board.c" ;;
     f107) ld="$H/mem_f107.ld"; board_src="$H/board.c" ;;
     tm4c) ld="$H/mem_tm4c.ld"; board_src="$H/board_tm4c.c" ;;
+    tm4c129) ld="$H/mem_tm4c129.ld"; board_src="$H/board_tm4c129.c" ;;
     *) echo "kings_link: unknown board $board" >&2; return 1 ;;
   esac
   board_obj="$KINGSWORK/harness/$(basename "$board_src" .c).o"

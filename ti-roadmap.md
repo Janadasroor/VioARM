@@ -70,6 +70,10 @@ famous firmware), and the kings harness ports in days.
   59/64): `FMC2` buffered program, 16× protection, `PP`/`SSIZE` ID.
 - **129 P3 (done 2026-09-22): closeout** (`vioarm-core/tests/
   tm4c129_closeout.rs`, 18/18): 129 natives + fleet on the real board.
+- **129 T3 (done 2026-09-22): firmware proof** (`scripts/kings/ports/
+  tm4c/` 129 builds): e2e 4/4, Dhrystone 9.124, CoreMark-40 golden CRCs
+  (tick-identical to the 123 run), CoreMark-400 valid (12 s). Pins +
+  gates in `expected.sh`/`run_all.sh` (weekly CI).
 
 ## Phase P2 — Peripheral models (~2–3 weeks, the bulk)
 

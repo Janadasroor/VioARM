@@ -24,6 +24,9 @@ rule that T3 claims lapse if re-runs stop passing.
   sources stay pristine; patches are build-time scripts with rationale.
   `ports/tm4c/` holds the Tiva retargets (e2e + Dhrystone + CoreMark
   40/400; the valid CoreMark run is 400 iterations — >=10 s at 16 MHz).
+  A second board argument (`tm4c129`) retargets the same firmware to
+  `tm4c1294ncpdt` (AHB-only GPIO in `board_tm4c129.c`, 1 MB/256 KB in
+  `mem_tm4c129.ld`).
 - `expected.sh`, `expected_embench.tsv` — pinned tables. Re-pin only
   with a full manual re-verification, never to silence CI.
 - `run_all.sh` — builds everything, runs, checks, exits nonzero on any
