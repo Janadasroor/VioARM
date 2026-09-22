@@ -8410,6 +8410,14 @@ pub fn tm4c123gh6pm() -> BoardMemory {
             crate::device::svd::tm4c123gh6pm::Tm4c123gh6pm,
         >(name)));
     }
+    // Two watchdogs sharing the board reset output.
+    let wdg = std::sync::Arc::new(std::sync::Mutex::new(false));
+    mem.set_watchdog_reset(wdg.clone());
+    for name in ["WATCHDOG0", "WATCHDOG1"] {
+        mem.attach(Box::new(crate::device::ti::wdt::Wdt::for_device::<
+            crate::device::svd::tm4c123gh6pm::Tm4c123gh6pm,
+        >(name, wdg.clone())));
+    }
     for p in crate::device::svd::tm4c123gh6pm::PERIPHERALS {
         if p.base >= 0xE000_0000 || p.base == crate::device::ti::sysctl::SYSCTL_BASE {
             continue;

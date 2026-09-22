@@ -6,3 +6,4 @@ pub mod ssi;
 pub mod sysctl;
 pub mod timer;
 pub mod uart;
+pub mod wdt;
