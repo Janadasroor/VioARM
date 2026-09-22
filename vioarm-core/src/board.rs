@@ -8365,18 +8365,11 @@ pub fn tm4c1294ncpdt() -> BoardMemory {
         >()
         .with_clock(clock.clone()),
     ));
-    for p in crate::device::svd::tm4c1294ncpdt::PERIPHERALS {
-        if p.name == "SYSCTL" {
-            continue;
-        }
-        // GPIO windows mount below with the 129 reset rows; skip latches.
-        if p.name.starts_with("GPIO") {
-            continue;
-        }
-        mem.attach(Box::new(RegisterFile::<NoBehavior>::new(p, NoBehavior)));
-    }
     // Fifteen GPIO ports: AHB-only A–J plus single-aperture K–Q (no
     // GPIOHBCTL on this family), each with the 129 Table 10-7 rows.
+    // Ordering is load-bearing (P2c): behaviors mount BEFORE the latch
+    // loop below because routing is first-wins — latches attached first
+    // would shadow the behaviors.
     for (aperture, port) in [
         ("GPIOA_AHB", "GPIOA"),
         ("GPIOB_AHB", "GPIOB"),
@@ -8404,6 +8397,93 @@ pub fn tm4c1294ncpdt() -> BoardMemory {
                 crate::device::ti::gpio::PORT_DEFAULTS_129,
             ),
         ));
+    }
+    // Eight UARTs, one behavior each (same offsets as the 123 family).
+    for name in [
+        "UART0", "UART1", "UART2", "UART3", "UART4", "UART5", "UART6", "UART7",
+    ] {
+        mem.attach(Box::new(crate::device::ti::uart::Uart::for_device::<
+            crate::device::svd::tm4c1294ncpdt::Tm4c1294ncpdt,
+        >(name)));
+    }
+    // Eight GPTMs: TIMER0–7 (this die exposes no WTIMER windows;
+    // PPWTIMER reads 0 — Timer A concatenated only).
+    for name in [
+        "TIMER0", "TIMER1", "TIMER2", "TIMER3", "TIMER4", "TIMER5", "TIMER6", "TIMER7",
+    ] {
+        mem.attach(Box::new(crate::device::ti::timer::Gptm::for_device::<
+            crate::device::svd::tm4c1294ncpdt::Tm4c1294ncpdt,
+        >(name)));
+    }
+    // Four SSIs (master Freescale SPI; slave mode latched).
+    for name in ["SSI0", "SSI1", "SSI2", "SSI3"] {
+        mem.attach(Box::new(crate::device::ti::ssi::Ssi::for_device::<
+            crate::device::svd::tm4c1294ncpdt::Tm4c1294ncpdt,
+        >(name)));
+    }
+    // Ten I2Cs (master mode; slave windows latched).
+    for name in [
+        "I2C0", "I2C1", "I2C2", "I2C3", "I2C4", "I2C5", "I2C6", "I2C7", "I2C8", "I2C9",
+    ] {
+        mem.attach(Box::new(crate::device::ti::i2c::I2c::for_device::<
+            crate::device::svd::tm4c1294ncpdt::Tm4c1294ncpdt,
+        >(name)));
+    }
+    // Two watchdogs sharing the board reset output.
+    let wdg = std::sync::Arc::new(std::sync::Mutex::new(false));
+    mem.set_watchdog_reset(wdg.clone());
+    for name in ["WATCHDOG0", "WATCHDOG1"] {
+        mem.attach(Box::new(crate::device::ti::wdt::Wdt::for_device::<
+            crate::device::svd::tm4c1294ncpdt::Tm4c1294ncpdt,
+        >(name, wdg.clone())));
+    }
+    // Two ADCs (processor-triggered sequencers; other triggers latched).
+    for name in ["ADC0", "ADC1"] {
+        mem.attach(Box::new(crate::device::ti::adc::Adc::for_device::<
+            crate::device::svd::tm4c1294ncpdt::Tm4c1294ncpdt,
+        >(name)));
+    }
+    // One PWM module (four generators; faults latched).
+    mem.attach(Box::new(crate::device::ti::pwm::Pwm::for_device::<
+        crate::device::svd::tm4c1294ncpdt::Tm4c1294ncpdt,
+    >("PWM0")));
+    // One QEI (phase/velocity capture; filters latched).
+    mem.attach(Box::new(crate::device::ti::qei::Qei::for_device::<
+        crate::device::svd::tm4c1294ncpdt::Tm4c1294ncpdt,
+    >("QEI0")));
+    // Two CANs (message objects + IF windows; errors/bit-timing latent).
+    for name in ["CAN0", "CAN1"] {
+        mem.attach(Box::new(crate::device::ti::can::Can::for_device::<
+            crate::device::svd::tm4c1294ncpdt::Tm4c1294ncpdt,
+        >(name)));
+    }
+    // One USB controller (device mode; host/OTG latched).
+    mem.attach(Box::new(crate::device::ti::usb::Usb::for_device::<
+        crate::device::svd::tm4c1294ncpdt::Tm4c1294ncpdt,
+    >("USB0")));
+    // EEPROM (the 129 flash controller needs a native FMC2 model — P2d;
+    // the EEPROM completion link is unwired until then).
+    mem.attach(Box::new(crate::device::ti::eeprom::Eeprom::for_device::<
+        crate::device::svd::tm4c1294ncpdt::Tm4c1294ncpdt,
+    >(
+        "EEPROM",
+        std::sync::Arc::new(std::sync::Mutex::new(false)),
+    )));
+    // Hibernation RTC subset.
+    mem.attach(Box::new(crate::device::ti::hib::Hib::for_device::<
+        crate::device::svd::tm4c1294ncpdt::Tm4c1294ncpdt,
+    >("HIB")));
+    // Analog comparators (driven outputs; no analog in T2).
+    mem.attach(Box::new(crate::device::ti::comp::Comp::for_device::<
+        crate::device::svd::tm4c1294ncpdt::Tm4c1294ncpdt,
+    >("COMP")));
+    // Leftover windows stay pure latches (new 129 IPs + decided latches).
+    // Attached LAST: first-wins routing keeps the behaviors above.
+    for p in crate::device::svd::tm4c1294ncpdt::PERIPHERALS {
+        if p.base >= 0xE000_0000 || p.base == crate::device::ti::sysctl129::SYSCTL_BASE {
+            continue;
+        }
+        mem.attach(Box::new(RegisterFile::<NoBehavior>::new(p, NoBehavior)));
     }
     mem.attach(Box::new(Dwt::new()));
     mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));

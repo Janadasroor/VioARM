@@ -61,6 +61,10 @@ famous firmware), and the kings harness ports in days.
   129 PLL math with the 25 MHz LaunchPad MOSC modeled, 120 MHz proven.
 - **129 P2b (done 2026-09-22): 129 GPIO** (reset-table parameter, 15
   ports mounted, audit 16/64).
+- **129 P2c (done 2026-09-22): compatible fleet** (42 windows, audit
+  58/64): UART/TIMER/SSI/I2C/WDT/ADC/PWM/QEI/CAN/USB/EEPROM/HIB/COMP
+  mount unchanged; this die has no `WTIMER` windows; latch loop moved
+  after behaviors (first-wins routing).
 
 ## Phase P2 — Peripheral models (~2–3 weeks, the bulk)
 
