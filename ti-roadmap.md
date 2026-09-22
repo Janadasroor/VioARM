@@ -43,6 +43,19 @@ famous firmware), and the kings harness ports in days.
 - `board_audit.rs` lists the new windows; pins entry.
 - Acceptance: audit shows `tm4c123gh6pm` 0/58 behavioral, 58 latch,
   zero Reserved.
+- **TM4C129 P1 (done 2026-09-22, pack SVD diff): the 20 TM4C129x dice
+  form 12 peripheral-name clusters with only 10 within-cluster
+  register diffs (flash-bank counts, EPHY presence) + 9
+  varying-presence IPs (`EMAC0`, `LCD0`, `AES`/`DES`/`SHAMD5`,
+  `ONEWIRE0`, `GPIOR`/`S`/`T`) — far cleaner than the 123 family.
+  TM4C1294NCPDT (Connected LaunchPad MCU) minted as the first true
+  own-SVD donor (64 periphs/2196 regs/7366 fields; 1 MB flash, 256 KB
+  SRAM per PDSC) + wired Dname + latch board: audit 0/64 behavioral,
+  zero Reserved. The other 19 dice stay unwired pending own-SVD
+  donors. New 129-only windows (`EMAC0`, `EPI0`, `CCM0`, `I2C4`–`I2C9`,
+  `TIMER6`/`7`, extra GPIO) are P2 modeling work; note the 129
+  `SYSCTL` DID constants differ from the 123 set the shared model
+  stamps today.
 
 ## Phase P2 — Peripheral models (~2–3 weeks, the bulk)
 

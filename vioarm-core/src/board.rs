@@ -8342,6 +8342,30 @@ pub const STM32WBA55A1_RAM_LEN: u32 = 0x0001_0000;
 pub fn stm32wba55a1() -> BoardMemory {
     stm32wba55()
 }
+/// TM4C1294NCPDT flash length in bytes (PDSC IROM1).
+pub const TM4C1294NCPDT_FLASH_LEN: u32 = 0x0010_0000;
+/// TM4C1294NCPDT RAM length in bytes (PDSC IRAM1).
+pub const TM4C1294NCPDT_RAM_LEN: u32 = 0x0004_0000;
+#[must_use]
+/// Construct the `tm4c1294ncpdt` (M4F) board memory: flash at 0x0 + RAM plus its peripheral set.
+/// T1 standing: every window is a `NoBehavior` latch; no TI behaviors mount yet (see `ti-roadmap.md` 129 P2).
+pub fn tm4c1294ncpdt() -> BoardMemory {
+    use crate::device::svd::{NoBehavior, RegisterFile};
+    // Tiva C boots at 0x00000000 (VTOR reset); no STM32 BOOT alias, no flash gate.
+    let backing = FlatMemory::with_layout(
+        &[0x0000_0000, RAM],
+        &[TM4C1294NCPDT_FLASH_LEN, TM4C1294NCPDT_RAM_LEN],
+    );
+    let mut mem = SystemMemory::new(backing);
+    let clock = ClockState::shared();
+    mem.set_clock(clock.clone());
+    for p in crate::device::svd::tm4c1294ncpdt::PERIPHERALS {
+        mem.attach(Box::new(RegisterFile::<NoBehavior>::new(p, NoBehavior)));
+    }
+    mem.attach(Box::new(Dwt::new()));
+    mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
+    mem
+}
 /// TM4C123GH6PM flash length in bytes (PDSC IROM1).
 pub const TM4C123GH6PM_FLASH_LEN: u32 = 0x0004_0000;
 /// TM4C123GH6PM RAM length in bytes (PDSC IRAM1).
@@ -11095,6 +11119,7 @@ pub fn all_chip_tables() -> Vec<(&'static str, &'static [crate::device::svd::Per
         ("stm32h743", svd::stm32h743::PERIPHERALS),
         ("stm32l476", svd::stm32l476::PERIPHERALS),
         ("tm4c123gh6pm", svd::tm4c123gh6pm::PERIPHERALS),
+        ("tm4c1294ncpdt", svd::tm4c1294ncpdt::PERIPHERALS),
     ]
 }
 
@@ -11663,6 +11688,7 @@ pub fn all_boards() -> Vec<BoardEntry> {
         ("stm32g474xx", stm32g474xx),
         ("stm32h743", stm32h743),
         ("tm4c123gh6pm", tm4c123gh6pm),
+        ("tm4c1294ncpdt", tm4c1294ncpdt),
     ]
 }
 

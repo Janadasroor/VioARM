@@ -76,6 +76,7 @@ pub fn donor_peripherals(donor: &str) -> &'static [PeripheralDef] {
         "stm32h743" => crate::device::svd::stm32h743::PERIPHERALS,
         "stm32l476" => crate::device::svd::stm32l476::PERIPHERALS,
         "tm4c123gh6pm" => crate::device::svd::tm4c123gh6pm::PERIPHERALS,
+        "tm4c1294ncpdt" => crate::device::svd::tm4c1294ncpdt::PERIPHERALS,
         _ => panic!("unknown SVD donor"),
     }
 }
@@ -4747,6 +4748,18 @@ pub const PER_DNAMES: &[PerDname] = &[
         ram_len: 0x0000_8000,
         flash_base: 0x0000_0000,
         donor: "tm4c123gh6pm",
+        removed: &[],
+    },
+    // TM4C129x (Tiva C): TM4C1294NCPDT (Connected LaunchPad) is a true
+    // own-SVD donor. The other 19 dice cluster into 11 peripheral-name
+    // groups with small register deltas (flash-bank counts, EPHY regs)
+    // and stay unwired until donors mint them (see ti-roadmap.md).
+    PerDname {
+        dname: "TM4C1294NCPDT",
+        flash_len: 0x0010_0000,
+        ram_len: 0x0004_0000,
+        flash_base: 0x0000_0000,
+        donor: "tm4c1294ncpdt",
         removed: &[],
     },
 ];
