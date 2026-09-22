@@ -77,6 +77,7 @@ pub fn donor_peripherals(donor: &str) -> &'static [PeripheralDef] {
         "stm32l476" => crate::device::svd::stm32l476::PERIPHERALS,
         "tm4c123gh6pm" => crate::device::svd::tm4c123gh6pm::PERIPHERALS,
         "tm4c1294ncpdt" => crate::device::svd::tm4c1294ncpdt::PERIPHERALS,
+        "tm4c129xnczad" => crate::device::svd::tm4c129xnczad::PERIPHERALS,
         _ => panic!("unknown SVD donor"),
     }
 }
@@ -4760,6 +4761,17 @@ pub const PER_DNAMES: &[PerDname] = &[
         ram_len: 0x0004_0000,
         flash_base: 0x0000_0000,
         donor: "tm4c1294ncpdt",
+        removed: &[],
+    },
+    // TM4C129XNCZAD: second 129 donor (maximal superset: +AES/DES/SHAMD5
+    // crypto, LCD0, ONEWIRE0, GPIOR/S/T over the 1294 set; register-
+    // identical elsewhere).
+    PerDname {
+        dname: "TM4C129XNCZAD",
+        flash_len: 0x0010_0000,
+        ram_len: 0x0004_0000,
+        flash_base: 0x0000_0000,
+        donor: "tm4c129xnczad",
         removed: &[],
     },
 ];

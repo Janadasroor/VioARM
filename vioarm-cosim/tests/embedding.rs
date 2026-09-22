@@ -317,7 +317,7 @@ fn embedding_misuse_fails_closed() {
 #[test]
 fn catalog_lists_boards_devices_clocks_and_pins() {
     let _serial = serial();
-    assert_eq!(vioarm_cosim_board_count(), 508, "frozen board list");
+    assert_eq!(vioarm_cosim_board_count(), 509, "frozen board list");
     let first = get_string(|out, cap| vioarm_cosim_board_name(0, out, cap));
     assert!(!first.is_empty(), "board 0 named");
     let last =

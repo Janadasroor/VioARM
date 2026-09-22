@@ -237,6 +237,10 @@ mod tests {
                 "packs/Keil.TM4C_DFP/SVD/TM4C129/TM4C1294NCPDT.svd",
                 "vioarm-core/src/device/svd/tm4c1294ncpdt.rs",
             ),
+            (
+                "packs/Keil.TM4C_DFP/SVD/TM4C129/TM4C129XNCZAD.svd",
+                "vioarm-core/src/device/svd/tm4c129xnczad.rs",
+            ),
         ];
         let mut checked = 0;
         for (svd_rel, out_rel) in pairs {

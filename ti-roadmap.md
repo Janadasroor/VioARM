@@ -74,6 +74,8 @@ famous firmware), and the kings harness ports in days.
   tm4c/` 129 builds): e2e 4/4, Dhrystone 9.124, CoreMark-40 golden CRCs
   (tick-identical to the 123 run), CoreMark-400 valid (12 s). Pins +
   gates in `expected.sh`/`run_all.sh` (weekly CI).
+- **Second 129 donor (done 2026-09-22): TM4C129XNCZAD** (72 periphs,
+  audit 62/72): maximal superset + full 129 mounts; 508 Dnames.
 
 ## Phase P2 — Peripheral models (~2–3 weeks, the bulk)
 

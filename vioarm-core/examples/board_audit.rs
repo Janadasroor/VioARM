@@ -52,6 +52,7 @@ fn main() {
     audit_one(&ctors, &tables, "tm4c123gh6pm");
     // TM4C129 donor (`ti-roadmap.md` 129 P1): same treatment.
     audit_one(&ctors, &tables, "tm4c1294ncpdt");
+    audit_one(&ctors, &tables, "tm4c129xnczad");
 }
 
 fn audit_one(

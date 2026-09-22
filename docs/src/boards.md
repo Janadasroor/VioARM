@@ -6,7 +6,7 @@
 | stm32f107 | M3 | 256 KiB | 64 KiB | +ETH+USB+CAN2 — 47/47 closed |
 | stm32f407 | M4 | 1 MiB | 128 KiB+CCM | +FPU+DMA F4 paced (TIM/ADC/SPI/USART request lines) |
 | stm32h743 | M7 | 2 MiB | 512 KiB | +FPU-DP+SDRAM+QSPI+DTCM/AXI 0x20000+0x60000+FDCAN1+LPTIM1-5 |
-| **507 Dnames** | M0/M3/M4/M7 | 16K–2M | 4K–512K | **507 boards `100%` `bootable` `34` `SVD` donors + removal deltas `507` `per_dname.rs` `true-generation` `F2`/`F7`/`G0` `IROM1/IRAM1` `H7` `DTCM` `all_boards()` `all_per_dnames()` `RCC` `HPRE/PPRE` → `APB` timer ratios `FLASH` `WS` fetch stalls |
+| **508 Dnames** | M0/M3/M4/M7 | 16K–2M | 4K–512K | **508 boards `100%` `bootable` `35` `SVD` donors + removal deltas `508` `per_dname.rs` `true-generation` `F2`/`F7`/`G0` `IROM1/IRAM1` `H7` `DTCM` `all_boards()` `all_per_dnames()` `RCC` `HPRE/PPRE` → `APB` timer ratios `FLASH` `WS` fetch stalls |
 | tm4c123gh6pm | M4F | 256 KiB | 32 KiB | Tiva C: all but SYSEXC/UDMA behavioral (56/58; T3 firmware-proven: Dhrystone 9.124, CoreMark valid, e2e; `ti-roadmap.md` P3; other 50 dice need own-SVD donors) |
 | tm4c1294ncpdt | M4F | 1 MiB | 256 KiB | Tiva C 129: all but EPI0/EMAC0/CCM0/SYSEXC/UDMA behavioral (59/64; T3 firmware-proven: Dhrystone 9.124, CoreMark valid, e2e; `ti-roadmap.md` 129 T3; other 19 dice need own-SVD donors) |
 | stm32f207/f217 | M3 | 256K–1M | 64–128K | `F4`-gen set, no `FPU`, `ETH`/`DCMI` per die, paced DMA + `LPTIM1` |
