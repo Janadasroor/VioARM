@@ -8359,7 +8359,16 @@ pub fn tm4c1294ncpdt() -> BoardMemory {
     let mut mem = SystemMemory::new(backing);
     let clock = ClockState::shared();
     mem.set_clock(clock.clone());
+    mem.attach(Box::new(
+        crate::device::ti::sysctl129::Sysctl129::for_device::<
+            crate::device::svd::tm4c1294ncpdt::Tm4c1294ncpdt,
+        >()
+        .with_clock(clock.clone()),
+    ));
     for p in crate::device::svd::tm4c1294ncpdt::PERIPHERALS {
+        if p.name == "SYSCTL" {
+            continue;
+        }
         mem.attach(Box::new(RegisterFile::<NoBehavior>::new(p, NoBehavior)));
     }
     mem.attach(Box::new(Dwt::new()));
