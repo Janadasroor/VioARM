@@ -86,9 +86,9 @@ Board is `stm32f103` @8 MHz unless noted; second opinion is QEMU
 | Firmware | Sources | Re-verified result |
 |---|---|---|
 | Dhrystone 2.1 | netlib `dhry-c` shar | 20/20 checks, **9.124 DMIPS** (1.14/MHz); VioARM ≡ QEMU |
-| CoreMark 2K perf | eembc/coremark, 40 iters | CRCs `e714/1fd7/8e3a`, **2.058/MHz**; VioARM ≡ QEMU |
+| CoreMark 2K perf | eembc/coremark, 40 iters | CRCs `e714/1fd7/8e3a`, **2.062/MHz**; VioARM ≡ QEMU |
 | CoreMark 2K perf | same, 200 iters | 12 s (≥10 s rule), **"Correct operation validated"**, 16 it/s |
-| Embench-IoT | embench-iot @`09c2ed8` (2026-02), `stm32f107` | **19/19 `correct=1`** |
+| Embench-IoT | embench-iot @`09c2ed8` (2026-02), `stm32f107` | **19/19 `correct=1`** (cycle table in `scripts/kings/`) |
 | FreeRTOS 10/11 kernel | FreeRTOS-Kernel, 2 tasks + `vTaskDelayUntil` | **9/9 periods exactly 2000000 cycles (250.000 ms)** |
 | mbedTLS 4.2.0 + TF-PSA-Crypto | `v4.2.0` + submodule | **OVERALL: PASSED** (AES + SHA-256) |
 | Eclipse ThreadX 6.x | Eclipse ThreadX, stock `demo_threadx` (100 Hz tick) | **2020 ticks, ~645K messages, all counters grow, backlog ≤ cap**; QEMU concurs on all tick-driven counters |
@@ -100,4 +100,13 @@ same binary, same sim); Embench cycle counts are pinned to the February
 snapshot and differ from the September table on retuned benches
 (`tarfind`, `statemate`, `md5sum`), with `correct=1` throughout. The
 cycle model itself is confirmed by the band matches (Dhrystone 1.14 vs
-1.0–1.25 published, CoreMark 2.058 vs ~2.05–2.1 published).
+1.0–1.25 published, CoreMark 2.062 vs ~2.05–2.1 published).
+
+## Automation
+
+`scripts/kings/` rebuilds this whole table from upstream on demand
+(`fetch.sh` pins, `ports/*/build.sh` build, `run_all.sh` runs and
+checks; `.github/workflows/kings.yml` runs it weekly). Functional gates
+hard-fail; cycle pins allow 5% for toolchain codegen drift across build
+roots (buffer alignment shifts newlib's word paths ~0–2%). Re-pin tables
+only with a full manual re-verification, never to silence CI.

@@ -1,0 +1,33 @@
+name: Kings re-verification
+
+# Famous-firmware end-to-end: rebuild from upstream, run on release
+# VioARM, check functional gates + pinned cycles. Weekly + manual only
+# (~2h wall); per-commit would burn the runner budget for no signal.
+on:
+  schedule:
+    - cron: "0 4 * * 1"
+  workflow_dispatch:
+
+jobs:
+  kings:
+    name: Rebuild + run famous firmware
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install arm-none-eabi-gcc + host g++ + python3
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -qy gcc-arm-none-eabi g++ python3
+          arm-none-eabi-gcc --version | head -n 1
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Build release vioarm
+        run: cargo build --release -p vioarm-cli
+      - name: Fetch upstream firmware
+        run: bash scripts/kings/fetch.sh
+      - name: Build + run + check
+        run: |
+          export VIOARM_BIN="$PWD/target/release/vioarm-cli"
+          export KINGSWORK="$RUNNER_TEMP/kings"
+          bash scripts/kings/run_all.sh

@@ -1,0 +1,23 @@
+# Embench-IoT expected cycles @embench-iot 09c2ed8, GLOBAL_SCALE_FACTOR 1,
+# newlib strings. Pinned from the 2026-09-22 validation run; re-pin only
+# with a full manual re-verification, never to silence CI.
+# name cycles
+aha-mont64 4386397
+crc32 5051936
+depthconv 4838366
+edn 4515652
+huffbench 3597130
+matmult-int 4366677
+md5sum 3099752
+nettle-aes 4004582
+nettle-sha256 3534472
+nsichneu 5407320
+picojpeg 4090453
+qrduino 4250824
+sglib-combined 4355028
+slre 4041261
+statemate 5910792
+tarfind 1760184
+ud 4498252
+wikisort 2551390
+xgboost 4757039
