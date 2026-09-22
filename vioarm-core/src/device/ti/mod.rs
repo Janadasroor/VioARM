@@ -4,6 +4,7 @@ pub mod adc;
 pub mod gpio;
 pub mod i2c;
 pub mod pwm;
+pub mod qei;
 pub mod ssi;
 pub mod sysctl;
 pub mod timer;
