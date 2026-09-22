@@ -8442,6 +8442,10 @@ pub fn tm4c123gh6pm() -> BoardMemory {
             crate::device::svd::tm4c123gh6pm::Tm4c123gh6pm,
         >(name)));
     }
+    // One USB controller (device mode; host/OTG latched).
+    mem.attach(Box::new(crate::device::ti::usb::Usb::for_device::<
+        crate::device::svd::tm4c123gh6pm::Tm4c123gh6pm,
+    >("USB0")));
     for p in crate::device::svd::tm4c123gh6pm::PERIPHERALS {
         if p.base >= 0xE000_0000 || p.base == crate::device::ti::sysctl::SYSCTL_BASE {
             continue;
