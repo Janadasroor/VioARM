@@ -5,6 +5,7 @@ pub mod can;
 pub mod comp;
 pub mod eeprom;
 pub mod flash;
+pub mod flash129;
 pub mod gpio;
 pub mod hib;
 pub mod i2c;

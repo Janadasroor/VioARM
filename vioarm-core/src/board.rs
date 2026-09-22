@@ -8461,14 +8461,16 @@ pub fn tm4c1294ncpdt() -> BoardMemory {
     mem.attach(Box::new(crate::device::ti::usb::Usb::for_device::<
         crate::device::svd::tm4c1294ncpdt::Tm4c1294ncpdt,
     >("USB0")));
-    // EEPROM (the 129 flash controller needs a native FMC2 model — P2d;
-    // the EEPROM completion link is unwired until then).
+    // EEPROM + 129 flash controller sharing the completion link.
+    let flash_link = std::sync::Arc::new(std::sync::Mutex::new(false));
     mem.attach(Box::new(crate::device::ti::eeprom::Eeprom::for_device::<
         crate::device::svd::tm4c1294ncpdt::Tm4c1294ncpdt,
-    >(
-        "EEPROM",
-        std::sync::Arc::new(std::sync::Mutex::new(false)),
-    )));
+    >("EEPROM", flash_link.clone())));
+    mem.attach(Box::new(
+        crate::device::ti::flash129::FlashCtrl129::for_device::<
+            crate::device::svd::tm4c1294ncpdt::Tm4c1294ncpdt,
+        >(flash_link),
+    ));
     // Hibernation RTC subset.
     mem.attach(Box::new(crate::device::ti::hib::Hib::for_device::<
         crate::device::svd::tm4c1294ncpdt::Tm4c1294ncpdt,
