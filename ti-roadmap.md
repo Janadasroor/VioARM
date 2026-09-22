@@ -1,0 +1,86 @@
+# TI Roadmap — Tiva C Series (TM4C123x, TM4C129x)
+
+New vendor track, not an extension: the Cortex-M4F core transfers
+directly, every peripheral is a new model. Method follows the STM32
+playbook (SVD tables → hand-written behaviors → closeout proofs →
+famous firmware), and the kings harness ports in days.
+
+## Scope
+
+- **TM4C123x first**: TM4C123GH6PM + EK-TM4C123GXL LaunchPad class board.
+  Cortex-M4F @ 80 MHz, 256 KiB flash / 32 KiB RAM.
+- **TM4C129x second**: TM4C1294 + EK-TM4C1294XL class board. Superset +
+  Ethernet MAC/PHY; exercises ETH modeling against a second vendor IP.
+- **Out of scope**: MSP430/CC25xx (non-ARM cores), CC13xx/CC26xx (value
+  is the radio; RF/baseband out of scope by design), Hercules TMS570.
+
+## Packs (Phase P0)
+
+- `Keil::TM4C_DFP@1.1.0` (`Keil.TM4C_DFP.1.1.0.pack`, keil.arm.com):
+  71 Tiva C devices, SVD + CMSIS headers + board examples. Same `.pack`
+  zip convention as the STM32 DFPs — add one entry to
+  `scripts/fetch_packs.py` (with SHA256 from the downloaded file) and a
+  row in `packs/PROVENANCE.md`.
+- TivaWare (BSD SDK: driver source + register headers) as the behavioral
+  oracle, the role STM32 HAL/LL plays in verification. Never vendored;
+  fetched at use time like all upstream sources.
+- Acceptance: `fetch_packs.py --list` shows the entry; the `.pack`
+  hash-verifies; SVDs extract for both target dice.
+
+## Phase P1 — Ingestion (3–5 days)
+
+- SVD → donor tables via the existing generator; alias wiring for the
+  TM4C123x 51-device set (one die closes the family).
+- Board constructors: flash/RAM/memory map, boot alias, core follows
+  M4F (+FPU, already modeled).
+- `board_audit.rs` lists the new windows; pins entry.
+- Acceptance: audit shows the new boards with all windows at least
+  latched, zero Reserved.
+
+## Phase P2 — Peripheral models (~2–3 weeks, the bulk)
+
+New drivers, one per IP, each with lib tests + vectors where applicable:
+
+- SYSCTL clocking (PLL 80 MHz math, peripheral ready bits).
+- GPIO (commit control, drive strength, alternate functions).
+- UART (baud divisor, FIFO, TX/RX interrupts).
+- SSI (SPI modes, FIFO).
+- I2C (master modes).
+- GPTM (32/64-bit timers, PWM, capture).
+- ADC sequencers (sample sequencers 0–3, FIFO, interrupts).
+- Watchdog (WDT0/1, reset vs interrupt).
+- USB OTG device (enumerates; reuse the USB-host lessons, device side).
+- CAN (message objects; arbitration lessons transfer).
+- Flash/EEPROM + μDMA (request-driven pacing per the F4 convention).
+- TM4C129x extension: Ethernet MAC/PHY + larger memory map.
+
+Each model lands with the standard treatment; TivaWare is the oracle,
+QEMU has no Tiva machine — second opinions come from TivaWare examples
+run as golden pairs where feasible, else VioARM-only locked tests.
+
+## Phase P3 — Boards + closeout (~1 week)
+
+- 1–2 boards per family, audit to zero latch, `tiva_closeout.rs`-style
+  direct-poke proofs per board.
+- T3 firmware: CoreMark + Dhrystone retargets via `scripts/kings/`
+  (new port dir, same method), plus a UART/GPIO/Timer e2e.
+- `boards.md` + `trust-scope.md` rows for the new boards.
+
+## Phase P4 — Continuous proof
+
+- New expected tables in `scripts/kings/`; the weekly CI job covers the
+  Tiva binaries once pinned.
+- `CHANGELOG.md` release entry when the track closes.
+
+## Acceptance gate (definition of done)
+
+- [ ] TM4C_DFP in `fetch_packs.py`, hash-verified, PROVENANCE row added.
+- [ ] TM4C123x board: audit zero latch, closeout proofs green.
+- [ ] TM4C129x board: audit zero latch, closeout proofs green.
+- [ ] CoreMark/Dhrystone pass on at least one Tiva board (T3).
+- [ ] Full suite green + kings CI extended; trust-scope + boards docs updated.
+
+## Estimates (Fermi, one focused engineer)
+
+- P0–P1: ~1 week. P2: ~2–3 weeks. P3: ~1 week. P4: ongoing.
+- **Total: ~4–5 weeks** to a closed Tiva track.

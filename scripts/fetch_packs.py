@@ -132,6 +132,13 @@ PACKS: dict[str, dict[str, str]] = {
         "url": "https://www.keil.com/pack/",
         "sha256": "14b366f2821ee5d32f0d3bf48ef9657ca45347261d0531263580848e9d36f8f4",
     },
+    "TM4C": {
+        "vendor": "Keil",
+        "name": "TM4C_DFP",
+        "version": "1.1.0",
+        "url": "https://www.keil.com/pack/",
+        "sha256": "127dcaf64e1b64674ae902239b6afa612701d8a73031492d65205f9aee2a5e8e",
+    },
 }
 
 
