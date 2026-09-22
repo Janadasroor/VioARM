@@ -2,4 +2,5 @@
 
 pub mod gpio;
 pub mod sysctl;
+pub mod timer;
 pub mod uart;

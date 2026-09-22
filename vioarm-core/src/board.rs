@@ -8389,6 +8389,15 @@ pub fn tm4c123gh6pm() -> BoardMemory {
             crate::device::svd::tm4c123gh6pm::Tm4c123gh6pm,
         >(name)));
     }
+    // Twelve GPTMs (Timer A concatenated only; Timer B latched).
+    for name in [
+        "TIMER0", "TIMER1", "TIMER2", "TIMER3", "TIMER4", "TIMER5", "WTIMER0", "WTIMER1",
+        "WTIMER2", "WTIMER3", "WTIMER4", "WTIMER5",
+    ] {
+        mem.attach(Box::new(crate::device::ti::timer::Gptm::for_device::<
+            crate::device::svd::tm4c123gh6pm::Tm4c123gh6pm,
+        >(name)));
+    }
     for p in crate::device::svd::tm4c123gh6pm::PERIPHERALS {
         if p.base >= 0xE000_0000 || p.base == crate::device::ti::sysctl::SYSCTL_BASE {
             continue;
