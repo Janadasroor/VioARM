@@ -8404,6 +8404,12 @@ pub fn tm4c123gh6pm() -> BoardMemory {
             crate::device::svd::tm4c123gh6pm::Tm4c123gh6pm,
         >(name)));
     }
+    // Four I2Cs (master mode; slave windows latched).
+    for name in ["I2C0", "I2C1", "I2C2", "I2C3"] {
+        mem.attach(Box::new(crate::device::ti::i2c::I2c::for_device::<
+            crate::device::svd::tm4c123gh6pm::Tm4c123gh6pm,
+        >(name)));
+    }
     for p in crate::device::svd::tm4c123gh6pm::PERIPHERALS {
         if p.base >= 0xE000_0000 || p.base == crate::device::ti::sysctl::SYSCTL_BASE {
             continue;
