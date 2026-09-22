@@ -8424,6 +8424,12 @@ pub fn tm4c123gh6pm() -> BoardMemory {
             crate::device::svd::tm4c123gh6pm::Tm4c123gh6pm,
         >(name)));
     }
+    // Two PWM modules (four generators each; faults latched).
+    for name in ["PWM0", "PWM1"] {
+        mem.attach(Box::new(crate::device::ti::pwm::Pwm::for_device::<
+            crate::device::svd::tm4c123gh6pm::Tm4c123gh6pm,
+        >(name)));
+    }
     for p in crate::device::svd::tm4c123gh6pm::PERIPHERALS {
         if p.base >= 0xE000_0000 || p.base == crate::device::ti::sysctl::SYSCTL_BASE {
             continue;
