@@ -7,6 +7,7 @@ pub mod ccm;
 pub mod comp;
 pub mod des;
 pub mod eeprom;
+pub mod emac;
 pub mod epi;
 pub mod flash;
 pub mod flash129;

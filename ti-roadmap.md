@@ -90,6 +90,8 @@ famous firmware), and the kings harness ports in days.
   XNCZAD audit 68/72): presence + instant `WR`/`RD`/`WRRD`.
 - **129 EPI (done 2026-09-23): external bus configs + FIFO** (3 lib
   tests, XNCZAD audit 69/72): no transfer engine (FSMC stance).
+- **129 EMAC package 1 (done 2026-09-23): MAC shell + MII** (2 lib
+  tests, XNCZAD audit 70/72): DMA/checksum/MMC/PTP deferred.
 
 ## Phase P2 — Peripheral models (~2–3 weeks, the bulk)
 
