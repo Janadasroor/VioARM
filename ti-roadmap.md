@@ -40,6 +40,10 @@ famous firmware), and the kings harness ports in days.
   true own-SVD donor + board. The other 50 dice stay unwired (no
   wrong-donor aliases; cf. the WP4 F7/G0 lesson) until P2/P3 mints
   their donors one cluster at a time.
+- **123 breadth (done 2026-09-23): 14 subset Dnames wired** (540
+  total, anchor 38880): 14 dice proved GH6PM-subsets, wired via
+  `removed` with inventoried residuals; 15/51 covered, 36 need new
+  windows (`GPIOG`/`H`/`J`, `I2C4`/`5`).
 - `board_audit.rs` lists the new windows; pins entry.
 - Acceptance: audit shows `tm4c123gh6pm` 0/58 behavioral, 58 latch,
   zero Reserved.
