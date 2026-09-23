@@ -39,7 +39,7 @@ the same commit.
 | stm32f105 | 43 | 43 | 0 | CAN1 fabric arbitration |
 | stm32f107 | 47 | 47 | 0 | Embench-IoT, TFLM `hello_world`, ETH/USB ISRs, SPI pairs |
 | tm4c123gh6pm | 58 | 56 | 2 | Dhrystone 9.124, CoreMark valid (400 it), UART/GPIO/Timer e2e (`scripts/kings/ports/tm4c`) |
-| tm4c1294ncpdt | 64 | 59 | 5 | Dhrystone 9.124, CoreMark valid (400 it), UART/GPIO/Timer e2e (`scripts/kings/ports/tm4c` 129 builds) |
+| tm4c1294ncpdt | 64 | 62 | 2 | Dhrystone 9.124, CoreMark valid (400 it), UART/GPIO/Timer e2e (`scripts/kings/ports/tm4c` 129 builds) |
 | tm4c129xnczad | 72 | 70 | 2 | Dhrystone 9.124, CoreMark valid (400 it), UART/GPIO/Timer e2e (same 129 ELFs, tick-identical) |
 | stm32f303xe | 56 | 56 | 0 | CRC, DAC1/2, GPIO, chip_cmsis legs |
 | stm32f407 | 82 | 82 | 0 | GPIO/USART/TIM2, ADC IRQ, Flash, DMA, USB host |

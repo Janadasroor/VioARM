@@ -484,3 +484,59 @@ fn comp_inverts_output() {
     ww(mem, COMP + ACCTL0, CINV);
     assert_eq!(rw(mem, COMP + ACSTAT0) & OVAL, OVAL, "inversion flips OVAL");
 }
+
+// --- CCM (backfill) ---
+
+const CCM0: u32 = 0x4403_0000;
+const CRCCTRL: u32 = 0x400;
+const CRCSEED: u32 = 0x410;
+const CRCDIN: u32 = 0x414;
+const CRCRSLTPP: u32 = 0x418;
+
+#[test]
+fn ccm_crc32_checks() {
+    let mut m = tiva129();
+    let mem = m.core.mem();
+    // `TYPE=P4C11DB7`, 32-bit words, seed all-1s, result invert.
+    ww(mem, CCM0 + CRCCTRL, 0x02 | (0x03 << 13) | (1 << 9));
+    ww(mem, CCM0 + CRCDIN, 0x3433_3231); // "1234" LE.
+    ww(mem, CCM0 + CRCDIN, 0x3837_3635); // "5678" LE.
+    assert_eq!(rw(mem, CCM0 + CRCRSLTPP), 0x9AE0_DAAF, "NIST word path");
+}
+
+// --- EPI (backfill) ---
+
+const EPI0: u32 = 0x400D_0000;
+const EPICFG: u32 = 0x00;
+const EPISTAT: u32 = 0x60;
+const EPIRFIS: u32 = 0x6C;
+const EPIRPSTD0: u32 = 0x28;
+const EPIREADFIFO: u32 = 0x70;
+
+#[test]
+fn epi_posts_reads() {
+    let mut m = tiva129();
+    let mem = m.core.mem();
+    ww(mem, EPI0 + EPICFG, 0x02); // HB8.
+    assert_eq!(rw(mem, EPI0 + EPISTAT) & 0x01, 0x01, "ACTIVE");
+    ww(mem, EPI0 + EPIRPSTD0, 2);
+    assert_eq!(rw(mem, EPI0 + EPIRFIS), 2, "two words posted");
+    assert_eq!(rw(mem, EPI0 + EPIREADFIFO), 0xFFFF_FFFF, "float high");
+}
+
+// --- EMAC (backfill) ---
+
+const EMAC0: u32 = 0x400E_C000;
+const EMACCTL: u32 = 0x00;
+const MIIADDR: u32 = 0x10;
+const MIIDATA: u32 = 0x14;
+
+#[test]
+fn emac_mii_completes() {
+    let mut m = tiva129();
+    let mem = m.core.mem();
+    ww(mem, EMAC0 + EMACCTL, (1 << 2) | (1 << 3)); // RE + TE.
+    ww(mem, EMAC0 + MIIADDR, 0x01);
+    assert_eq!(rw(mem, EMAC0 + MIIADDR) & 0x01, 0, "MII completes");
+    assert_eq!(rw(mem, EMAC0 + MIIDATA), 0xFFFF, "no PHY");
+}

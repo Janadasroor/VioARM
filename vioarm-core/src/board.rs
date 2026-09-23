@@ -8479,6 +8479,20 @@ pub fn tm4c1294ncpdt() -> BoardMemory {
     mem.attach(Box::new(crate::device::ti::comp::Comp::for_device::<
         crate::device::svd::tm4c1294ncpdt::Tm4c1294ncpdt,
     >("COMP")));
+    // Backfilled models (shared with the X board): CRC, EPI, EMAC.
+    mem.attach(Box::new(crate::device::ti::ccm::Ccm::for_device::<
+        crate::device::svd::tm4c1294ncpdt::Tm4c1294ncpdt,
+    >()));
+    mem.attach(Box::new(crate::device::ti::epi::Epi::for_device::<
+        crate::device::svd::tm4c1294ncpdt::Tm4c1294ncpdt,
+    >()));
+    let eth_mailbox = std::sync::Arc::new(std::sync::Mutex::new(
+        crate::device::stm32::eth::EthMailbox::default(),
+    ));
+    mem.set_eth_mailbox(eth_mailbox.clone());
+    mem.attach(Box::new(crate::device::ti::emac::Emac::for_device::<
+        crate::device::svd::tm4c1294ncpdt::Tm4c1294ncpdt,
+    >(eth_mailbox)));
     // Leftover windows stay pure latches (new 129 IPs + decided latches).
     // Attached LAST: first-wins routing keeps the behaviors above.
     for p in crate::device::svd::tm4c1294ncpdt::PERIPHERALS {
