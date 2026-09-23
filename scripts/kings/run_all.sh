@@ -182,5 +182,29 @@ if within "$COREMARK_MHZ_TM4C129" "$MHZ" 5; then pass tm4c129-coremark40 "mhz=$M
 run_uart tm4c1294ncpdt "$KINGSWORK/build/tm4c129_cm400/cm-vioarm.elf" 600000000 "$KINGSWORK/tm4c129_cm400.log"
 grep -q "Correct operation validated" "$KINGSWORK/tm4c129_cm400.log.uart" && pass tm4c129-coremark400 valid || fail tm4c129-coremark400 "not validated"
 
+echo "== tiva129x =="
+run_uart tm4c129xnczad "$KINGSWORK/build/tm4c129_e2e/e2e-vioarm.elf" 500000 "$KINGSWORK/tm4c129x_e2e.log"
+U="$KINGSWORK/tm4c129x_e2e.log.uart"
+for m in E2E_UART_OK E2E_GPIO_OK E2E_TIMER_OK E2E_DONE; do
+  grep -q "$m" "$U" || fail tm4c129x-e2e "missing $m"
+done
+grep -q E2E_DONE "$U" && pass tm4c129x-e2e all-markers
+run_uart tm4c129xnczad "$KINGSWORK/build/tm4c129_dhry/dhry-vioarm.elf" 500000000 "$KINGSWORK/tm4c129x_dhry.log"
+U="$KINGSWORK/tm4c129x_dhry.log.uart"
+grep -q DHRY_DONE "$U" || fail tm4c129x-dhry "no DONE"
+[ "$(grep -c "should be:" "$U")" -ge 20 ] || fail tm4c129x-dhry "self-checks missing"
+DMIPS=$(grep -oE "DMIPS \(dps/1757, x1000\): +[0-9]+\.[0-9]+" "$U" | grep -oE "[0-9]+\.[0-9]+$")
+if within "$DHRY_DMIPS_TM4C129X" "$DMIPS" 5; then pass tm4c129x-dhry "dmips=$DMIPS"; else fail tm4c129x-dhry "dmips=$DMIPS want $DHRY_DMIPS_TM4C129X"; fi
+run_uart tm4c129xnczad "$KINGSWORK/build/tm4c129_cm40/cm-vioarm.elf" 50000000 "$KINGSWORK/tm4c129x_cm40.log"
+U="$KINGSWORK/tm4c129x_cm40.log.uart"
+for c in "crclist *: 0xe714" "crcmatrix *: 0x1fd7" "crcstate *: 0x8e3a"; do
+  grep -qE "$c" "$U" || fail tm4c129x-coremark40 "missing $c"
+done
+MHZ=$(grep -oE "Total ticks *: [0-9]+" "$U" | grep -oE "[0-9]+$" || echo 0)
+MHZ=$(python3 -c "print(40000000.0/$MHZ if $MHZ else 0)")
+if within "$COREMARK_MHZ_TM4C129X" "$MHZ" 5; then pass tm4c129x-coremark40 "mhz=$MHZ crc-ok"; else fail tm4c129x-coremark40 "mhz=$MHZ"; fi
+run_uart tm4c129xnczad "$KINGSWORK/build/tm4c129_cm400/cm-vioarm.elf" 600000000 "$KINGSWORK/tm4c129x_cm400.log"
+grep -q "Correct operation validated" "$KINGSWORK/tm4c129x_cm400.log.uart" && pass tm4c129x-coremark400 valid || fail tm4c129x-coremark400 "not validated"
+
 echo "== done: FAIL=$FAIL =="
 exit $FAIL

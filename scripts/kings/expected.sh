@@ -15,6 +15,10 @@ COREMARK_MHZ_TM4C=2.062
 # (129 CoreMark-40 measured the same 19397092 ticks as the 123 run).
 DHRY_DMIPS_TM4C129=9.124
 COREMARK_MHZ_TM4C129=2.062
+# Second 129 board (tm4c129xnczad): same ELFs, same pins (verified
+# tick-identical on e2e/dhry/cm40).
+DHRY_DMIPS_TM4C129X=9.124
+COREMARK_MHZ_TM4C129X=2.062
 # ThreadX oracle @100 Hz, 2020 ticks:
 TX_TICKS=2020
 TX_SENT=646372

@@ -8,7 +8,8 @@
 | stm32h743 | M7 | 2 MiB | 512 KiB | +FPU-DP+SDRAM+QSPI+DTCM/AXI 0x20000+0x60000+FDCAN1+LPTIM1-5 |
 | **526 Dnames** | M0/M3/M4/M7 | 16K–2M | 4K–512K | **526 boards `100%` `bootable` `35` `SVD` donors + removal deltas `526` `per_dname.rs` `true-generation` `F2`/`F7`/`G0` `IROM1/IRAM1` `H7` `DTCM` `all_boards()` `all_per_dnames()` `RCC` `HPRE/PPRE` → `APB` timer ratios `FLASH` `WS` fetch stalls |
 | tm4c123gh6pm | M4F | 256 KiB | 32 KiB | Tiva C: all but SYSEXC/UDMA behavioral (56/58; T3 firmware-proven: Dhrystone 9.124, CoreMark valid, e2e; `ti-roadmap.md` P3; other 50 dice need own-SVD donors) |
-| tm4c1294ncpdt | M4F | 1 MiB | 256 KiB | Tiva C 129: all but EPI0/EMAC0/CCM0/SYSEXC/UDMA behavioral (59/64; T3 firmware-proven: Dhrystone 9.124, CoreMark valid, e2e; `ti-roadmap.md` 129 T3; other 19 dice need own-SVD donors) |
+| tm4c1294ncpdt | M4F | 1 MiB | 256 KiB | Tiva C 129: all but EPI0/EMAC0/CCM0/SYSEXC/UDMA behavioral (59/64; T3 firmware-proven: Dhrystone 9.124, CoreMark valid, e2e; `ti-roadmap.md` 129 T3; family fully enumerated via subsets) |
+| tm4c129xnczad | M4F | 1 MiB | 256 KiB | Tiva C 129 maximal superset: all but SYSEXC/UDMA behavioral (70/72; T3 firmware-proven with the same 129 ELFs, tick-identical) |
 | stm32f207/f217 | M3 | 256K–1M | 64–128K | `F4`-gen set, no `FPU`, `ETH`/`DCMI` per die, paced DMA + `LPTIM1` |
 | stm32f722/f746/f767/f730 | M7 | 256K–2M | 64–512K | `F4`-gen set, `QUADSPI`/`FMC` latch, `F730` own donor, paced DMA + `LPTIM1` |
 | stm32g031/g081/g050/g061/g0c1 | M0+ | 16–512K | 4–144K | `G031` behaviors, `FLASH`/`I2C`/`EXTI`/`SYSCFG` latch, `G0` `RCC`, `FDCAN`-cut + `LPTIM` |

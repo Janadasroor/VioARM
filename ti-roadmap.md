@@ -74,6 +74,8 @@ famous firmware), and the kings harness ports in days.
   tm4c/` 129 builds): e2e 4/4, Dhrystone 9.124, CoreMark-40 golden CRCs
   (tick-identical to the 123 run), CoreMark-400 valid (12 s). Pins +
   gates in `expected.sh`/`run_all.sh` (weekly CI).
+- **129X T3 (done 2026-09-23): second-board kings**: same 129 ELFs
+  tick-identical on `tm4c129xnczad` (e2e/dhry/cm40/cm400 valid).
 - **Second 129 donor (done 2026-09-22): TM4C129XNCZAD** (72 periphs,
   audit 62/72): maximal superset + full 129 mounts; 508 Dnames.
 - **Full 129 family (done 2026-09-22): 20/20 Dnames** (526 total):
