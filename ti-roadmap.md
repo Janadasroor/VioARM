@@ -80,6 +80,8 @@ famous firmware), and the kings harness ports in days.
   every remaining die proved a peripheral-subset of XNCZAD and wired
   via `removed` (PDSC sizes); register residuals inventoried in
   `per_dname.rs` (Known limitations).
+- **129 crypto 1/2 (done 2026-09-23): CCM CRC-32 + SHA-256** (3+3
+  lib tests, XNCZAD audit 64/72): NIST-vectored; other types latch.
 
 ## Phase P2 — Peripheral models (~2–3 weeks, the bulk)
 

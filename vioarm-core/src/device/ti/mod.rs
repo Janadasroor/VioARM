@@ -2,6 +2,7 @@
 
 pub mod adc;
 pub mod can;
+pub mod ccm;
 pub mod comp;
 pub mod eeprom;
 pub mod flash;
@@ -11,6 +12,7 @@ pub mod hib;
 pub mod i2c;
 pub mod pwm;
 pub mod qei;
+pub mod shamd5;
 pub mod ssi;
 pub mod sysctl;
 pub mod sysctl129;

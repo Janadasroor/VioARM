@@ -8629,6 +8629,13 @@ pub fn tm4c129xnczad() -> BoardMemory {
     mem.attach(Box::new(crate::device::ti::comp::Comp::for_device::<
         crate::device::svd::tm4c129xnczad::Tm4c129xnczad,
     >("COMP")));
+    // Crypto cluster (XNCZAD-only windows; CRC-32 + SHA-256 live).
+    mem.attach(Box::new(crate::device::ti::ccm::Ccm::for_device::<
+        crate::device::svd::tm4c129xnczad::Tm4c129xnczad,
+    >()));
+    mem.attach(Box::new(crate::device::ti::shamd5::Shamd5::for_device::<
+        crate::device::svd::tm4c129xnczad::Tm4c129xnczad,
+    >()));
     // Leftover windows stay pure latches (new 129 IPs + decided latches).
     // Attached LAST: first-wins routing keeps the behaviors above.
     for p in crate::device::svd::tm4c129xnczad::PERIPHERALS {
