@@ -82,6 +82,8 @@ famous firmware), and the kings harness ports in days.
   `per_dname.rs` (Known limitations).
 - **129 crypto 1/2 (done 2026-09-23): CCM CRC-32 + SHA-256** (3+3
   lib tests, XNCZAD audit 64/72): NIST-vectored; other types latch.
+- **129 crypto 2/2 (done 2026-09-23): AES + DES** (5+4 lib tests,
+  XNCZAD audit 66/72): FIPS/NIST-vectored ECB/CBC; advanced modes latch.
 
 ## Phase P2 — Peripheral models (~2–3 weeks, the bulk)
 

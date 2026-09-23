@@ -8636,6 +8636,13 @@ pub fn tm4c129xnczad() -> BoardMemory {
     mem.attach(Box::new(crate::device::ti::shamd5::Shamd5::for_device::<
         crate::device::svd::tm4c129xnczad::Tm4c129xnczad,
     >()));
+    // AES + DES engines (ECB/CBC live; advanced modes latch).
+    mem.attach(Box::new(crate::device::ti::aes::Aes::for_device::<
+        crate::device::svd::tm4c129xnczad::Tm4c129xnczad,
+    >()));
+    mem.attach(Box::new(crate::device::ti::des::Des::for_device::<
+        crate::device::svd::tm4c129xnczad::Tm4c129xnczad,
+    >()));
     // Leftover windows stay pure latches (new 129 IPs + decided latches).
     // Attached LAST: first-wins routing keeps the behaviors above.
     for p in crate::device::svd::tm4c129xnczad::PERIPHERALS {

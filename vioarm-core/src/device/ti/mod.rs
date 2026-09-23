@@ -1,9 +1,11 @@
 //! TI Tiva C peripheral models (new vendor track, see `ti-roadmap.md`).
 
 pub mod adc;
+pub mod aes;
 pub mod can;
 pub mod ccm;
 pub mod comp;
+pub mod des;
 pub mod eeprom;
 pub mod flash;
 pub mod flash129;
