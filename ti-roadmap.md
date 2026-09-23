@@ -48,6 +48,10 @@ famous firmware), and the kings harness ports in days.
   audit 65/67; 568 Dnames, anchor 40555): G/H/J/K rows, I2C4/5,
   data-driven 3rd comparator, 27 subsets wired; 43/51 covered, 8 BGA
   dice left.
+- **123 third donor + family complete (done 2026-09-23): GH6ZRB** (72
+  periphs, audit 70/72; 577 Dnames, anchor 41180): GPIO L/M/N/P/Q,
+  8 BGA subsets wired; 51/51 TM4C123x + 20/20 TM4C129x = full Tiva C
+  family enumerated (71 dice).
 - `board_audit.rs` lists the new windows; pins entry.
 - Acceptance: audit shows `tm4c123gh6pm` 0/58 behavioral, 58 latch,
   zero Reserved.
