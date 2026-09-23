@@ -12,6 +12,7 @@ pub mod flash129;
 pub mod gpio;
 pub mod hib;
 pub mod i2c;
+pub mod lcd;
 pub mod pwm;
 pub mod qei;
 pub mod shamd5;

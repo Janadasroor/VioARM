@@ -84,6 +84,8 @@ famous firmware), and the kings harness ports in days.
   lib tests, XNCZAD audit 64/72): NIST-vectored; other types latch.
 - **129 crypto 2/2 (done 2026-09-23): AES + DES** (5+4 lib tests,
   XNCZAD audit 66/72): FIPS/NIST-vectored ECB/CBC; advanced modes latch.
+- **129 LCD (done 2026-09-23): raster timing + done IRQs** (3 lib
+  tests, XNCZAD audit 67/72): PL110-compatible frames, no pixels.
 
 ## Phase P2 — Peripheral models (~2–3 weeks, the bulk)
 
