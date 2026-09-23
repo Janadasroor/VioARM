@@ -92,6 +92,9 @@ famous firmware), and the kings harness ports in days.
   tests, XNCZAD audit 69/72): no transfer engine (FSMC stance).
 - **129 EMAC package 1 (done 2026-09-23): MAC shell + MII** (2 lib
   tests, XNCZAD audit 70/72): DMA/checksum/MMC/PTP deferred.
+- **129 EMAC package 2 (done 2026-09-23): descriptor-ring DMA** (6
+  lib tests + board TX proof): TX/RX rings via the shared mailbox;
+  checksum/MMC/PTP still deferred.
 
 ## Phase P2 — Peripheral models (~2–3 weeks, the bulk)
 
