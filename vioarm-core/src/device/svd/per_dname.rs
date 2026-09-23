@@ -4930,6 +4930,125 @@ pub const PER_DNAMES: &[PerDname] = &[
         donor: "tm4c129xnczad",
         removed: &[],
     },
+    // Fourteen TM4C123x dice: peripheral-subsets of the GH6PM donor
+    // (SVD-diffed 2026-09-23), wired with `removed` lists. Residual
+    // register-level diffs (Known limitations): phantom `SYSCTL` clock
+    // regs for removed IPs, phantom `ADC.TSSEL` / `USB.EPC` regs (both
+    // unmodeled offsets — fully inert), phantom upper `FMPRE`/`FMPPE`
+    // banks on smaller-flash parts (unreachable). The other 36 dice
+    // need new windows (`GPIOG`/`H`/`J`, `I2C4`/`5`) — future donors.
+    PerDname {
+        dname: "TM4C1231C3PM",
+        flash_len: 0x0000_8000,
+        ram_len: 0x0000_3000,
+        flash_base: 0x0000_0000,
+        donor: "tm4c123gh6pm",
+        removed: &["CAN1", "PWM0", "PWM1", "QEI0", "QEI1", "USB0"],
+    },
+    PerDname {
+        dname: "TM4C1231D5PM",
+        flash_len: 0x0001_0000,
+        ram_len: 0x0000_6000,
+        flash_base: 0x0000_0000,
+        donor: "tm4c123gh6pm",
+        removed: &["CAN1", "PWM0", "PWM1", "QEI0", "QEI1", "USB0"],
+    },
+    PerDname {
+        dname: "TM4C1231E6PM",
+        flash_len: 0x0002_0000,
+        ram_len: 0x0000_8000,
+        flash_base: 0x0000_0000,
+        donor: "tm4c123gh6pm",
+        removed: &["CAN1", "PWM0", "PWM1", "QEI0", "QEI1", "USB0"],
+    },
+    PerDname {
+        dname: "TM4C1231H6PM",
+        flash_len: 0x0004_0000,
+        ram_len: 0x0000_8000,
+        flash_base: 0x0000_0000,
+        donor: "tm4c123gh6pm",
+        removed: &["CAN1", "PWM0", "PWM1", "QEI0", "QEI1", "USB0"],
+    },
+    PerDname {
+        dname: "TM4C1233C3PM",
+        flash_len: 0x0000_8000,
+        ram_len: 0x0000_3000,
+        flash_base: 0x0000_0000,
+        donor: "tm4c123gh6pm",
+        removed: &["CAN1", "PWM0", "PWM1", "QEI0", "QEI1"],
+    },
+    PerDname {
+        dname: "TM4C1233D5PM",
+        flash_len: 0x0001_0000,
+        ram_len: 0x0000_6000,
+        flash_base: 0x0000_0000,
+        donor: "tm4c123gh6pm",
+        removed: &["CAN1", "PWM0", "PWM1", "QEI0", "QEI1"],
+    },
+    PerDname {
+        dname: "TM4C1233E6PM",
+        flash_len: 0x0002_0000,
+        ram_len: 0x0000_8000,
+        flash_base: 0x0000_0000,
+        donor: "tm4c123gh6pm",
+        removed: &["CAN1", "PWM0", "PWM1", "QEI0", "QEI1"],
+    },
+    PerDname {
+        dname: "TM4C1233H6PM",
+        flash_len: 0x0004_0000,
+        ram_len: 0x0000_8000,
+        flash_base: 0x0000_0000,
+        donor: "tm4c123gh6pm",
+        removed: &["CAN1", "PWM0", "PWM1", "QEI0", "QEI1"],
+    },
+    PerDname {
+        dname: "TM4C1237D5PM",
+        flash_len: 0x0001_0000,
+        ram_len: 0x0000_6000,
+        flash_base: 0x0000_0000,
+        donor: "tm4c123gh6pm",
+        removed: &["CAN1", "PWM0", "PWM1", "QEI0", "QEI1"],
+    },
+    PerDname {
+        dname: "TM4C1237E6PM",
+        flash_len: 0x0002_0000,
+        ram_len: 0x0000_8000,
+        flash_base: 0x0000_0000,
+        donor: "tm4c123gh6pm",
+        removed: &["CAN1", "PWM0", "PWM1", "QEI0", "QEI1"],
+    },
+    PerDname {
+        dname: "TM4C1237H6PM",
+        flash_len: 0x0004_0000,
+        ram_len: 0x0000_8000,
+        flash_base: 0x0000_0000,
+        donor: "tm4c123gh6pm",
+        removed: &["CAN1", "PWM0", "PWM1", "QEI0", "QEI1"],
+    },
+    PerDname {
+        dname: "TM4C123BE6PM",
+        flash_len: 0x0002_0000,
+        ram_len: 0x0000_8000,
+        flash_base: 0x0000_0000,
+        donor: "tm4c123gh6pm",
+        removed: &["USB0"],
+    },
+    PerDname {
+        dname: "TM4C123BH6PM",
+        flash_len: 0x0004_0000,
+        ram_len: 0x0000_8000,
+        flash_base: 0x0000_0000,
+        donor: "tm4c123gh6pm",
+        removed: &["USB0"],
+    },
+    PerDname {
+        dname: "TM4C123GE6PM",
+        flash_len: 0x0002_0000,
+        ram_len: 0x0000_8000,
+        flash_base: 0x0000_0000,
+        donor: "tm4c123gh6pm",
+        removed: &[],
+    },
 ];
 
 /// H7 DTCM RAM size.
