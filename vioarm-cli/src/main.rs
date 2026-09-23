@@ -536,6 +536,8 @@ enum Board {
     Stm32g474xx,
     Stm32l476,
     Tm4c123gh6pm,
+    Tm4c123gh6pz,
+    Tm4c123gh6zrb,
     Tm4c1294ncpdt,
     Tm4c129xnczad,
 }
@@ -1051,6 +1053,8 @@ impl Board {
             Board::Stm32g474xx => board::stm32g474xx(),
             Board::Stm32l476 => board::stm32l476(),
             Board::Tm4c123gh6pm => board::tm4c123gh6pm(),
+            Board::Tm4c123gh6pz => board::tm4c123gh6pz(),
+            Board::Tm4c123gh6zrb => board::tm4c123gh6zrb(),
             Board::Tm4c1294ncpdt => board::tm4c1294ncpdt(),
             Board::Tm4c129xnczad => board::tm4c129xnczad(),
         }
@@ -1565,6 +1569,8 @@ impl Board {
             Board::Stm32g474xx => "stm32g474xx",
             Board::Stm32l476 => "stm32l476",
             Board::Tm4c123gh6pm => "tm4c123gh6pm",
+            Board::Tm4c123gh6pz => "tm4c123gh6pz",
+            Board::Tm4c123gh6zrb => "tm4c123gh6zrb",
             Board::Tm4c1294ncpdt => "tm4c1294ncpdt",
             Board::Tm4c129xnczad => "tm4c129xnczad",
         }

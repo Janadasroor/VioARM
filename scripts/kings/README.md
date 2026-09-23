@@ -26,7 +26,9 @@ rule that T3 claims lapse if re-runs stop passing.
   40/400; the valid CoreMark run is 400 iterations — >=10 s at 16 MHz).
   A second board argument (`tm4c129`) retargets the same firmware to
   `tm4c1294ncpdt` (AHB-only GPIO in `board_tm4c129.c`, 1 MB/256 KB in
-  `mem_tm4c129.ld`).
+  `mem_tm4c129.ld`). `run_all.sh` re-runs the same ELFs tick-identical
+  on all five Tiva boards (`tiva`/`tiva123pz`/`tiva123zrb` share the
+  `tm4c` ELFs; `tiva129`/`tiva129x` share the `tm4c129` ELFs).
 - `expected.sh`, `expected_embench.tsv` — pinned tables. Re-pin only
   with a full manual re-verification, never to silence CI.
 - `run_all.sh` — builds everything, runs, checks, exits nonzero on any

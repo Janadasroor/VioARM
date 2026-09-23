@@ -206,5 +206,53 @@ if within "$COREMARK_MHZ_TM4C129X" "$MHZ" 5; then pass tm4c129x-coremark40 "mhz=
 run_uart tm4c129xnczad "$KINGSWORK/build/tm4c129_cm400/cm-vioarm.elf" 600000000 "$KINGSWORK/tm4c129x_cm400.log"
 grep -q "Correct operation validated" "$KINGSWORK/tm4c129x_cm400.log.uart" && pass tm4c129x-coremark400 valid || fail tm4c129x-coremark400 "not validated"
 
+echo "== tiva123pz =="
+run_uart tm4c123gh6pz "$KINGSWORK/build/tm4c_e2e/e2e-vioarm.elf" 500000 "$KINGSWORK/tm4c123pz_e2e.log"
+U="$KINGSWORK/tm4c123pz_e2e.log.uart"
+for m in E2E_UART_OK E2E_GPIO_OK E2E_TIMER_OK E2E_DONE; do
+  grep -q "$m" "$U" || fail tm4c123pz-e2e "missing $m"
+done
+grep -q E2E_DONE "$U" && pass tm4c123pz-e2e all-markers
+run_uart tm4c123gh6pz "$KINGSWORK/build/tm4c_dhry/dhry-vioarm.elf" 500000000 "$KINGSWORK/tm4c123pz_dhry.log"
+U="$KINGSWORK/tm4c123pz_dhry.log.uart"
+grep -q DHRY_DONE "$U" || fail tm4c123pz-dhry "no DONE"
+[ "$(grep -c "should be:" "$U")" -ge 20 ] || fail tm4c123pz-dhry "self-checks missing"
+DMIPS=$(grep -oE "DMIPS \(dps/1757, x1000\): +[0-9]+\.[0-9]+" "$U" | grep -oE "[0-9]+\.[0-9]+$")
+if within "$DHRY_DMIPS_TM4C123PZ" "$DMIPS" 5; then pass tm4c123pz-dhry "dmips=$DMIPS"; else fail tm4c123pz-dhry "dmips=$DMIPS want $DHRY_DMIPS_TM4C123PZ"; fi
+run_uart tm4c123gh6pz "$KINGSWORK/build/tm4c_cm40/cm-vioarm.elf" 50000000 "$KINGSWORK/tm4c123pz_cm40.log"
+U="$KINGSWORK/tm4c123pz_cm40.log.uart"
+for c in "crclist *: 0xe714" "crcmatrix *: 0x1fd7" "crcstate *: 0x8e3a"; do
+  grep -qE "$c" "$U" || fail tm4c123pz-coremark40 "missing $c"
+done
+MHZ=$(grep -oE "Total ticks *: [0-9]+" "$U" | grep -oE "[0-9]+$" || echo 0)
+MHZ=$(python3 -c "print(40000000.0/$MHZ if $MHZ else 0)")
+if within "$COREMARK_MHZ_TM4C123PZ" "$MHZ" 5; then pass tm4c123pz-coremark40 "mhz=$MHZ crc-ok"; else fail tm4c123pz-coremark40 "mhz=$MHZ"; fi
+run_uart tm4c123gh6pz "$KINGSWORK/build/tm4c_cm400/cm-vioarm.elf" 600000000 "$KINGSWORK/tm4c123pz_cm400.log"
+grep -q "Correct operation validated" "$KINGSWORK/tm4c123pz_cm400.log.uart" && pass tm4c123pz-coremark400 valid || fail tm4c123pz-coremark400 "not validated"
+
+echo "== tiva123zrb =="
+run_uart tm4c123gh6zrb "$KINGSWORK/build/tm4c_e2e/e2e-vioarm.elf" 500000 "$KINGSWORK/tm4c123zrb_e2e.log"
+U="$KINGSWORK/tm4c123zrb_e2e.log.uart"
+for m in E2E_UART_OK E2E_GPIO_OK E2E_TIMER_OK E2E_DONE; do
+  grep -q "$m" "$U" || fail tm4c123zrb-e2e "missing $m"
+done
+grep -q E2E_DONE "$U" && pass tm4c123zrb-e2e all-markers
+run_uart tm4c123gh6zrb "$KINGSWORK/build/tm4c_dhry/dhry-vioarm.elf" 500000000 "$KINGSWORK/tm4c123zrb_dhry.log"
+U="$KINGSWORK/tm4c123zrb_dhry.log.uart"
+grep -q DHRY_DONE "$U" || fail tm4c123zrb-dhry "no DONE"
+[ "$(grep -c "should be:" "$U")" -ge 20 ] || fail tm4c123zrb-dhry "self-checks missing"
+DMIPS=$(grep -oE "DMIPS \(dps/1757, x1000\): +[0-9]+\.[0-9]+" "$U" | grep -oE "[0-9]+\.[0-9]+$")
+if within "$DHRY_DMIPS_TM4C123ZRB" "$DMIPS" 5; then pass tm4c123zrb-dhry "dmips=$DMIPS"; else fail tm4c123zrb-dhry "dmips=$DMIPS want $DHRY_DMIPS_TM4C123ZRB"; fi
+run_uart tm4c123gh6zrb "$KINGSWORK/build/tm4c_cm40/cm-vioarm.elf" 50000000 "$KINGSWORK/tm4c123zrb_cm40.log"
+U="$KINGSWORK/tm4c123zrb_cm40.log.uart"
+for c in "crclist *: 0xe714" "crcmatrix *: 0x1fd7" "crcstate *: 0x8e3a"; do
+  grep -qE "$c" "$U" || fail tm4c123zrb-coremark40 "missing $c"
+done
+MHZ=$(grep -oE "Total ticks *: [0-9]+" "$U" | grep -oE "[0-9]+$" || echo 0)
+MHZ=$(python3 -c "print(40000000.0/$MHZ if $MHZ else 0)")
+if within "$COREMARK_MHZ_TM4C123ZRB" "$MHZ" 5; then pass tm4c123zrb-coremark40 "mhz=$MHZ crc-ok"; else fail tm4c123zrb-coremark40 "mhz=$MHZ"; fi
+run_uart tm4c123gh6zrb "$KINGSWORK/build/tm4c_cm400/cm-vioarm.elf" 600000000 "$KINGSWORK/tm4c123zrb_cm400.log"
+grep -q "Correct operation validated" "$KINGSWORK/tm4c123zrb_cm400.log.uart" && pass tm4c123zrb-coremark400 valid || fail tm4c123zrb-coremark400 "not validated"
+
 echo "== done: FAIL=$FAIL =="
 exit $FAIL

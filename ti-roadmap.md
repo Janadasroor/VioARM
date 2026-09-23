@@ -52,6 +52,10 @@ famous firmware), and the kings harness ports in days.
   periphs, audit 70/72; 577 Dnames, anchor 41180): GPIO L/M/N/P/Q,
   8 BGA subsets wired; 51/51 TM4C123x + 20/20 TM4C129x = full Tiva C
   family enumerated (71 dice).
+- **123 donors runnable + proven (done 2026-09-23)**: PZ/ZRB on the CLI
+  `--board` list; same `tm4c` ELFs tick-identical (e2e 4/4, Dhry 9.124
+  byte-identical, CM40 exactly 19397092 ticks, CM400 valid);
+  `tiva123pz`/`tiva123zrb` gates + ZRB smoke test.
 - `board_audit.rs` lists the new windows; pins entry.
 - Acceptance: audit shows `tm4c123gh6pm` 0/58 behavioral, 58 latch,
   zero Reserved.

@@ -19,6 +19,12 @@ COREMARK_MHZ_TM4C129=2.062
 # tick-identical on e2e/dhry/cm40).
 DHRY_DMIPS_TM4C129X=9.124
 COREMARK_MHZ_TM4C129X=2.062
+# 123 donor boards (tm4c123gh6pz, tm4c123gh6zrb): same ELFs, same pins
+# (verified byte-identical logs on e2e/dhry, tick-identical cm40).
+DHRY_DMIPS_TM4C123PZ=9.124
+COREMARK_MHZ_TM4C123PZ=2.062
+DHRY_DMIPS_TM4C123ZRB=9.124
+COREMARK_MHZ_TM4C123ZRB=2.062
 # ThreadX oracle @100 Hz, 2020 ticks:
 TX_TICKS=2020
 TX_SENT=646372
