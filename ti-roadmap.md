@@ -88,6 +88,8 @@ famous firmware), and the kings harness ports in days.
   tests, XNCZAD audit 67/72): PL110-compatible frames, no pixels.
 - **129 1-Wire (done 2026-09-23): master transactions** (4 lib tests,
   XNCZAD audit 68/72): presence + instant `WR`/`RD`/`WRRD`.
+- **129 EPI (done 2026-09-23): external bus configs + FIFO** (3 lib
+  tests, XNCZAD audit 69/72): no transfer engine (FSMC stance).
 
 ## Phase P2 — Peripheral models (~2–3 weeks, the bulk)
 

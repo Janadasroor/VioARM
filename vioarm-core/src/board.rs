@@ -8651,6 +8651,10 @@ pub fn tm4c129xnczad() -> BoardMemory {
     mem.attach(Box::new(crate::device::ti::onewire::OneWire::for_device::<
         crate::device::svd::tm4c129xnczad::Tm4c129xnczad,
     >()));
+    // EPI external bus (configs + read FIFO; no transfer engine).
+    mem.attach(Box::new(crate::device::ti::epi::Epi::for_device::<
+        crate::device::svd::tm4c129xnczad::Tm4c129xnczad,
+    >()));
     // Leftover windows stay pure latches (new 129 IPs + decided latches).
     // Attached LAST: first-wins routing keeps the behaviors above.
     for p in crate::device::svd::tm4c129xnczad::PERIPHERALS {
