@@ -8833,6 +8833,152 @@ pub fn tm4c123gh6pz() -> BoardMemory {
     mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
     mem
 }
+/// TM4C123GH6ZRB flash length in bytes (PDSC IROM1).
+pub const TM4C123GH6ZRB_FLASH_LEN: u32 = 0x0004_0000;
+/// TM4C123GH6ZRB RAM length in bytes (PDSC IRAM1).
+pub const TM4C123GH6ZRB_RAM_LEN: u32 = 0x0000_8000;
+#[must_use]
+/// Construct the `tm4c123gh6zrb` (M4F) board memory: the BGA die
+/// (GPIO L/M/N/P/Q over the PZ set). Same mounts as
+/// [`tm4c123gh6pz`] plus the five ports.
+pub fn tm4c123gh6zrb() -> BoardMemory {
+    // Tiva C boots at 0x00000000 (VTOR reset); no STM32 BOOT alias, no flash gate.
+    let backing = FlatMemory::with_layout(
+        &[0x0000_0000, RAM],
+        &[TM4C123GH6ZRB_FLASH_LEN, TM4C123GH6ZRB_RAM_LEN],
+    );
+    let mut mem = SystemMemory::new(backing);
+    let clock = ClockState::shared();
+    mem.set_clock(clock.clone());
+    mem.attach(Box::new(
+        crate::device::ti::sysctl::Sysctl::for_device::<
+            crate::device::svd::tm4c123gh6zrb::Tm4c123gh6zrb,
+        >()
+        .with_clock(clock.clone()),
+    ));
+    // Ten GPIO ports, APB + AHB apertures sharing one port core each
+    // (K–Q single-aperture).
+    for (port, apb, ahb) in [
+        ("GPIOA", "GPIOA", "GPIOA_AHB"),
+        ("GPIOB", "GPIOB", "GPIOB_AHB"),
+        ("GPIOC", "GPIOC", "GPIOC_AHB"),
+        ("GPIOD", "GPIOD", "GPIOD_AHB"),
+        ("GPIOE", "GPIOE", "GPIOE_AHB"),
+        ("GPIOF", "GPIOF", "GPIOF_AHB"),
+        ("GPIOG", "GPIOG", "GPIOG_AHB"),
+        ("GPIOH", "GPIOH", "GPIOH_AHB"),
+        ("GPIOJ", "GPIOJ", "GPIOJ_AHB"),
+    ] {
+        let shared = crate::device::ti::gpio::Gpio::new_shared();
+        mem.attach(Box::new(crate::device::ti::gpio::Gpio::for_aperture::<
+            crate::device::svd::tm4c123gh6zrb::Tm4c123gh6zrb,
+        >(apb, port, shared.clone())));
+        mem.attach(Box::new(crate::device::ti::gpio::Gpio::for_aperture::<
+            crate::device::svd::tm4c123gh6zrb::Tm4c123gh6zrb,
+        >(ahb, port, shared)));
+    }
+    for port in ["GPIOK", "GPIOL", "GPIOM", "GPION", "GPIOP", "GPIOQ"] {
+        mem.attach(Box::new(crate::device::ti::gpio::Gpio::for_aperture::<
+            crate::device::svd::tm4c123gh6zrb::Tm4c123gh6zrb,
+        >(
+            port,
+            port,
+            crate::device::ti::gpio::Gpio::new_shared(),
+        )));
+    }
+    // Eight UARTs, one behavior each.
+    for name in [
+        "UART0", "UART1", "UART2", "UART3", "UART4", "UART5", "UART6", "UART7",
+    ] {
+        mem.attach(Box::new(crate::device::ti::uart::Uart::for_device::<
+            crate::device::svd::tm4c123gh6zrb::Tm4c123gh6zrb,
+        >(name)));
+    }
+    // Twelve GPTMs (Timer A concatenated only; Timer B latched).
+    for name in [
+        "TIMER0", "TIMER1", "TIMER2", "TIMER3", "TIMER4", "TIMER5", "WTIMER0", "WTIMER1",
+        "WTIMER2", "WTIMER3", "WTIMER4", "WTIMER5",
+    ] {
+        mem.attach(Box::new(crate::device::ti::timer::Gptm::for_device::<
+            crate::device::svd::tm4c123gh6zrb::Tm4c123gh6zrb,
+        >(name)));
+    }
+    // Four SSIs (master Freescale SPI; slave mode latched).
+    for name in ["SSI0", "SSI1", "SSI2", "SSI3"] {
+        mem.attach(Box::new(crate::device::ti::ssi::Ssi::for_device::<
+            crate::device::svd::tm4c123gh6zrb::Tm4c123gh6zrb,
+        >(name)));
+    }
+    // Six I2Cs (master mode; slave windows latched).
+    for name in ["I2C0", "I2C1", "I2C2", "I2C3", "I2C4", "I2C5"] {
+        mem.attach(Box::new(crate::device::ti::i2c::I2c::for_device::<
+            crate::device::svd::tm4c123gh6zrb::Tm4c123gh6zrb,
+        >(name)));
+    }
+    // Two watchdogs sharing the board reset output.
+    let wdg = std::sync::Arc::new(std::sync::Mutex::new(false));
+    mem.set_watchdog_reset(wdg.clone());
+    for name in ["WATCHDOG0", "WATCHDOG1"] {
+        mem.attach(Box::new(crate::device::ti::wdt::Wdt::for_device::<
+            crate::device::svd::tm4c123gh6zrb::Tm4c123gh6zrb,
+        >(name, wdg.clone())));
+    }
+    // Two ADCs (processor-triggered sequencers; other triggers latched).
+    for name in ["ADC0", "ADC1"] {
+        mem.attach(Box::new(crate::device::ti::adc::Adc::for_device::<
+            crate::device::svd::tm4c123gh6zrb::Tm4c123gh6zrb,
+        >(name)));
+    }
+    // Two PWM modules (four generators each; faults latched).
+    for name in ["PWM0", "PWM1"] {
+        mem.attach(Box::new(crate::device::ti::pwm::Pwm::for_device::<
+            crate::device::svd::tm4c123gh6zrb::Tm4c123gh6zrb,
+        >(name)));
+    }
+    // Two QEIs (phase/velocity capture; filters latched).
+    for name in ["QEI0", "QEI1"] {
+        mem.attach(Box::new(crate::device::ti::qei::Qei::for_device::<
+            crate::device::svd::tm4c123gh6zrb::Tm4c123gh6zrb,
+        >(name)));
+    }
+    // Two CANs (message objects + IF windows; errors/bit-timing latent).
+    for name in ["CAN0", "CAN1"] {
+        mem.attach(Box::new(crate::device::ti::can::Can::for_device::<
+            crate::device::svd::tm4c123gh6zrb::Tm4c123gh6zrb,
+        >(name)));
+    }
+    // One USB controller (device mode; host/OTG latched).
+    mem.attach(Box::new(crate::device::ti::usb::Usb::for_device::<
+        crate::device::svd::tm4c123gh6zrb::Tm4c123gh6zrb,
+    >("USB0")));
+    // EEPROM + flash controller sharing the Flash-vector completion link.
+    let flash_link = std::sync::Arc::new(std::sync::Mutex::new(false));
+    mem.attach(Box::new(crate::device::ti::eeprom::Eeprom::for_device::<
+        crate::device::svd::tm4c123gh6zrb::Tm4c123gh6zrb,
+    >("EEPROM", flash_link.clone())));
+    mem.attach(Box::new(crate::device::ti::flash::FlashCtrl::for_device::<
+        crate::device::svd::tm4c123gh6zrb::Tm4c123gh6zrb,
+    >(flash_link)));
+    // Hibernation RTC subset.
+    mem.attach(Box::new(crate::device::ti::hib::Hib::for_device::<
+        crate::device::svd::tm4c123gh6zrb::Tm4c123gh6zrb,
+    >("HIB")));
+    // Analog comparators (3 on this die; driven outputs, no analog in T2).
+    mem.attach(Box::new(crate::device::ti::comp::Comp::for_device::<
+        crate::device::svd::tm4c123gh6zrb::Tm4c123gh6zrb,
+    >("COMP")));
+    for p in crate::device::svd::tm4c123gh6zrb::PERIPHERALS {
+        if p.base >= 0xE000_0000 || p.base == crate::device::ti::sysctl::SYSCTL_BASE {
+            continue;
+        }
+        mem.attach(Box::new(crate::device::svd::RegisterFile::<
+            crate::device::svd::NoBehavior,
+        >::new(p, crate::device::svd::NoBehavior)));
+    }
+    mem.attach(Box::new(Dwt::new()));
+    mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
+    mem
+}
 /// TM4C123GH6PM flash length in bytes (PDSC IROM1).
 pub const TM4C123GH6PM_FLASH_LEN: u32 = 0x0004_0000;
 /// TM4C123GH6PM RAM length in bytes (PDSC IRAM1).
@@ -11587,6 +11733,7 @@ pub fn all_chip_tables() -> Vec<(&'static str, &'static [crate::device::svd::Per
         ("stm32l476", svd::stm32l476::PERIPHERALS),
         ("tm4c123gh6pm", svd::tm4c123gh6pm::PERIPHERALS),
         ("tm4c123gh6pz", svd::tm4c123gh6pz::PERIPHERALS),
+        ("tm4c123gh6zrb", svd::tm4c123gh6zrb::PERIPHERALS),
         ("tm4c1294ncpdt", svd::tm4c1294ncpdt::PERIPHERALS),
         ("tm4c129xnczad", svd::tm4c129xnczad::PERIPHERALS),
     ]
@@ -12158,6 +12305,7 @@ pub fn all_boards() -> Vec<BoardEntry> {
         ("stm32h743", stm32h743),
         ("tm4c123gh6pm", tm4c123gh6pm),
         ("tm4c123gh6pz", tm4c123gh6pz),
+        ("tm4c123gh6zrb", tm4c123gh6zrb),
         ("tm4c1294ncpdt", tm4c1294ncpdt),
         ("tm4c129xnczad", tm4c129xnczad),
     ]

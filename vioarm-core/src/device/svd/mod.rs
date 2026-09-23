@@ -57,6 +57,7 @@ pub mod stm32u5g9;
 pub mod stm32wba55;
 pub mod tm4c123gh6pm;
 pub mod tm4c123gh6pz;
+pub mod tm4c123gh6zrb;
 pub mod tm4c1294ncpdt;
 pub mod tm4c129xnczad;
 
@@ -1419,8 +1420,8 @@ mod tests {
     #[test]
     fn per_dname_deltas_are_consistent() {
         use super::per_dname::{donor_peripherals, PER_DNAMES};
-        // 568 Dnames, every donor resolves, every removal names a real donor peripheral.
-        assert_eq!(PER_DNAMES.len(), 568);
+        // 577 Dnames, every donor resolves, every removal names a real donor peripheral.
+        assert_eq!(PER_DNAMES.len(), 577);
         let mut total = 0usize;
         for e in PER_DNAMES {
             assert!(e.flash_len > 0 && e.ram_len > 0, "sizes of {}", e.dname);
@@ -1446,8 +1447,9 @@ mod tests {
         // remaining 129 dice as XNCZAD `removed` subsets, +1213; 38880
         // with 14 TM4C123x dice as GH6PM `removed` subsets, +751; 40555
         // with the GH6PZ donor (+67) and 27 more 123 dice as its subsets
-        // (+1608).)
-        assert_eq!(total, 40555);
+        // (+1608); 41180 with the GH6ZRB donor (+72) and the 8 BGA dice
+        // as its subsets (+553).)
+        assert_eq!(total, 41180);
         // Spot checks: known deltas from the (deleted) per-variant tables.
         let f405 = PER_DNAMES.iter().find(|e| e.dname == "STM32F405").unwrap();
         assert!(f405.peripheral("GPIOA").is_some());
