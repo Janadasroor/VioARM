@@ -86,6 +86,8 @@ famous firmware), and the kings harness ports in days.
   XNCZAD audit 66/72): FIPS/NIST-vectored ECB/CBC; advanced modes latch.
 - **129 LCD (done 2026-09-23): raster timing + done IRQs** (3 lib
   tests, XNCZAD audit 67/72): PL110-compatible frames, no pixels.
+- **129 1-Wire (done 2026-09-23): master transactions** (4 lib tests,
+  XNCZAD audit 68/72): presence + instant `WR`/`RD`/`WRRD`.
 
 ## Phase P2 — Peripheral models (~2–3 weeks, the bulk)
 

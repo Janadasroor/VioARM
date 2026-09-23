@@ -13,6 +13,7 @@ pub mod gpio;
 pub mod hib;
 pub mod i2c;
 pub mod lcd;
+pub mod onewire;
 pub mod pwm;
 pub mod qei;
 pub mod shamd5;
