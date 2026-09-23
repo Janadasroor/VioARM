@@ -50,6 +50,7 @@ fn main() {
     }
     // TI track (`ti-roadmap.md` P1): the Tiva C donor audits the same way.
     audit_one(&ctors, &tables, "tm4c123gh6pm");
+    audit_one(&ctors, &tables, "tm4c123gh6pz");
     // TM4C129 donor (`ti-roadmap.md` 129 P1): same treatment.
     audit_one(&ctors, &tables, "tm4c1294ncpdt");
     audit_one(&ctors, &tables, "tm4c129xnczad");

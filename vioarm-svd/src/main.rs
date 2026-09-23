@@ -234,6 +234,10 @@ mod tests {
                 "vioarm-core/src/device/svd/tm4c123gh6pm.rs",
             ),
             (
+                "packs/Keil.TM4C_DFP/SVD/TM4C123/TM4C123GH6PZ.svd",
+                "vioarm-core/src/device/svd/tm4c123gh6pz.rs",
+            ),
+            (
                 "packs/Keil.TM4C_DFP/SVD/TM4C129/TM4C1294NCPDT.svd",
                 "vioarm-core/src/device/svd/tm4c1294ncpdt.rs",
             ),

@@ -67,6 +67,13 @@ const PORT_DEFAULTS_123: &[(&str, u32, u32, u32, u32, u32)] = &[
     ("GPIOD", 0x00, 0x00, 0x00, 0x0000_0000, 0x7F),
     ("GPIOE", 0x00, 0x00, 0x00, 0x0000_0000, 0xFF),
     ("GPIOF", 0x00, 0x00, 0x00, 0x0000_0000, 0xFE),
+    // `G`/`H`/`J`/`K` (100-pin+ dice): Tables 10-8–10-11 list no
+    // exceptions for these ports (JTAG/NMI live on `C`/`D`/`F`), so
+    // plain tri-state GPIO, fully committable.
+    ("GPIOG", 0x00, 0x00, 0x00, 0x0000_0000, 0xFF),
+    ("GPIOH", 0x00, 0x00, 0x00, 0x0000_0000, 0xFF),
+    ("GPIOJ", 0x00, 0x00, 0x00, 0x0000_0000, 0xFF),
+    ("GPIOK", 0x00, 0x00, 0x00, 0x0000_0000, 0xFF),
 ];
 
 /// Per-port reset words from Table 10-7 (TM4C1294NCPDT, SPMS433B):

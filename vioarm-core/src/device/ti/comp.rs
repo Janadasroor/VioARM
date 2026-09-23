@@ -1,4 +1,5 @@
-//! TI Tiva C analog comparators (`COMP`, comparators 0-1).
+//! TI Tiva C analog comparators (`COMP`, comparators 0-1, or 0-2 where
+//! the tables carry `ACCTL2`).
 //!
 //! Output and interrupt sense follow the TM4C123GH6PM datasheet
 //! (SPMS376E §19): `OVAL` reports the driven input state through `CINV`,
@@ -9,7 +10,7 @@
 //!
 //! Inputs arrive through [`Comp::drive`] (host/test stimulus; no analog
 //! in T2): each comparator's output is its driven level. Per-comparator
-//! NVIC lines (`COMP0`/`COMP1`) carry the masked bits.
+//! NVIC lines (`COMP0`/`COMP1`/`COMP2`) carry the masked bits.
 
 use crate::device::svd::{Behavior, Device, RegisterFile, Registers};
 use crate::device::{InterruptSource, Peripheral};
@@ -41,26 +42,52 @@ const SENSE_EITHER: u32 = 0x3;
 const RESETS: &[(u32, u32)] = &[(PP_OFF, 0x0003_0003)];
 
 /// Behavior behind the COMP window (driven outputs + sense).
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct CompBehavior {
     /// Driven input levels per comparator.
-    driven: [bool; 2],
+    driven: [bool; 3],
     /// Last evaluated outputs (for edge detection).
-    prev: [bool; 2],
+    prev: [bool; 3],
     /// Edge-latch bits (`INn` in `ACRIS`).
-    edge: [bool; 2],
-    pending: [bool; 2],
+    edge: [bool; 3],
+    pending: [bool; 3],
+    /// Comparator count from the tables (2, or 3 where `ACCTL2` exists).
+    ncomp: usize,
+}
+
+impl Default for CompBehavior {
+    fn default() -> Self {
+        Self {
+            driven: [false; 3],
+            prev: [false; 3],
+            edge: [false; 3],
+            pending: [false; 3],
+            ncomp: 2,
+        }
+    }
+}
+
+impl CompBehavior {
+    /// `ACCTL` offset of comparator `n` (`0x24 + 0x20*n`).
+    fn ctl_off(n: usize) -> u32 {
+        ACCTL0_OFF + 0x20 * n as u32
+    }
+
+    /// `ACSTAT` offset of comparator `n` (`0x20 + 0x20*n`).
+    fn stat_off(n: usize) -> u32 {
+        ACSTAT0_OFF + 0x20 * n as u32
+    }
 }
 
 impl CompBehavior {
     fn output(&self, view: &Registers<&mut [u32]>, n: usize) -> bool {
-        let ctl = view.get(if n == 0 { ACCTL0_OFF } else { ACCTL1_OFF });
+        let ctl = view.get(Self::ctl_off(n));
         self.driven[n] ^ (ctl & CTL_CINV != 0)
     }
 
     /// Re-evaluate comparator `n` after a drive change.
     fn poll(&mut self, view: &Registers<&mut [u32]>, n: usize) {
-        let ctl = view.get(if n == 0 { ACCTL0_OFF } else { ACCTL1_OFF });
+        let ctl = view.get(Self::ctl_off(n));
         let out = self.output(view, n);
         let before = self.prev[n];
         self.prev[n] = out;
@@ -91,7 +118,7 @@ impl CompBehavior {
         if self.edge[n] {
             return true;
         }
-        let ctl = view.get(if n == 0 { ACCTL0_OFF } else { ACCTL1_OFF });
+        let ctl = view.get(Self::ctl_off(n));
         if (ctl >> CTL_ISEN_SHIFT) & CTL_ISEN_MASK != SENSE_LEVEL {
             return false;
         }
@@ -100,7 +127,7 @@ impl CompBehavior {
 
     fn refresh(&mut self, view: &Registers<&mut [u32]>) {
         let inten = view.get(ACINTEN_OFF);
-        for n in 0..2 {
+        for n in 0..self.ncomp {
             self.pending[n] = self.raw(view, n) && inten & (1 << n) != 0;
         }
     }
@@ -112,20 +139,30 @@ impl Behavior for CompBehavior {
     }
 
     fn reset(&mut self) {
-        let driven = self.driven;
+        let (driven, ncomp) = (self.driven, self.ncomp);
         *self = Self::default();
         self.driven = driven;
+        self.ncomp = ncomp;
     }
 
     fn on_read(&mut self, view: &mut Registers<&mut [u32]>, offset: u32, value: u32) -> u32 {
         let out = match offset {
-            ACSTAT0_OFF => u32::from(self.output(view, 0)) << 1,
-            ACSTAT1_OFF => u32::from(self.output(view, 1)) << 1,
-            ACRIS_OFF => u32::from(self.raw(view, 0)) | (u32::from(self.raw(view, 1)) << 1),
+            ACRIS_OFF => {
+                (0..self.ncomp).fold(0, |acc, n| acc | (u32::from(self.raw(view, n)) << n))
+            }
             ACMIS_OFF => {
                 let inten = view.get(ACINTEN_OFF);
-                (u32::from(self.raw(view, 0)) & (inten & 0x01))
-                    | ((u32::from(self.raw(view, 1)) & ((inten >> 1) & 0x01)) << 1)
+                (0..self.ncomp).fold(0, |acc, n| {
+                    acc | ((u32::from(self.raw(view, n)) & ((inten >> n) & 0x01)) << n)
+                })
+            }
+            _ if offset == ACSTAT0_OFF || offset == ACSTAT1_OFF || offset == 0x60 => {
+                let n = ((offset - ACSTAT0_OFF) / 0x20) as usize;
+                if n < self.ncomp {
+                    u32::from(self.output(view, n)) << 1
+                } else {
+                    value
+                }
             }
             _ => value,
         };
@@ -140,13 +177,13 @@ impl Behavior for CompBehavior {
         val: u8,
         shift: u32,
     ) -> u32 {
-        if offset == ACSTAT0_OFF || offset == ACSTAT1_OFF || offset == ACRIS_OFF {
+        if offset == ACSTAT0_OFF || offset == ACSTAT1_OFF || offset == 0x60 || offset == ACRIS_OFF {
             return view.get(offset);
         }
         if offset == ACMIS_OFF {
             // W1C: clears masked and raw bits (datasheet `ACMIS` page).
             let word = view.merged(offset, val, shift);
-            for n in 0..2 {
+            for n in 0..self.ncomp {
                 if word & (1 << n) != 0 {
                     self.edge[n] = false;
                 }
@@ -157,9 +194,11 @@ impl Behavior for CompBehavior {
         let word = view.merged(offset, val, shift);
         view.set(offset, word);
         // `CINV`/`ISEN` changes re-evaluate levels immediately.
-        if offset == ACCTL0_OFF || offset == ACCTL1_OFF {
-            let n = usize::from(offset != ACCTL0_OFF);
-            self.poll(view, n);
+        if offset == ACCTL0_OFF || offset == ACCTL1_OFF || offset == 0x64 {
+            let n = ((offset - ACCTL0_OFF) / 0x20) as usize;
+            if n < self.ncomp {
+                self.poll(view, n);
+            }
         }
         self.refresh(view);
         word
@@ -179,8 +218,19 @@ impl Comp {
     #[must_use]
     pub fn for_device<D: Device>(name: &str) -> Self {
         let def = D::peripheral(name).expect("generated tables contain COMP");
+        let ncomp = if def.registers.iter().any(|r| r.offset == 0x64) {
+            3
+        } else {
+            2
+        };
         let mut comp = Self {
-            inner: RegisterFile::new(def, CompBehavior::default()),
+            inner: RegisterFile::new(
+                def,
+                CompBehavior {
+                    ncomp,
+                    ..CompBehavior::default()
+                },
+            ),
         };
         comp.stamp_resets();
         comp
@@ -206,10 +256,10 @@ impl Comp {
 
     /// Drive comparator `n`'s input level (host/test stimulus).
     pub fn drive(&mut self, n: usize, high: bool) {
-        if n > 1 {
-            return;
-        }
         self.inner.with_view(|view, b| {
+            if n >= b.ncomp {
+                return;
+            }
             b.driven[n] = high;
             b.poll(view, n);
         });
@@ -248,12 +298,12 @@ impl InterruptSource for Comp {
     }
 
     fn lines(&self) -> u32 {
-        2
+        self.inner.behavior().ncomp as u32
     }
 
     fn pending(&self) -> u32 {
         let b = self.inner.behavior();
-        u32::from(b.pending[0]) | (u32::from(b.pending[1]) << 1)
+        (0..b.ncomp).fold(0, |acc, n| acc | (u32::from(b.pending[n]) << n))
     }
 }
 
@@ -296,6 +346,22 @@ mod tests {
         assert_eq!(read_word(&mut comp, ACSTAT0_OFF) & STAT_OVAL, 0);
         assert_eq!(comp.exception_number(), Some(41));
         assert_eq!(comp.exception_for_line(1), Some(42));
+    }
+
+    /// Third comparator (100-pin+ dice): `ACSTAT2`/`ACCTL2` live with
+    /// their own line; two-comparator tables stay at two.
+    #[test]
+    fn third_comparator_where_present() {
+        use crate::device::svd::tm4c123gh6pz::Tm4c123gh6pz;
+        let mut comp3 = Comp::for_device::<Tm4c123gh6pz>("COMP");
+        assert_eq!(comp3.lines(), 3);
+        comp3.drive(2, true);
+        assert_eq!(read_word(&mut comp3, 0x60) & STAT_OVAL, STAT_OVAL);
+        write_word(&mut comp3, 0x64, CTL_CINV);
+        assert_eq!(read_word(&mut comp3, 0x60) & STAT_OVAL, 0);
+        // Out-of-range drives are ignored.
+        comp3.drive(3, true);
+        assert_eq!(comp().lines(), 2);
     }
 
     /// Rising-edge sense latches `IN0` behind `INTEN`; `ACMIS` W1C clears.

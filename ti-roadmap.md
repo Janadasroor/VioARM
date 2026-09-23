@@ -44,6 +44,10 @@ famous firmware), and the kings harness ports in days.
   total, anchor 38880): 14 dice proved GH6PM-subsets, wired via
   `removed` with inventoried residuals; 15/51 covered, 36 need new
   windows (`GPIOG`/`H`/`J`, `I2C4`/`5`).
+- **123 second donor + sweep (done 2026-09-23): GH6PZ** (67 periphs,
+  audit 65/67; 568 Dnames, anchor 40555): G/H/J/K rows, I2C4/5,
+  data-driven 3rd comparator, 27 subsets wired; 43/51 covered, 8 BGA
+  dice left.
 - `board_audit.rs` lists the new windows; pins entry.
 - Acceptance: audit shows `tm4c123gh6pm` 0/58 behavioral, 58 latch,
   zero Reserved.
