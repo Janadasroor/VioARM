@@ -113,6 +113,14 @@ famous firmware), and the kings harness ports in days.
 - **129 EMAC package 2 (done 2026-09-23): descriptor-ring DMA** (6
   lib tests + board TX proof): TX/RX rings via the shared mailbox;
   checksum/MMC/PTP still deferred.
+- **129 EMAC package 3 (done 2026-09-24): checksum offload + MMC**
+  (13 lib tests + 2 board proofs, audit still 70/72 — no new
+  windows): TX `CIC` insertion (IPv4/TCP/UDP/ICMPv4/ICMPv6, `CIC=2`
+  folds the input field, `CIC=3` full pseudo-header) with `IHE`/`ES`
+  write-back; RX Table 20-9 status under `EMACCFG.IPC`; all eight
+  32-bit MMC counters with `CNTRST`/`CNTPRST`/`CNTFREEZ`/`RSTONRD`,
+  half/full interrupts + masks into `EMACRIS`. PTP/magic-packet/
+  `CRCR`/`VLIC` still deferred.
 
 ## Phase P2 — Peripheral models (~2–3 weeks, the bulk)
 
