@@ -10,10 +10,13 @@
 //! * `CAN_CCU` walks calibration to precision and barks its watchdog.
 //! * `DBGMCU` reports `IDC 0x10006450`.
 //!
-//! `AXI` stays a documented latch: interconnect issuing/QoS tuning with no
-//! firmware-observable dynamics (reset values are the working config).
+//! `AXI` is a proven latch: the interconnect issuing/QoS registers hold
+//! the working config with no firmware-observable dynamics, and the test
+//! below pins the whole window (reachability, ID resets, RO rejection,
+//! program/readback).
 
 use vioarm_core::board;
+use vioarm_core::device::svd::{stm32h743::Stm32h743, Device};
 use vioarm_core::machine::Machine;
 use vioarm_core::mem::Bus;
 
@@ -202,4 +205,35 @@ fn ccu_calibrates_and_watchdogs() {
 fn dbgmcu_reports_id() {
     let mut m = Machine::armv7em(board::stm32h743());
     assert_eq!(rw(m.core.mem(), 0x5C00_1000), 0x1000_6450, "IDC");
+}
+
+// --- AXI interconnect latch proof ---
+
+const AXI: u32 = 0x5100_0000;
+
+#[test]
+fn axi_latch_is_complete() {
+    let def = Stm32h743::peripheral("AXI").expect("AXI window");
+    assert_eq!(def.base, AXI, "matrix window base");
+    let mut m = Machine::armv7em(board::stm32h743());
+    let mem = m.core.mem();
+    // Every defined register answers (no Reserved holes in the window).
+    for r in def.registers {
+        rw(mem, AXI + r.offset);
+    }
+    // ID registers read their SVD resets and reject writes.
+    for r in def
+        .registers
+        .iter()
+        .filter(|r| r.name.contains("PERIPH_ID") || r.name.contains("COMP_ID"))
+    {
+        assert_eq!(rw(mem, AXI + r.offset), r.reset, "{} reset", r.name);
+        ww(mem, AXI + r.offset, !r.reset);
+        assert_eq!(rw(mem, AXI + r.offset), r.reset, "{} RO", r.name);
+    }
+    // Issuing + QoS hold the working config (program/readback).
+    ww(mem, AXI + 0x2008, 0x0000_00FF); // TARG1 issuing
+    assert_eq!(rw(mem, AXI + 0x2008), 0x0000_00FF);
+    ww(mem, AXI + 0x42100, 0x0000_000C); // INI1 read QoS
+    assert_eq!(rw(mem, AXI + 0x42100), 0x0000_000C);
 }

@@ -10542,7 +10542,7 @@ pub fn stm32g474xx() -> BoardMemory {
 
 /// STM32H743 (H7, Cortex-M7) flash size in bytes (2 MiB).
 pub const STM32_H743_FLASH_LEN: u32 = 0x0020_0000;
-/// STM32H743 RAM size in bytes (512 KiB AXI + 128 KiB DTCM).
+/// STM32H743 RAM size in bytes (384 KiB AXI + 128 KiB DTCM).
 pub const STM32_H743_RAM_LEN: u32 = 0x0008_0000;
 /// An STM32H743 board: the H7 line with `Stm32h743` tables.
 #[must_use]

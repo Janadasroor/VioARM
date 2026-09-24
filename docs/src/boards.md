@@ -227,7 +227,9 @@ Per-board detail (latch lists are the Phase C work items):
   `DLYB`×3 (`LNGF` = enabled path), `CAN_CCU` (`CALS` walk per HAL state encodings,
   calibration watchdog, W1C `IR`), H7 `DBGMCU` (`DEV_ID 0x450`); shared mounts for new-gen
   `RTC` (PRLH gate retired), `UART4`/`5`/`7`/`8`, `Flash` name fallback. Documented limits:
-  `AXI` stays a latch (interconnect issuing/QoS tuning, no firmware-observable dynamics —
+  `AXI` a proven latch (`axi_latch_is_complete`: whole-window reachability,
+  ID resets, RO rejection, issuing/QoS program/readback — interconnect
+  issuing/QoS tuning, no firmware-observable dynamics —
   T2 by the contract-driver rule); option-byte reload, WPSN protection, flash CRC/ECC,
   OTP, CALS counters, DLYB phase granularity unmodeled.
 - `stm32l476` — **closed (Phase C): 71/71 behavioral, zero latch.** No firmware aboard so

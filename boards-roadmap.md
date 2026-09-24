@@ -129,7 +129,8 @@ record result in `docs/src/boards.md`. All pending.
 - [x] `stm32h743` (119) — closed: 118/119 behavioral, one documented latch
       (H7 SYSCFG comp-cell + FlashH7 dual-bank + DLYB×3 + CAN_CCU models,
       H7 DBGMCU, RTC gate retired, UART4/5/7/8 mounts, 8 proofs in
-      `h743_closeout.rs`; AXI stays a config latch; record in `docs/src/boards.md`).
+       `h743_closeout.rs`; AXI a proven latch (`axi_latch_is_complete` walks
+       the matrix window; record in `docs/src/boards.md`).
 - [x] `stm32l476` (80) — closed: 71/71 behavioral, zero latch
       (L4 FLASH + LCD + FIREWALL models, Dfsdm named ctor, SWPMI1 fallback,
       shared-driver mounts incl. DMA/ADC-common, 14 proofs in `l476_closeout.rs`;
