@@ -1,13 +1,16 @@
 //! TI Tiva C AES engine (`AES`, `0x4403_6000`).
 //!
 //! Register map and `CTRL`/`IRQSTATUS` semantics follow the TI
-//! `hw_aes.h` + `aes.c` oracle (BSD): `KEY1_0-7` (LSW first; 4/6/8 words
-//! for 128/192/256), `IV_IN_0-3`, `CTRL` as a plain config word
-//! (`DIRECTION` 1 = encrypt, `MODE` field under mask `0x2007FE60`
-//! per the TI driverlib `AES_CFG_*` values: `ECB 0x0`, `CBC 0x20`,
-//! `CTR 0x40` with `CTR_WIDTH` 32/64/96/128 in bits 7-8, `CBCMAC
-//! 0x20008000`, `GCM 0x20030040`, `CCM 0x20040040` with `CCM_L_*` in
-//! bits 19-21 off `IV_IN` byte 0 and `CCM_M_*` in bits 22-24),
+//! `hw_aes.h` + `aes.c` + `aes.h` oracle (BSD, fetched at runtime and
+//! never vendored): `KEY1_0-7` (LSW first; 4/6/8 words for 128/192/256),
+//! `KEY2_0-7` (same interleave, XTS second key), `IV_IN_0-3`, `CTRL` as
+//! a plain config word (`DIRECTION` 1 = encrypt, `MODE` field under mask
+//! `0x2007FE60` per the driverlib `AES_CFG_*` values: `ECB 0x0`, `CBC
+//! 0x20`, `CTR 0x40` with `CTR_WIDTH` 32/64/96/128 in bits 7-8, `ICM
+//! 0x200`, `CFB 0x400`, XTS `TWEAKJL 0x800` / `K2IJL 0x1000` / `K2ILJ0
+//! 0x1800`, `F8 0x2000`, `F9 0x20004000`, `CBCMAC 0x20008000`, `GCM
+//! 0x20030040`, `CCM 0x20040040` with `CCM_L_*` in bits 19-21 off
+//! `IV_IN` byte 0 and `CCM_M_*` in bits 22-24),
 //! `C_LENGTH_0/1` + `AUTH_length` partitioning auth/data streams,
 //! `DATA_IN_3-0` carrying words 0-3 (reversed: `src[0]` → `DATA_IN_3`),
 //! result read back from the same regs, `TAG_OUT_0-3` carrying the tag
@@ -17,6 +20,10 @@
 //!
 //! Modeled: AES-128/192/256 ECB + CBC + CTR encrypt/decrypt in pure
 //! software (S-box computed at runtime — no transcribed tables),
+//! ICM (full-width integer counter: the CTR path with the whole block
+//! as span), full-block CFB with cross-completion chaining, XTS
+//! (single continuous tweak chain over all three load variants;
+//! 128/256-bit keys, tweak from `IV_IN`, unit index 0),
 //! GCM/GMAC (12-byte nonces: `J0 = nonce || 1` from `IV_IN`; GHASH
 //! via the NIST-proven STM32 primitives), raw CBC-MAC, and CCM (SP
 //! 800-38C/RFC 3610: `B0`/AAD-format/CTR/CBC-MAC state machine over
@@ -25,8 +32,14 @@
 //! CBC-128/CTR-128, NIST SP 800-38D GCM cases, RFC 3610 CCM vectors,
 //! and Python-`cryptography`-oracle vectors. Unlike GCM, the CCM MAC
 //! covers PLAINTEXT in both directions (RFC 3610 §2.2/2.5).
-//! Deliberate scope: ICM/CFB/XTS/F8/F9/DMA/`SAVE_CONTEXT` latch
-//! without acting; non-12-byte GCM nonces (engine GHASH-derives `J0`;
+//! Deliberate scope: F8/F9/DMA/`SAVE_CONTEXT` latch without acting
+//! (F8/F9 use an engine-specific `KEY3` construction with no oracle in
+//! the fetched TivaWare sources — wrong crypto is worse than latched
+//! crypto); XTS-192 (IEEE 1619 has no 192-bit variant); XTS
+//! ciphertext-stealing tails (unreachable: completions are always whole
+//! 16-byte words off the `DATA_IN` lane path) and continuation-call
+//! tweak reloads (each config starts a fresh chain); non-12-byte GCM
+//! nonces (engine GHASH-derives `J0`;
 //! unmodeled); tag-mismatch signaling (the engine exposes none —
 //! firmware compares); CBCMAC `DATA_OUT` (tag-only mode, regs stay
 //! stale). Malformed CCM configs stay inert.
@@ -71,7 +84,14 @@ const CTRL_MODE_ECB: u32 = 0x00;
 const CTRL_MODE_CBC: u32 = 0x20;
 const CTRL_MODE_CTR: u32 = 0x40;
 const CTRL_CTR_WIDTH_SHIFT: u32 = 7;
+const CTRL_MODE_ICM: u32 = 0x200;
+const CTRL_MODE_CFB: u32 = 0x400;
+const CTRL_MODE_XTS_TWEAKJL: u32 = 0x800;
+const CTRL_MODE_XTS_K2IJL: u32 = 0x1000;
+const CTRL_MODE_XTS_K2ILJ0: u32 = 0x1800;
 const CTRL_MODE_CBCMAC: u32 = 0x2000_8000;
+/// `KEY2` word `j` offsets (XTS second key; same interleave as `KEY1`).
+const KEY2_WORD_OFF: [u32; 8] = [0x18, 0x1C, 0x10, 0x14, 0x08, 0x0C, 0x00, 0x04];
 const CTRL_MODE_GCM: u32 = 0x2003_0040;
 const CTRL_MODE_CCM: u32 = 0x2004_0040;
 const CTRL_CCM_M_SHIFT: u32 = 22;
@@ -262,9 +282,16 @@ pub struct AesBehavior {
     /// CBC chaining value (encrypt: last ciphertext; decrypt: last input).
     chain: [u8; 16],
     chain_valid: bool,
-    /// CTR running counter + latched flag.
+    /// CTR running counter + latched flag (shared with ICM: same
+    /// engine primitive, full-width span).
     ctr: [u8; 16],
     ctr_valid: bool,
+    /// CFB shift register + latched flag (ciphertext feeds back).
+    cfb_sr: [u8; 16],
+    cfb_valid: bool,
+    /// XTS running tweak + latched flag (fresh chain per config).
+    xts_tweak: [u8; 16],
+    xts_valid: bool,
     /// GCM stream state (`C_LENGTH`/`AUTH_length` partition the input).
     g_latched: bool,
     g_h: [u8; 16],
@@ -325,6 +352,39 @@ impl AesBehavior {
             key[4 * i..4 * i + 4].copy_from_slice(&w.to_le_bytes());
         }
         Some(expand_key(&key[..4 * nk]))
+    }
+
+    /// Expanded KEY2 round keys (XTS second key, same size field as
+    /// KEY1; 128/256 only — IEEE 1619 has no 192-bit variant).
+    fn key2_round_keys(view: &Registers<&mut [u32]>) -> Option<Vec<[u8; 16]>> {
+        let ks = (view.get(CTRL_OFF) >> CTRL_KEY_SIZE_SHIFT) & CTRL_KEY_SIZE_MASK;
+        let nk = match ks {
+            0x01 => 4,
+            0x03 => 8,
+            _ => return None,
+        };
+        let mut key = [0u8; 32];
+        for i in 0..nk {
+            let w = view.get(KEY2_WORD_OFF[i]);
+            key[4 * i..4 * i + 4].copy_from_slice(&w.to_le_bytes());
+        }
+        Some(expand_key(&key[..4 * nk]))
+    }
+
+    /// GF(2^128) multiply-by-alpha (IEEE 1619 tweak update, polynomial
+    /// x^128+x^7+x^2+x+1; tweak bytes little-endian, reduction into byte
+    /// 0). Pinned by the Python-`cryptography` XTS oracle — the
+    /// big-endian mirror fails block 2 while block 1 matches.
+    fn gf128_mul_alpha(t: &mut [u8; 16]) {
+        let mut carry = 0u8;
+        for b in t.iter_mut() {
+            let next = *b >> 7;
+            *b = (*b << 1) | carry;
+            carry = next;
+        }
+        if carry != 0 {
+            t[0] ^= 0x87;
+        }
     }
 
     /// One input block, TivaWare order (`DATA_IN_3` holds bytes 0-3).
@@ -876,6 +936,8 @@ impl Behavior for AesBehavior {
             self.output_ready = false;
             self.data_out_irq = false;
             self.ctr_valid = false;
+            self.cfb_valid = false;
+            self.xts_valid = false;
             self.g_latched = false;
             self.g_tag_valid = false;
             self.m_latched = false;
@@ -951,6 +1013,59 @@ impl Behavior for AesBehavior {
                     let out = self.ctr_block(&rk, width, &iv, &block);
                     self.publish(out);
                 }
+                CTRL_MODE_ICM => {
+                    // Integer counter: the CTR path with the whole
+                    // block as span (width select ignored, per the
+                    // driverlib config ASSERT).
+                    let iv = Self::iv_bytes(view);
+                    let out = self.ctr_block(&rk, 3, &iv, &block);
+                    self.publish(out);
+                }
+                CTRL_MODE_CFB => {
+                    let iv = Self::iv_bytes(view);
+                    if !self.cfb_valid {
+                        self.cfb_sr = iv;
+                        self.cfb_valid = true;
+                    }
+                    let ks = encrypt_block(&self.cfb_sr, &rk);
+                    let mut out = [0u8; 16];
+                    for (dst, (&b, &k)) in out.iter_mut().zip(block.iter().zip(ks.iter())) {
+                        *dst = b ^ k;
+                    }
+                    // Encrypt feeds back ciphertext, decrypt feeds back
+                    // the input ciphertext.
+                    self.cfb_sr = if encrypt { out } else { block };
+                    self.publish(out);
+                }
+                CTRL_MODE_XTS_TWEAKJL | CTRL_MODE_XTS_K2IJL | CTRL_MODE_XTS_K2ILJ0 => {
+                    // One continuous tweak chain over every load variant
+                    // (continuation-call context reloads unmodeled: each
+                    // config starts fresh). 192-bit keys have no XTS
+                    // variant and stay inert.
+                    if let Some(rk2) = Self::key2_round_keys(view) {
+                        if !self.xts_valid {
+                            self.xts_tweak = encrypt_block(&Self::iv_bytes(view), &rk2);
+                            self.xts_valid = true;
+                        }
+                        let mut xored = [0u8; 16];
+                        for (dst, (&b, &t)) in xored
+                            .iter_mut()
+                            .zip(block.iter().zip(self.xts_tweak.iter()))
+                        {
+                            *dst = b ^ t;
+                        }
+                        let mut mid = if encrypt {
+                            encrypt_block(&xored, &rk)
+                        } else {
+                            decrypt_block(&xored, &rk)
+                        };
+                        for (dst, &t) in mid.iter_mut().zip(self.xts_tweak.iter()) {
+                            *dst ^= t;
+                        }
+                        Self::gf128_mul_alpha(&mut self.xts_tweak);
+                        self.publish(mid);
+                    }
+                }
                 CTRL_MODE_GCM => {
                     if !self.g_latched {
                         self.gcm_latch(view, &rk);
@@ -983,8 +1098,8 @@ impl Behavior for AesBehavior {
     }
 }
 
-/// A Tiva C AES engine (ECB/CBC/CTR/GCM/CBC-MAC/CCM 128/192/256;
-/// other modes latch).
+/// A Tiva C AES engine (ECB/CBC/CTR/ICM/CFB/XTS/GCM/CBC-MAC/CCM
+/// 128/192/256 — XTS without 192; other modes latch).
 pub struct Aes {
     inner: RegisterFile<AesBehavior>,
 }
@@ -1211,17 +1326,17 @@ mod tests {
             [0xa8f6_4332, 0x8d30_5a88, 0xa298_3131, 0x3407_37e0],
         );
         assert_eq!(aes.pending(), 1);
-        // CFB mode latches without acting.
+        // F8 mode latches without acting (KEY3 construction, no oracle).
         let mut aes2 = new_aes();
-        write_word(&mut aes2, CTRL_OFF, CTRL_DIRECTION | 0x08 | 0x400);
+        write_word(&mut aes2, CTRL_OFF, CTRL_DIRECTION | 0x08 | 0x2000);
         block(
             &mut aes2,
             [0xa8f6_4332, 0x8d30_5a88, 0xa298_3131, 0x3407_37e0],
         );
         assert_eq!(read_word(&mut aes2, 0x8C) & IRQ_DATA_OUT, 0);
-        // XTS stays inert (tweak engine unmodeled).
+        // F9 likewise inert.
         let mut aes3 = new_aes();
-        write_word(&mut aes3, CTRL_OFF, CTRL_DIRECTION | 0x08 | 0x0800);
+        write_word(&mut aes3, CTRL_OFF, CTRL_DIRECTION | 0x08 | 0x2000_4000);
         block(
             &mut aes3,
             [0xa8f6_4332, 0x8d30_5a88, 0xa298_3131, 0x3407_37e0],
@@ -1634,5 +1749,264 @@ mod tests {
         block(&mut aes, [0, 0, 0, 0]);
         assert_eq!(read_word(&mut aes, 0x8C) & IRQ_DATA_OUT, 0);
         assert_eq!(tag(&mut aes), [0, 0, 0, 0]);
+    }
+
+    /// Bytes <-> LE-word blocks for oracle vectors.
+    fn w16(b: &[u8]) -> [u32; 4] {
+        core::array::from_fn(|i| {
+            u32::from_le_bytes([b[4 * i], b[4 * i + 1], b[4 * i + 2], b[4 * i + 3]])
+        })
+    }
+
+    fn w32(b: &[u8]) -> Vec<u32> {
+        b.chunks(4)
+            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect()
+    }
+
+    fn b16(w: &[u32; 4]) -> Vec<u8> {
+        w.iter().flat_map(|x| x.to_le_bytes()).collect()
+    }
+
+    /// Write `KEY2` words (LSW first, XTS second key).
+    fn setup2(aes: &mut Aes, key2_le: &[u32]) {
+        for (i, &w) in key2_le.iter().enumerate() {
+            write_word(aes, KEY2_WORD_OFF[i], w);
+        }
+    }
+
+    /// Frozen oracle vectors (`/tmp/opencode/aes_resid_vecs.json`).
+    const RK128: &str = "000102 030405 060708 090a0b 0c0d0e 0f";
+    const RK256: &str =
+        "000102 030405 060708 090a0b 0c0d0e 0f 101112 131415 161718 191a1b 1c1d1e 1f";
+    const RK2_128: &str = "101112 131415 161718 191a1b 1c1d1e 1f";
+    const RK2_256: &str =
+        "202122 232425 262728 292a2b 2c2d2e 2f 303132 333435 363738 393a3b 3c3d3e 3f";
+    const RPT2: &str =
+        "001122 334455 667788 99aa bbcc ddee ff00 112233 445566 778899 aabb ccdd eeff";
+
+    /// ICM encrypt, 2 blocks (`624cb605…602b` oracle).
+    #[test]
+    fn icm_encrypt_2block() {
+        let mut aes = new_aes();
+        setup(
+            &mut aes,
+            &w16(&unhex(RK128)),
+            Some(w16(&unhex("000000 000000 000000 000000 0000 fffe"))),
+            CTRL_DIRECTION | CTRL_MODE_ICM | 0x08,
+        );
+        let pt = unhex(RPT2);
+        let c0 = b16(&block(&mut aes, w16(&pt[..16])));
+        let c1 = b16(&block(&mut aes, w16(&pt[16..])));
+        assert_eq!(
+            [c0, c1].concat(),
+            unhex("624cb605 0c1c3093 fca0ae17 fb5e9914 6a2788ea 3cfa3846 eb55b253 5d20602b")
+        );
+    }
+
+    /// ICM first keystream block is ECB(IV) by construction (`ks0` oracle).
+    #[test]
+    fn icm_first_keystream_is_ecb_iv() {
+        let mut aes = new_aes();
+        setup(
+            &mut aes,
+            &w16(&unhex(RK128)),
+            Some(w16(&unhex("000000 000000 000000 000000 0000 fffe"))),
+            CTRL_DIRECTION | CTRL_MODE_ICM | 0x08,
+        );
+        let pt = unhex(RPT2);
+        let c0 = b16(&block(&mut aes, w16(&pt[..16])));
+        let ks0 = unhex("625d9436 484956e4 743904ac 378377eb");
+        assert_eq!(
+            c0,
+            pt[..16]
+                .iter()
+                .zip(ks0.iter())
+                .map(|(&a, &b)| a ^ b)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// ICM full-width carry: `FF…FF` + 1 wraps the whole block (`3c553d…53686`).
+    #[test]
+    fn icm_carry_wrap() {
+        let mut aes = new_aes();
+        setup(
+            &mut aes,
+            &w16(&unhex(RK128)),
+            Some([0xFFFF_FFFF, 0xFFFF_FFFF, 0xFFFF_FFFF, 0xFFFF_FFFF]),
+            CTRL_DIRECTION | CTRL_MODE_ICM | 0x08,
+        );
+        let pt = unhex(RPT2);
+        let c0 = b16(&block(&mut aes, w16(&pt[..16])));
+        let c1 = b16(&block(&mut aes, w16(&pt[16..])));
+        assert_eq!(
+            [c0, c1].concat(),
+            unhex("3c553d01 8a52e454 ec4e0822 c28d55ec c6b01904 c3da3df5 e7d62bd9 6d153686")
+        );
+    }
+
+    /// ICM decrypt round-trips; 256-bit keys work the same path.
+    #[test]
+    fn icm_decrypt_roundtrip_256() {
+        let mut aes = new_aes();
+        setup(
+            &mut aes,
+            &w32(&unhex(RK256)),
+            Some(w16(&unhex("000102 030405 060708 090a0b 0c0d0e 0f"))),
+            CTRL_DIRECTION | CTRL_MODE_ICM | 0x18,
+        );
+        let pt = unhex(RPT2);
+        let c0 = block(&mut aes, w16(&pt[..16]));
+        let c1 = block(&mut aes, w16(&pt[16..]));
+        let mut aes2 = new_aes();
+        setup(
+            &mut aes2,
+            &w32(&unhex(RK256)),
+            Some(w16(&unhex("000102 030405 060708 090a0b 0c0d0e 0f"))),
+            CTRL_MODE_ICM | 0x18,
+        );
+        assert_eq!(b16(&block(&mut aes2, c0)), pt[..16]);
+        assert_eq!(b16(&block(&mut aes2, c1)), pt[16..]);
+    }
+
+    /// CFB-128 encrypt, 2 blocks (`0a852986…0f3c` oracle).
+    #[test]
+    fn cfb_encrypt_2block() {
+        let mut aes = new_aes();
+        setup(
+            &mut aes,
+            &w16(&unhex(RK128)),
+            Some(w16(&unhex("000102 030405 060708 090a0b 0c0d0e 0f"))),
+            CTRL_DIRECTION | CTRL_MODE_CFB | 0x08,
+        );
+        let pt = unhex(RPT2);
+        let c0 = b16(&block(&mut aes, w16(&pt[..16])));
+        let c1 = b16(&block(&mut aes, w16(&pt[16..])));
+        assert_eq!(
+            [c0, c1].concat(),
+            unhex("0a852986 053b9632 795a3ee3 0a8e04a5 ccefb18f ab11bca6 7c621a7b 947c0f3c")
+        );
+    }
+
+    /// CFB-128 decrypt recovers the oracle ciphertext; 256-bit encrypt matches.
+    #[test]
+    fn cfb_decrypt_and_256() {
+        let ct = unhex("0a852986 053b9632 795a3ee3 0a8e04a5 ccefb18f ab11bca6 7c621a7b 947c0f3c");
+        let mut aes = new_aes();
+        setup(
+            &mut aes,
+            &w16(&unhex(RK128)),
+            Some(w16(&unhex("000102 030405 060708 090a0b 0c0d0e 0f"))),
+            CTRL_MODE_CFB | 0x08,
+        );
+        assert_eq!(b16(&block(&mut aes, w16(&ct[..16]))), unhex(RPT2)[..16]);
+        assert_eq!(b16(&block(&mut aes, w16(&ct[16..]))), unhex(RPT2)[16..]);
+        // Chaining holds across completions (second block used the first).
+        let mut aes2 = new_aes();
+        setup(
+            &mut aes2,
+            &w32(&unhex(RK256)),
+            Some(w16(&unhex("000102 030405 060708 090a0b 0c0d0e 0f"))),
+            CTRL_DIRECTION | CTRL_MODE_CFB | 0x18,
+        );
+        let pt = unhex(RPT2);
+        let c0 = b16(&block(&mut aes2, w16(&pt[..16])));
+        let c1 = b16(&block(&mut aes2, w16(&pt[16..])));
+        assert_eq!(
+            [c0, c1].concat(),
+            unhex("5a7f2664 4cae17e1 78b7ff86 ce1e486d 2e05f8bb e5166fbb d52a771a 3d4fc393")
+        );
+    }
+
+    /// XTS-128 encrypt, 2 blocks (`34abbd…eeef` oracle, `TWEAKJL`).
+    #[test]
+    fn xts_encrypt_128() {
+        let mut aes = new_aes();
+        setup(
+            &mut aes,
+            &w16(&unhex(RK128)),
+            Some(w16(&unhex("000102 030405 060708 090a0b 0c0d0e 0f"))),
+            CTRL_DIRECTION | CTRL_MODE_XTS_TWEAKJL | 0x08,
+        );
+        setup2(&mut aes, &w16(&unhex(RK2_128)));
+        let pt = unhex(RPT2);
+        let c0 = b16(&block(&mut aes, w16(&pt[..16])));
+        let c1 = b16(&block(&mut aes, w16(&pt[16..])));
+        assert_eq!(
+            [c0, c1].concat(),
+            unhex("34abbd23 f8f3a6a9 04e8288b 9af9f11c 492413fc 2e8d94d6 ddda059b 0614eeef")
+        );
+    }
+
+    /// XTS-128 decrypt round-trips through the tweak chain.
+    #[test]
+    fn xts_decrypt_roundtrip() {
+        let ct = unhex("34abbd23 f8f3a6a9 04e8288b 9af9f11c 492413fc 2e8d94d6 ddda059b 0614eeef");
+        let mut aes = new_aes();
+        setup(
+            &mut aes,
+            &w16(&unhex(RK128)),
+            Some(w16(&unhex("000102 030405 060708 090a0b 0c0d0e 0f"))),
+            CTRL_MODE_XTS_TWEAKJL | 0x08,
+        );
+        setup2(&mut aes, &w16(&unhex(RK2_128)));
+        assert_eq!(b16(&block(&mut aes, w16(&ct[..16]))), unhex(RPT2)[..16]);
+        assert_eq!(b16(&block(&mut aes, w16(&ct[16..]))), unhex(RPT2)[16..]);
+    }
+
+    /// XTS-256 via `K2IJL` (`2cee1d…444f` oracle); `K2ILJ0` decodes the
+    /// same single-shot math.
+    #[test]
+    fn xts_256_variants() {
+        let pt = unhex(RPT2);
+        let mut aes = new_aes();
+        setup(
+            &mut aes,
+            &w32(&unhex(RK256)),
+            Some(w16(&unhex("101112 131415 161718 191a1b 1c1d1e 1f"))),
+            CTRL_DIRECTION | CTRL_MODE_XTS_K2IJL | 0x18,
+        );
+        setup2(&mut aes, &w32(&unhex(RK2_256)));
+        let c0 = b16(&block(&mut aes, w16(&pt[..16])));
+        let c1 = b16(&block(&mut aes, w16(&pt[16..])));
+        assert_eq!(
+            [c0, c1].concat(),
+            unhex("2cee1d0a 794cf6ce 0527876f 9c098750 4e840552 b30bfcf3 a91211f4 2bca444f")
+        );
+        // `K2ILJ0` agrees block-for-block with `TWEAKJL` on one shot.
+        let mut a = new_aes();
+        setup(
+            &mut a,
+            &w16(&unhex(RK128)),
+            Some(w16(&unhex("000102 030405 060708 090a0b 0c0d0e 0f"))),
+            CTRL_DIRECTION | CTRL_MODE_XTS_TWEAKJL | 0x08,
+        );
+        setup2(&mut a, &w16(&unhex(RK2_128)));
+        let r0 = block(&mut a, w16(&pt[..16]));
+        let mut b = new_aes();
+        setup(
+            &mut b,
+            &w16(&unhex(RK128)),
+            Some(w16(&unhex("000102 030405 060708 090a0b 0c0d0e 0f"))),
+            CTRL_DIRECTION | CTRL_MODE_XTS_K2ILJ0 | 0x08,
+        );
+        setup2(&mut b, &w16(&unhex(RK2_128)));
+        assert_eq!(block(&mut b, w16(&pt[..16])), r0);
+    }
+
+    /// XTS-192 has no IEEE 1619 variant: fully inert.
+    #[test]
+    fn xts_192_inert() {
+        let mut aes = new_aes();
+        setup(
+            &mut aes,
+            &w16(&unhex(RK128)),
+            Some(w16(&unhex("000102 030405 060708 090a0b 0c0d0e 0f"))),
+            CTRL_DIRECTION | CTRL_MODE_XTS_TWEAKJL | 0x10,
+        );
+        setup2(&mut aes, &w16(&unhex(RK2_128)));
+        block(&mut aes, w16(&unhex(RPT2)[..16]));
+        assert_eq!(read_word(&mut aes, CTRL_OFF) & CTRL_OUTPUT_READY, 0);
     }
 }

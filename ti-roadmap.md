@@ -118,6 +118,21 @@ famous firmware), and the kings harness ports in days.
   state machine over `L` = 2-8, `M` = 4-16 (MAC covers PLAINTEXT per
   RFC §2.2, unlike GCM); malformed configs inert. Only ICM/CFB/XTS/
   F8/F9/DMA/`SAVE_CONTEXT` still latch.
+- **129 AES residual modes (done 2026-09-24): ICM + CFB + XTS** (10
+  lib tests, audit still 66/72 — no new windows): TivaWare driverlib
+  `AES_CFG_MODE_*` values fetched at runtime (never vendored: `ICM
+  0x200`, `CFB 0x400`, XTS `TWEAKJL 0x800`/`K2IJL 0x1000`/`K2ILJ0
+  0x1800`, `F8 0x2000`, `F9 0x20004000`); ICM reuses the proven CTR
+  primitive full-width (first keystream == ECB(IV) checked); full-block
+  CFB with cross-completion chaining; XTS as one continuous tweak chain
+  over all three load variants (128/256-bit, tweak from `IV_IN`, KEY2
+  same interleave as KEY1) — the oracle caught the alpha-step byte
+  order (block 1 matched, block 2 decided little-endian). Frozen oracle
+  vectors (`aes_resid_vecs.json`: ICM/CFB/XTS enc/dec, carry wrap,
+  variant agreement, XTS-192 inert). F8/F9 stay latched by decision
+  (engine-specific `KEY3` construction, no oracle in the fetched
+  sources); XTS-192/steal-tails/continuation reloads documented. Only
+  F8/F9/DMA/`SAVE_CONTEXT` still latch.
 - **129 LCD (done 2026-09-23): raster timing + done IRQs** (3 lib
   tests, XNCZAD audit 67/72): PL110-compatible frames, no pixels.
 - **129 1-Wire (done 2026-09-23): master transactions** (4 lib tests,
