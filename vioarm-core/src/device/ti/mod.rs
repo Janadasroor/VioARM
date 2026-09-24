@@ -24,5 +24,6 @@ pub mod sysctl;
 pub mod sysctl129;
 pub mod timer;
 pub mod uart;
+pub mod udma;
 pub mod usb;
 pub mod wdt;

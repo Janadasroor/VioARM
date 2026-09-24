@@ -196,6 +196,20 @@ I2C, WDT, ADC, PWM, QEI, CAN, USB, EEPROM, FLASH_CTRL, HIB, COMP
 needs bus-master reads; behaviors own their window only) and `SYSEXC`
 stays a proven latch (zero-correct: `sysexc_stays_quiet` on both family
 closeouts — mask programs, clear takes writes, no faults occur).
+- **TI UDMA (done 2026-09-24): μDMA engine** (12 lib tests + 1 board
+  proof, all 5 boards +1 behavioral — `SYSEXC` is the last latch):
+  TivaWare `hw_udma.h`/`udma.c`/`udma.h` oracle fetched at runtime
+  (never vendored); 32 channels over the SRAM control table
+  (`BASIC`/`AUTO` run to completion, `PINGPONG` alternates with
+  `ALTSET` flipping, `STOP`/scatter-gather inert), end-pointer/N/INC
+  arithmetic, `STOP`+`N=0` write-back, per-channel `CHIS` (pack SVD
+  omits it — synthesized at the edge, write-mask clears) + `ERRCLR`
+  behind the done/error NVIC lines, priority service order, instant
+  transfers through the shared DMA mailbox (F4 request convention:
+  `SWREQ` triggers). Frozen oracle vectors (`udma_vecs.json`).
+  Deferred: scatter-gather task lists, arbitration pacing/`USEBURST`,
+  `CHMAP`/`CHASGN` routing, `REQMASK` (SW bypasses), mid-transfer
+  residuals, size mismatch (source width wins).
 
 ## Phase P3 — Boards + closeout (~1 week)
 

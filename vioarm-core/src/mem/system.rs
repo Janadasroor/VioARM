@@ -19,6 +19,7 @@ use crate::device::stm32::flash::{FlashErase, FlashGate};
 use crate::device::stm32::fmc::Dma2dMailbox;
 use crate::device::stm32::fmc::QspiGate;
 use crate::device::stm32::rcc::ClockState;
+use crate::device::ti::udma::{UdmaMailbox, UdmaOp};
 use crate::device::vdd::VddState;
 use crate::device::{InterruptSource, Peripheral};
 use crate::error::BusError;
@@ -108,6 +109,10 @@ pub struct SystemMemory<M: Bus> {
     /// controller pushes source-row reads and destination writes here;
     /// this bus performs them, appending correlated read results.
     dma2d_mailbox: Option<Arc<Mutex<Dma2dMailbox>>>,
+    /// The shared TI μDMA mailbox, drained after every device tick. The
+    /// controller pushes control-table reads and write-backs here; this
+    /// bus performs them, appending read results in request order.
+    udma_mailbox: Option<Arc<Mutex<UdmaMailbox>>>,
     /// The shared watchdog reset latch. The IWDG/WWDG devices set it when their
     /// counter underflows; `reset_requested()` folds it into the SCB's latch so
     /// the `Machine` performs a full reset, and `reset_devices()` clears it.
@@ -167,6 +172,7 @@ impl<M: Bus + core::fmt::Debug> core::fmt::Debug for SystemMemory<M> {
             .field("eth_mailbox", &self.eth_mailbox)
             .field("fdcan_mailbox", &self.fdcan_mailbox)
             .field("dma2d_mailbox", &self.dma2d_mailbox)
+            .field("udma_mailbox", &self.udma_mailbox)
             .field("watchdog", &self.watchdog)
             .field("clock", &self.clock)
             .field("tim_phase", &self.tim_phase)
@@ -201,6 +207,7 @@ impl<M: Bus> SystemMemory<M> {
             eth_mailbox: None,
             fdcan_mailbox: None,
             dma2d_mailbox: None,
+            udma_mailbox: None,
             watchdog: None,
             vdd: VddState::shared(),
             clock: None,
@@ -351,6 +358,14 @@ impl<M: Bus> SystemMemory<M> {
     /// leaves pixel traffic unable to move (flags still update).
     pub fn set_dma2d_mailbox(&mut self, mailbox: Arc<Mutex<Dma2dMailbox>>) {
         self.dma2d_mailbox = Some(mailbox);
+    }
+
+    /// Install the shared TI μDMA mailbox. The attached μDMA controller must
+    /// push through the same `Arc`; this bus performs its control-table reads
+    /// and write-backs after each device tick. `None` (the default) leaves
+    /// channel transfers unable to move (requests still latch).
+    pub fn set_udma_mailbox(&mut self, mailbox: Arc<Mutex<UdmaMailbox>>) {
+        self.udma_mailbox = Some(mailbox);
     }
 
     /// Install the shared watchdog reset latch. The `IWDG`/`WWDG` devices must
@@ -551,6 +566,8 @@ impl<M: Bus> SystemMemory<M> {
         self.drain_fdcan_ops();
         // And the DMA2D controller's row reads and frame writes.
         self.drain_dma2d_ops();
+        // And the TI μDMA controller's table reads and write-backs.
+        self.drain_udma_ops();
         self.latch_device_asserts();
     }
 
@@ -700,6 +717,42 @@ impl<M: Bus> SystemMemory<M> {
                     addr.wrapping_add(u32::try_from(i).unwrap_or(u32::MAX)),
                     *byte,
                 );
+            }
+        }
+    }
+
+    /// Perform the TI μDMA controller's queued table traffic. Reads go
+    /// through the full bus path and land (possibly short, on `Reserved`)
+    /// in the results FIFO in request order; writes are performed directly.
+    fn drain_udma_ops(&mut self) {
+        let Some(mailbox) = self.udma_mailbox.clone() else {
+            return;
+        };
+        let ops = core::mem::take(&mut mailbox.lock().unwrap_or_else(|e| e.into_inner()).ops);
+        for op in ops {
+            match op {
+                UdmaOp::Read { addr, len } => {
+                    let mut bytes = Vec::with_capacity(len as usize);
+                    for i in 0..len {
+                        let Some(byte) = self.read(addr.wrapping_add(u32::from(i))).ok() else {
+                            break;
+                        };
+                        bytes.push(byte);
+                    }
+                    mailbox
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .results
+                        .push_back(bytes);
+                }
+                UdmaOp::Write { addr, bytes } => {
+                    for (i, byte) in bytes.iter().enumerate() {
+                        let _ = self.write(
+                            addr.wrapping_add(u32::try_from(i).unwrap_or(u32::MAX)),
+                            *byte,
+                        );
+                    }
+                }
             }
         }
     }

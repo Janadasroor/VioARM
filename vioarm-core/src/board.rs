@@ -8479,6 +8479,15 @@ pub fn tm4c1294ncpdt() -> BoardMemory {
     mem.attach(Box::new(crate::device::ti::comp::Comp::for_device::<
         crate::device::svd::tm4c1294ncpdt::Tm4c1294ncpdt,
     >("COMP")));
+    // μDMA engine (shared data-copy + table mailboxes).
+    let udma_data: Arc<Mutex<Vec<crate::device::stm32::dma::DmaUnit>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    mem.set_dma_mailbox(udma_data.clone());
+    let udma_table = Arc::new(Mutex::new(crate::device::ti::udma::UdmaMailbox::default()));
+    mem.set_udma_mailbox(udma_table.clone());
+    mem.attach(Box::new(crate::device::ti::udma::Udma::for_device::<
+        crate::device::svd::tm4c1294ncpdt::Tm4c1294ncpdt,
+    >(udma_data, udma_table)));
     // Backfilled models (shared with the X board): CRC, EPI, EMAC.
     mem.attach(Box::new(crate::device::ti::ccm::Ccm::for_device::<
         crate::device::svd::tm4c1294ncpdt::Tm4c1294ncpdt,
@@ -8643,6 +8652,15 @@ pub fn tm4c129xnczad() -> BoardMemory {
     mem.attach(Box::new(crate::device::ti::comp::Comp::for_device::<
         crate::device::svd::tm4c129xnczad::Tm4c129xnczad,
     >("COMP")));
+    // μDMA engine (shared data-copy + table mailboxes).
+    let udma_data: Arc<Mutex<Vec<crate::device::stm32::dma::DmaUnit>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    mem.set_dma_mailbox(udma_data.clone());
+    let udma_table = Arc::new(Mutex::new(crate::device::ti::udma::UdmaMailbox::default()));
+    mem.set_udma_mailbox(udma_table.clone());
+    mem.attach(Box::new(crate::device::ti::udma::Udma::for_device::<
+        crate::device::svd::tm4c129xnczad::Tm4c129xnczad,
+    >(udma_data, udma_table)));
     // Crypto cluster (XNCZAD-only windows; CRC-32 + SHA-256 live).
     mem.attach(Box::new(crate::device::ti::ccm::Ccm::for_device::<
         crate::device::svd::tm4c129xnczad::Tm4c129xnczad,
@@ -8821,6 +8839,15 @@ pub fn tm4c123gh6pz() -> BoardMemory {
     mem.attach(Box::new(crate::device::ti::comp::Comp::for_device::<
         crate::device::svd::tm4c123gh6pz::Tm4c123gh6pz,
     >("COMP")));
+    // μDMA engine (shared data-copy + table mailboxes).
+    let udma_data: Arc<Mutex<Vec<crate::device::stm32::dma::DmaUnit>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    mem.set_dma_mailbox(udma_data.clone());
+    let udma_table = Arc::new(Mutex::new(crate::device::ti::udma::UdmaMailbox::default()));
+    mem.set_udma_mailbox(udma_table.clone());
+    mem.attach(Box::new(crate::device::ti::udma::Udma::for_device::<
+        crate::device::svd::tm4c123gh6pz::Tm4c123gh6pz,
+    >(udma_data, udma_table)));
     for p in crate::device::svd::tm4c123gh6pz::PERIPHERALS {
         if p.base >= 0xE000_0000 || p.base == crate::device::ti::sysctl::SYSCTL_BASE {
             continue;
@@ -8967,6 +8994,15 @@ pub fn tm4c123gh6zrb() -> BoardMemory {
     mem.attach(Box::new(crate::device::ti::comp::Comp::for_device::<
         crate::device::svd::tm4c123gh6zrb::Tm4c123gh6zrb,
     >("COMP")));
+    // μDMA engine (shared data-copy + table mailboxes).
+    let udma_data: Arc<Mutex<Vec<crate::device::stm32::dma::DmaUnit>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    mem.set_dma_mailbox(udma_data.clone());
+    let udma_table = Arc::new(Mutex::new(crate::device::ti::udma::UdmaMailbox::default()));
+    mem.set_udma_mailbox(udma_table.clone());
+    mem.attach(Box::new(crate::device::ti::udma::Udma::for_device::<
+        crate::device::svd::tm4c123gh6zrb::Tm4c123gh6zrb,
+    >(udma_data, udma_table)));
     for p in crate::device::svd::tm4c123gh6zrb::PERIPHERALS {
         if p.base >= 0xE000_0000 || p.base == crate::device::ti::sysctl::SYSCTL_BASE {
             continue;
@@ -9099,6 +9135,15 @@ pub fn tm4c123gh6pm() -> BoardMemory {
     mem.attach(Box::new(crate::device::ti::comp::Comp::for_device::<
         crate::device::svd::tm4c123gh6pm::Tm4c123gh6pm,
     >("COMP")));
+    // μDMA engine (shared data-copy + table mailboxes).
+    let udma_data: Arc<Mutex<Vec<crate::device::stm32::dma::DmaUnit>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    mem.set_dma_mailbox(udma_data.clone());
+    let udma_table = Arc::new(Mutex::new(crate::device::ti::udma::UdmaMailbox::default()));
+    mem.set_udma_mailbox(udma_table.clone());
+    mem.attach(Box::new(crate::device::ti::udma::Udma::for_device::<
+        crate::device::svd::tm4c123gh6pm::Tm4c123gh6pm,
+    >(udma_data, udma_table)));
     for p in crate::device::svd::tm4c123gh6pm::PERIPHERALS {
         if p.base >= 0xE000_0000 || p.base == crate::device::ti::sysctl::SYSCTL_BASE {
             continue;
