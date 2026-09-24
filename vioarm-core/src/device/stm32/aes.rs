@@ -120,7 +120,8 @@ const fn xtime(a: u8) -> u8 {
 }
 
 /// `GF(2^128)` multiply, GCM MSB-first form (`R = 0xE1`).
-fn ghash_mul(x: &[u8; 16], y: &[u8; 16]) -> [u8; 16] {
+/// Shared with the TI engine (same math, NIST-proven here).
+pub(crate) fn ghash_mul(x: &[u8; 16], y: &[u8; 16]) -> [u8; 16] {
     let mut z = [0u8; 16];
     let mut v = *y;
     for i in 0..128 {
@@ -141,8 +142,8 @@ fn ghash_mul(x: &[u8; 16], y: &[u8; 16]) -> [u8; 16] {
     z
 }
 
-/// One GHASH step: `Y = (Y ^ block) * H`.
-fn ghash_acc(y: &mut [u8; 16], h: &[u8; 16], block: &[u8; 16]) {
+/// One GHASH step: `Y = (Y ^ block) * H`. Shared with TI.
+pub(crate) fn ghash_acc(y: &mut [u8; 16], h: &[u8; 16], block: &[u8; 16]) {
     for i in 0..16 {
         y[i] ^= block[i];
     }
@@ -163,8 +164,8 @@ fn gcm_dbl(x: &[u8; 16]) -> [u8; 16] {
     out
 }
 
-/// Big-endian 32-bit counter increment (GCM `inc32`).
-fn inc32(c: &mut [u8; 16]) {
+/// Big-endian 32-bit counter increment (GCM `inc32`). Shared with TI.
+pub(crate) fn inc32(c: &mut [u8; 16]) {
     for b in c[12..16].iter_mut().rev() {
         let (v, carry) = b.overflowing_add(1);
         *b = v;

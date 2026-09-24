@@ -102,6 +102,16 @@ famous firmware), and the kings harness ports in days.
   lib tests, XNCZAD audit 64/72): NIST-vectored; other types latch.
 - **129 crypto 2/2 (done 2026-09-23): AES + DES** (5+4 lib tests,
   XNCZAD audit 66/72): FIPS/NIST-vectored ECB/CBC; advanced modes latch.
+- **129 AES advanced modes (done 2026-09-24): CTR + GCM/GMAC +
+  CBC-MAC** (9 lib tests, audit still 66/72 — no new windows): TI
+  driverlib `AES_CFG_MODE_*` decode (`CTR 0x40` + widths,
+  `CBCMAC 0x20008000`, `GCM 0x20030040`); GHASH via the NIST-proven
+  STM32 primitives; byte-FIFO + 16 B staging so firmware chunking
+  (incl. mid-stream AAD/data straddles) can't misalign blocks;
+  `C_LENGTH`/`AUTH_length` partition streams, `TAG_OUT` finalizes.
+  Python-oracle vectors (CTR-128/256, GCM zero + GMAC + straddle +
+  trailing-partial, raw CBC-MAC). ICM/CFB/XTS/F8/F9/CCM still
+  deferred.
 - **129 LCD (done 2026-09-23): raster timing + done IRQs** (3 lib
   tests, XNCZAD audit 67/72): PL110-compatible frames, no pixels.
 - **129 1-Wire (done 2026-09-23): master transactions** (4 lib tests,
