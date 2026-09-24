@@ -13,6 +13,8 @@
 //! * `USB0` holds datasheet resets and ships an EP1 IN packet.
 //! * `EEPROM` round-trips a word; `FLASH_CTRL` completes a keyed write.
 //! * `HIB` counts seconds once `RTCEN` sets; `COMP` inverts its output.
+//! * `SYSEXC` stays quiet (zero-correct latch: mask programs, clear takes
+//!   writes, no faults occur).
 //!
 //! Register offsets come from the TM4C123GH6PM datasheet (SPMS376E);
 //! command encodings mirror the `device::ti` driver sources.
@@ -457,4 +459,27 @@ fn comp_inverts_output() {
     assert_eq!(rw(mem, COMP + ACSTAT0) & OVAL, 0, "undriven reads low");
     ww(mem, COMP + ACCTL0, CINV);
     assert_eq!(rw(mem, COMP + ACSTAT0) & OVAL, OVAL, "inversion flips OVAL");
+}
+
+// --- SYSEXC (proven latch) ---
+
+const SYSEXC: u32 = 0x400F_9000;
+const SX_RIS: u32 = 0x00;
+const SX_IM: u32 = 0x04;
+const SX_MIS: u32 = 0x08;
+const SX_IC: u32 = 0x0C;
+
+#[test]
+fn sysexc_stays_quiet() {
+    let mut m = tiva();
+    let mem = m.core.mem();
+    // Zero-correct: no CPU faults occur in simulation.
+    assert_eq!(rw(mem, SYSEXC + SX_RIS), 0, "no raw faults");
+    assert_eq!(rw(mem, SYSEXC + SX_MIS), 0, "no masked faults");
+    // Mask programs and reads back; the clear register takes writes.
+    ww(mem, SYSEXC + SX_IM, 0x3F);
+    assert_eq!(rw(mem, SYSEXC + SX_IM), 0x3F, "IM latches");
+    ww(mem, SYSEXC + SX_IC, 0x3F);
+    assert_eq!(rw(mem, SYSEXC + SX_RIS), 0, "still quiet after clear");
+    ww(mem, SYSEXC + SX_IM, 0);
 }

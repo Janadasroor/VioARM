@@ -194,7 +194,8 @@ Status 2026-09-22: P2 core set done — SYSCTL, GPIO, UART, GPTM, SSI,
 I2C, WDT, ADC, PWM, QEI, CAN, USB, EEPROM, FLASH_CTRL, HIB, COMP
 (audit 56/58 behavioral). `UDMA` stays latch by decision (a real engine
 needs bus-master reads; behaviors own their window only) and `SYSEXC`
-stays latch (zero-correct: no faults occur in simulation).
+stays a proven latch (zero-correct: `sysexc_stays_quiet` on both family
+closeouts — mask programs, clear takes writes, no faults occur).
 
 ## Phase P3 — Boards + closeout (~1 week)
 

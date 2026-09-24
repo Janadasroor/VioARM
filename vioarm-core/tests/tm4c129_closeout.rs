@@ -7,6 +7,8 @@
 //! this family has no `PRn`), the AHB-only GPIO apertures (late-port
 //! round-trip, `PD7` commit lock), the new `TIMER6`/`I2C4` instances, and
 //! the native flash controller (`FMC2` buffered program, `PP`/`SSIZE`).
+//! `SYSEXC` likewise stays quiet (zero-correct latch, both families share
+//! the `0x400F_9000` window).
 //!
 //! Register offsets come from the TM4C1294NCPDT datasheet (SPMS433B);
 //! command encodings mirror the `device::ti` driver sources.
@@ -539,4 +541,27 @@ fn emac_mii_completes() {
     ww(mem, EMAC0 + MIIADDR, 0x01);
     assert_eq!(rw(mem, EMAC0 + MIIADDR) & 0x01, 0, "MII completes");
     assert_eq!(rw(mem, EMAC0 + MIIDATA), 0xFFFF, "no PHY");
+}
+
+// --- SYSEXC (proven latch) ---
+
+const SYSEXC: u32 = 0x400F_9000;
+const SX_RIS: u32 = 0x00;
+const SX_IM: u32 = 0x04;
+const SX_MIS: u32 = 0x08;
+const SX_IC: u32 = 0x0C;
+
+#[test]
+fn sysexc_stays_quiet() {
+    let mut m = tiva129();
+    let mem = m.core.mem();
+    // Zero-correct: no CPU faults occur in simulation.
+    assert_eq!(rw(mem, SYSEXC + SX_RIS), 0, "no raw faults");
+    assert_eq!(rw(mem, SYSEXC + SX_MIS), 0, "no masked faults");
+    // Mask programs and reads back; the clear register takes writes.
+    ww(mem, SYSEXC + SX_IM, 0x3F);
+    assert_eq!(rw(mem, SYSEXC + SX_IM), 0x3F, "IM latches");
+    ww(mem, SYSEXC + SX_IC, 0x3F);
+    assert_eq!(rw(mem, SYSEXC + SX_RIS), 0, "still quiet after clear");
+    ww(mem, SYSEXC + SX_IM, 0);
 }
