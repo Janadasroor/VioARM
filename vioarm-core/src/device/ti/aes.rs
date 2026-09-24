@@ -6,24 +6,30 @@
 //! (`DIRECTION` 1 = encrypt, `MODE` field under mask `0x2007FE60`
 //! per the TI driverlib `AES_CFG_*` values: `ECB 0x0`, `CBC 0x20`,
 //! `CTR 0x40` with `CTR_WIDTH` 32/64/96/128 in bits 7-8, `CBCMAC
-//! 0x20008000`, `GCM 0x20030040`), `C_LENGTH_0/1` + `AUTH_length`
-//! partitioning GCM/CBC-MAC streams, `DATA_IN_3-0` carrying words 0-3
-//! (reversed: `src[0]` → `DATA_IN_3`), result read back from the same
-//! regs, `TAG_OUT_0-3` carrying the tag as LE words (byte 0 first,
-//! same convention as data), `OUTPUT_READY`/`INPUT_READY`
-//! synthesis, `IRQSTATUS.DATA_OUT` + `IRQENABLE` gating.
+//! 0x20008000`, `GCM 0x20030040`, `CCM 0x20040040` with `CCM_L_*` in
+//! bits 19-21 off `IV_IN` byte 0 and `CCM_M_*` in bits 22-24),
+//! `C_LENGTH_0/1` + `AUTH_length` partitioning auth/data streams,
+//! `DATA_IN_3-0` carrying words 0-3 (reversed: `src[0]` → `DATA_IN_3`),
+//! result read back from the same regs, `TAG_OUT_0-3` carrying the tag
+//! as LE words (byte 0 first, same convention as data),
+//! `OUTPUT_READY`/`INPUT_READY` synthesis, `IRQSTATUS.DATA_OUT` +
+//! `IRQENABLE` gating.
 //!
 //! Modeled: AES-128/192/256 ECB + CBC + CTR encrypt/decrypt in pure
 //! software (S-box computed at runtime — no transcribed tables),
 //! GCM/GMAC (12-byte nonces: `J0 = nonce || 1` from `IV_IN`; GHASH
-//! via the NIST-proven STM32 primitives) and raw CBC-MAC, instant
-//! completion. Verified against FIPS-197 Appendix B/C (`B` ECB-128,
-//! `C.1` ECB-256), SP 800-38A CBC-128/CTR-128, NIST SP 800-38D GCM
-//! cases and Python-`cryptography`-oracle vectors. Deliberate scope:
-//! ICM/CFB/XTS/F8/F9/CCM/DMA/`SAVE_CONTEXT` latch without acting;
-//! non-12-byte GCM nonces (engine GHASH-derives `J0`; unmodeled);
-//! `TAG` verify-fail signaling (the engine exposes none — firmware
-//! compares); CBCMAC `DATA_OUT` (tag-only mode, regs stay stale).
+//! via the NIST-proven STM32 primitives), raw CBC-MAC, and CCM (SP
+//! 800-38C/RFC 3610: `B0`/AAD-format/CTR/CBC-MAC state machine over
+//! `L` = 2-8, `M` = 4-16), instant completion. Verified against
+//! FIPS-197 Appendix B/C (`B` ECB-128, `C.1` ECB-256), SP 800-38A
+//! CBC-128/CTR-128, NIST SP 800-38D GCM cases, RFC 3610 CCM vectors,
+//! and Python-`cryptography`-oracle vectors. Unlike GCM, the CCM MAC
+//! covers PLAINTEXT in both directions (RFC 3610 §2.2/2.5).
+//! Deliberate scope: ICM/CFB/XTS/F8/F9/DMA/`SAVE_CONTEXT` latch
+//! without acting; non-12-byte GCM nonces (engine GHASH-derives `J0`;
+//! unmodeled); tag-mismatch signaling (the engine exposes none —
+//! firmware compares); CBCMAC `DATA_OUT` (tag-only mode, regs stay
+//! stale). Malformed CCM configs stay inert.
 //! Streaming: `DATA_IN` lane writes feed a byte FIFO drained in
 //! order, so firmware chunking never misaligns the 16-byte crypto
 //! blocks (a mid-stream AAD/data straddle settles per data block);
@@ -67,6 +73,9 @@ const CTRL_MODE_CTR: u32 = 0x40;
 const CTRL_CTR_WIDTH_SHIFT: u32 = 7;
 const CTRL_MODE_CBCMAC: u32 = 0x2000_8000;
 const CTRL_MODE_GCM: u32 = 0x2003_0040;
+const CTRL_MODE_CCM: u32 = 0x2004_0040;
+const CTRL_CCM_M_SHIFT: u32 = 22;
+const CTRL_CCM_M_MASK: u32 = 0x07;
 /// `IRQSTATUS` bits.
 const IRQ_DATA_OUT: u32 = 1 << 2;
 
@@ -274,6 +283,19 @@ pub struct AesBehavior {
     m_left: u64,
     m_tag: [u8; 16],
     m_tag_valid: bool,
+    /// CCM stream state (SP 800-38C: `B0`/AAD-format/CTR/CBC-MAC).
+    c_latched: bool,
+    c_ok: bool,
+    c_l: u32,
+    c_m: usize,
+    c_nonce: [u8; 13],
+    c_nonce_len: usize,
+    c_ctr: [u8; 16],
+    c_mac: [u8; 16],
+    c_tag: [u8; 16],
+    c_tag_valid: bool,
+    c_aad_left: u64,
+    c_data_left: u64,
     /// Input byte FIFO: every `DATA_IN` lane write appends (TivaWare
     /// order is reconstructed by completion time); completions and
     /// `TAG_OUT` reads drain it in order, so firmware chunking never
@@ -455,7 +477,154 @@ impl AesBehavior {
         self.g_tag
     }
 
-    /// Latch CBC-MAC state (zero-IV chain over `C_LENGTH` bytes).
+    /// Latch CCM stream state: `L`/`M`/nonce from `IV_IN` + `CTRL`,
+    /// lengths from the length regs, `B0` into the MAC chain. Malformed
+    /// configs (`L` outside 2-8, `M` = 2, payload not fitting `L`
+    /// bytes) latch invalid — the stream stays inert.
+    fn ccm_latch(&mut self, view: &Registers<&mut [u32]>, rk: &[[u8; 16]], ctrl: u32) {
+        let iv = Self::iv_bytes(view);
+        let l = (u32::from(iv[0] & 7) + 1) as usize;
+        let m = 2 * (((ctrl >> CTRL_CCM_M_SHIFT) & CTRL_CCM_M_MASK) as usize + 1);
+        let lo = u64::from(view.get(CLEN_LO_OFF));
+        let hi = u64::from(view.get(CLEN_HI_OFF));
+        let data_len = lo | (hi << 32);
+        let aad_len = u64::from(view.get(AUTH_LEN_OFF));
+        self.c_latched = true;
+        self.c_ok = false;
+        if !(2..=8).contains(&l) || m < 4 || (l < 8 && data_len >= 1u64 << (8 * l)) {
+            return;
+        }
+        let nonce_len = 15 - l;
+        self.c_l = l as u32;
+        self.c_m = m;
+        self.c_nonce[..nonce_len].copy_from_slice(&iv[1..1 + nonce_len]);
+        self.c_nonce_len = nonce_len;
+        self.c_aad_left = aad_len;
+        self.c_data_left = data_len;
+        // Running counter block: flags (`L-1`) + nonce, BE count.
+        self.c_ctr[0] = (l - 1) as u8;
+        self.c_ctr[1..1 + nonce_len].copy_from_slice(&self.c_nonce[..nonce_len]);
+        // `B0`: flags (Adata/`M'`/`L'`) + nonce + length, then `X1`.
+        let mut b0 = [0u8; 16];
+        b0[0] = (if aad_len > 0 { 64 } else { 0 }) | (((m - 2) / 2) as u8) << 3 | (l - 1) as u8;
+        b0[1..1 + nonce_len].copy_from_slice(&self.c_nonce[..nonce_len]);
+        let q = data_len.to_be_bytes();
+        b0[16 - l..16].copy_from_slice(&q[8 - l..8]);
+        self.c_mac = encrypt_block(&b0, rk);
+        // AAD length prefix stages first (SP 800-38C §2.2.1).
+        self.st_len = 0;
+        self.st_aad = true;
+        if aad_len > 0 {
+            if aad_len < 65280 {
+                let len = (aad_len as u16).to_be_bytes();
+                self.st_buf[0..2].copy_from_slice(&len);
+                self.st_len = 2;
+            } else if aad_len < 1 << 32 {
+                self.st_buf[0..2].copy_from_slice(&[0xFF, 0xFE]);
+                self.st_buf[2..6].copy_from_slice(&(aad_len as u32).to_be_bytes());
+                self.st_len = 6;
+            } else {
+                self.st_buf[0..2].copy_from_slice(&[0xFF, 0xFF]);
+                self.st_buf[2..10].copy_from_slice(&aad_len.to_be_bytes());
+                self.st_len = 10;
+            }
+        }
+        self.c_tag_valid = false;
+        self.c_ok = true;
+    }
+
+    /// Push stream bytes through CCM: AAD accumulates into 16-byte
+    /// MAC blocks (tail pads when the AAD exhausts), payload crypts
+    /// per 16-byte block (counter from 1) while MACing ciphertext on
+    /// encrypt, input on decrypt.
+    fn ccm_push(&mut self, rk: &[[u8; 16]], bytes: &[u8], encrypt: bool) {
+        for &b in bytes {
+            if !self.c_ok {
+                return;
+            }
+            if self.c_aad_left > 0 {
+                self.st_buf[self.st_len] = b;
+                self.st_len += 1;
+                self.c_aad_left -= 1;
+                if self.st_len == 16 || self.c_aad_left == 0 {
+                    let mut blk = [0u8; 16];
+                    blk[..self.st_len].copy_from_slice(&self.st_buf[..self.st_len]);
+                    for (dst, &m) in blk.iter_mut().zip(self.c_mac.iter()) {
+                        *dst ^= m;
+                    }
+                    self.c_mac = encrypt_block(&blk, rk);
+                    self.st_len = 0;
+                    self.st_aad = false;
+                }
+            } else if self.c_data_left > 0 {
+                self.st_buf[self.st_len] = b;
+                self.st_len += 1;
+                self.c_data_left -= 1;
+                if self.st_len == 16 {
+                    let blk = self.crypt_ccm_block(rk, encrypt);
+                    self.st_len = 0;
+                    self.publish(blk);
+                }
+            }
+            // Overfed bytes are ignored.
+        }
+    }
+
+    /// Crypt one staged 16-byte payload block: counter first (from 1),
+    /// MAC over ciphertext on encrypt, over input on decrypt.
+    /// Crypt one staged 16-byte payload block: counter first (from 1).
+    /// Unlike GCM, the CCM MAC covers PLAINTEXT in both directions
+    /// (RFC 3610 §2.2/2.5: the receiver decrypts, then verifies).
+    fn crypt_ccm_block(&mut self, rk: &[[u8; 16]], encrypt: bool) -> [u8; 16] {
+        for i in (16 - self.c_l as usize..16).rev() {
+            let (v, carry) = self.c_ctr[i].overflowing_add(1);
+            self.c_ctr[i] = v;
+            if !carry {
+                break;
+            }
+        }
+        let ks = encrypt_block(&self.c_ctr, rk);
+        let mut out = [0u8; 16];
+        for i in 0..16 {
+            out[i] = self.st_buf[i] ^ ks[i];
+        }
+        // MAC input is plaintext: staged input on encrypt, recovered
+        // output on decrypt.
+        let mut blk = [0u8; 16];
+        if encrypt {
+            for (dst, (&a, &b)) in blk
+                .iter_mut()
+                .zip(self.st_buf.iter().zip(self.c_mac.iter()))
+            {
+                *dst = a ^ b;
+            }
+        } else {
+            for i in 0..16 {
+                blk[i] = out[i] ^ self.c_mac[i];
+            }
+        }
+        self.c_mac = encrypt_block(&blk, rk);
+        out
+    }
+
+    /// Finalize the CCM tag: `MSB_M(MAC)` ^ `MSB_M(E(S0))`.
+    fn ccm_tag(&mut self, rk: &[[u8; 16]]) -> [u8; 16] {
+        if !self.c_tag_valid {
+            let mut s0 = [0u8; 16];
+            s0[0] = (self.c_l - 1) as u8;
+            s0[1..1 + self.c_nonce_len].copy_from_slice(&self.c_nonce[..self.c_nonce_len]);
+            let e = encrypt_block(&s0, rk);
+            for (dst, (&m, &x)) in self.c_tag.iter_mut().zip(self.c_mac.iter().zip(e.iter())) {
+                *dst = m ^ x;
+            }
+            for dst in self.c_tag.iter_mut().skip(self.c_m) {
+                *dst = 0;
+            }
+            self.c_tag_valid = true;
+        }
+        self.c_tag
+    }
+
     fn cbcmac_latch(&mut self, view: &Registers<&mut [u32]>) {
         let lo = u64::from(view.get(CLEN_LO_OFF));
         let hi = u64::from(view.get(CLEN_HI_OFF));
@@ -507,7 +676,11 @@ impl AesBehavior {
         match ctrl & CTRL_MODE_M {
             CTRL_MODE_GCM => {
                 if !self.g_latched {
-                    return [0u8; 16];
+                    if let Some(rk) = Self::round_keys(view) {
+                        self.gcm_latch(view, &rk);
+                    } else {
+                        return [0u8; 16];
+                    }
                 }
                 let fifo: Vec<u8> = core::mem::take(&mut self.in_fifo);
                 if !fifo.is_empty() {
@@ -550,7 +723,17 @@ impl AesBehavior {
             }
             CTRL_MODE_CBCMAC => {
                 if !self.m_latched {
-                    return [0u8; 16];
+                    if Self::round_keys(view).is_some() {
+                        // Latch needs no key: lengths only.
+                        let lo = u64::from(view.get(CLEN_LO_OFF));
+                        let hi = u64::from(view.get(CLEN_HI_OFF));
+                        self.m_left = lo | (hi << 32);
+                        self.m_chain = [0u8; 16];
+                        self.m_tag_valid = false;
+                        self.m_latched = true;
+                    } else {
+                        return [0u8; 16];
+                    }
                 }
                 let fifo: Vec<u8> = core::mem::take(&mut self.in_fifo);
                 if !fifo.is_empty() {
@@ -571,6 +754,62 @@ impl AesBehavior {
                     self.m_tag
                 } else {
                     self.m_chain
+                }
+            }
+            CTRL_MODE_CCM => {
+                if !self.c_latched {
+                    if let Some(rk) = Self::round_keys(view) {
+                        self.ccm_latch(view, &rk, ctrl);
+                    }
+                }
+                if !self.c_ok {
+                    return [0u8; 16];
+                }
+                let fifo: Vec<u8> = core::mem::take(&mut self.in_fifo);
+                if !fifo.is_empty() {
+                    if let Some(rk) = Self::round_keys(view) {
+                        let encrypt = ctrl & CTRL_DIRECTION != 0;
+                        self.ccm_push(&rk, &fifo, encrypt);
+                    }
+                }
+                if self.st_len > 0 {
+                    // Staged data tail (AAD tails flush inline when the
+                    // AAD exhausts): pad, MAC, crypt + publish.
+                    if let Some(rk) = Self::round_keys(view) {
+                        let encrypt = ctrl & CTRL_DIRECTION != 0;
+                        let n = self.st_len;
+                        for i in (16 - self.c_l as usize..16).rev() {
+                            let (v, carry) = self.c_ctr[i].overflowing_add(1);
+                            self.c_ctr[i] = v;
+                            if !carry {
+                                break;
+                            }
+                        }
+                        let ks = encrypt_block(&self.c_ctr, &rk);
+                        let mut out = [0u8; 16];
+                        let mut blk = [0u8; 16];
+                        // MAC input is plaintext (RFC 3610 §2.2).
+                        for i in 0..n {
+                            out[i] = self.st_buf[i] ^ ks[i];
+                            if encrypt {
+                                blk[i] = self.st_buf[i];
+                            } else {
+                                blk[i] = out[i];
+                            }
+                        }
+                        for (dst, &m) in blk.iter_mut().zip(self.c_mac.iter()) {
+                            *dst ^= m;
+                        }
+                        self.c_mac = encrypt_block(&blk, &rk);
+                        self.c_data_left = self.c_data_left.saturating_sub(n as u64);
+                        self.st_len = 0;
+                        self.publish(out);
+                    }
+                }
+                if let Some(rk) = Self::round_keys(view) {
+                    self.ccm_tag(&rk)
+                } else {
+                    [0u8; 16]
                 }
             }
             _ => [0u8; 16],
@@ -641,6 +880,8 @@ impl Behavior for AesBehavior {
             self.g_tag_valid = false;
             self.m_latched = false;
             self.m_tag_valid = false;
+            self.c_latched = false;
+            self.c_tag_valid = false;
             self.in_fifo.clear();
             self.st_len = 0;
             self.st_aad = false;
@@ -716,6 +957,15 @@ impl Behavior for AesBehavior {
                     }
                     self.gcm_push(&rk, &fifo, encrypt);
                 }
+                CTRL_MODE_CCM => {
+                    if !self.c_latched {
+                        self.ccm_latch(view, &rk, ctrl);
+                    }
+                    // Completion flags rise from `publish` on real
+                    // blocks (push) or the `TAG_OUT` tail flush; an
+                    // invalid config stays fully inert.
+                    self.ccm_push(&rk, &fifo, encrypt);
+                }
                 CTRL_MODE_CBCMAC => {
                     if !self.m_latched {
                         self.cbcmac_latch(view);
@@ -733,8 +983,8 @@ impl Behavior for AesBehavior {
     }
 }
 
-/// A Tiva C AES engine (ECB/CBC/CTR/GCM/CBC-MAC 128/192/256; other
-/// modes latch).
+/// A Tiva C AES engine (ECB/CBC/CTR/GCM/CBC-MAC/CCM 128/192/256;
+/// other modes latch).
 pub struct Aes {
     inner: RegisterFile<AesBehavior>,
 }
@@ -969,9 +1219,9 @@ mod tests {
             [0xa8f6_4332, 0x8d30_5a88, 0xa298_3131, 0x3407_37e0],
         );
         assert_eq!(read_word(&mut aes2, 0x8C) & IRQ_DATA_OUT, 0);
-        // CCM likewise stays inert.
+        // XTS stays inert (tweak engine unmodeled).
         let mut aes3 = new_aes();
-        write_word(&mut aes3, CTRL_OFF, CTRL_DIRECTION | 0x08 | 0x2004_0040);
+        write_word(&mut aes3, CTRL_OFF, CTRL_DIRECTION | 0x08 | 0x0800);
         block(
             &mut aes3,
             [0xa8f6_4332, 0x8d30_5a88, 0xa298_3131, 0x3407_37e0],
@@ -1183,5 +1433,206 @@ mod tests {
             tag(&mut aes),
             [0x7447_4153, 0x4c77_c05a, 0xd5cf_1ca5, 0x4b3a_a71a]
         );
+    }
+
+    /// `IV_IN` for CCM: byte 0 = `L-1`, then the nonce bytes.
+    fn iv_ccm(nonce: &[u8], l: u32) -> [u32; 4] {
+        let mut iv = [0u8; 16];
+        iv[0] = (l - 1) as u8;
+        iv[1..1 + nonce.len()].copy_from_slice(nonce);
+        core::array::from_fn(|i| {
+            u32::from_le_bytes([iv[4 * i], iv[4 * i + 1], iv[4 * i + 2], iv[4 * i + 3]])
+        })
+    }
+
+    /// CCM config word for tag length `m` (128-bit key).
+    fn ctrl_ccm(encrypt: bool, m: u32) -> u32 {
+        (if encrypt { CTRL_DIRECTION } else { 0 })
+            | CTRL_MODE_CCM
+            | ((m / 2 - 1) << CTRL_CCM_M_SHIFT)
+            | 0x08
+    }
+
+    /// Feed a byte stream TivaWare-order (full 16 B blocks via
+    /// `block`; trailing bytes lane by lane, so no phantom zero bytes
+    /// enter the FIFO).
+    fn feed_stream(aes: &mut Aes, data: &[u8]) {
+        let mut chunks = data.chunks_exact(16);
+        for blk in &mut chunks {
+            block(
+                aes,
+                core::array::from_fn(|i| {
+                    u32::from_le_bytes([blk[4 * i], blk[4 * i + 1], blk[4 * i + 2], blk[4 * i + 3]])
+                }),
+            );
+        }
+        // Remainder byte by byte into `DATA_IN_3` first (TivaWare
+        // order); single-lane writes never complete spuriously.
+        let mut off = DATA_OFF + 12;
+        let mut lane = 0;
+        for &b in chunks.remainder() {
+            aes.write(AES0_BASE + off + lane, b).unwrap();
+            lane += 1;
+            if lane == 4 {
+                lane = 0;
+                off -= 4;
+            }
+        }
+    }
+
+    /// Read `n <= 16` output bytes from `DATA_OUT` (TivaWare order):
+    /// the window holds the last completed block only, so streaming
+    /// firmware reads per block.
+    fn read_stream(aes: &mut Aes, n: usize) -> Vec<u8> {
+        assert!(n <= 16);
+        let words = n.div_ceil(4);
+        let mut out = Vec::new();
+        for k in 0..words {
+            let w = read_word(aes, DATA_OFF + 12 - 4 * k as u32);
+            out.extend_from_slice(&w.to_le_bytes());
+        }
+        out.truncate(n);
+        out
+    }
+
+    /// CCM case A: 12 B nonce (`L` = 3), `M` = 8, 10 B AAD, 20 B data
+    /// (oracle CT + tag). `DATA_OUT` is read per completed block, the
+    /// streaming firmware pattern.
+    #[test]
+    fn ccm_encrypt_aad_tail() {
+        let mut aes = new_aes();
+        let key: Vec<u32> = (0..4)
+            .map(|i| u32::from_le_bytes([4 * i, 4 * i + 1, 4 * i + 2, 4 * i + 3]))
+            .collect();
+        let nonce: Vec<u8> = (0..12).collect();
+        let aad: Vec<u8> = (100..110).collect();
+        let pt: Vec<u8> = (200..220).collect();
+        setup(&mut aes, &key, Some(iv_ccm(&nonce, 3)), ctrl_ccm(true, 8));
+        lengths(&mut aes, 20, 10);
+        feed_stream(&mut aes, &aad);
+        // First data block (16 B) completes; tail (4 B) stages.
+        feed_stream(&mut aes, &pt[..16]);
+        assert_eq!(
+            read_stream(&mut aes, 16),
+            unhex("fbdc39ac 104d0a7e a1c21b33 d63f5357")
+        );
+        feed_stream(&mut aes, &pt[16..]);
+        assert_eq!(tag(&mut aes)[..2], [0x5e31_1c1d, 0x35e6_ba4d]);
+        assert_eq!(read_stream(&mut aes, 4), unhex("b48fc3e9"));
+    }
+
+    /// CCM decrypt round-trips case A (tag recomputed identically).
+    #[test]
+    fn ccm_decrypt_aad_tail() {
+        let mut aes = new_aes();
+        let key: Vec<u32> = (0..4)
+            .map(|i| u32::from_le_bytes([4 * i, 4 * i + 1, 4 * i + 2, 4 * i + 3]))
+            .collect();
+        let nonce: Vec<u8> = (0..12).collect();
+        let aad: Vec<u8> = (100..110).collect();
+        let ct = unhex("fbdc39ac 104d0a7e a1c21b33 d63f5357 b48fc3e9");
+        setup(&mut aes, &key, Some(iv_ccm(&nonce, 3)), ctrl_ccm(false, 8));
+        lengths(&mut aes, 20, 10);
+        feed_stream(&mut aes, &aad);
+        feed_stream(&mut aes, &ct[..16]);
+        let pt: Vec<u8> = (200..220).collect();
+        assert_eq!(read_stream(&mut aes, 16), pt[..16]);
+        feed_stream(&mut aes, &ct[16..]);
+        assert_eq!(tag(&mut aes)[..2], [0x5e31_1c1d, 0x35e6_ba4d]);
+        assert_eq!(read_stream(&mut aes, 4), pt[16..]);
+    }
+
+    /// CCM case B: 7 B nonce (`L` = 8), `M` = 16, no AAD, 32 B data.
+    #[test]
+    fn ccm_encrypt_no_aad() {
+        let mut aes = new_aes();
+        let key: Vec<u32> = (0..4)
+            .map(|i| u32::from_le_bytes([4 * i, 4 * i + 1, 4 * i + 2, 4 * i + 3]))
+            .collect();
+        let nonce: Vec<u8> = (0..7).collect();
+        let pt: Vec<u8> = (0..32).collect();
+        setup(&mut aes, &key, Some(iv_ccm(&nonce, 8)), ctrl_ccm(true, 16));
+        lengths(&mut aes, 32, 0);
+        feed_stream(&mut aes, &pt[..16]);
+        assert_eq!(
+            read_stream(&mut aes, 16),
+            unhex("5715b1ef 39830708 a405a5ee 98eb09b0")
+        );
+        feed_stream(&mut aes, &pt[16..]);
+        assert_eq!(
+            read_stream(&mut aes, 16),
+            unhex("cf21098c 7b865325 998ba6e7 0eb59e95")
+        );
+        assert_eq!(
+            tag(&mut aes),
+            [0xe076_b643, 0xcd9d_ac56, 0xb790_a6e0, 0xefc7_679e]
+        );
+    }
+
+    /// CCM case C: 13 B nonce (`L` = 2), `M` = 4, short everything.
+    #[test]
+    fn ccm_encrypt_short() {
+        let mut aes = new_aes();
+        let key: Vec<u32> = (0..4)
+            .map(|i| u32::from_le_bytes([4 * i, 4 * i + 1, 4 * i + 2, 4 * i + 3]))
+            .collect();
+        let nonce: Vec<u8> = (0..13).collect();
+        let aad: Vec<u8> = (0..8).collect();
+        let pt: Vec<u8> = (0..5).collect();
+        setup(&mut aes, &key, Some(iv_ccm(&nonce, 2)), ctrl_ccm(true, 4));
+        lengths(&mut aes, 5, 8);
+        feed_stream(&mut aes, &aad);
+        feed_stream(&mut aes, &pt);
+        // Single partial block: nothing out until `TAG` flushes it.
+        assert_eq!(tag(&mut aes)[0], 0xf19a_b5a2);
+        assert_eq!(read_stream(&mut aes, 5), unhex("1635b68b 57"));
+    }
+
+    /// RFC 3610 Packet Vector #1 (`L` = 2, `M` = 8, 8 B header,
+    /// 23 B message): the authoritative end-to-end check — key, nonce,
+    /// AAD, PT, CT, and tag all transcribed from the RFC text (the
+    /// Python oracle reproduces the RFC packet byte-for-byte).
+    #[test]
+    fn ccm_rfc3610_vector1() {
+        let mut aes = new_aes();
+        let key = unhex("C0C1C2C3 C4C5C6C7 C8C9CACB CCCDCECF");
+        let key: Vec<u32> = key
+            .chunks(4)
+            .map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]))
+            .collect();
+        let nonce = unhex("00000003 020100A0 A1A2A3A4 A5");
+        let aad = unhex("00010203 04050607");
+        let pt = unhex("08090A0B 0C0D0E0F 10111213 14151617 18191A1B 1C1D1E");
+        setup(&mut aes, &key, Some(iv_ccm(&nonce, 2)), ctrl_ccm(true, 8));
+        lengths(&mut aes, 23, 8);
+        feed_stream(&mut aes, &aad);
+        feed_stream(&mut aes, &pt[..16]);
+        assert_eq!(
+            read_stream(&mut aes, 16),
+            unhex("588c979a 61c663d2 f066d0c2 c0f98980")
+        );
+        feed_stream(&mut aes, &pt[16..]);
+        assert_eq!(tag(&mut aes)[..2], [0x2cd1_e817, 0xe026_f9fd]);
+        assert_eq!(read_stream(&mut aes, 7), unhex("6d5f6b61 dac384"));
+    }
+
+    /// Malformed CCM config (`M` = 2) stays inert.
+    #[test]
+    fn ccm_malformed_stays_inert() {
+        let mut aes = new_aes();
+        let key: Vec<u32> = (0..4)
+            .map(|i| u32::from_le_bytes([4 * i, 4 * i + 1, 4 * i + 2, 4 * i + 3]))
+            .collect();
+        let nonce: Vec<u8> = (0..12).collect();
+        setup(
+            &mut aes,
+            &key,
+            Some(iv_ccm(&nonce, 3)),
+            CTRL_DIRECTION | CTRL_MODE_CCM | 0x08,
+        );
+        lengths(&mut aes, 16, 0);
+        block(&mut aes, [0, 0, 0, 0]);
+        assert_eq!(read_word(&mut aes, 0x8C) & IRQ_DATA_OUT, 0);
+        assert_eq!(tag(&mut aes), [0, 0, 0, 0]);
     }
 }

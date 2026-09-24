@@ -112,6 +112,12 @@ famous firmware), and the kings harness ports in days.
   Python-oracle vectors (CTR-128/256, GCM zero + GMAC + straddle +
   trailing-partial, raw CBC-MAC). ICM/CFB/XTS/F8/F9/CCM still
   deferred.
+- **129 AES CCM (done 2026-09-24): SP 800-38C/RFC 3610 framing** (6
+  lib tests incl. RFC 3610 Packet Vector #1, audit still 66/72):
+  `CCM 0x20040040` + `CCM_L_*`/`CCM_M_*`, `B0`/AAD-format/CTR/CBC-MAC
+  state machine over `L` = 2-8, `M` = 4-16 (MAC covers PLAINTEXT per
+  RFC §2.2, unlike GCM); malformed configs inert. Only ICM/CFB/XTS/
+  F8/F9/DMA/`SAVE_CONTEXT` still latch.
 - **129 LCD (done 2026-09-23): raster timing + done IRQs** (3 lib
   tests, XNCZAD audit 67/72): PL110-compatible frames, no pixels.
 - **129 1-Wire (done 2026-09-23): master transactions** (4 lib tests,
