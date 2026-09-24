@@ -135,8 +135,24 @@ famous firmware), and the kings harness ports in days.
   folds the input field, `CIC=3` full pseudo-header) with `IHE`/`ES`
   write-back; RX Table 20-9 status under `EMACCFG.IPC`; all eight
   32-bit MMC counters with `CNTRST`/`CNTPRST`/`CNTFREEZ`/`RSTONRD`,
-  half/full interrupts + masks into `EMACRIS`. PTP/magic-packet/
-  `CRCR`/`VLIC` still deferred.
+   half/full interrupts + masks into `EMACRIS`. PTP/magic-packet/
+   `CRCR`/`VLIC` still deferred.
+- **129 EMAC package 4 (done 2026-09-24): PTP time + magic-packet wake
+  + `CRCR`/`VLIC`** (16 lib tests + 1 board proof, audit still 70/72
+  — no new windows): system-time generator (coarse `SSINC`/fine
+  `TSAR`, `TSINIT`/`TSUPDT`/`ADDSUB`, digital/binary rollover,
+  target-time `TT` IRQ + `TIMSTAT`), TX snapshots (`TTSE` →
+  `TDES6/7` + `TTSS`) and RX snapshots (`ALLF`/PTP-select →
+  `RDES6/7` + `RDES4` info + `RDES0[7]`), magic-packet + global-unicast
+  wake with power-down gating (`WUPRX`/`MGKPRX` read-clear,
+  `DMARIS.PMT` + `EMACRIS.PMT`), TX `DC`/`CRCR` FCS append/replace +
+  `DP` runt padding (IEEE CRC-32), `VLIC` strip/insert/replace via
+  `EMACVLNINCREP` (`VF` status, RX VLAN-presence bit). Frozen oracle
+  vectors (`emac_vecs.json`: CRC-32 check, FCS append/replace, VLAN
+  edits, magic pattern, PTP Sync). Still deferred: remote wake-up
+  pattern CRC match (bank mechanics only), second-buffer scatter, DMA
+  burst arbitration + `DMAIM` masking, IPv6 extension headers, `UCDBC`,
+  PPS output, RX FCS validation.
 
 ## Phase P2 — Peripheral models (~2–3 weeks, the bulk)
 

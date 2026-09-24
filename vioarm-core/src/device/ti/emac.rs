@@ -22,11 +22,21 @@
 //! with `IHE`/`ES` write-back; RX validation under `EMACCFG.IPC`
 //! driving Table 20-9 `RDES0` bits. MMC counters (§20.3.9, all eight
 //! 32-bit) with `MMCCTRL` modes, half/full interrupts + masks.
-//! Deliberate scope: PTP time, magic-packet wake, second-buffer
-//! (`TBS2`/`RBS2`) scatter, DMA burst arbitration (instant, unpaced),
-//! `CRCR` CRC replacement (needs an FCS engine), `VLIC` tag edits
-//! (control bits preserved on write-back), IPv6 extension headers,
-//! `UCDBC`. Notes: store-forward is structural here (the frame only
+//! Also modeled (package 4, SPMS433B §20.3.5/§20.3.9.3/§20.3.10): the
+//! PTP system-time generator (coarse `SSINC` or fine `TSAR` advance,
+//! `TSINIT`/`TSUPDT`/`ADDSUB`, digital/binary rollover, target-time
+//! `TT` interrupt + `TIMSTAT`), TX snapshots (`TTSE` → `TDES6/7` +
+//! `TTSS`) and RX snapshots (`ALLF`/PTP-select → `RDES6/7` + `RDES4`
+//! info + `RDES0[7]`), PMT magic-packet + global-unicast wake with
+//! power-down gating (`WUPRX`/`MGKPRX` read-clear, `DMARIS.PMT` +
+//! `EMACRIS.PMT`), TX `DC`/`CRCR` FCS append/replace + `DP` padding
+//! (IEEE 802.3 CRC-32), and `VLIC` strip/insert/replace via
+//! `EMACVLNINCREP` (`VF` status, RX VLAN-presence bit).
+//! Deliberate scope: remote wake-up pattern CRC match (filter-bank
+//! mechanics only), second-buffer (`TBS2`/`RBS2`) scatter, DMA burst
+//! arbitration (instant, unpaced) + `DMAIM` masking (one shared line,
+//! unmasked), IPv6 extension headers, `UCDBC`, PPS output (latched),
+//! RX FCS validation (injected frames carry none). Notes: store-forward is structural here (the frame only
 //! exists whole at `LS`), so the `TSF`/size-limit note needs no
 //! enforcement; `DC`/`DP` are trivially satisfied (no CRC appended,
 //! no padding added); collision counters stay zero (no half-duplex
@@ -127,6 +137,89 @@ const RDES0_ES: u32 = 1 << 15;
 const RDES0_FT: u32 = 1 << 5;
 const RDES0_IPCERR: u32 = 1 << 7;
 const RDES0_PCSERR: u32 = 1 << 0;
+/// `RDES0` VLAN-tag status (Table 20-8).
+const RDES0_VLAN: u32 = 1 << 10;
+/// `TDES0` TX-path control/status bits (Table 20-2).
+const TDES0_DC: u32 = 1 << 27;
+const TDES0_DP: u32 = 1 << 26;
+const TDES0_TTSE: u32 = 1 << 25;
+const TDES0_CRCR: u32 = 1 << 24;
+const TDES0_VLIC_SHIFT: u32 = 18;
+const TDES0_TTSS: u32 = 1 << 17;
+const TDES0_VF: u32 = 1 << 7;
+/// `DMARIS` timestamp/PMT bits.
+const DMA_TT: u32 = 1 << 29;
+const DMA_PMT: u32 = 1 << 28;
+/// Power-management registers (`EMACRWUFF` bank mechanics only; the
+/// wake-pattern CRC engine stays latched).
+const RWUFF_OFF: u32 = 0x028;
+const PMTCTLSTAT_OFF: u32 = 0x02C;
+const PMT_PWRDWN: u32 = 1 << 0;
+const PMT_MGKPKTEN: u32 = 1 << 1;
+const PMT_WUPFREN: u32 = 1 << 2;
+const PMT_MGKPRX: u32 = 1 << 5;
+const PMT_WUPRX: u32 = 1 << 6;
+const PMT_GLBLUCAST: u32 = 1 << 9;
+const PMT_RWKPTR_SHIFT: u32 = 24;
+const PMT_RWKPTR_MASK: u32 = 0x7 << PMT_RWKPTR_SHIFT;
+const PMT_WUPFRRST: u32 = 1 << 31;
+const PMT_WRITABLE: u32 = PMT_PWRDWN | PMT_MGKPKTEN | PMT_WUPFREN | PMT_GLBLUCAST;
+/// `EMACRIS` timestamp/PMT reflections.
+const RIS_TS: u32 = 1 << 9;
+const RIS_PMT: u32 = 1 << 3;
+/// MAC address + TX VLAN registers.
+const ADDR0H_OFF: u32 = 0x040;
+const ADDR0L_OFF: u32 = 0x044;
+const VLNINCREP_OFF: u32 = 0x584;
+const VLN_VLC_SHIFT: u32 = 16;
+const VLN_VLP: u32 = 1 << 18;
+const VLN_CSVL: u32 = 1 << 19;
+/// PTP timestamp registers.
+const TIMSTCTRL_OFF: u32 = 0x700;
+const SUBSECINC_OFF: u32 = 0x704;
+const TIMSEC_OFF: u32 = 0x708;
+const TIMNANO_OFF: u32 = 0x70C;
+const TIMSECU_OFF: u32 = 0x710;
+const TIMNANOU_OFF: u32 = 0x714;
+const TIMADD_OFF: u32 = 0x718;
+const TARGSEC_OFF: u32 = 0x71C;
+const TARGNANO_OFF: u32 = 0x720;
+const HWORDSEC_OFF: u32 = 0x724;
+const TIMSTAT_OFF: u32 = 0x728;
+/// `TIMSTCTRL` control bits.
+const TS_TSEN: u32 = 1 << 0;
+const TS_TSFCUPDT: u32 = 1 << 1;
+const TS_TSINIT: u32 = 1 << 2;
+const TS_TSUPDT: u32 = 1 << 3;
+const TS_INTTRIG: u32 = 1 << 4;
+const TS_ADDREGUP: u32 = 1 << 5;
+const TS_ALLF: u32 = 1 << 8;
+const TS_DGTLBIN: u32 = 1 << 9;
+const TS_PTPVER2: u32 = 1 << 10;
+const TS_PTPETH: u32 = 1 << 11;
+const TS_PTPIPV6: u32 = 1 << 12;
+const TS_PTPIPV4: u32 = 1 << 13;
+const TS_TSEVNT: u32 = 1 << 14;
+const TS_TSMAST: u32 = 1 << 15;
+const TS_SELP_SHIFT: u32 = 16;
+/// `TIMSTAT` status bits.
+const TIM_TSTARGT: u32 = 1 << 1;
+const TIM_TSSOVF: u32 = 1 << 0;
+/// `TARGNANO` busy bit: PPS modes unmodeled, always reads 0.
+const TARG_TRGTBUSY: u32 = 1 << 31;
+/// `RDES4` PTP info bits (Table 20-13).
+const RDES4_VER: u32 = 1 << 13;
+const RDES4_FTYPE: u32 = 1 << 12;
+const RDES4_MSG_SHIFT: u32 = 8;
+const RDES4_IPV6: u32 = 1 << 7;
+const RDES4_IPV4: u32 = 1 << 6;
+const RDES4_BYP: u32 = 1 << 5;
+const RDES4_PERR: u32 = 1 << 4;
+const RDES4_HERR: u32 = 1 << 3;
+/// Digital-rollover nanoseconds per second.
+const NS_PER_SEC: u64 = 1_000_000_000;
+/// Binary-rollover sub-second modulus (2^31, ~0.465 ns/bit).
+const BIN_MOD: u64 = 0x8000_0000;
 
 /// DMA phase: one mailbox round-trip per tick.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -435,6 +528,191 @@ fn rx_checksum_status(frame: &[u8]) -> Option<(bool, bool, bool)> {
     Some((true, !header_ok, !payload_ok))
 }
 
+/// IEEE 802.3 CRC-32 (reflected, init all-ones, xor-out): the FCS
+/// the MAC appends (`DC=0`) or swaps in (`DC=1` + `CRCR`).
+fn crc32_ieee(bytes: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFFu32;
+    for &b in bytes {
+        crc ^= u32::from(b);
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0xEDB8_8320
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    !crc
+}
+
+/// Whether the frame carries a VLAN tag (`0x8100`/`0x88A8`).
+fn frame_tagged(frame: &[u8]) -> bool {
+    if frame.len() < 14 {
+        return false;
+    }
+    let tpid = u16::from_be_bytes([frame[12], frame[13]]);
+    tpid == 0x8100 || tpid == 0x88A8
+}
+
+/// Apply a `VLIC`/register-`VLC` tag edit (Table 20-2 + `EMACVLNINCREP`):
+/// `1` strip, `2` insert `tpid`/`vlt` after the source address, `3`
+/// replace the tag in place. Short or untagged frames pass through
+/// untouched for strip/replace.
+fn vlan_edit(frame: Vec<u8>, action: u32, tpid: u16, vlt: u16) -> Vec<u8> {
+    if frame.len() < 14 {
+        return frame;
+    }
+    match action {
+        1 => {
+            if frame_tagged(&frame) {
+                let mut f = frame[..12].to_vec();
+                f.extend_from_slice(&frame[16..]);
+                f
+            } else {
+                frame
+            }
+        }
+        2 => {
+            let mut f = frame[..12].to_vec();
+            f.extend_from_slice(&tpid.to_be_bytes());
+            f.extend_from_slice(&vlt.to_be_bytes());
+            f.extend_from_slice(&frame[12..]);
+            f
+        }
+        3 => {
+            if frame_tagged(&frame) {
+                let mut f = frame;
+                f[12..14].copy_from_slice(&tpid.to_be_bytes());
+                f[14..16].copy_from_slice(&vlt.to_be_bytes());
+                f
+            } else {
+                frame
+            }
+        }
+        _ => frame,
+    }
+}
+
+/// PTP payload location for a frame: `(eth_direct, ptp_offset)`.
+/// IPv4/UDP and IPv6/UDP (no extension headers) plus EtherType
+/// `0x88F7` directly, each gated by its `TIMSTCTRL` transport enable.
+/// UDP port filtering is not modeled (no port gate appears in the
+/// databook's PTP detection description).
+fn ptp_info(frame: &[u8], ctrl: u32) -> Option<(bool, bool, u8)> {
+    let (ether, off) = eth_ip_split(frame)?;
+    let (eth_direct, ptp_off) = if ether == 0x88F7 {
+        if ctrl & TS_PTPETH == 0 {
+            return None;
+        }
+        (true, off)
+    } else if ether == 0x0800 {
+        if ctrl & TS_PTPIPV4 == 0 {
+            return None;
+        }
+        if frame.len() < off + 20 {
+            return None;
+        }
+        let ihl = ((frame[off] & 0x0F) as usize) * 4;
+        if ihl < 20 || frame[off + 9] != 17 {
+            return None;
+        }
+        let u = off + ihl;
+        if frame.len() < u + 8 {
+            return None;
+        }
+        (false, u + 8)
+    } else if ether == 0x86DD {
+        if ctrl & TS_PTPIPV6 == 0 {
+            return None;
+        }
+        if frame.len() < off + 40 || frame[off + 6] != 17 {
+            return None;
+        }
+        (false, off + 48)
+    } else {
+        return None;
+    };
+    if frame.len() < ptp_off + 2 {
+        return None;
+    }
+    let msg = frame[ptp_off] & 0x0F;
+    let ver = frame[ptp_off + 1] & 0x0F;
+    if ctrl & TS_PTPVER2 != 0 {
+        if ver != 2 {
+            return None;
+        }
+    } else if ver != 1 {
+        return None;
+    }
+    // Message-class filter (judgment: the databook names the selects
+    // but no exact class table, so master nodes take request classes,
+    // slave nodes the rest, and Pdelay classes need peer-to-peer
+    // `SELPTP`; event-only drops Announce/Management/Signaling).
+    if matches!(msg, 0x5..=0x7) && (ctrl >> TS_SELP_SHIFT) & 3 != 3 {
+        return None;
+    }
+    let master_set = matches!(msg, 0x3 | 0x5);
+    if ctrl & TS_TSMAST != 0 {
+        if !master_set {
+            return None;
+        }
+    } else if master_set {
+        return None;
+    }
+    if ctrl & TS_TSEVNT != 0 {
+        if !matches!(msg, 0x1 | 0x3 | 0x5 | 0x6) {
+            return None;
+        }
+    } else if matches!(msg, 0x8..=0xA) {
+        return None;
+    }
+    Some((eth_direct, ver == 2, msg))
+}
+
+/// Station MAC bytes from `EMACADDR0H/L` (first DA byte on the wire is
+/// `ADDR0L[7:0]`, Table 20 register 14/15).
+fn station_mac<W>(view: &Registers<W>) -> [u8; 6]
+where
+    W: Deref<Target = [u32]>,
+{
+    let lo = view.get(ADDR0L_OFF);
+    let hi = view.get(ADDR0H_OFF);
+    [
+        (lo & 0xFF) as u8,
+        ((lo >> 8) & 0xFF) as u8,
+        ((lo >> 16) & 0xFF) as u8,
+        ((lo >> 24) & 0xFF) as u8,
+        (hi & 0xFF) as u8,
+        ((hi >> 8) & 0xFF) as u8,
+    ]
+}
+
+/// Magic-packet match (§20.3.10.3): DA is ours, broadcast, or multicast,
+/// then a 6-byte all-ones sync stream (scanned from past DA+SA, so a
+/// break simply resumes the scan) followed by 16 contiguous repetitions
+/// of the station address.
+fn is_magic_packet(frame: &[u8], mac: &[u8; 6]) -> bool {
+    if frame.len() < 12 {
+        return false;
+    }
+    let da = &frame[..6];
+    if da != mac && *da != [0xFF; 6] && da[0] & 1 == 0 {
+        return false;
+    }
+    let mut rep = [0u8; 96];
+    for chunk in rep.chunks_mut(6) {
+        chunk.copy_from_slice(mac);
+    }
+    let mut i = 12;
+    while i + 102 <= frame.len() {
+        if frame[i..i + 6] == [0xFF; 6] && frame[i + 6..i + 102] == rep {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
 /// Behavior behind the MAC window: shell registers plus the
 /// descriptor-ring DMA engine.
 #[derive(Debug)]
@@ -448,6 +726,30 @@ pub struct EmacBehavior {
     tx_accum: Vec<u8>,
     /// `CIC` latched from the frame's first descriptor.
     tx_cic: u32,
+    /// `DC`/`DP`/`TTSE`/`CRCR`/`VLIC` latched from the frame's first
+    /// descriptor (validity is FS-gated per Table 20-2).
+    tx_dc: bool,
+    tx_dp: bool,
+    tx_ttse: bool,
+    tx_crcr: bool,
+    tx_vlic: u32,
+    /// PTP system time: seconds, sub-seconds, higher-word seconds,
+    /// fine-correction accumulator, seconds-overflow latch.
+    ts_sec: u32,
+    ts_nsss: u32,
+    ts_hword: u16,
+    ts_acc: u32,
+    ts_tssovf: bool,
+    /// PMT wake flags (`WUPRX`/`MGKPRX`, cleared on register read).
+    pmt_wuprx: bool,
+    pmt_mgkprx: bool,
+    /// Remote wake-up filter bank + pointer + word-read cache (pattern
+    /// CRC matching stays latched; only the bank mechanics move).
+    rwuff_bank: [u32; 8],
+    rwuff_ptr: u8,
+    /// Word staged by the lane-0 peek (lanes 1-3 of a word read repeat
+    /// it; word reads must start at lane 0, the `read_word` convention).
+    rwuff_cache: u32,
     /// Frames firmware transmitted (test/closeout introspection).
     tx_frames: Vec<Vec<u8>>,
     /// Host-injected receive frame.
@@ -562,6 +864,147 @@ impl EmacBehavior {
         }
     }
 
+    /// Add whole seconds with wrap: overflow bumps the higher word
+    /// and latches `TSSOVF` (the 130-year register still counts here).
+    fn ptp_add_sec(&mut self, carry: u64) {
+        let total = u64::from(self.ts_sec) + carry;
+        self.ts_sec = (total & 0xFFFF_FFFF) as u32;
+        if total >> 32 != 0 {
+            self.ts_hword = self.ts_hword.wrapping_add((total >> 32) as u16);
+            self.ts_tssovf = true;
+        }
+    }
+
+    /// Fold raw sub-seconds into seconds per the rollover mode.
+    fn ptp_normalize(&mut self, nsss: u64, digital: bool) {
+        if digital {
+            self.ptp_add_sec(nsss / NS_PER_SEC);
+            self.ts_nsss = (nsss % NS_PER_SEC) as u32;
+        } else {
+            self.ptp_add_sec(nsss / BIN_MOD);
+            self.ts_nsss = (nsss % BIN_MOD) as u32;
+        }
+    }
+
+    /// Advance the PTP system time: one device tick is one PTP reference
+    /// clock (documented unit — the databook's MOSC cycle). Coarse mode
+    /// adds `SSINC` per tick; fine mode accumulates the `TSAR` addend
+    /// and adds `SSINC` per accumulator overflow.
+    fn ptp_advance<W>(&mut self, view: &Registers<W>, delta: u64)
+    where
+        W: Deref<Target = [u32]>,
+    {
+        let ctrl = view.get(TIMSTCTRL_OFF);
+        if ctrl & TS_TSEN == 0 || delta == 0 {
+            return;
+        }
+        let ssinc = u64::from(view.get(SUBSECINC_OFF) & 0xFF);
+        let mut nsss = u64::from(self.ts_nsss);
+        if ctrl & TS_TSFCUPDT != 0 {
+            let acc = u64::from(self.ts_acc) + u64::from(view.get(TIMADD_OFF)) * delta;
+            self.ts_acc = (acc & 0xFFFF_FFFF) as u32;
+            nsss += ssinc * (acc >> 32);
+        } else {
+            nsss += ssinc * delta;
+        }
+        self.ptp_normalize(nsss, ctrl & TS_DGTLBIN != 0);
+    }
+
+    /// `TSINIT`: overwrite the time from the update registers.
+    fn ptp_init(&mut self, sec: u32, ns: u32, digital: bool) {
+        if digital {
+            self.ts_sec = sec.wrapping_add((u64::from(ns) / NS_PER_SEC) as u32);
+            self.ts_nsss = (u64::from(ns) % NS_PER_SEC) as u32;
+        } else {
+            self.ts_sec = sec;
+            self.ts_nsss = (u64::from(ns) % BIN_MOD) as u32;
+        }
+    }
+
+    /// `TSUPDT`: add or subtract (`ADDSUB`) the update registers. A
+    /// subtract past zero saturates at zero (the databook defines no
+    /// borrow out of the epoch).
+    fn ptp_update(&mut self, sec: u32, ns: u32, sub: bool, digital: bool) {
+        if digital {
+            let cur = u64::from(self.ts_sec) * NS_PER_SEC + u64::from(self.ts_nsss);
+            let adj = u64::from(sec) * NS_PER_SEC + u64::from(ns);
+            let out = if sub {
+                cur.saturating_sub(adj)
+            } else {
+                cur + adj
+            };
+            self.ptp_set_digital(out);
+        } else {
+            let cur = (u64::from(self.ts_sec) << 31) | u64::from(self.ts_nsss);
+            let adj = (u64::from(sec) << 31) | u64::from(ns);
+            if sub && adj > cur {
+                self.ts_sec = 0;
+                self.ts_nsss = 0;
+            } else {
+                let out = if sub { cur - adj } else { cur + adj };
+                let secs = out >> 31;
+                if secs >> 32 != 0 {
+                    self.ts_hword = self.ts_hword.wrapping_add((secs >> 32) as u16);
+                    self.ts_tssovf = true;
+                }
+                self.ts_sec = (secs & 0xFFFF_FFFF) as u32;
+                self.ts_nsss = (out & (BIN_MOD - 1)) as u32;
+            }
+        }
+    }
+
+    /// Split an absolute nanosecond count into seconds + sub-seconds.
+    fn ptp_set_digital(&mut self, out: u64) {
+        let secs = out / NS_PER_SEC;
+        if secs >> 32 != 0 {
+            self.ts_hword = self.ts_hword.wrapping_add((secs >> 32) as u16);
+            self.ts_tssovf = true;
+        }
+        self.ts_sec = (secs & 0xFFFF_FFFF) as u32;
+        self.ts_nsss = (out % NS_PER_SEC) as u32;
+    }
+
+    /// `INTTRIG`: fire once when the time reaches the target (the bit
+    /// self-clears; the `TT` status bit clears via `DMARIS` W1C).
+    fn ptp_target_check(&mut self, view: &mut Registers<&mut [u32]>) {
+        if view.get(TIMSTCTRL_OFF) & TS_INTTRIG == 0 {
+            return;
+        }
+        let tgt = (view.get(TARGSEC_OFF), view.get(TARGNANO_OFF) & 0x7FFF_FFFF);
+        if (self.ts_sec, self.ts_nsss & 0x7FFF_FFFF) >= tgt {
+            let mut ctrl = view.get(TIMSTCTRL_OFF);
+            ctrl &= !TS_INTTRIG;
+            view.set(TIMSTCTRL_OFF, ctrl);
+            self.dmaris |= DMA_TT;
+        }
+    }
+
+    /// Power-down RX triage (§20.3.10.5): the frame is consumed by the
+    /// PMT, never delivered. A wake event self-clears `PWRDWN` and
+    /// latches `DMARIS.PMT`; anything else is dropped silently.
+    fn pmt_rx_wake(&mut self, view: &mut Registers<&mut [u32]>, frame: &[u8]) {
+        let ctl = view.get(PMTCTLSTAT_OFF);
+        let mac = station_mac(view);
+        let unicast_us = frame.len() >= 6 && frame[..6] == mac;
+        let mut woke = false;
+        if ctl & PMT_MGKPKTEN != 0 && is_magic_packet(frame, &mac) {
+            self.pmt_mgkprx = true;
+            woke = true;
+        }
+        if ctl & PMT_GLBLUCAST != 0 && unicast_us {
+            self.pmt_wuprx = true;
+            woke = true;
+        }
+        // Remote wake-up pattern filters: bank mechanics only, so
+        // `WUPFREN` alone never matches (documented).
+        if woke {
+            let mut pmt = view.get(PMTCTLSTAT_OFF);
+            pmt &= !PMT_PWRDWN;
+            view.set(PMTCTLSTAT_OFF, pmt);
+            self.dmaris |= DMA_PMT;
+        }
+    }
+
     /// Consume a fetched TX descriptor: read its buffer next.
     fn consume_tx_desc(&mut self, view: &mut Registers<&mut [u32]>, bytes: &[u8]) {
         let w = |i: usize| {
@@ -581,8 +1024,14 @@ impl EmacBehavior {
         let tbs1 = (t1 & TBS1_MASK) as u16;
         let desc = self.tx_desc;
         if t0 & TDES0_FS != 0 {
-            // `CIC` is valid on the first segment; it rides the frame.
+            // `CIC`/`DC`/`DP`/`TTSE`/`CRCR`/`VLIC` are valid on the
+            // first segment; they ride the frame.
             self.tx_cic = (t0 >> TDES0_CIC_SHIFT) & 3;
+            self.tx_dc = t0 & TDES0_DC != 0;
+            self.tx_dp = t0 & TDES0_DP != 0;
+            self.tx_ttse = t0 & TDES0_TTSE != 0;
+            self.tx_crcr = t0 & TDES0_CRCR != 0;
+            self.tx_vlic = (t0 >> TDES0_VLIC_SHIFT) & 3;
         }
         let mut next = if t0 & TDES0_TCH != 0 {
             t3
@@ -610,8 +1059,44 @@ impl EmacBehavior {
         if t0 & TDES0_LS != 0 {
             self.tx_accum.extend_from_slice(data);
             let mut frame = core::mem::take(&mut self.tx_accum);
+            // 1. VLAN tag edits shift every later offset, so they run
+            // first. The register `VLC` wins when `VLP` says so.
+            let vlr = view.get(VLNINCREP_OFF);
+            let vlan_action = if vlr & VLN_VLP != 0 {
+                (vlr >> VLN_VLC_SHIFT) & 3
+            } else {
+                self.tx_vlic
+            };
+            if vlan_action != 0 {
+                let tpid = if vlr & VLN_CSVL != 0 { 0x88A8 } else { 0x8100 };
+                frame = vlan_edit(frame, vlan_action, tpid, (vlr & 0xFFFF) as u16);
+            }
+            if frame_tagged(&frame) {
+                status |= TDES0_VF;
+            }
+            // 2. Checksum insertion over the edited frame.
             if self.tx_cic != 0 {
-                status = tx_insert_checksum(&mut frame, self.tx_cic);
+                status |= tx_insert_checksum(&mut frame, self.tx_cic);
+            }
+            // 3. Runt padding, then FCS (Table 20-19): `DC=0` appends
+            // the computed CRC; `DC=1` + `CRCR` replaces the last four
+            // bytes the CPU left in the frame.
+            if !self.tx_dp && frame.len() < 60 {
+                frame.resize(60, 0);
+            }
+            if !self.tx_dc {
+                let crc = crc32_ieee(&frame);
+                frame.extend_from_slice(&crc.to_be_bytes());
+            } else if self.tx_crcr && frame.len() >= 4 {
+                let n = frame.len();
+                let crc = crc32_ieee(&frame[..n - 4]);
+                frame[n - 4..].copy_from_slice(&crc.to_be_bytes());
+            }
+            // 4. Timestamp snapshot into the extended descriptor words.
+            if view.get(TIMSTCTRL_OFF) & TS_TSEN != 0 && self.tx_ttse {
+                status |= TDES0_TTSS;
+                self.push_write(desc + 24, self.ts_nsss.to_le_bytes().to_vec());
+                self.push_write(desc + 28, self.ts_sec.to_le_bytes().to_vec());
             }
             self.mmc_bump(ctrl, 0, 1);
             self.mmc_bump(ctrl, 3, frame.len() as u32);
@@ -644,6 +1129,13 @@ impl EmacBehavior {
             return;
         }
         if let Some(frame) = self.rx_pending.take() {
+            if view.get(PMTCTLSTAT_OFF) & PMT_PWRDWN != 0 {
+                // Power-down: the PMT consumes the frame (wake or drop),
+                // the DMA never sees it.
+                self.pmt_rx_wake(view, &frame);
+                self.phase = Phase::Idle;
+                return;
+            }
             let rbs1 = (r1 & RBS1_MASK) as usize;
             let n = frame.len().min(rbs1);
             if n > 0 {
@@ -654,7 +1146,11 @@ impl EmacBehavior {
             // 20-9 checksum bits when `IPC` is set.
             let fl = ((frame.len() as u32) & 0x3FFF) << 16;
             let mut status = fl | RDES0_FS | RDES0_LS;
-            if view.get(CFG_OFF) & CFG_IPC != 0 {
+            if frame_tagged(&frame) {
+                status |= RDES0_VLAN;
+            }
+            let ipc = view.get(CFG_OFF) & CFG_IPC != 0;
+            if ipc {
                 if let Some((ft, herr, perr)) = rx_checksum_status(&frame) {
                     if ft {
                         status |= RDES0_FT;
@@ -666,6 +1162,47 @@ impl EmacBehavior {
                         status |= RDES0_PCSERR | RDES0_ES;
                     }
                 }
+            }
+            // Timestamp snapshot into the extended descriptor words.
+            // `RDES0[7]` doubles as timestamp-available here (the same
+            // bit reads `IPCERR` for checksum errors above).
+            let tctrl = view.get(TIMSTCTRL_OFF);
+            if tctrl & TS_TSEN != 0 && (tctrl & TS_ALLF != 0 || ptp_info(&frame, tctrl).is_some()) {
+                status |= RDES0_IPCERR;
+                let mut rdes4 = 0u32;
+                if let Some((eth, v2, msg)) = ptp_info(&frame, tctrl) {
+                    if v2 {
+                        rdes4 |= RDES4_VER;
+                    }
+                    if eth {
+                        rdes4 |= RDES4_FTYPE;
+                    }
+                    rdes4 |= u32::from(msg) << RDES4_MSG_SHIFT;
+                }
+                if ipc {
+                    if let Some((_, herr, perr)) = rx_checksum_status(&frame) {
+                        if let Some((ether, _)) = eth_ip_split(&frame) {
+                            if ether == 0x0800 {
+                                rdes4 |= RDES4_IPV4;
+                            } else if ether == 0x86DD {
+                                rdes4 |= RDES4_IPV6;
+                            }
+                        }
+                        if herr {
+                            rdes4 |= RDES4_HERR;
+                        }
+                        if perr {
+                            rdes4 |= RDES4_PERR;
+                        }
+                    } else {
+                        rdes4 |= RDES4_BYP;
+                    }
+                } else {
+                    rdes4 |= RDES4_BYP;
+                }
+                self.push_write(self.rx_desc + 16, rdes4.to_le_bytes().to_vec());
+                self.push_write(self.rx_desc + 24, self.ts_nsss.to_le_bytes().to_vec());
+                self.push_write(self.rx_desc + 28, self.ts_sec.to_le_bytes().to_vec());
             }
             self.push_write(self.rx_desc, status.to_le_bytes().to_vec());
             let ctrl = Self::mmc_ctrl(view);
@@ -701,6 +1238,21 @@ impl Behavior for EmacBehavior {
         self.tx_poll = false;
         self.tx_accum.clear();
         self.tx_cic = 0;
+        self.tx_dc = false;
+        self.tx_dp = false;
+        self.tx_ttse = false;
+        self.tx_crcr = false;
+        self.tx_vlic = 0;
+        self.ts_sec = 0;
+        self.ts_nsss = 0;
+        self.ts_hword = 0;
+        self.ts_acc = 0;
+        self.ts_tssovf = false;
+        self.pmt_wuprx = false;
+        self.pmt_mgkprx = false;
+        self.rwuff_bank = [0; 8];
+        self.rwuff_ptr = 0;
+        self.rwuff_cache = 0;
         self.rx_pending = None;
         self.dmaris = 0;
         self.phase = Phase::Idle;
@@ -715,10 +1267,13 @@ impl Behavior for EmacBehavior {
 
     fn pending(&self, view: &Registers<&[u32]>) -> u32 {
         let (rx, tx) = self.mmc_summary(view);
-        u32::from(self.dmaris & (DMA_TI | DMA_RI) != 0 || rx || tx)
+        u32::from(self.dmaris & (DMA_TI | DMA_RI | DMA_TT | DMA_PMT) != 0 || rx || tx)
     }
 
-    fn tick(&mut self, view: &mut Registers<&mut [u32]>, _delta: u64) {
+    fn tick(&mut self, view: &mut Registers<&mut [u32]>, delta: u64) {
+        // The time generator runs on every tick, even mid-DMA.
+        self.ptp_advance(view, delta);
+        self.ptp_target_check(view);
         // Consume one landed result per tick (bus drains after ticks).
         if self.phase != Phase::Idle {
             if let Some(result) = self.pop_result() {
@@ -760,7 +1315,9 @@ impl Behavior for EmacBehavior {
             MIIDATA_OFF => 0xFFFF, // No PHY: MDIO floats high.
             0x24 => 0,             // Engines idle between bursts.
             EMACRIS_OFF => {
-                // MAC `RIS`: MMC summaries only (PMT/TS latch by scope).
+                // MAC `RIS`: MMC summaries plus the timestamp (`TT`
+                // latch or seconds overflow) and PMT (wake flags)
+                // reflections.
                 let (rx, tx) = self.mmc_summary(view);
                 let mut r = 0;
                 if rx || tx {
@@ -772,13 +1329,42 @@ impl Behavior for EmacBehavior {
                 if tx {
                     r |= RIS_MMCTX;
                 }
+                if self.dmaris & DMA_TT != 0 || self.ts_tssovf {
+                    r |= RIS_TS;
+                }
+                if self.pmt_wuprx || self.pmt_mgkprx {
+                    r |= RIS_PMT;
+                }
                 r
+            }
+            TIMSEC_OFF => self.ts_sec,
+            TIMNANO_OFF => self.ts_nsss & 0x7FFF_FFFF,
+            HWORDSEC_OFF => u32::from(self.ts_hword),
+            TIMSTAT_OFF => {
+                let mut t = 0;
+                if self.ts_tssovf {
+                    t |= TIM_TSSOVF;
+                }
+                if (self.ts_sec, self.ts_nsss)
+                    >= (view.get(TARGSEC_OFF), view.get(TARGNANO_OFF) & 0x7FFF_FFFF)
+                {
+                    t |= TIM_TSTARGT;
+                }
+                t
+            }
+            TARGNANO_OFF => value & !TARG_TRGTBUSY,
+            RWUFF_OFF => self.rwuff_cache,
+            PMTCTLSTAT_OFF => {
+                (value & !(PMT_WUPRX | PMT_MGKPRX | PMT_RWKPTR_MASK))
+                    | (u32::from(self.rwuff_ptr) << PMT_RWKPTR_SHIFT)
+                    | if self.pmt_wuprx { PMT_WUPRX } else { 0 }
+                    | if self.pmt_mgkprx { PMT_MGKPRX } else { 0 }
             }
             MMCRXRIS_OFF => self.rx_ris,
             MMCTXRIS_OFF => self.tx_ris,
             DMARIS_OFF => {
                 let mut d = self.dmaris;
-                if d & (DMA_TI | DMA_RI) != 0 {
+                if d & (DMA_TI | DMA_RI | DMA_TT | DMA_PMT) != 0 {
                     d |= DMA_NIS;
                 }
                 d
@@ -813,6 +1399,54 @@ impl Behavior for EmacBehavior {
                 self.dmaris &= !word;
             }
             return self.dmaris;
+        }
+        if offset == TIMSTCTRL_OFF && shift == 24 {
+            let mut ctrl = view.merged(offset, val, shift);
+            if ctrl & TS_TSINIT != 0 {
+                let digital = ctrl & TS_DGTLBIN != 0;
+                self.ptp_init(
+                    view.get(TIMSECU_OFF),
+                    view.get(TIMNANOU_OFF) & 0x7FFF_FFFF,
+                    digital,
+                );
+                ctrl &= !TS_TSINIT;
+            }
+            if ctrl & TS_TSUPDT != 0 {
+                let digital = ctrl & TS_DGTLBIN != 0;
+                let ns = view.get(TIMNANOU_OFF);
+                self.ptp_update(
+                    view.get(TIMSECU_OFF),
+                    ns & 0x7FFF_FFFF,
+                    ns & 0x8000_0000 != 0,
+                    digital,
+                );
+                ctrl &= !TS_TSUPDT;
+            }
+            // The addend register is live (no shadow), so `ADDREGUP`
+            // completes the moment it is written.
+            ctrl &= !TS_ADDREGUP;
+            view.set(offset, ctrl);
+            return ctrl;
+        }
+        if offset == PMTCTLSTAT_OFF {
+            // Status bits are read-only; the filter pointer is
+            // behavior-side. Whole-word stores additionally service
+            // the pointer reset.
+            let merged = view.merged(offset, val, shift);
+            if shift == 24 && merged & PMT_WUPFRRST != 0 {
+                self.rwuff_ptr = 0;
+            }
+            let word = (merged & PMT_WRITABLE) | (view.get(offset) & !PMT_WRITABLE);
+            view.set(offset, word);
+            return word;
+        }
+        if offset == RWUFF_OFF && shift == 24 {
+            // Sequential bank load: whole-word stores rotate the pointer.
+            let word = view.merged(offset, val, shift);
+            self.rwuff_bank[self.rwuff_ptr as usize] = word;
+            self.rwuff_ptr = (self.rwuff_ptr + 1) & 7;
+            view.set(offset, word);
+            return word;
         }
         let word = view.merged(offset, val, shift);
         view.set(offset, word);
@@ -875,6 +1509,21 @@ impl Emac {
                     tx_poll: false,
                     tx_accum: Vec::new(),
                     tx_cic: 0,
+                    tx_dc: false,
+                    tx_dp: false,
+                    tx_ttse: false,
+                    tx_crcr: false,
+                    tx_vlic: 0,
+                    ts_sec: 0,
+                    ts_nsss: 0,
+                    ts_hword: 0,
+                    ts_acc: 0,
+                    ts_tssovf: false,
+                    pmt_wuprx: false,
+                    pmt_mgkprx: false,
+                    rwuff_bank: [0; 8],
+                    rwuff_ptr: 0,
+                    rwuff_cache: 0,
                     tx_frames: Vec::new(),
                     rx_pending: None,
                     dmaris: 0,
@@ -908,13 +1557,31 @@ impl Peripheral for Emac {
     }
 
     fn read(&mut self, addr: u32) -> Result<u8, BusError> {
+        // The `RWUFF` bank peeks on lane 0 (the staged word feeds
+        // lanes 1-3, so word reads must start at lane 0).
+        if addr & 3 == 0 && addr.wrapping_sub(EMAC_BASE) == RWUFF_OFF {
+            self.inner.with_view(|_, b| {
+                b.rwuff_cache = b.rwuff_bank[b.rwuff_ptr as usize];
+                b.rwuff_ptr = (b.rwuff_ptr + 1) & 7;
+            });
+        }
         let byte = self.inner.read(addr)?;
-        // `RSTONRD` + interrupt-clear fire on the counter's LSB lane,
-        // which `on_read` cannot see (per-byte calls, no lane).
+        // Every other lane-0 side effect returns the word first, then
+        // moves the state (`on_read` sees per-byte calls with no lane):
+        // `RSTONRD` + interrupt-clear on the counters, the PMT wake
+        // flags, and the timestamp overflow latch.
         if addr & 3 == 0 {
             let off = addr.wrapping_sub(EMAC_BASE);
-            self.inner
-                .with_view(|view, b| b.counter_lane0_read(view, off));
+            self.inner.with_view(|view, b| {
+                b.counter_lane0_read(view, off);
+                if off == PMTCTLSTAT_OFF {
+                    b.pmt_wuprx = false;
+                    b.pmt_mgkprx = false;
+                }
+                if off == TIMSTAT_OFF {
+                    b.ts_tssovf = false;
+                }
+            });
         }
         Ok(byte)
     }
@@ -958,7 +1625,7 @@ mod tests {
     const CFG_OFF: u32 = 0x00;
     const ADDR0L_OFF: u32 = 0x44;
 
-    fn emac() -> (Emac, Arc<Mutex<EthMailbox>>) {
+    fn new_emac() -> (Emac, Arc<Mutex<EthMailbox>>) {
         let mb = Arc::new(Mutex::new(EthMailbox::default()));
         (Emac::for_device::<Tm4c129xnczad>(mb.clone()), mb)
     }
@@ -1071,7 +1738,7 @@ mod tests {
     /// `CFG` + MAC address latches; engines report idle and quiet.
     #[test]
     fn config_latches_and_idle() {
-        let (mut emac, _) = emac();
+        let (mut emac, _) = new_emac();
         write_word(&mut emac, CFG_OFF, (1 << 2) | (1 << 3)); // RE + TE.
         assert_eq!(read_word(&mut emac, CFG_OFF) & 0x0C, 0x0C);
         write_word(&mut emac, ADDR0L_OFF, 0x1234_5678);
@@ -1084,7 +1751,7 @@ mod tests {
     /// MII completes instantly; no PHY reads all-ones.
     #[test]
     fn mii_completes() {
-        let (mut emac, _) = emac();
+        let (mut emac, _) = new_emac();
         write_word(&mut emac, MIIADDR_OFF, 0x01); // MIIB + PHY 0/reg 0.
         assert_eq!(read_word(&mut emac, MIIADDR_OFF) & MII_MIIB, 0);
         assert_eq!(read_word(&mut emac, MIIDATA_OFF), 0xFFFF);
@@ -1093,16 +1760,21 @@ mod tests {
     /// TX: descriptor → buffer → ownership home + `TI`, frame observed.
     #[test]
     fn tx_single_desc_flow() {
-        let (mut emac, mb) = emac();
+        let (mut emac, mb) = new_emac();
         write_word(&mut emac, DMAOPMODE_OFF, OP_ST);
         write_word(&mut emac, TXDLADDR_OFF, 0x2000_0000);
         write_word(&mut emac, TXPOLLD_OFF, 0x01);
         emac.tick(1); // Queues the descriptor read.
                       // Descriptor: OWN|LS|FS, TBS1=4, buffer @0x20000100.
-        let desc = [OWN | TDES0_LS | TDES0_FS, 4, 0x2000_0100, 0x2000_0010]
-            .iter()
-            .flat_map(|w| w.to_le_bytes())
-            .collect::<Vec<_>>();
+        let desc = [
+            OWN | TDES0_LS | TDES0_FS | TDES0_DC | TDES0_DP,
+            4,
+            0x2000_0100,
+            0x2000_0010,
+        ]
+        .iter()
+        .flat_map(|w| w.to_le_bytes())
+        .collect::<Vec<_>>();
         seed_result(&mb, desc);
         emac.tick(1); // Consumes desc, queues the buffer read.
         seed_result(&mb, vec![0xDE, 0xAD, 0xBE, 0xEF]);
@@ -1114,7 +1786,7 @@ mod tests {
         // Ownership write-back queued for the bus.
         let ops = &mb.lock().unwrap().ops;
         assert!(ops.iter().any(|op| matches!(op,
-            EthMemOp::Write { addr: 0x2000_0000, bytes } if bytes == &word_le(TDES0_LS | TDES0_FS))));
+            EthMemOp::Write { addr: 0x2000_0000, bytes } if bytes == &word_le(TDES0_LS | TDES0_FS | TDES0_DC | TDES0_DP))));
         // W1C clears.
         write_word(&mut emac, DMARIS_OFF, DMA_TI | DMA_NIS);
         assert_eq!(emac.pending(), 0);
@@ -1123,7 +1795,7 @@ mod tests {
     /// TX with `OWN` clear: spurious poll, nothing moves.
     #[test]
     fn tx_spurious_poll() {
-        let (mut emac, mb) = emac();
+        let (mut emac, mb) = new_emac();
         write_word(&mut emac, DMAOPMODE_OFF, OP_ST);
         write_word(&mut emac, TXDLADDR_OFF, 0x2000_0000);
         write_word(&mut emac, TXPOLLD_OFF, 0x01);
@@ -1137,7 +1809,7 @@ mod tests {
     /// RX: injected frame lands in the owned buffer with `FS`/`LS`/`FL`.
     #[test]
     fn rx_flow() {
-        let (mut emac, mb) = emac();
+        let (mut emac, mb) = new_emac();
         write_word(&mut emac, DMAOPMODE_OFF, OP_SR);
         write_word(&mut emac, RXDLADDR_OFF, 0x2000_1000);
         emac.inject_frame(&[0x01, 0x02, 0x03]);
@@ -1160,7 +1832,7 @@ mod tests {
     /// RX with no owned descriptor drops the frame.
     #[test]
     fn rx_drop_unowned() {
-        let (mut emac, mb) = emac();
+        let (mut emac, mb) = new_emac();
         write_word(&mut emac, DMAOPMODE_OFF, OP_SR);
         write_word(&mut emac, RXDLADDR_OFF, 0x2000_1000);
         emac.inject_frame(&[0x01]);
@@ -1174,12 +1846,12 @@ mod tests {
     /// vector), status clean.
     #[test]
     fn tx_cic1_inserts_ipv4_header() {
-        let (mut emac, mb) = emac();
+        let (mut emac, mb) = new_emac();
         let iph = unhex("4500 003c 1c46 4000 4006 0000 ac10 0a63 ac10 0a0c");
         let out = tx_frame(
             &mut emac,
             &mb,
-            OWN | TDES0_LS | TDES0_FS | (1 << TDES0_CIC_SHIFT),
+            OWN | TDES0_LS | TDES0_FS | TDES0_DC | TDES0_DP | (1 << TDES0_CIC_SHIFT),
             &eth_frame(&iph),
         );
         assert_eq!(&out[14 + 10..14 + 12], &[0xb1, 0xe6]);
@@ -1190,7 +1862,7 @@ mod tests {
     /// (`9d36`/`eead` vectors), status clean.
     #[test]
     fn tx_cic3_tcp_full() {
-        let (mut emac, mb) = emac();
+        let (mut emac, mb) = new_emac();
         let iph = unhex("4500 0028 1c46 4000 4006 0000 c0a8 0001 c0a8 0002");
         let tcp = unhex("0050 1f90 0000 0001 0000 0000 5002 2000 0000 0000");
         let mut payload = iph;
@@ -1198,7 +1870,7 @@ mod tests {
         let out = tx_frame(
             &mut emac,
             &mb,
-            OWN | TDES0_LS | TDES0_FS | (3 << TDES0_CIC_SHIFT),
+            OWN | TDES0_LS | TDES0_FS | TDES0_DC | TDES0_DP | (3 << TDES0_CIC_SHIFT),
             &eth_frame(&payload),
         );
         assert_eq!(&out[14 + 10..14 + 12], &[0x9d, 0x36]);
@@ -1212,7 +1884,7 @@ mod tests {
     /// `6cbb` yields a verifying `0361`.
     #[test]
     fn tx_cic2_folds_input_field() {
-        let (mut emac, mb) = emac();
+        let (mut emac, mb) = new_emac();
         let iph = unhex("4500 0028 1c46 4000 4006 0000 ac10 0a63 ac10 0a0c");
         let tcp = unhex("0050 1f90 0000 0001 0000 0000 5002 2000 6caa 0000");
         let mut payload = iph;
@@ -1220,7 +1892,7 @@ mod tests {
         let out = tx_frame(
             &mut emac,
             &mb,
-            OWN | TDES0_LS | TDES0_FS | (2 << TDES0_CIC_SHIFT),
+            OWN | TDES0_LS | TDES0_FS | TDES0_DC | TDES0_DP | (2 << TDES0_CIC_SHIFT),
             &eth_frame(&payload),
         );
         assert_eq!(&out[14 + 20 + 16..14 + 20 + 18], &[0x03, 0x72]);
@@ -1240,7 +1912,7 @@ mod tests {
     /// Good UDP frame under `IPC`: `(FT=1, no errors)`, `ES` clear.
     #[test]
     fn rx_ipc_good_frame() {
-        let (mut emac, mb) = emac();
+        let (mut emac, mb) = new_emac();
         let mut payload = unhex("4500 0021 1c46 4000 4011 b1f6 ac10 0a63 ac10 0a0c");
         payload.extend_from_slice(&unhex("04d2 162e 000d 3472 6865 6c6c 6f"));
         let st = rx_status(&mut emac, &mb, CFG_IPC, &eth_frame(&payload));
@@ -1255,7 +1927,7 @@ mod tests {
     /// Corrupted payload byte: `(FT=1, payload error)` + `ES`.
     #[test]
     fn rx_ipc_bad_payload() {
-        let (mut emac, mb) = emac();
+        let (mut emac, mb) = new_emac();
         let mut payload = unhex("4500 0021 1c46 4000 4011 b1f6 ac10 0a63 ac10 0a0c");
         payload.extend_from_slice(&unhex("04d2 162e 000d 3472 6865 6c6c 6f"));
         let mut frame = eth_frame(&payload);
@@ -1273,7 +1945,7 @@ mod tests {
     /// (the header-error-only encoding, table-reserved — see docs).
     #[test]
     fn rx_ipc_bad_header() {
-        let (mut emac, mb) = emac();
+        let (mut emac, mb) = new_emac();
         let mut payload = unhex("4500 0021 1c46 4000 4011 0000 ac10 0a63 ac10 0a0c");
         payload.extend_from_slice(&unhex("04d2 162e 000d 3472 6865 6c6c 6f"));
         let st = rx_status(&mut emac, &mb, CFG_IPC, &eth_frame(&payload));
@@ -1286,7 +1958,7 @@ mod tests {
     /// `IPC` clear: no checksum bits at all.
     #[test]
     fn rx_ipc_disabled_is_quiet() {
-        let (mut emac, mb) = emac();
+        let (mut emac, mb) = new_emac();
         let mut payload = unhex("4500 0021 1c46 4000 4011 b1f6 ac10 0a63 ac10 0a0c");
         payload.extend_from_slice(&unhex("04d2 162e 000d 3472 6865 6c6c 6f"));
         let st = rx_status(&mut emac, &mb, 0, &eth_frame(&payload));
@@ -1296,7 +1968,7 @@ mod tests {
     /// Non-IP EtherType: `FT` set, engine bypasses.
     #[test]
     fn rx_non_ip_frame() {
-        let (mut emac, mb) = emac();
+        let (mut emac, mb) = new_emac();
         let mut frame = vec![
             0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0x00, 0xA1, 0x88, 0xB5,
         ];
@@ -1309,11 +1981,11 @@ mod tests {
     /// MMC frame/octet counters move with traffic.
     #[test]
     fn mmc_counts_traffic() {
-        let (mut emac, mb) = emac();
+        let (mut emac, mb) = new_emac();
         tx_frame(
             &mut emac,
             &mb,
-            OWN | TDES0_LS | TDES0_FS,
+            OWN | TDES0_LS | TDES0_FS | TDES0_DC | TDES0_DP,
             &[0xDE, 0xAD, 0xBE, 0xEF],
         );
         assert_eq!(read_word(&mut emac, 0x118), 1, "TXCNTGB");
@@ -1329,11 +2001,11 @@ mod tests {
     /// `CNTRST` / `CNTPRST` / `CNTFREEZ` / `RSTONRD` modes.
     #[test]
     fn mmc_control_modes() {
-        let (mut emac, mb) = emac();
+        let (mut emac, mb) = new_emac();
         tx_frame(
             &mut emac,
             &mb,
-            OWN | TDES0_LS | TDES0_FS,
+            OWN | TDES0_LS | TDES0_FS | TDES0_DC | TDES0_DP,
             &[0xDE, 0xAD, 0xBE, 0xEF],
         );
         assert_eq!(read_word(&mut emac, 0x118), 1);
@@ -1351,10 +2023,20 @@ mod tests {
         assert_eq!(read_word(&mut emac, 0x118), 0xFFFF_FFF0);
         // Freeze stops counting; unfreeze resumes.
         write_word(&mut emac, MMCCTRL_OFF, MMC_CNTRST | MMC_CNTFREEZ);
-        tx_frame(&mut emac, &mb, OWN | TDES0_LS | TDES0_FS, &[0x01, 0x02]);
+        tx_frame(
+            &mut emac,
+            &mb,
+            OWN | TDES0_LS | TDES0_FS | TDES0_DC | TDES0_DP,
+            &[0x01, 0x02],
+        );
         assert_eq!(read_word(&mut emac, 0x118), 0, "frozen");
         write_word(&mut emac, MMCCTRL_OFF, 0);
-        tx_frame(&mut emac, &mb, OWN | TDES0_LS | TDES0_FS, &[0x01, 0x02]);
+        tx_frame(
+            &mut emac,
+            &mb,
+            OWN | TDES0_LS | TDES0_FS | TDES0_DC | TDES0_DP,
+            &[0x01, 0x02],
+        );
         assert_eq!(read_word(&mut emac, 0x118), 1, "resumed");
         // Reset-on-read zeroes the counter just read.
         write_word(&mut emac, MMCCTRL_OFF, MMC_RSTONRD);
@@ -1365,14 +2047,14 @@ mod tests {
     /// Half/full interrupts, counter-read clear, masks, `EMACRIS`.
     #[test]
     fn mmc_interrupts_and_masks() {
-        let (mut emac, mb) = emac();
+        let (mut emac, mb) = new_emac();
         // Preset TXCNTGB almost-full, then one frame crosses max.
         write_word(&mut emac, MMCCTRL_OFF, MMC_CNTPRST | MMC_CNTPRSTLVL);
         assert_eq!(read_word(&mut emac, MMCTXRIS_OFF), 0);
         tx_frame(
             &mut emac,
             &mb,
-            OWN | TDES0_LS | TDES0_FS,
+            OWN | TDES0_LS | TDES0_FS | TDES0_DC | TDES0_DP,
             &[
                 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E,
                 0x0F, 0x10,
@@ -1398,7 +2080,7 @@ mod tests {
         tx_frame(
             &mut emac,
             &mb,
-            OWN | TDES0_LS | TDES0_FS,
+            OWN | TDES0_LS | TDES0_FS | TDES0_DC | TDES0_DP,
             &[
                 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E,
                 0x0F, 0x10,
@@ -1416,18 +2098,500 @@ mod tests {
     /// TX version mismatch flags `IHE` + `ES` in the write-back.
     #[test]
     fn tx_ihe_on_version_mismatch() {
-        let (mut emac, mb) = emac();
+        let (mut emac, mb) = new_emac();
         let mut bad = vec![0x60, 0x00, 0x00, 0x00];
         bad.resize(20, 0);
         tx_frame(
             &mut emac,
             &mb,
-            OWN | TDES0_LS | TDES0_FS | (1 << TDES0_CIC_SHIFT),
+            OWN | TDES0_LS | TDES0_FS | TDES0_DC | TDES0_DP | (1 << TDES0_CIC_SHIFT),
             &eth_frame(&bad),
         );
         assert_eq!(
             tx_status_wb(&mb) & (TDES0_IHE | TDES0_ES),
             TDES0_IHE | TDES0_ES
         );
+    }
+
+    /// Scan the mailbox for the last 4-byte write to `addr`.
+    fn desc_word(mb: &Arc<Mutex<EthMailbox>>, addr: u32) -> Option<u32> {
+        let ops = &mb.lock().unwrap().ops;
+        for op in ops.iter().rev() {
+            if let EthMemOp::Write { addr: a, bytes } = op {
+                if *a == addr && bytes.len() == 4 {
+                    return Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]));
+                }
+            }
+        }
+        None
+    }
+
+    /// Frozen oracle vectors (`/tmp/opencode/emac_vecs.json`): IEEE
+    /// CRC-32 check `cbf43926`, 47 B UDP frame append `ad14391b`,
+    /// 43 B prefix replace `0671fdb2`.
+    const UDP47: &str = "0011 2233 4455 6677 8899 00A1 0800 4500 0021 1c46 4000 4011 0000 ac10 0a63 ac10 0a0c 04d2 162e 000d 0000 6865 6c6c 6f";
+    /// 64 B sibling (`/tmp/opencode/emac_vecs.json`): append `fb445ca4`,
+    /// replace-over-prefix `6ec6a5e0`.
+    const UDP64: &str = "0011 2233 4455 6677 8899 00A1 0800 4500 0032 1c46 4000 4011 0000 ac10 0a63 ac10 0a0c 04d2 162e 001e 0000 6865 6c6c 6f00 1122 3344 5566 7788 99aa bbcc ddee ff00";
+    /// UDP frame with valid checksums (for snapshot-absence negatives).
+    const UDPGOOD: &str = "0011 2233 4455 6677 8899 00A1 0800 4500 0021 1c46 4000 4011 b1f6 ac10 0a63 ac10 0a0c 04d2 162e 000d 3472 6865 6c6c 6f";
+
+    #[test]
+    fn crc32_unit_vectors() {
+        assert_eq!(crc32_ieee(b"123456789"), 0xcbf4_3926);
+        assert_eq!(crc32_ieee(&unhex(UDP47)), 0xad14_391b);
+        let f = unhex(UDP47);
+        assert_eq!(crc32_ieee(&f[..43]), 0x0671_fdb2);
+    }
+
+    /// TX `DC=0` appends the computed FCS (`ad14391b`, big-endian).
+    #[test]
+    fn tx_crcr_append() {
+        let (mut emac, mb) = new_emac();
+        let frame = unhex(UDP64);
+        let out = tx_frame(&mut emac, &mb, OWN | TDES0_LS | TDES0_FS, &frame);
+        assert_eq!(out.len(), 68);
+        assert_eq!(&out[64..68], &[0xfb, 0x44, 0x5c, 0xa4]);
+        assert_eq!(tx_status_wb(&mb) & (TDES0_IHE | TDES0_ES), 0);
+    }
+
+    /// TX `DC=1` + `CRCR` replaces the trailing four bytes (`0671fdb2`).
+    #[test]
+    fn tx_crcr_replace() {
+        let (mut emac, mb) = new_emac();
+        let frame = unhex(UDP64);
+        let out = tx_frame(
+            &mut emac,
+            &mb,
+            OWN | TDES0_LS | TDES0_FS | TDES0_DC | TDES0_DP | TDES0_CRCR,
+            &frame,
+        );
+        assert_eq!(out.len(), 64);
+        assert_eq!(&out[60..64], &[0x6e, 0xc6, 0xa5, 0xe0]);
+    }
+
+    /// TX `DP=0` pads runts to 60 bytes before the FCS decision.
+    #[test]
+    fn tx_dp_pads_runt() {
+        let (mut emac, mb) = new_emac();
+        // Pad only (`DC=1`, no replace): 4 bytes -> 60.
+        let out = tx_frame(
+            &mut emac,
+            &mb,
+            OWN | TDES0_LS | TDES0_FS | TDES0_DC,
+            &[0xDE, 0xAD, 0xBE, 0xEF],
+        );
+        assert_eq!(out.len(), 60);
+        // Pad + append (`DC=0`): 60 + 4 FCS, trailer is the CRC of the
+        // padded prefix.
+        let (mut emac2, mb2) = new_emac();
+        let out = tx_frame(&mut emac2, &mb2, OWN | TDES0_LS | TDES0_FS, &[0x01, 0x02]);
+        assert_eq!(out.len(), 64);
+        let mut prefix = vec![0x01, 0x02];
+        prefix.resize(60, 0);
+        assert_eq!(&out[60..64], &crc32_ieee(&prefix).to_be_bytes());
+    }
+
+    /// TX `VLIC=2` inserts `EMACVLNINCREP.VLT` after the source address.
+    #[test]
+    fn tx_vlan_insert() {
+        let (mut emac, mb) = new_emac();
+        write_word(&mut emac, VLNINCREP_OFF, 0x0064);
+        let out = tx_frame(
+            &mut emac,
+            &mb,
+            OWN | TDES0_LS | TDES0_FS | TDES0_DC | TDES0_DP | (2 << TDES0_VLIC_SHIFT),
+            &unhex(UDP47),
+        );
+        let mut expect = unhex("0011 2233 4455 6677 8899 00A1 8100 0064");
+        expect.extend_from_slice(&unhex(
+            "0800 4500 0021 1c46 4000 4011 0000 ac10 0a63 ac10 0a0c 04d2 162e 000d 0000 6865 6c6c 6f",
+        ));
+        assert_eq!(out, expect);
+        assert_ne!(tx_status_wb(&mb) & TDES0_VF, 0, "VLAN frame status");
+    }
+
+    /// TX `VLIC=1` strips a present tag; `VLIC=3` replaces it.
+    #[test]
+    fn tx_vlan_strip_replace() {
+        let tagged = unhex(
+            "0011 2233 4455 6677 8899 00A1 8100 000A 0800 4500 0021 1c46 4000 4011 0000 ac10 0a63 ac10 0a0c 04d2 162e 000d 0000 6865 6c6c 6f",
+        );
+        let (mut emac, mb) = new_emac();
+        let out = tx_frame(
+            &mut emac,
+            &mb,
+            OWN | TDES0_LS | TDES0_FS | TDES0_DC | TDES0_DP | (1 << TDES0_VLIC_SHIFT),
+            &tagged,
+        );
+        assert_eq!(out, unhex(UDP47));
+        assert_eq!(tx_status_wb(&mb) & TDES0_VF, 0, "no tag left");
+        let (mut emac2, mb2) = new_emac();
+        write_word(&mut emac2, VLNINCREP_OFF, 0x0064);
+        let out = tx_frame(
+            &mut emac2,
+            &mb2,
+            OWN | TDES0_LS | TDES0_FS | TDES0_DC | TDES0_DP | (3 << TDES0_VLIC_SHIFT),
+            &tagged,
+        );
+        let mut expect = unhex("0011 2233 4455 6677 8899 00A1 8100 0064");
+        expect.extend_from_slice(&unhex(
+            "0800 4500 0021 1c46 4000 4011 0000 ac10 0a63 ac10 0a0c 04d2 162e 000d 0000 6865 6c6c 6f",
+        ));
+        assert_eq!(out, expect);
+        assert_ne!(tx_status_wb(&mb2) & TDES0_VF, 0);
+    }
+
+    /// Register `VLC` wins when `VLP` is set, even against the descriptor.
+    #[test]
+    fn tx_vlan_register_override() {
+        let tagged = unhex(
+            "0011 2233 4455 6677 8899 00A1 8100 000A 0800 4500 0021 1c46 4000 4011 0000 ac10 0a63 ac10 0a0c",
+        );
+        // `VLC=1` (strip) overrides descriptor `VLIC=2` (insert).
+        let (mut emac, mb) = new_emac();
+        write_word(&mut emac, VLNINCREP_OFF, VLN_VLP | (1 << VLN_VLC_SHIFT));
+        let out = tx_frame(
+            &mut emac,
+            &mb,
+            OWN | TDES0_LS | TDES0_FS | TDES0_DC | TDES0_DP | (2 << TDES0_VLIC_SHIFT),
+            &tagged,
+        );
+        assert_eq!(&out[12..14], &[0x08, 0x00], "tag stripped");
+        // `VLC=0` with `VLP` set means no-op despite descriptor `VLIC=2`.
+        let (mut emac2, mb2) = new_emac();
+        write_word(&mut emac2, VLNINCREP_OFF, VLN_VLP);
+        let out = tx_frame(
+            &mut emac2,
+            &mb2,
+            OWN | TDES0_LS | TDES0_FS | TDES0_DC | TDES0_DP | (2 << TDES0_VLIC_SHIFT),
+            &unhex(UDP47),
+        );
+        assert_eq!(out, unhex(UDP47));
+    }
+
+    /// RX tags the VLAN status bit on tag presence.
+    #[test]
+    fn rx_vlan_bit() {
+        let (mut emac, mb) = new_emac();
+        let tagged = unhex("0011 2233 4455 6677 8899 00A1 8100 000A 0800 4500 0021");
+        let st = rx_status(&mut emac, &mb, 0, &tagged);
+        assert_ne!(st & RDES0_VLAN, 0);
+        let (mut emac2, mb2) = new_emac();
+        let st = rx_status(&mut emac2, &mb2, 0, &unhex(UDP47));
+        assert_eq!(st & RDES0_VLAN, 0);
+    }
+
+    /// PTP `TSINIT`/`TSUPDT` program the time; command bits self-clear.
+    #[test]
+    fn ptp_init_update() {
+        let (mut emac, _) = new_emac();
+        write_word(&mut emac, TIMSECU_OFF, 100);
+        write_word(&mut emac, TIMNANOU_OFF, 500);
+        write_word(&mut emac, TIMSTCTRL_OFF, TS_TSEN | TS_DGTLBIN | TS_TSINIT);
+        assert_eq!(read_word(&mut emac, TIMSEC_OFF), 100);
+        assert_eq!(read_word(&mut emac, TIMNANO_OFF), 500);
+        assert_eq!(read_word(&mut emac, TIMSTCTRL_OFF) & TS_TSINIT, 0);
+        // Add 2 s + 600 ns.
+        write_word(&mut emac, TIMSECU_OFF, 2);
+        write_word(&mut emac, TIMNANOU_OFF, 600);
+        write_word(&mut emac, TIMSTCTRL_OFF, TS_TSEN | TS_DGTLBIN | TS_TSUPDT);
+        assert_eq!(read_word(&mut emac, TIMSEC_OFF), 102);
+        assert_eq!(read_word(&mut emac, TIMNANO_OFF), 1100);
+        // Subtract 3 s (`ADDSUB`): borrows through seconds.
+        write_word(&mut emac, TIMSECU_OFF, 3);
+        write_word(&mut emac, TIMNANOU_OFF, 0x8000_0000 | 100);
+        write_word(&mut emac, TIMSTCTRL_OFF, TS_TSEN | TS_DGTLBIN | TS_TSUPDT);
+        assert_eq!(read_word(&mut emac, TIMSEC_OFF), 99);
+        assert_eq!(read_word(&mut emac, TIMNANO_OFF), 1000);
+    }
+
+    /// PTP coarse advance + digital rollover at 1e9 ns.
+    #[test]
+    fn ptp_coarse_rollover() {
+        let (mut emac, _) = new_emac();
+        write_word(&mut emac, SUBSECINC_OFF, 40);
+        write_word(&mut emac, TIMSECU_OFF, 0);
+        write_word(&mut emac, TIMNANOU_OFF, 999_999_990);
+        write_word(&mut emac, TIMSTCTRL_OFF, TS_TSEN | TS_DGTLBIN | TS_TSINIT);
+        emac.tick(1);
+        assert_eq!(read_word(&mut emac, TIMSEC_OFF), 1);
+        assert_eq!(read_word(&mut emac, TIMNANO_OFF), 30);
+    }
+
+    /// PTP binary rollover wraps at 2^31.
+    #[test]
+    fn ptp_binary_rollover() {
+        let (mut emac, _) = new_emac();
+        write_word(&mut emac, SUBSECINC_OFF, 0x20);
+        write_word(&mut emac, TIMSECU_OFF, 5);
+        write_word(&mut emac, TIMNANOU_OFF, 0x7FFF_FFF0);
+        write_word(&mut emac, TIMSTCTRL_OFF, TS_TSEN | TS_TSINIT);
+        emac.tick(1);
+        assert_eq!(read_word(&mut emac, TIMSEC_OFF), 6);
+        assert_eq!(read_word(&mut emac, TIMNANO_OFF), 0x10);
+    }
+
+    /// PTP fine correction: `TSAR=2^31` overflows every second tick.
+    #[test]
+    fn ptp_fine_advance() {
+        let (mut emac, _) = new_emac();
+        write_word(&mut emac, SUBSECINC_OFF, 40);
+        write_word(&mut emac, TIMADD_OFF, 0x8000_0000);
+        write_word(&mut emac, TIMSTCTRL_OFF, TS_TSEN | TS_DGTLBIN | TS_TSFCUPDT);
+        emac.tick(1);
+        assert_eq!(read_word(&mut emac, TIMNANO_OFF), 0);
+        emac.tick(1);
+        assert_eq!(read_word(&mut emac, TIMNANO_OFF), 40);
+    }
+
+    /// PTP target: `INTTRIG` fires `TT` + `EMACRIS.TS` once at the mark.
+    #[test]
+    fn ptp_target_interrupt() {
+        let (mut emac, _) = new_emac();
+        write_word(&mut emac, SUBSECINC_OFF, 40);
+        write_word(&mut emac, TIMSECU_OFF, 9);
+        write_word(&mut emac, TIMNANOU_OFF, 999_999_999);
+        write_word(&mut emac, TIMSTCTRL_OFF, TS_TSEN | TS_DGTLBIN | TS_TSINIT);
+        write_word(&mut emac, TARGSEC_OFF, 10);
+        write_word(&mut emac, TARGNANO_OFF, 0);
+        write_word(&mut emac, TIMSTCTRL_OFF, TS_TSEN | TS_DGTLBIN | TS_INTTRIG);
+        emac.tick(1);
+        assert_eq!(read_word(&mut emac, TIMSTCTRL_OFF) & TS_INTTRIG, 0);
+        assert_ne!(read_word(&mut emac, DMARIS_OFF) & DMA_TT, 0);
+        assert_ne!(read_word(&mut emac, EMACRIS_OFF) & RIS_TS, 0);
+        assert_ne!(read_word(&mut emac, TIMSTAT_OFF) & TIM_TSTARGT, 0);
+        assert_ne!(emac.pending(), 0);
+        write_word(&mut emac, DMARIS_OFF, DMA_TT);
+        assert_eq!(read_word(&mut emac, EMACRIS_OFF) & RIS_TS, 0);
+    }
+
+    /// TX `TTSE` captures the time into `TDES6/7` with `TTSS`.
+    #[test]
+    fn tx_ttse_snapshot() {
+        let (mut emac, mb) = new_emac();
+        write_word(&mut emac, TIMSECU_OFF, 7);
+        write_word(&mut emac, TIMNANOU_OFF, 123);
+        write_word(&mut emac, TIMSTCTRL_OFF, TS_TSEN | TS_DGTLBIN | TS_TSINIT);
+        let frame = unhex(UDP47);
+        tx_frame(
+            &mut emac,
+            &mb,
+            OWN | TDES0_LS | TDES0_FS | TDES0_DC | TDES0_DP | TDES0_TTSE,
+            &frame,
+        );
+        assert_eq!(desc_word(&mb, 0x2000_0018), Some(123));
+        assert_eq!(desc_word(&mb, 0x2000_001C), Some(7));
+        assert_ne!(tx_status_wb(&mb) & TDES0_TTSS, 0);
+        // Without `TTSE` no timestamp words land.
+        let (mut emac2, mb2) = new_emac();
+        write_word(&mut emac2, TIMSTCTRL_OFF, TS_TSEN);
+        tx_frame(
+            &mut emac2,
+            &mb2,
+            OWN | TDES0_LS | TDES0_FS | TDES0_DC | TDES0_DP,
+            &frame,
+        );
+        assert_eq!(desc_word(&mb2, 0x2000_0018), None);
+        assert_eq!(tx_status_wb(&mb2) & TDES0_TTSS, 0);
+    }
+
+    /// RX `ALLF` snapshots every frame with the bypassed-checksum mark.
+    #[test]
+    fn rx_allf_snapshot() {
+        let (mut emac, mb) = new_emac();
+        write_word(&mut emac, TIMSECU_OFF, 3);
+        write_word(&mut emac, TIMNANOU_OFF, 9);
+        write_word(
+            &mut emac,
+            TIMSTCTRL_OFF,
+            TS_TSEN | TS_DGTLBIN | TS_TSINIT | TS_ALLF,
+        );
+        let st = rx_status(&mut emac, &mb, 0, &[0x01, 0x02, 0x03]);
+        assert_ne!(st & RDES0_IPCERR, 0, "timestamp-available bit");
+        assert_eq!(desc_word(&mb, 0x2000_1018), Some(9));
+        assert_eq!(desc_word(&mb, 0x2000_101C), Some(3));
+        assert_eq!(desc_word(&mb, 0x2000_1010), Some(RDES4_BYP));
+    }
+
+    /// PTP Sync v2 over IPv4/UDP (frozen `ptp_sync_hex` shape): selective
+    /// snapshot fills `RDES4` (version + IPv4 + `Delay_Req`-class message
+    /// fields); the zeroed IP checksum mirrors into `HERR`.
+    fn ptp_sync_frame() -> Vec<u8> {
+        let mut f = vec![
+            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0x00, 0xA1, 0x08, 0x00,
+        ];
+        f.extend_from_slice(&unhex("4500 0048 0000 4000 4011 0000 c0a8 0001 e000 0000"));
+        f.extend_from_slice(&unhex("013F 013F 0034 0000"));
+        f.extend_from_slice(&[0x01, 0x02]);
+        f.extend_from_slice(&[0u8; 42]);
+        f
+    }
+
+    #[test]
+    fn rx_ptp_selective_snapshot() {
+        let (mut emac, mb) = new_emac();
+        write_word(
+            &mut emac,
+            TIMSTCTRL_OFF,
+            TS_TSEN | TS_DGTLBIN | TS_PTPVER2 | TS_PTPIPV4,
+        );
+        let st = rx_status(&mut emac, &mb, CFG_IPC, &ptp_sync_frame());
+        assert_ne!(st & RDES0_IPCERR, 0, "timestamp-available");
+        // `VER` + IPv4 + message `0x1` + header-error mirror.
+        assert_eq!(
+            desc_word(&mb, 0x2000_1010),
+            Some(RDES4_VER | RDES4_IPV4 | (0x1 << RDES4_MSG_SHIFT) | RDES4_HERR)
+        );
+        // A non-PTP frame takes no snapshot.
+        let (mut emac2, mb2) = new_emac();
+        write_word(
+            &mut emac2,
+            TIMSTCTRL_OFF,
+            TS_TSEN | TS_DGTLBIN | TS_PTPVER2 | TS_PTPIPV4,
+        );
+        let st = rx_status(&mut emac2, &mb2, CFG_IPC, &unhex(UDPGOOD));
+        assert_eq!(st & (RDES0_IPCERR | RDES0_ES), 0);
+        assert_eq!(desc_word(&mb2, 0x2000_1018), None);
+        // Transport disabled: the same Sync frame is ignored.
+        let (mut emac3, mb3) = new_emac();
+        write_word(&mut emac3, TIMSTCTRL_OFF, TS_TSEN | TS_DGTLBIN | TS_PTPVER2);
+        // Transport disabled: the same Sync frame takes no snapshot
+        // (its zeroed IP checksum still flags `HERR`, which is not one).
+        rx_status(&mut emac3, &mb3, CFG_IPC, &ptp_sync_frame());
+        assert_eq!(desc_word(&mb3, 0x2000_1018), None);
+    }
+
+    /// Magic-packet wake: pattern match sets `MGKPRX`, self-clears
+    /// `PWRDWN`, raises `DMARIS.PMT`; the register read clears the flags.
+    fn pmt_rx_flow(emac: &mut Emac, mb: &Arc<Mutex<EthMailbox>>, frame: &[u8]) {
+        write_word(emac, DMAOPMODE_OFF, OP_SR);
+        write_word(emac, RXDLADDR_OFF, 0x2000_1000);
+        emac.inject_frame(frame);
+        emac.tick(1);
+        let desc = [OWN, 1536, 0x2000_0200, 0x2000_1010]
+            .iter()
+            .flat_map(|w| w.to_le_bytes())
+            .collect::<Vec<_>>();
+        seed_result(mb, desc);
+        emac.tick(1);
+    }
+
+    fn magic_frame() -> Vec<u8> {
+        let mac = [0x02, 0x00, 0x5E, 0xAA, 0xBB, 0xCC];
+        let mut f = vec![0xFF; 6];
+        f.extend_from_slice(&[0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+        f.extend_from_slice(&[0xFF; 6]);
+        for _ in 0..16 {
+            f.extend_from_slice(&mac);
+        }
+        f
+    }
+
+    #[test]
+    fn magic_packet_wakes() {
+        let (mut emac, mb) = new_emac();
+        write_word(&mut emac, ADDR0L_OFF, 0xAA5E_0002);
+        write_word(&mut emac, ADDR0H_OFF, 0xCCBB);
+        write_word(&mut emac, PMTCTLSTAT_OFF, PMT_PWRDWN | PMT_MGKPKTEN);
+        pmt_rx_flow(&mut emac, &mb, &magic_frame());
+        assert_ne!(read_word(&mut emac, DMARIS_OFF) & DMA_PMT, 0);
+        assert_ne!(read_word(&mut emac, EMACRIS_OFF) & RIS_PMT, 0);
+        assert_ne!(emac.pending(), 0);
+        assert_eq!(
+            read_word(&mut emac, DMARIS_OFF) & DMA_RI,
+            0,
+            "wake frame not delivered"
+        );
+        // The first read shows the flag with `PWRDWN` self-cleared;
+        // the second read shows the read-clear.
+        let pmt = read_word(&mut emac, PMTCTLSTAT_OFF);
+        assert_eq!(pmt & PMT_PWRDWN, 0, "wake self-cleared power-down");
+        assert_ne!(pmt & PMT_MGKPRX, 0, "magic flag visible once");
+        assert_eq!(
+            read_word(&mut emac, PMTCTLSTAT_OFF) & (PMT_MGKPRX | PMT_WUPRX),
+            0,
+            "read-clear"
+        );
+        assert_eq!(read_word(&mut emac, EMACRIS_OFF) & RIS_PMT, 0);
+        write_word(&mut emac, DMARIS_OFF, DMA_PMT);
+        assert_eq!(emac.pending(), 0);
+    }
+
+    /// A broken repetition sequence is not magic: still powered down.
+    #[test]
+    fn magic_packet_broken_stays_down() {
+        let (mut emac, mb) = new_emac();
+        write_word(&mut emac, ADDR0L_OFF, 0xAA5E_0002);
+        write_word(&mut emac, ADDR0H_OFF, 0xCCBB);
+        write_word(&mut emac, PMTCTLSTAT_OFF, PMT_PWRDWN | PMT_MGKPKTEN);
+        let mut bad = magic_frame();
+        bad[30] ^= 0xFF;
+        pmt_rx_flow(&mut emac, &mb, &bad);
+        assert_ne!(
+            read_word(&mut emac, PMTCTLSTAT_OFF) & PMT_PWRDWN,
+            0,
+            "still powered down"
+        );
+        assert_eq!(read_word(&mut emac, DMARIS_OFF) & (DMA_PMT | DMA_RI), 0);
+        assert_eq!(emac.pending(), 0);
+    }
+
+    /// Global-unicast wake fires `WUPRX` on our address.
+    #[test]
+    fn glblucast_wakes() {
+        let (mut emac, mb) = new_emac();
+        write_word(&mut emac, ADDR0L_OFF, 0xAA5E_0002);
+        write_word(&mut emac, ADDR0H_OFF, 0xCCBB);
+        write_word(&mut emac, PMTCTLSTAT_OFF, PMT_PWRDWN | PMT_GLBLUCAST);
+        let mut f = vec![
+            0x02, 0x00, 0x5E, 0xAA, 0xBB, 0xCC, 0x66, 0x77, 0x88, 0x99, 0x00, 0xA1,
+        ];
+        f.extend_from_slice(&[0x08, 0x00, 0x45, 0x00]);
+        pmt_rx_flow(&mut emac, &mb, &f);
+        assert_ne!(read_word(&mut emac, EMACRIS_OFF) & RIS_PMT, 0);
+        let pmt = read_word(&mut emac, PMTCTLSTAT_OFF);
+        assert_eq!(pmt & PMT_PWRDWN, 0, "woke");
+        assert_ne!(pmt & PMT_WUPRX, 0, "unicast flag visible once");
+        assert_eq!(
+            read_word(&mut emac, PMTCTLSTAT_OFF) & PMT_WUPRX,
+            0,
+            "read-clear"
+        );
+    }
+
+    /// Power-down with no wake enables drops frames silently.
+    #[test]
+    fn powerdown_drops_quiet() {
+        let (mut emac, mb) = new_emac();
+        write_word(&mut emac, PMTCTLSTAT_OFF, PMT_PWRDWN);
+        pmt_rx_flow(&mut emac, &mb, &[0x01, 0x02, 0x03]);
+        assert_eq!(read_word(&mut emac, DMARIS_OFF) & (DMA_PMT | DMA_RI), 0);
+        assert_ne!(
+            read_word(&mut emac, PMTCTLSTAT_OFF) & PMT_PWRDWN,
+            0,
+            "still down"
+        );
+    }
+
+    /// `RWUFF` bank rotates on whole-word access; the pointer reset works.
+    #[test]
+    fn rwuff_bank_mechanics() {
+        let (mut emac, _) = new_emac();
+        write_word(&mut emac, RWUFF_OFF, 0x1111_1111);
+        write_word(&mut emac, RWUFF_OFF, 0x2222_2222);
+        write_word(&mut emac, RWUFF_OFF, 0x3333_3333);
+        assert_eq!(
+            read_word(&mut emac, PMTCTLSTAT_OFF) >> PMT_RWKPTR_SHIFT & 7,
+            3
+        );
+        write_word(&mut emac, PMTCTLSTAT_OFF, PMT_WUPFRRST);
+        assert_eq!(
+            read_word(&mut emac, PMTCTLSTAT_OFF) >> PMT_RWKPTR_SHIFT & 7,
+            0
+        );
+        assert_eq!(read_word(&mut emac, RWUFF_OFF), 0x1111_1111);
+        assert_eq!(read_word(&mut emac, RWUFF_OFF), 0x2222_2222);
+        assert_eq!(read_word(&mut emac, RWUFF_OFF), 0x3333_3333);
     }
 }

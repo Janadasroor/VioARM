@@ -47,7 +47,7 @@ fn emac_tx_walks_the_bus() {
     // Frame bytes in SRAM.
     ww(mem, BUF, 0xBEAD_DEAD);
     // Descriptor: OWN|LS|FS, TBS1=4, buffer, ring-next.
-    ww(mem, DESC, 0xB000_0000);
+    ww(mem, DESC, 0xBC00_0000);
     ww(mem, DESC + 4, 4);
     ww(mem, DESC + 8, BUF);
     ww(mem, DESC + 12, DESC);
@@ -89,7 +89,7 @@ fn tx_with_cic(mem: &mut board::BoardMemory, cic: u32, frame: &[u8]) -> u32 {
             u32::from_le_bytes([w[0], w[1], w[2], w[3]]),
         );
     }
-    ww(mem, DESC, 0xB000_0000 | (cic << CIC_SHIFT));
+    ww(mem, DESC, 0xBC00_0000 | (cic << CIC_SHIFT));
     ww(mem, DESC + 4, frame.len() as u32);
     ww(mem, DESC + 8, BUF);
     ww(mem, DESC + 12, DESC);
@@ -121,4 +121,27 @@ fn emac_tx_bad_version_flags_ihe() {
     frame[14] = 0x60; // EtherType says IPv4, version says otherwise.
     let status = tx_with_cic(mem, 1, &frame);
     assert_eq!(status & (IHE | ES), IHE | ES);
+}
+
+/// Default FCS path on real SRAM: `DC=0`/`DP=0` pads the 4-byte buffer
+/// to 60 and appends the CRC — 64 octets counted, status clean.
+#[test]
+fn emac_tx_crc_append_counted() {
+    let mut m = Machine::armv7m(board::tm4c129xnczad());
+    let mem = m.core.mem();
+    ww(mem, BUF, 0xBEAD_DEAD);
+    ww(mem, DESC, 0xB000_0000); // OWN|LS|FS, DC=0 appends, DP=0 pads.
+    ww(mem, DESC + 4, 4);
+    ww(mem, DESC + 8, BUF);
+    ww(mem, DESC + 12, DESC);
+    ww(mem, EMAC0 + DMAOPMODE, ST);
+    ww(mem, EMAC0 + TXDLADDR, DESC);
+    ww(mem, EMAC0 + TXPOLLD, 0x01);
+    for _ in 0..20 {
+        mem.tick_devices(1);
+    }
+    assert_eq!(rw(mem, EMAC0 + DMARIS) & TI, TI, "transmit completes");
+    assert_eq!(rw(mem, DESC) & (IHE | ES), 0, "engine accepted the frame");
+    assert_eq!(rw(mem, EMAC0 + TXCNTGB), 1, "frame counted");
+    assert_eq!(rw(mem, EMAC0 + TXOCTCNTG), 64, "pad + FCS counted");
 }
