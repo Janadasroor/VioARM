@@ -164,11 +164,18 @@ stays latch (zero-correct: no faults occur in simulation).
 
 ## Acceptance gate (definition of done)
 
-- [ ] TM4C_DFP in `fetch_packs.py`, hash-verified, PROVENANCE row added.
-- [ ] TM4C123x board: audit zero latch, closeout proofs green.
-- [ ] TM4C129x board: audit zero latch, closeout proofs green.
-- [ ] CoreMark/Dhrystone pass on at least one Tiva board (T3).
-- [ ] Full suite green + kings CI extended; trust-scope + boards docs updated.
+Closed 2026-09-24 as `v1.11.0` (`CHANGELOG.md` TI entries drained into
+the release). `UDMA`/`SYSEXC` latch by standing decision on every Tiva
+board — a real μDMA engine needs bus-master reads (behaviors own their
+window only) and no faults occur in simulation — so "zero latch" below
+means zero *undecided* latch.
+
+- [x] TM4C_DFP in `fetch_packs.py`, hash-verified, PROVENANCE row added.
+- [x] TM4C123x board: audit 70/72 behavioral, closeout proofs green.
+- [x] TM4C129x board: audit 70/72 behavioral, closeout proofs green.
+- [x] CoreMark/Dhrystone pass on Tiva boards (T3): all five boards,
+  tick-identical ELFs.
+- [x] Full suite green + kings CI extended; trust-scope + boards docs updated.
 
 ## Estimates (Fermi, one focused engineer)
 

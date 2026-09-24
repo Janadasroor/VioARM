@@ -3,8 +3,8 @@
 Install layout for hosts embedding VioARM through the C ABI:
 ```
 <prefix>/include/vioarm_cosim.h
-<prefix>/lib/libvioarm_cosim.so.1.10.0   (cdylib; soname `libvioarm_cosim.so.1`)
-<prefix>/lib/libvioarm_cosim.so.1  ->  libvioarm_cosim.so.1.10.0
+<prefix>/lib/libvioarm_cosim.so.1.11.0   (cdylib; soname `libvioarm_cosim.so.1`)
+<prefix>/lib/libvioarm_cosim.so.1  ->  libvioarm_cosim.so.1.11.0
 <prefix>/lib/libvioarm_cosim.so    ->  libvioarm_cosim.so.1
 <prefix>/lib/libvioarm_cosim.a                       (staticlib)
 <prefix>/lib/pkgconfig/vioarm-cosim.pc
