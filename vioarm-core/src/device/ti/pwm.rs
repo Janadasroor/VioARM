@@ -28,7 +28,7 @@ use std::sync::{Arc, Mutex};
 // Module offsets (in the SVD table).
 const PWMENABLE_OFF: u32 = 0x008;
 const PWMINVERT_OFF: u32 = 0x00C;
-// Generator block stride and field offsets (datasheet Table 20-7).
+// Generator block stride and field offsets (datasheet Table 20-2 p1240).
 const GEN_STRIDE: u32 = 0x040;
 const GEN_BASE: u32 = 0x040;
 const GCTL_OFF: u32 = 0x00;

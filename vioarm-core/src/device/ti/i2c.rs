@@ -2,10 +2,12 @@
 //!
 //! Master transmit/receive follows the TM4C123GH6PM datasheet (SPMS376E
 //! §16): `MSA` address + `R/S`, `MCS` Table 16-5 command decoding
-//! (`RUN`/`START`/`STOP`/`ACK`), instant-completion status (`IDLE`,
-//! `ADRACK`/`DATACK`/`ERROR`, `BUSBSY`), `MDR` data, `MTPR` period math
-//! (`SCL = SysClk / (20 × (1+TPR))` standard mode), `MIMR`/`MRIS`/`MMIS`
-//! with `MICR` W1C clear, `MCR.MFE` gating.
+//! (`RUN`/`START`/`STOP`/`ACK`) with Illegal/NOP encodings ignored
+//! (p1023-1024, e.g. Idle `R/S=1 ACK=1 STOP=1 START=1 RUN=1` Illegal,
+//! Master-Rx `ACK=1 STOP=1 START=0 RUN=1` Illegal), instant-completion
+//! status (`IDLE`, `ADRACK`/`DATACK`/`ERROR`, `BUSBSY`), `MDR` data,
+//! `MTPR` period math (`SCL = SysClk / (20 × (1+TPR))` standard mode),
+//! `MIMR`/`MRIS`/`MMIS` with `MICR` W1C clear, `MCR.MFE` gating.
 //!
 //! Like the repo's other serials, transfers complete synchronously on the
 //! `MCS` write — no SCL timing is modeled (`BUSY` reads 0 after the write
@@ -107,7 +109,28 @@ impl I2cBehavior {
         view.get(MCR_OFF) & MCR_MFE != 0
     }
 
+    /// Table 16-5 `START` (`RUN=1 START=1`) legality (p1023-1024).
+    /// `R/S=1 ACK=1 STOP=1` is Illegal in every state (Idle, Transmit,
+    /// Receive); all other unlisted encodings are NOPs (handled by the
+    /// `RUN`/`STOP` guards above, so every remaining `START` encoding
+    /// with `RUN=1` is legal here).
+    fn start_legal(_state: MasterState, rs: bool, ack: bool, stop: bool) -> bool {
+        !(rs && ack && stop)
+    }
+
+    /// Table 16-5 no-`START` (`RUN=1 START=0`) legality (p1024). Notably
+    /// Master-Rx `ACK=1 STOP=1` is Illegal/NOP.
+    fn continue_legal(state: MasterState, ack: bool, stop: bool) -> bool {
+        match state {
+            MasterState::Transmit => true, // `ACK=X`, with or without STOP.
+            MasterState::Receive => !(ack && stop),
+            MasterState::Idle => false, // `RUN=1 START=0` in Idle is a NOP.
+        }
+    }
+
     /// Execute a Table 16-5 command word against the addressed slave.
+    /// Illegal/NOP encodings (p1023-1024) leave state, status, and the
+    /// interrupt flag untouched.
     fn command(&mut self, view: &mut Registers<&mut [u32]>, cmd: u32) {
         let run = cmd & MCS_RUN != 0;
         let start = cmd & MCS_START != 0;
@@ -120,7 +143,10 @@ impl I2cBehavior {
         let addr = ((msa >> 1) & 0x7F) as u8;
         let rs = msa & 0x01 != 0;
         if stop && !run && !start {
-            // STOP alone: release the bus back to Idle.
+            // STOP alone: legal in Transmit/Receive (→ Idle); NOP in Idle.
+            if self.state == MasterState::Idle {
+                return;
+            }
             self.state = MasterState::Idle;
             self.bus_busy = false;
             self.mris = true;
@@ -131,6 +157,9 @@ impl I2cBehavior {
             return; // Remaining `RUN=0` encodings are NOPs.
         }
         if start {
+            if !Self::start_legal(self.state, rs, ack, stop) {
+                return; // Illegal/NOP (p1023-1024): no state or flag change.
+            }
             self.bus_busy = true;
             // (Repeated) START: (re-)address the slave.
             if !self.slaves.contains_key(&addr) {
@@ -172,7 +201,10 @@ impl I2cBehavior {
             self.refresh(view);
             return;
         }
-        // No `START`: continue in the current state.
+        // No `START`: continue in the current state (Table 16-5 p1024).
+        if !Self::continue_legal(self.state, ack, stop) {
+            return; // Illegal/NOP: no state or flag change.
+        }
         match self.state {
             MasterState::Transmit => {
                 self.transmit_byte(view, addr);
@@ -514,6 +546,58 @@ mod tests {
         write_word(&mut i2c, MIMR_OFF, M_INT);
         write_word(&mut i2c, MSA_OFF, 0x50 << 1);
         write_word(&mut i2c, MCS_OFF, CMD_TX_SINGLE);
+        assert_eq!(read_word(&mut i2c, MRIS_OFF), 0);
+        assert_eq!(read_word(&mut i2c, MCS_OFF) & MCS_IDLE, MCS_IDLE);
+    }
+
+    /// Table 16-5 p1023: Idle `R/S=1 ACK=1 STOP=1 START=1 RUN=1` is
+    /// Illegal/NOP: no state change, no status, no interrupt.
+    #[test]
+    fn idle_illegal_combo_is_nop() {
+        let mut i2c = i2c0();
+        enable(&mut i2c);
+        i2c.attach_eeprom(0x50, vec![0x00; 16]);
+        write_word(&mut i2c, MIMR_OFF, M_INT);
+        write_word(&mut i2c, MSA_OFF, (0x50 << 1) | 0x01); // R/S = 1
+        write_word(&mut i2c, MCS_OFF, MCS_ACK | MCS_STOP | MCS_START | MCS_RUN);
+        assert_eq!(read_word(&mut i2c, MRIS_OFF), 0);
+        assert_eq!(read_word(&mut i2c, MCS_OFF) & MCS_IDLE, MCS_IDLE);
+        assert_eq!(read_word(&mut i2c, MCS_OFF) & MCS_BUSBSY, 0);
+        assert_eq!(i2c.pending(), 0);
+    }
+
+    /// Table 16-5 p1024: Master-Rx `ACK=1 STOP=1 START=0 RUN=1` is
+    /// Illegal/NOP: the bus stays held, no interrupt.
+    #[test]
+    fn master_rx_illegal_combo_is_nop() {
+        let mut i2c = i2c0();
+        enable(&mut i2c);
+        i2c.attach_eeprom(0x50, vec![0x11, 0x22]);
+        write_word(&mut i2c, MIMR_OFF, M_INT);
+        // Enter Master-Receive with `START + RECEIVE` (`ACK=1`, no STOP).
+        write_word(&mut i2c, MSA_OFF, (0x50 << 1) | 0x01);
+        write_word(&mut i2c, MCS_OFF, MCS_ACK | MCS_START | MCS_RUN);
+        assert_eq!(read_word(&mut i2c, MCS_OFF) & MCS_IDLE, 0);
+        write_word(&mut i2c, MICR_OFF, M_INT);
+        // Illegal `RECEIVE + STOP` with `ACK=1`: ignored.
+        write_word(&mut i2c, MCS_OFF, MCS_ACK | MCS_STOP | MCS_RUN);
+        assert_eq!(read_word(&mut i2c, MRIS_OFF), 0);
+        assert_eq!(read_word(&mut i2c, MCS_OFF) & MCS_IDLE, 0);
+        assert_eq!(read_word(&mut i2c, MCS_OFF) & MCS_BUSBSY, MCS_BUSBSY);
+        // Legal `RECEIVE + STOP` with `ACK=0` releases the bus.
+        write_word(&mut i2c, MCS_OFF, MCS_STOP | MCS_RUN);
+        assert_eq!(read_word(&mut i2c, MCS_OFF) & MCS_IDLE, MCS_IDLE);
+        assert_eq!(read_word(&mut i2c, MRIS_OFF), M_INT);
+    }
+
+    /// `RUN=1 START=0` in Idle is a NOP (Table 16-5 lists no such row).
+    #[test]
+    fn idle_run_without_start_is_nop() {
+        let mut i2c = i2c0();
+        enable(&mut i2c);
+        write_word(&mut i2c, MIMR_OFF, M_INT);
+        write_word(&mut i2c, MSA_OFF, 0x50 << 1);
+        write_word(&mut i2c, MCS_OFF, MCS_RUN);
         assert_eq!(read_word(&mut i2c, MRIS_OFF), 0);
         assert_eq!(read_word(&mut i2c, MCS_OFF) & MCS_IDLE, MCS_IDLE);
     }

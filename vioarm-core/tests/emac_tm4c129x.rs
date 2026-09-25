@@ -46,8 +46,9 @@ fn emac_tx_walks_the_bus() {
     let mem = m.core.mem();
     // Frame bytes in SRAM.
     ww(mem, BUF, 0xBEAD_DEAD);
-    // Descriptor: OWN|LS|FS, TBS1=4, buffer, ring-next.
-    ww(mem, DESC, 0xBC00_0000);
+    // Descriptor: OWN|IC|LS|FS, TBS1=4, buffer, ring-next (Table 20-2:
+    // `TI` latches only when `IC` is set).
+    ww(mem, DESC, 0xFC00_0000);
     ww(mem, DESC + 4, 4);
     ww(mem, DESC + 8, BUF);
     ww(mem, DESC + 12, DESC);
@@ -89,7 +90,7 @@ fn tx_with_cic(mem: &mut board::BoardMemory, cic: u32, frame: &[u8]) -> u32 {
             u32::from_le_bytes([w[0], w[1], w[2], w[3]]),
         );
     }
-    ww(mem, DESC, 0xBC00_0000 | (cic << CIC_SHIFT));
+    ww(mem, DESC, 0xFC00_0000 | (cic << CIC_SHIFT));
     ww(mem, DESC + 4, frame.len() as u32);
     ww(mem, DESC + 8, BUF);
     ww(mem, DESC + 12, DESC);
@@ -130,7 +131,7 @@ fn emac_tx_crc_append_counted() {
     let mut m = Machine::armv7m(board::tm4c129xnczad());
     let mem = m.core.mem();
     ww(mem, BUF, 0xBEAD_DEAD);
-    ww(mem, DESC, 0xB000_0000); // OWN|LS|FS, DC=0 appends, DP=0 pads.
+    ww(mem, DESC, 0xF000_0000); // OWN|IC|LS|FS, DC=0 appends, DP=0 pads.
     ww(mem, DESC + 4, 4);
     ww(mem, DESC + 8, BUF);
     ww(mem, DESC + 12, DESC);

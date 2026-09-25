@@ -3,16 +3,25 @@
 //! Master-mode Freescale SPI follows the TM4C123GH6PM datasheet
 //! (SPMS376E §15): 8-deep FIFOs, `SR` synthesis (`TFE`/`TNF`/`RNE`/`RFF`/
 //! `BSY`), `CR0` clock math (`SysClk / (CPSDVSR × (1+SCR))`, `CPSDVSR`
-//! even-enforced), `DSS` data widths 4–16 bit, `TXRIS` at half-empty-or-less
+//! even-enforced), `DSS` data widths 4–16 bit (reserved `0x0-0x2` latch but
+//! read as 16-bit width, p970), `TXRIS` at half-empty-or-less
 //! (`EOT` empties), `RXRIS` at half-full-or-more, `IM`/`MIS` with `ICR`
-//! W1C (`RTIC`/`RORIC`), overrun `RORRIS`, `SSICC` system/`PIOSC` select.
+//! W1C (`RTIC`/`RORIC`), overrun `RORRIS`, `SSICC` system/`PIOSC` select,
+//! `CPSR[31:8]` `RO` with `CPSDVSR` LSB hard-0 (p976), `DR` 16-bit
+//! right-justified (p973).
 //!
 //! Like the repo's SPI pairs and STM32 USART, TX completes into the host
-//! mailbox instantly — no bit timing is modeled (`BSY` reads 0 on an idle
-//! SSI; documented). RX bytes arrive through [`Ssi::inject_rx`]
+//! mailbox instantly — no bit timing is modeled. `BSY` is a 1-tick shifter
+//! hold: set on a `DR` write, cleared on the next `tick` once the FIFO is
+//! empty and the shifter is done (p974: `1` while Tx/Rx *or* TX FIFO
+//! non-empty). RX bytes arrive through [`Ssi::inject_rx`]
 //! (host/test stimulus); overflow sets sticky `RORRIS`. `LBM` loopback
 //! routes TX into RX in order. Slave mode (`MS=1`), TI/Microwire formats,
 //! and the receive-timeout interrupt stay latched/unfired (documented).
+//! Firmware always word-stores `DR` (like TivaWare); byte/halfword stores
+//! assemble lanes but only a full-word store pushes a frame, and sub-word
+//! data must be right-justified (p973). `PeriphID`/`CellID` read as Table
+//! 15-2 p967 even though the SVD omits them (custom bus shim).
 
 use crate::device::svd::{Behavior, Device, RegisterFile, Registers};
 use crate::device::{InterruptSource, Peripheral};
@@ -60,7 +69,22 @@ const FIFO_DEPTH: usize = 8;
 const FIFO_HALF: usize = 4;
 
 /// Nonzero datasheet resets stamped over the SVD zeros.
+/// Table 15-2 p967: `SR=0x03`, `RIS=0x08`; `PeriphID`/`CellID` are handled
+/// by the bus shim below (SVD omits them).
 const RESETS: &[(u32, u32)] = &[(SR_OFF, 0x0000_0003), (RIS_OFF, 0x0000_0008)];
+
+/// Identification words missing from the SVD (Table 15-2 p967, all `RO`).
+/// `PeriphID4-7` read 0.
+const ID_WORDS: &[(u32, u32)] = &[
+    (0xFE0, 0x0000_0022), // PeriphID0
+    (0xFE4, 0x0000_0000), // PeriphID1
+    (0xFE8, 0x0000_0018), // PeriphID2
+    (0xFEC, 0x0000_0001), // PeriphID3
+    (0xFF0, 0x0000_000D), // CellID0
+    (0xFF4, 0x0000_00F0), // CellID1
+    (0xFF8, 0x0000_0005), // CellID2
+    (0xFFC, 0x0000_00B1), // CellID3
+];
 
 /// SSI bit rate in Hz: `SysClk / (CPSDVSR × (1 + SCR))`, 0 when unprogrammed.
 #[must_use]
@@ -83,6 +107,10 @@ pub struct SsiBehavior {
     tx_out: Vec<u16>,
     /// Sticky receive-overrun flag.
     ror: bool,
+    /// `BSY` shifter hold: set on a `DR` write, cleared on the next `tick`
+    /// once the FIFO is empty and the shifter is done (p974). Instant TX
+    /// drain keeps `tx` empty, so `SR.BSY` reads this hold.
+    busy: bool,
     /// Last popped frame (lane-1 `DR` reads fetch its high byte).
     /// Cached `(RIS & IM) != 0` (`InterruptSource::pending` is `&self`).
     pending: bool,
@@ -97,7 +125,8 @@ impl SsiBehavior {
         view.get(CR1_OFF) & CR1_MS == 0
     }
 
-    /// Data width in bits from `DSS` (4–16); reserved encodings read as 16.
+    /// Data width in bits from `DSS` (4–16); reserved `0x0-0x2` latch but
+    /// are treated as 16-bit width (p970, documented approximation).
     fn width(&self, view: &Registers<&mut [u32]>) -> u32 {
         let dss = view.get(CR0_OFF) & CR0_DSS_MASK;
         if (0x03..=0x0F).contains(&dss) {
@@ -138,7 +167,13 @@ impl SsiBehavior {
 
 impl Behavior for SsiBehavior {
     fn needs_tick() -> bool {
-        false
+        true
+    }
+
+    fn tick(&mut self, _view: &mut Registers<&mut [u32]>, _delta: u64) {
+        // 1-tick shifter hold: the instant-drained FIFO is empty, so clear
+        // the `BSY` latch on the next tick (p974).
+        self.busy = false;
     }
 
     fn reset(&mut self) {
@@ -161,7 +196,10 @@ impl Behavior for SsiBehavior {
                 if self.tx.is_empty() {
                     sr |= SR_TFE;
                 }
-                if !self.tx.is_empty() {
+                // p974: `1` while Tx/Rx *or* TX FIFO non-empty (shifter hold
+                // after FIFO empty). Instant drain keeps `tx` empty, so the
+                // 1-tick `busy` hold is the shifter.
+                if self.busy || !self.tx.is_empty() {
                     sr |= SR_BSY;
                 }
                 sr
@@ -184,8 +222,12 @@ impl Behavior for SsiBehavior {
     ) -> u32 {
         match offset {
             DR_OFF => {
+                // `DR` is 16-bit right-justified (p973): firmware must
+                // right-justify sub-16-bit data, the transmit logic ignores
+                // unused top bits, and receive data is auto-right-justified.
                 // Lane-assembled 16-bit frame; only full-word stores push
-                // (firmware always word-stores `DR`, like TivaWare).
+                // (firmware always word-stores `DR`, like TivaWare, so
+                // byte/halfword stores assemble but never push — documented).
                 let cur = view.get(offset);
                 let word = (cur & !(0xFF << shift)) | (u32::from(val) << shift);
                 view.set(offset, word);
@@ -194,6 +236,8 @@ impl Behavior for SsiBehavior {
                     if self.tx.len() < FIFO_DEPTH {
                         self.tx.push_back(frame);
                     }
+                    // Shifter hold for `BSY` (cleared on next `tick`).
+                    self.busy = true;
                     // Instant completion into the host mailbox (no bit
                     // timing); loopback routes TX into RX in order.
                     while let Some(f) = self.tx.pop_front() {
@@ -207,11 +251,15 @@ impl Behavior for SsiBehavior {
             }
             SR_OFF | RIS_OFF | MIS_OFF => view.get(offset),
             CPSR_OFF => {
-                // `CPSDVSR` LSB is hard-coded to zero on silicon.
-                let cur = view.get(offset);
-                let word = ((cur & !(0xFF << shift)) | (u32::from(val) << shift)) & !0xFF00_0001;
-                view.set(offset, word);
-                word
+                // p976: `31:8` `RO` 0, only `7:0 CPSDVSR`, LSB hard-0
+                // (reads back even). Upper-lane writes sink.
+                if shift != 0 {
+                    view.get(offset)
+                } else {
+                    let lo = val & 0xFE;
+                    view.set(offset, u32::from(lo));
+                    u32::from(lo)
+                }
             }
             ICR_OFF => {
                 let word = view.merged(offset, val, shift);
@@ -346,10 +394,35 @@ impl Peripheral for Ssi {
             }
             return Ok(0);
         }
+        // Table 15-2 p967 identification words (SVD omits them, all `RO`).
+        if off >= 0xFD0 && off < 0x1000 {
+            if off >= 0xFE0 {
+                for &(base, word) in ID_WORDS {
+                    if off >= base && off < base + 4 {
+                        let shift = 8 * (off - base);
+                        return Ok(((word >> shift) & 0xFF) as u8);
+                    }
+                }
+            }
+            // `PeriphID4-7` reset 0.
+            return Ok(0);
+        }
         self.inner.read(addr)
     }
 
     fn write(&mut self, addr: u32, val: u8) -> Result<(), BusError> {
+        let (base, len) = {
+            let r = self.inner.ranges()[0];
+            (r.base, r.len)
+        };
+        let off = addr
+            .checked_sub(base)
+            .filter(|o| *o < len)
+            .ok_or(BusError::Reserved)?;
+        // Identification words are `RO`: writes sink (Table 15-2 p967).
+        if off >= 0xFD0 && off < 0x1000 {
+            return Ok(());
+        }
         self.inner.write(addr, val)
     }
 
@@ -358,7 +431,9 @@ impl Peripheral for Ssi {
         self.stamp_resets();
     }
 
-    fn tick(&mut self, _delta: u64) {}
+    fn tick(&mut self, delta: u64) {
+        self.inner.tick(delta);
+    }
 }
 
 impl InterruptSource for Ssi {
@@ -406,12 +481,24 @@ mod tests {
     }
 
     /// Datasheet resets: `SR` shows empty TX, `RIS` shows `TXRIS`.
+    /// Table 15-2 p967 `PeriphID`/`CellID` read through the bus shim.
     #[test]
     fn datasheet_resets() {
         let mut ssi = ssi0();
         assert_eq!(read_word(&mut ssi, SR_OFF), 0x03);
         assert_eq!(read_word(&mut ssi, RIS_OFF), RIS_TX);
         assert_eq!(read_word(&mut ssi, CR0_OFF), 0);
+        assert_eq!(read_word(&mut ssi, 0xFE0), 0x22);
+        assert_eq!(read_word(&mut ssi, 0xFE8), 0x18);
+        assert_eq!(read_word(&mut ssi, 0xFEC), 0x01);
+        assert_eq!(read_word(&mut ssi, 0xFF0), 0x0D);
+        assert_eq!(read_word(&mut ssi, 0xFF4), 0xF0);
+        assert_eq!(read_word(&mut ssi, 0xFF8), 0x05);
+        assert_eq!(read_word(&mut ssi, 0xFFC), 0xB1);
+        assert_eq!(read_word(&mut ssi, 0xFD0), 0);
+        // Identification words are `RO`.
+        write_word(&mut ssi, 0xFE0, 0xFFFF_FFFF);
+        assert_eq!(read_word(&mut ssi, 0xFE0), 0x22);
     }
 
     /// Bit rate math: 16 MHz / (2 × (1 + 7)) = 1 MHz. Odd `CPSDVSR`
@@ -426,12 +513,54 @@ mod tests {
         assert_eq!(ssi.bitrate_hz_over(16_000_000), 1_000_000);
     }
 
-    /// `CPSDVSR` LSB is hard-wired to zero.
+    /// `CPSDVSR` LSB is hard-wired to zero; `CPSR[31:8]` are `RO` 0 (p976).
     #[test]
     fn cpsr_lsb_forced_zero() {
         let mut ssi = ssi0();
         write_word(&mut ssi, CPSR_OFF, 0x03);
         assert_eq!(read_word(&mut ssi, CPSR_OFF) & 0xFF, 0x02);
+        write_word(&mut ssi, CPSR_OFF, 0xFFFF_FFFF);
+        assert_eq!(read_word(&mut ssi, CPSR_OFF), 0xFE);
+    }
+
+    /// Reserved `DSS 0x0-0x2` latch but read as 16-bit width (p970).
+    #[test]
+    fn dss_reserved_reads_as_16bit() {
+        let mut ssi = ssi0();
+        enable(&mut ssi);
+        write_word(&mut ssi, CR0_OFF, 0x02);
+        assert_eq!(read_word(&mut ssi, CR0_OFF) & CR0_DSS_MASK, 0x02);
+        write_word(&mut ssi, CR1_OFF, CR1_SSE | CR1_LBM);
+        write_word(&mut ssi, DR_OFF, 0xABCD);
+        assert_eq!(read_word(&mut ssi, DR_OFF) & 0xFFFF, 0xABCD);
+    }
+
+    /// `BSY` is a 1-tick shifter hold (p974): set on the `DR` write, clear
+    /// on the next `tick` once the FIFO is empty.
+    #[test]
+    fn bsy_is_one_tick_shifter_hold() {
+        let mut ssi = ssi0();
+        enable(&mut ssi);
+        write_word(&mut ssi, CR0_OFF, 0x07);
+        assert_eq!(read_word(&mut ssi, SR_OFF) & SR_BSY, 0);
+        write_word(&mut ssi, DR_OFF, 0xA5);
+        assert_eq!(read_word(&mut ssi, SR_OFF) & SR_BSY, SR_BSY);
+        ssi.tick(1);
+        assert_eq!(read_word(&mut ssi, SR_OFF) & SR_BSY, 0);
+    }
+
+    /// `DR` is 16-bit right-justified (p973): only full-word stores push a
+    /// frame (TivaWare word-store assumption); byte stores assemble lanes
+    /// without pushing.
+    #[test]
+    fn dr_word_store_pushes_byte_store_does_not() {
+        let mut ssi = ssi0();
+        enable(&mut ssi);
+        write_word(&mut ssi, CR0_OFF, 0x07); // 8-bit frames
+        ssi.write(SSI0_BASE + DR_OFF, 0xA5).unwrap();
+        assert_eq!(ssi.drain_output(), []);
+        write_word(&mut ssi, DR_OFF, 0xA5);
+        assert_eq!(ssi.drain_output(), [0xA5]);
     }
 
     /// TX frames drain to the mailbox; `SR` tracks empty/full.

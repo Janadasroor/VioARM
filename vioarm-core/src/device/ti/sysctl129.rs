@@ -10,20 +10,29 @@
 //! Table 5-11 RO/RW types on write.
 //!
 //! Modeled: `RSCLKCFG`/`PLLFREQ0`/`PLLFREQ1` (PLL math → `sysclk_hz`, pushed
-//! into the shared [`ClockState`]), PLL lock after [`PLL_LOCK_TICKS`]
-//! device ticks (`RIS.PLLLRIS` bit 6 + `PLLSTAT.LOCK` bit 0; the analog lock
-//! is unobservable to polling firmware, same convention as the 123 model),
-//! `RCGCn`/`SCGCn`/`DCGCn`/`SRn` latch words (instant-apply; the 129 family
-//! has no `PRn` ready registers — firmware waits 3 clocks, unobservable
-//! here), RO ID/capability constants (`DID0` modeled `0x100A_0001`:
-//! `VER=1`, `CLASS=0x0A` Snowflake per datasheet, die revision A1;
-//! `DID1` `0x101F_C06E`; `PPn` from Table 5-11, including the genuine
-//! `PPWTIMER=0` quirk), `RESC` power-on (`POR` set), `MISC` W1C sink.
-//! Deliberate approximations: `MOSC` is a modeled 25 MHz crystal (the
-//! Connected LaunchPad crystal; frequency is not a register and firmware
-//! "knows" its board); `MOSC` ready is immediate; `LFIOSC` reads nominal
-//! 30 kHz; `MOSCPUPRIS`/`MOFRIS`/`BORRIS` never fire (no analog events in
-//! simulation, same rationale as the 123 `MISC` handling).
+//! into the shared [`ClockState`]), `PLLFREQ` deferred until `NEWFREQ=1`
+//! (`R0/W`, auto-clear; change only while powered-down / not sourcing,
+//! p236–238), `MEMTIM0` applied only on `MEMTIMU=1` (`R0/W` auto-clear,
+//! p277; wait-state values unmodeled — the applied value is latched),
+//! `RSCLKCFG` bits 31/30 `R0/W` read-0 auto-clear, PLL lock after
+//! [`PLL_LOCK_TICKS`] device ticks (`RIS.PLLLRIS` bit 6 + `PLLSTAT.LOCK`
+//! bit 0; the analog lock is unobservable to polling firmware, same
+//! convention as the 123 model), MOSC enable sequence (`MOSCCTL` reset
+//! `PWRDN=1+NOXTAL=1`, p273–274; clear `PWRDN`/`NOXTAL` and stabilize via
+//! [`MOSC_STABLE_TICKS`] ticks before select; board crystal fixed 25 MHz),
+//! `RCGCn`/`SCGCn`/`DCGCn`/`SRn` latch words, `CAN0MPC` RW reset
+//! `0x0000.0003` (Table 5-11), `PWRTC` RW1C, `RIS`/`MISC` RW1C (`MISC` reads
+//! `RIS & IMC`, W1C clears `RIS`; `pending()` clears with `MISC`), RO
+//! ID/capability constants (`DID0` modeled `0x100A_0001`: `VER=1`,
+//! `CLASS=0x0A` Snowflake per datasheet, die revision A1; `DID1`
+//! `0x101F_C06E`; `PPn` from Table 5-11, including the genuine `PPWTIMER=0`
+//! quirk), `RESC` power-on (`POR` set).
+//! Deliberate approximations: `LFIOSC` nominal 33 kHz (§5.2.5.1/Table 5-3
+//! note: 33/10/90); `PLLSRC` `0x1–0x2` reserved → `PIOSC` fallback with note
+//! (p276: only `0x0`=PIOSC, `0x3`=MOSC); `OSCSRC` `0x1/0x5+` reserved →
+//! `PIOSC` fallback with note (p276 — cosmetic, fallback kept);
+//! `MOSCPUPRIS`/`MOFRIS`/`BORRIS` analog events never fire except via the
+//! modeled MOSC/PLL paths (same rationale as the 123 `MISC` handling).
 
 use crate::device::stm32::rcc::ClockState;
 use crate::device::svd::{Behavior, Device, RegisterFile, Registers};
@@ -41,7 +50,10 @@ const RIS_OFF: u32 = 0x050;
 const IMC_OFF: u32 = 0x054;
 const MISC_OFF: u32 = 0x058;
 const RESC_OFF: u32 = 0x05C;
+const PWRTC_OFF: u32 = 0x060;
+const MOSCCTL_OFF: u32 = 0x07C;
 const RSCLKCFG_OFF: u32 = 0x0B0;
+const MEMTIM0_OFF: u32 = 0x0C0;
 const PLLFREQ0_OFF: u32 = 0x160;
 const PLLFREQ1_OFF: u32 = 0x164;
 const PLLSTAT_OFF: u32 = 0x168;
@@ -54,11 +66,15 @@ const RS_OSYSDIV_SHIFT: u32 = 10;
 const RS_OSYSDIV_MASK: u32 = 0x3FF;
 const RS_PSYSDIV_MASK: u32 = 0x3FF;
 const RS_NEWFREQ: u32 = 1 << 30;
-/// Oscillator sources.
+const RS_MEMTIMU: u32 = 1 << 31;
+/// Oscillator sources (RSCLKCFG p276).
 const OSCSRC_PIOSC: u32 = 0x0;
 const OSCSRC_LFIOSC: u32 = 0x2;
 const OSCSRC_MOSC: u32 = 0x3;
 const OSCSRC_RTC: u32 = 0x4;
+/// `MOSCCTL` bits (p273–274): `OSCRNG` 4, `PWRDN` 3, `NOXTAL` 2.
+const MOSCCTL_PWRDN: u32 = 1 << 3;
+const MOSCCTL_NOXTAL: u32 = 1 << 2;
 /// `PLLFREQ0` fields.
 const FREQ0_PLLPWR: u32 = 1 << 23;
 const FREQ0_MFRAC_SHIFT: u32 = 10;
@@ -68,9 +84,10 @@ const FREQ0_MINT_MASK: u32 = 0x3FF;
 const FREQ1_Q_SHIFT: u32 = 8;
 const FREQ1_Q_MASK: u32 = 0x1F;
 const FREQ1_N_MASK: u32 = 0x1F;
-/// `PLLSTAT.LOCK` bit 0; `RIS` interrupt bits.
+/// `PLLSTAT.LOCK` bit 0; `RIS` interrupt bits (p261).
 const PLLSTAT_LOCK: u32 = 1 << 0;
 const RIS_PLLLRIS: u32 = 1 << 6;
+const RIS_MOSCPUPRIS: u32 = 1 << 8;
 
 /// `SRn`/`RCGCn`/`SCGCn`/`DCGCn` group base offsets.
 const SR_BASE_OFF: u32 = 0x500;
@@ -84,10 +101,12 @@ const GROUP_OFFS: &[u32] = &[
 ];
 
 const PLL_LOCK_TICKS: u32 = 128;
+/// MOSC stabilize ticks (analog settle unobservable; small-tick model).
+const MOSC_STABLE_TICKS: u32 = 64;
 /// `PIOSC` rate in Hz (datasheet §5.2.5.1: 16 MHz).
 pub const PIOSC_HZ: u32 = 16_000_000;
-/// Nominal `LFIOSC` rate in Hz (datasheet: wide variations; TivaWare nominal).
-pub const LFIOSC_HZ: u32 = 30_000;
+/// Nominal `LFIOSC` rate in Hz (§5.2.5.1/Table 5-3 note: 33 kHz nom, 10/90).
+pub const LFIOSC_HZ: u32 = 33_000;
 /// Hibernate RTC oscillator in Hz.
 pub const RTC_OSC_HZ: u32 = 32_768;
 /// Modeled MOSC crystal in Hz (EK-TM4C1294XL 25 MHz crystal; the frequency
@@ -95,6 +114,8 @@ pub const RTC_OSC_HZ: u32 = 32_768;
 pub const MOSC_HZ: u32 = 25_000_000;
 /// Maximum TM4C129 system clock in Hz (120 MHz part).
 const SYSCLK_MAX_HZ: u32 = 120_000_000;
+/// `MEMTIM0` reset (Table 5-11).
+const MEMTIM0_RESET: u32 = 0x0030_0030;
 
 /// `DID0` model: `VER=1`, `CLASS=0x0A` Snowflake (datasheet), die revision
 /// A1 (`MAJOR=0`, `MINOR=1` — a modeled choice, silicon varies by lot).
@@ -111,7 +132,7 @@ const RESETS: &[(u32, u32)] = &[
     (0x038, 0x0000_0003),    // PTBOCTL
     (RESC_OFF, 0x0000_0002), // RESC (POR)
     (0x07C, 0x0000_000C),    // MOSCCTL (PWRDN + NOXTAL)
-    (0x0C0, 0x0030_0030),    // MEMTIM0
+    (0x0C0, MEMTIM0_RESET),  // MEMTIM0
     (0x14C, 0x0003_1F31),    // SYSPROP
     (0x154, 0x0040_0040),    // PIOSCSTAT
     (0x1A0, 0x0000_0001),    // NVMSTAT
@@ -124,6 +145,10 @@ const RESETS: &[(u32, u32)] = &[
     (0x284, 0x0000_0003),    // USBMPC
     (0x288, 0x0000_003F),    // EMACPDS
     (0x28C, 0x0000_0003),    // EMACMPC
+    (0x298, 0x0000_003F),    // CAN0PDS
+    (0x29C, 0x0000_0003),    // CAN0MPC (RW)
+    (0x2A0, 0x0000_003F),    // CAN1PDS
+    (0x2A4, 0x0000_0003),    // CAN1MPC
     (0x300, 0x0000_0003),    // PPWD
     (0x304, 0x0000_00FF),    // PPTIMER
     (0x308, 0x0000_7FFF),    // PPGPIO
@@ -153,13 +178,40 @@ const RESETS: &[(u32, u32)] = &[
     (0x3A0, 0x0000_0000),    // PPPRB
 ];
 
-/// Oscillator rate in Hz for an `OSCSRC`/`PLLSRC` encoding.
-fn osc_hz(src: u32) -> u32 {
+/// Oscillator rate for an `OSCSRC` encoding with MOSC gating.
+/// Reserved `0x1/0x5+` fall back to `PIOSC` with note (p276 — cosmetic).
+fn osc_hz(src: u32, mosc_ready: bool) -> u32 {
     match src {
         OSCSRC_PIOSC => PIOSC_HZ,
         OSCSRC_LFIOSC => LFIOSC_HZ,
-        OSCSRC_MOSC => MOSC_HZ,
+        OSCSRC_MOSC => {
+            if mosc_ready {
+                MOSC_HZ
+            } else {
+                PIOSC_HZ
+            }
+        }
         OSCSRC_RTC => RTC_OSC_HZ,
+        // `0x1` and `0x5–0xFF` reserved (p276): PIOSC fallback, cosmetic.
+        _ => PIOSC_HZ,
+    }
+}
+
+/// PLL source rate for a `PLLSRC` encoding with MOSC gating.
+/// Only `0x0`=PIOSC and `0x3`=MOSC are valid (p276); `0x1–0x2` reserved →
+/// `PIOSC` fallback with note; `0x4+` reserved likewise.
+fn pll_src_hz(src: u32, mosc_ready: bool) -> u32 {
+    match src {
+        0x0 => PIOSC_HZ,
+        0x3 => {
+            if mosc_ready {
+                MOSC_HZ
+            } else {
+                PIOSC_HZ
+            }
+        }
+        // `0x1–0x2` reserved (p276): PIOSC fallback.
+        // `0x4–0xFF` reserved: PIOSC fallback, cosmetic.
         _ => PIOSC_HZ,
     }
 }
@@ -168,15 +220,22 @@ fn osc_hz(src: u32) -> u32 {
 /// (datasheet RSCLKCFG + PLLFREQ pages). `locked` gates the PLL path: an
 /// unpowered or not-yet-locked PLL cannot source the clock, so the raw
 /// oscillator feeds through (firmware programs the PLL before setting
-/// `USEPLL`, per the datasheet procedure).
+/// `USEPLL`, per the datasheet procedure). `mosc_ready` gates MOSC
+/// (enable sequence + stabilize before select).
 #[must_use]
-pub fn sysclk_hz_for_129(rsclkcfg: u32, pllfreq0: u32, pllfreq1: u32, locked: bool) -> u32 {
+pub fn sysclk_hz_for_129(
+    rsclkcfg: u32,
+    pllfreq0: u32,
+    pllfreq1: u32,
+    locked: bool,
+    mosc_ready: bool,
+) -> u32 {
     let usepll = rsclkcfg & RS_USEPLL != 0;
     let powered = pllfreq0 & FREQ0_PLLPWR != 0;
     let oscsrc = (rsclkcfg >> RS_OSCSRC_SHIFT) & 0xF;
     if usepll && powered && locked {
         let pllsrc = (rsclkcfg >> RS_PLLSRC_SHIFT) & 0xF;
-        let fin = u64::from(osc_hz(pllsrc));
+        let fin = u64::from(pll_src_hz(pllsrc, mosc_ready));
         let mint = u64::from(pllfreq0 & FREQ0_MINT_MASK);
         let mfrac = u64::from((pllfreq0 >> FREQ0_MFRAC_SHIFT) & FREQ0_MFRAC_MASK);
         let q = u64::from((pllfreq1 >> FREQ1_Q_SHIFT) & FREQ1_Q_MASK);
@@ -187,7 +246,7 @@ pub fn sysclk_hz_for_129(rsclkcfg: u32, pllfreq0: u32, pllfreq1: u32, locked: bo
         u32::try_from(fvco / (psysdiv + 1)).unwrap_or(SYSCLK_MAX_HZ)
     } else {
         let osysdiv = u64::from((rsclkcfg >> RS_OSYSDIV_SHIFT) & RS_OSYSDIV_MASK);
-        u32::try_from(u64::from(osc_hz(oscsrc)) / (osysdiv + 1)).unwrap_or(PIOSC_HZ)
+        u32::try_from(u64::from(osc_hz(oscsrc, mosc_ready)) / (osysdiv + 1)).unwrap_or(PIOSC_HZ)
     }
 }
 
@@ -204,7 +263,8 @@ fn is_writable(offset: u32) -> bool {
         || offset == 0x1C0
         || offset == 0x280
         || offset == 0x288
-        || (0x298..=0x2A0).contains(&offset) && offset % 4 == 0
+        || offset == 0x298
+        || offset == 0x2A0
         || (0x300..=0x3A4).contains(&offset)
     {
         return false;
@@ -215,17 +275,25 @@ fn is_writable(offset: u32) -> bool {
             return true;
         }
     }
-    // `MISC` is W1C (handled in `on_write`); the rest latch by default.
+    // `MISC`/`PWRTC` are W1C (handled in `on_write`); `CAN0MPC`/`CAN1MPC`
+    // are RW (Table 5-11); the rest latch by default.
     true
 }
 
-/// PLL lock timing and `sysclk_hz` pushes.
+/// PLL lock timing, MOSC stabilize, NEWFREQ/MEMTIMU defer, and `sysclk_hz`
+/// pushes.
 #[derive(Debug)]
 pub struct Sysctl129Behavior {
     clock: Option<Arc<Mutex<ClockState>>>,
     pll_lockdown: u32,
     locked: bool,
     sysclk: u32,
+    active_freq0: u32,
+    active_freq1: u32,
+    memtim_active: u32,
+    memtim_pending: u32,
+    mosc_lockdown: u32,
+    mosc_stable: bool,
 }
 
 impl Default for Sysctl129Behavior {
@@ -235,25 +303,63 @@ impl Default for Sysctl129Behavior {
             pll_lockdown: 0,
             locked: false,
             sysclk: PIOSC_HZ,
+            active_freq0: 0,
+            active_freq1: 0,
+            memtim_active: MEMTIM0_RESET,
+            memtim_pending: MEMTIM0_RESET,
+            mosc_lockdown: 0,
+            mosc_stable: false,
         }
     }
 }
 
 impl Sysctl129Behavior {
+    /// Whether MOSC is enabled for crystal mode (`NOXTAL` clear;
+    /// `PWRDN` clear for crystal, set for single-ended — the board crystal
+    /// needs both clear).
+    fn mosc_enabled(view: &Registers<&mut [u32]>) -> bool {
+        let moscctl = view.get(MOSCCTL_OFF);
+        moscctl & MOSCCTL_NOXTAL == 0
+    }
+
+    /// Whether MOSC is ready (enabled + crystal stabilized).
+    /// Single-ended (`PWRDN` set) is immediate; crystal (`PWRDN` clear)
+    /// needs [`MOSC_STABLE_TICKS`] (board crystal fixed 25 MHz).
+    fn mosc_ready(&self, view: &Registers<&mut [u32]>) -> bool {
+        let moscctl = view.get(MOSCCTL_OFF);
+        if moscctl & MOSCCTL_NOXTAL != 0 {
+            return false;
+        }
+        if moscctl & MOSCCTL_PWRDN != 0 {
+            // Single-ended: ready once NOXTAL clears (no settle).
+            return true;
+        }
+        self.mosc_stable
+    }
+
     /// Recompute lock state and `sysclk` from the current clock words.
+    /// Uses the applied (`NEWFREQ`/`MEMTIMU`-gated) `PLLFREQ` values.
     fn recompute(&mut self, view: &mut Registers<&mut [u32]>) {
-        let rsclkcfg = view.get(RSCLKCFG_OFF);
-        let pllfreq0 = view.get(PLLFREQ0_OFF);
-        let powered = pllfreq0 & FREQ0_PLLPWR != 0;
+        let rsclkcfg = view.get(RSCLKCFG_OFF) & !(RS_MEMTIMU | RS_NEWFREQ);
+        let powered = self.active_freq0 & FREQ0_PLLPWR != 0;
         let usepll = rsclkcfg & RS_USEPLL != 0;
         if !powered || !usepll {
             self.locked = false;
             self.pll_lockdown = 0;
+            // Power-down/bypass clears the lock indication.
+            let ris = view.get(RIS_OFF) & !RIS_PLLLRIS;
+            view.set(RIS_OFF, ris);
         } else if !self.locked && self.pll_lockdown == 0 {
             self.pll_lockdown = PLL_LOCK_TICKS;
         }
-        let pllfreq1 = view.get(PLLFREQ1_OFF);
-        self.sysclk = sysclk_hz_for_129(rsclkcfg, pllfreq0, pllfreq1, self.locked);
+        let ready = self.mosc_ready(view);
+        self.sysclk = sysclk_hz_for_129(
+            rsclkcfg,
+            self.active_freq0,
+            self.active_freq1,
+            self.locked,
+            ready,
+        );
         self.push_clock();
     }
 
@@ -273,18 +379,28 @@ impl Behavior for Sysctl129Behavior {
     }
 
     fn tick(&mut self, view: &mut Registers<&mut [u32]>, delta: u64) {
-        if self.pll_lockdown == 0 {
-            return;
-        }
         let dt = u32::try_from(delta).unwrap_or(u32::MAX);
-        self.pll_lockdown = self.pll_lockdown.saturating_sub(dt);
-        if self.pll_lockdown == 0 {
-            self.locked = true;
-            let rsclkcfg = view.get(RSCLKCFG_OFF);
-            let pllfreq0 = view.get(PLLFREQ0_OFF);
-            let pllfreq1 = view.get(PLLFREQ1_OFF);
-            self.sysclk = sysclk_hz_for_129(rsclkcfg, pllfreq0, pllfreq1, true);
-            self.push_clock();
+        if self.pll_lockdown != 0 {
+            self.pll_lockdown = self.pll_lockdown.saturating_sub(dt);
+            if self.pll_lockdown == 0 {
+                self.locked = true;
+                let ris = view.get(RIS_OFF) | RIS_PLLLRIS;
+                view.set(RIS_OFF, ris);
+                let rsclkcfg = view.get(RSCLKCFG_OFF) & !(RS_MEMTIMU | RS_NEWFREQ);
+                let ready = self.mosc_ready(view);
+                self.sysclk =
+                    sysclk_hz_for_129(rsclkcfg, self.active_freq0, self.active_freq1, true, ready);
+                self.push_clock();
+            }
+        }
+        if self.mosc_lockdown != 0 {
+            self.mosc_lockdown = self.mosc_lockdown.saturating_sub(dt);
+            if self.mosc_lockdown == 0 {
+                self.mosc_stable = true;
+                let ris = view.get(RIS_OFF) | RIS_MOSCPUPRIS;
+                view.set(RIS_OFF, ris);
+                self.recompute(view);
+            }
         }
     }
 
@@ -292,24 +408,45 @@ impl Behavior for Sysctl129Behavior {
         self.pll_lockdown = 0;
         self.locked = false;
         self.sysclk = PIOSC_HZ;
+        self.active_freq0 = 0;
+        self.active_freq1 = 0;
+        self.memtim_active = MEMTIM0_RESET;
+        self.memtim_pending = MEMTIM0_RESET;
+        self.mosc_lockdown = 0;
+        self.mosc_stable = false;
     }
 
     fn pending(&self, view: &Registers<&[u32]>) -> u32 {
-        let ris = if self.locked {
-            view.get(RIS_OFF) | RIS_PLLLRIS
-        } else {
-            view.get(RIS_OFF) & !RIS_PLLLRIS
-        };
-        u32::from(ris & view.get(IMC_OFF) != 0)
+        // Stored latch masked by live lock/stability, gated by `IMC`.
+        let mut full = view.get(RIS_OFF);
+        if !self.locked {
+            full &= !RIS_PLLLRIS;
+        }
+        if !self.mosc_stable {
+            // Crystal path needs settle; single-ended (`PWRDN` set, `NOXTAL`
+            // clear) keeps the latch (set immediately on enable).
+            let mc = view.get(MOSCCTL_OFF);
+            if mc & MOSCCTL_PWRDN == 0 || mc & MOSCCTL_NOXTAL != 0 {
+                full &= !RIS_MOSCPUPRIS;
+            }
+        }
+        u32::from(full & view.get(IMC_OFF) != 0)
     }
 
     fn on_read(&mut self, view: &mut Registers<&mut [u32]>, offset: u32, value: u32) -> u32 {
         if offset == RIS_OFF {
-            return if self.locked {
-                value | RIS_PLLLRIS
-            } else {
-                value & !RIS_PLLLRIS
-            };
+            let mut out = view.get(RIS_OFF);
+            if !self.locked {
+                out &= !RIS_PLLLRIS;
+            }
+            if !self.mosc_stable {
+                let mc = view.get(MOSCCTL_OFF);
+                // Crystal path needs settle; single-ended keeps the latch.
+                if mc & MOSCCTL_PWRDN == 0 || mc & MOSCCTL_NOXTAL != 0 {
+                    out &= !RIS_MOSCPUPRIS;
+                }
+            }
+            return out;
         }
         if offset == PLLSTAT_OFF {
             return if self.locked {
@@ -319,7 +456,17 @@ impl Behavior for Sysctl129Behavior {
             };
         }
         if offset == MISC_OFF {
-            return 0;
+            // `MISC` reads `RIS & IMC` (p265).
+            let ris = self.on_read(view, RIS_OFF, view.get(RIS_OFF));
+            return ris & view.get(IMC_OFF);
+        }
+        if offset == RSCLKCFG_OFF {
+            // Bits 31/30 are `R0/W`: read 0, auto-clear (p275).
+            return value & !(RS_MEMTIMU | RS_NEWFREQ);
+        }
+        if offset == MEMTIM0_OFF {
+            // Applied value only (writes stage until `MEMTIMU`).
+            return self.memtim_active;
         }
         value
     }
@@ -332,21 +479,97 @@ impl Behavior for Sysctl129Behavior {
         shift: u32,
     ) -> u32 {
         if offset == MISC_OFF {
-            // Write-1-to-clear interrupt status; nothing latches here (no
-            // analog events in simulation), so the write sinks.
+            // RW1C: writing 1 clears the corresponding `RIS` bit (p265).
+            let w1c = u32::from(val) << shift;
+            let ris = view.get(RIS_OFF) & !w1c;
+            view.set(RIS_OFF, ris);
             return view.get(offset);
+        }
+        if offset == PWRTC_OFF {
+            // RW1C (p270): writing 1 clears, writing 0 has no effect;
+            // reserved bits stay 0 (cannot be set in simulation).
+            let w1c = u32::from(val) << shift;
+            let old = view.get(offset);
+            let cleared = old & !w1c;
+            // Only the two status bits are writable; mask the rest.
+            let masked = cleared & 0x0000_0011;
+            view.set(offset, masked);
+            return masked;
         }
         if !is_writable(offset) {
             return view.get(offset);
         }
-        let word = view.merged(offset, val, shift);
-        if offset == RSCLKCFG_OFF || offset == PLLFREQ0_OFF || offset == PLLFREQ1_OFF {
-            // Recompute against the about-to-land word: stage it, refresh
-            // lock/sysclk, then report the staged word.
-            view.set(offset, word);
-            self.recompute(view);
+        if offset == MEMTIM0_OFF {
+            // Stage until `MEMTIMU`; reads show the applied value.
+            // Merge into the pending latch (not the register file, which
+            // holds the applied value) so multi-byte writes accumulate.
+            let mask = 0xFFu32 << shift;
+            let staged = (self.memtim_pending & !mask) | (u32::from(val) << shift);
+            self.memtim_pending = staged;
+            return self.memtim_active;
         }
-        word
+        if offset == PLLFREQ0_OFF || offset == PLLFREQ1_OFF {
+            // Deferred until `NEWFREQ=1` (p292–293): latch the staged word,
+            // do not touch the applied PLL yet.
+            let staged = view.merged(offset, val, shift);
+            view.set(offset, staged);
+            return staged;
+        }
+        if offset == RSCLKCFG_OFF {
+            let old = view.get(offset) & !(RS_MEMTIMU | RS_NEWFREQ);
+            let merged = view.merged(offset, val, shift);
+            let want_memtimu = merged & RS_MEMTIMU != 0;
+            let want_newfreq = merged & RS_NEWFREQ != 0;
+            let stored = merged & !(RS_MEMTIMU | RS_NEWFREQ);
+            view.set(offset, stored);
+            if want_memtimu {
+                // `MEMTIMU`: apply `MEMTIM0`, auto-clear (p275–277).
+                // Wait-state values stay unmodeled — latch the applied value.
+                self.memtim_active = self.memtim_pending;
+                view.set(MEMTIM0_OFF, self.memtim_active);
+            }
+            if want_newfreq {
+                // `NEWFREQ`: apply `PLLFREQ0/1` only while powered-down and
+                // not sourcing (p292–293 + §5.2.5.5); auto-clear regardless.
+                let active_pwr = self.active_freq0 & FREQ0_PLLPWR != 0;
+                let old_usepll = old & RS_USEPLL != 0;
+                if !active_pwr && !old_usepll {
+                    self.active_freq0 = view.get(PLLFREQ0_OFF);
+                    self.active_freq1 = view.get(PLLFREQ1_OFF);
+                }
+            }
+            self.recompute(view);
+            return stored;
+        }
+        if offset == MOSCCTL_OFF {
+            let old = view.get(offset);
+            let word = view.merged(offset, val, shift);
+            view.set(offset, word);
+            let was_enabled = old & MOSCCTL_NOXTAL == 0;
+            let now_enabled = word & MOSCCTL_NOXTAL == 0;
+            let crystal = word & MOSCCTL_PWRDN == 0;
+            if now_enabled && !crystal {
+                // Single-ended: ready immediately, set the latch.
+                self.mosc_stable = true;
+                self.mosc_lockdown = 0;
+                let ris = view.get(RIS_OFF) | RIS_MOSCPUPRIS;
+                view.set(RIS_OFF, ris);
+            } else if now_enabled && crystal && !self.mosc_stable && self.mosc_lockdown == 0 {
+                // Crystal: needs settle after the enable sequence.
+                if !was_enabled || old & MOSCCTL_PWRDN != 0 {
+                    self.mosc_lockdown = MOSC_STABLE_TICKS;
+                }
+            } else if !now_enabled {
+                self.mosc_stable = false;
+                self.mosc_lockdown = 0;
+                let ris = view.get(RIS_OFF) & !RIS_MOSCPUPRIS;
+                view.set(RIS_OFF, ris);
+            }
+            self.recompute(view);
+            return word;
+        }
+        // `SRn`/`RCGCn`/`SCGCn`/`DCGCn` and remaining RW words latch.
+        view.merged(offset, val, shift)
     }
 }
 
@@ -386,6 +609,16 @@ impl Sysctl129 {
         for (idx, value) in stamped {
             words[idx] = value;
         }
+        let behavior = self.inner.behavior_mut();
+        behavior.active_freq0 = 0;
+        behavior.active_freq1 = 0;
+        behavior.memtim_active = MEMTIM0_RESET;
+        behavior.memtim_pending = MEMTIM0_RESET;
+        behavior.mosc_stable = false;
+        behavior.mosc_lockdown = 0;
+        behavior.locked = false;
+        behavior.pll_lockdown = 0;
+        behavior.sysclk = PIOSC_HZ;
     }
 
     /// Current `SYSCLK` in Hz (last recompute).
@@ -501,13 +734,13 @@ mod tests {
     #[test]
     fn bypass_math() {
         // Reset: USEPLL=0, OSCSRC=PIOSC, OSYSDIV=0 → 16 MHz.
-        assert_eq!(sysclk_hz_for_129(0, 0, 0, false), 16_000_000);
+        assert_eq!(sysclk_hz_for_129(0, 0, 0, false, false), 16_000_000);
         // PIOSC / 4.
         let cfg = 3 << RS_OSYSDIV_SHIFT;
-        assert_eq!(sysclk_hz_for_129(cfg, 0, 0, false), 4_000_000);
-        // LFIOSC source.
+        assert_eq!(sysclk_hz_for_129(cfg, 0, 0, false, false), 4_000_000);
+        // LFIOSC source (33 kHz nom).
         let cfg = OSCSRC_LFIOSC << RS_OSCSRC_SHIFT;
-        assert_eq!(sysclk_hz_for_129(cfg, 0, 0, false), 30_000);
+        assert_eq!(sysclk_hz_for_129(cfg, 0, 0, false, false), 33_000);
     }
 
     /// The LaunchPad 120 MHz configuration: 25 MHz MOSC → 480 MHz VCO → /4.
@@ -517,18 +750,66 @@ mod tests {
         let freq0 = FREQ0_PLLPWR | 96;
         let freq1 = 4; // N=4, Q=0.
         let cfg = RS_USEPLL | (OSCSRC_MOSC << RS_PLLSRC_SHIFT) | 3;
-        assert_eq!(sysclk_hz_for_129(cfg, freq0, freq1, true), 120_000_000);
+        assert_eq!(
+            sysclk_hz_for_129(cfg, freq0, freq1, true, true),
+            120_000_000
+        );
         // Same words, unlocked: the raw oscillator feeds through.
-        assert_eq!(sysclk_hz_for_129(cfg, freq0, freq1, false), 16_000_000);
+        assert_eq!(
+            sysclk_hz_for_129(cfg, freq0, freq1, false, true),
+            16_000_000
+        );
     }
 
-    /// `NEWFREQ` + 128 ticks lock the PLL (`PLLSTAT.LOCK`, `RIS.PLLLRIS`).
+    /// `NEWFREQ` defers `PLLFREQ` until set, auto-clears, and only applies
+    /// while powered-down / not sourcing; then 128 ticks lock the PLL.
+    #[test]
+    fn newfreq_defers_and_autoclears_powered_down_only() {
+        let mut sys = sys129();
+        // Stage PLLFREQ without NEWFREQ: no lock starts, sysclk stays PIOSC.
+        write_word(&mut sys, PLLFREQ1_OFF, 4);
+        write_word(&mut sys, PLLFREQ0_OFF, FREQ0_PLLPWR | 96);
+        assert_eq!(read_word(&mut sys, PLLSTAT_OFF) & PLLSTAT_LOCK, 0);
+        assert_eq!(sys.sysclk_hz(), 16_000_000);
+        sys.tick(200);
+        assert_eq!(read_word(&mut sys, PLLSTAT_OFF) & PLLSTAT_LOCK, 0);
+        // NEWFREQ applies (powered-down before, not sourcing) + auto-clears.
+        let cfg = RS_USEPLL | (OSCSRC_MOSC << RS_PLLSRC_SHIFT) | 3;
+        // Enable MOSC crystal first (board 25 MHz): clear PWRDN+NOXTAL.
+        write_word(&mut sys, MOSCCTL_OFF, 0x0000_0000);
+        sys.tick(u64::from(MOSC_STABLE_TICKS));
+        write_word(&mut sys, RSCLKCFG_OFF, cfg | RS_NEWFREQ);
+        assert_eq!(read_word(&mut sys, RSCLKCFG_OFF) & RS_NEWFREQ, 0);
+        assert_eq!(read_word(&mut sys, RSCLKCFG_OFF) & RS_MEMTIMU, 0);
+        assert_eq!(read_word(&mut sys, PLLSTAT_OFF) & PLLSTAT_LOCK, 0);
+        sys.tick(127);
+        assert_eq!(read_word(&mut sys, PLLSTAT_OFF) & PLLSTAT_LOCK, 0);
+        sys.tick(1);
+        assert_eq!(
+            read_word(&mut sys, PLLSTAT_OFF) & PLLSTAT_LOCK,
+            PLLSTAT_LOCK
+        );
+        assert_eq!(read_word(&mut sys, RIS_OFF) & RIS_PLLLRIS, RIS_PLLLRIS);
+        // Second NEWFREQ while powered + sourcing is ignored (stays locked
+        // config, no relock): change staged values, NEWFREQ clears, no drop.
+        write_word(&mut sys, PLLFREQ0_OFF, FREQ0_PLLPWR | 32);
+        write_word(&mut sys, RSCLKCFG_OFF, cfg | RS_NEWFREQ);
+        assert_eq!(read_word(&mut sys, RSCLKCFG_OFF) & RS_NEWFREQ, 0);
+        assert_eq!(
+            read_word(&mut sys, PLLSTAT_OFF) & PLLSTAT_LOCK,
+            PLLSTAT_LOCK
+        );
+    }
+
+    /// Legacy `newfreq_lock_flow` sequence still locks (powered-down start).
     #[test]
     fn newfreq_lock_flow() {
         let mut sys = sys129();
         let freq0 = FREQ0_PLLPWR | 96;
         write_word(&mut sys, PLLFREQ1_OFF, 4);
         write_word(&mut sys, PLLFREQ0_OFF, freq0);
+        write_word(&mut sys, MOSCCTL_OFF, 0);
+        sys.tick(u64::from(MOSC_STABLE_TICKS));
         let cfg = RS_USEPLL | (OSCSRC_MOSC << RS_PLLSRC_SHIFT) | 3;
         write_word(&mut sys, RSCLKCFG_OFF, cfg | RS_NEWFREQ);
         assert_eq!(read_word(&mut sys, PLLSTAT_OFF) & PLLSTAT_LOCK, 0);
@@ -543,6 +824,118 @@ mod tests {
         assert_eq!(sys.sysclk_hz(), 120_000_000);
     }
 
+    /// `MEMTIM0` stages until `MEMTIMU`, which auto-clears (p277).
+    #[test]
+    fn memtim0_applies_on_memtimu_autoclears() {
+        let mut sys = sys129();
+        assert_eq!(read_word(&mut sys, MEMTIM0_OFF), MEMTIM0_RESET);
+        write_word(&mut sys, MEMTIM0_OFF, 0x0000_1111);
+        // Still applied value (staged, not yet applied).
+        assert_eq!(read_word(&mut sys, MEMTIM0_OFF), MEMTIM0_RESET);
+        write_word(&mut sys, RSCLKCFG_OFF, RS_MEMTIMU);
+        assert_eq!(read_word(&mut sys, RSCLKCFG_OFF) & RS_MEMTIMU, 0);
+        assert_eq!(read_word(&mut sys, MEMTIM0_OFF), 0x0000_1111);
+    }
+
+    /// `RSCLKCFG` bits 31/30 are `R0/W`: read 0, auto-clear (p275).
+    #[test]
+    fn rsclkcfg_bits_31_30_read0_autoclear() {
+        let mut sys = sys129();
+        write_word(&mut sys, RSCLKCFG_OFF, RS_MEMTIMU | RS_NEWFREQ | RS_USEPLL);
+        let got = read_word(&mut sys, RSCLKCFG_OFF);
+        assert_eq!(got & (RS_MEMTIMU | RS_NEWFREQ), 0);
+        assert_ne!(got & RS_USEPLL, 0);
+    }
+
+    /// `LFIOSC` nominal is 33 kHz (Table 5-3 note).
+    #[test]
+    fn lfiosc_is_33khz() {
+        assert_eq!(LFIOSC_HZ, 33_000);
+        let cfg = OSCSRC_LFIOSC << RS_OSCSRC_SHIFT;
+        assert_eq!(sysclk_hz_for_129(cfg, 0, 0, false, false), 33_000);
+    }
+
+    /// MOSC reset `PWRDN=1+NOXTAL=1` with stabilize path (board 25 MHz).
+    #[test]
+    fn mosc_reset_and_stabilize_path() {
+        let mut sys = sys129();
+        assert_eq!(read_word(&mut sys, MOSCCTL_OFF), 0x0000_000C);
+        // MOSC source without enable falls back to PIOSC.
+        let cfg = OSCSRC_MOSC << RS_OSCSRC_SHIFT;
+        assert_eq!(sysclk_hz_for_129(cfg, 0, 0, false, false), PIOSC_HZ);
+        // Single-ended (NOXTAL clear, PWRDN set): immediate ready.
+        write_word(&mut sys, MOSCCTL_OFF, 0x0000_0008);
+        assert_eq!(
+            read_word(&mut sys, RIS_OFF) & RIS_MOSCPUPRIS,
+            RIS_MOSCPUPRIS
+        );
+        // Crystal (both clear): needs settle ticks.
+        let mut sys2 = sys129();
+        write_word(&mut sys2, MOSCCTL_OFF, 0x0000_0000);
+        assert_eq!(read_word(&mut sys2, RIS_OFF) & RIS_MOSCPUPRIS, 0);
+        sys2.tick(u64::from(MOSC_STABLE_TICKS) - 1);
+        assert_eq!(read_word(&mut sys2, RIS_OFF) & RIS_MOSCPUPRIS, 0);
+        sys2.tick(1);
+        assert_ne!(read_word(&mut sys2, RIS_OFF) & RIS_MOSCPUPRIS, 0);
+        // Enabled crystal gives the board 25 MHz.
+        let cfg = OSCSRC_MOSC << RS_OSCSRC_SHIFT;
+        assert_eq!(sysclk_hz_for_129(cfg, 0, 0, false, true), MOSC_HZ);
+    }
+
+    /// `PLLSRC` `0x1–0x2` reserved (p276): fall back to `PIOSC`.
+    #[test]
+    fn pllsrc_reserved_falls_back() {
+        let freq0 = FREQ0_PLLPWR | 96;
+        let freq1 = 4;
+        for src in [0x1, 0x2] {
+            let cfg = RS_USEPLL | (src << RS_PLLSRC_SHIFT) | 3;
+            // Reserved → PIOSC reference (16 MHz * 96 / 5 / 4 = 76.8 MHz),
+            // not the MOSC-derived 120 MHz.
+            let hz = sysclk_hz_for_129(cfg, freq0, freq1, true, true);
+            assert_eq!(hz, 76_800_000);
+        }
+        // Valid MOSC source gives 120 MHz.
+        let cfg = RS_USEPLL | (0x3 << RS_PLLSRC_SHIFT) | 3;
+        assert_eq!(
+            sysclk_hz_for_129(cfg, freq0, freq1, true, true),
+            120_000_000
+        );
+    }
+
+    /// `OSCSRC` `0x1/0x5+` reserved (p276 — cosmetic, PIOSC fallback kept).
+    #[test]
+    fn oscsrc_reserved_falls_back() {
+        for src in [0x1, 0x5, 0x6, 0xF] {
+            let cfg = src << RS_OSCSRC_SHIFT;
+            assert_eq!(sysclk_hz_for_129(cfg, 0, 0, false, false), PIOSC_HZ);
+        }
+    }
+
+    /// `CAN0MPC` RW reset `0x0000.0003` (Table 5-11).
+    /// Note: the SVD tables lack `0x298–0x2A4`, so the bus reports
+    /// `Reserved` there today (SVD fix lands separately); this test asserts
+    /// the behavior-side contract (writable + reset) that takes effect once
+    /// the tables expose the register.
+    #[test]
+    fn can0mpc_rw_reset_0003() {
+        assert!(is_writable(0x29C));
+        assert!(!is_writable(0x298));
+        assert!(!is_writable(0x2A0));
+        assert!(RESETS.iter().any(|&(o, v)| o == 0x29C && v == 0x0000_0003));
+        // Power-domain status stays RO.
+        assert!(!is_writable(0x298));
+    }
+
+    /// `PWRTC` RW1C (p270).
+    #[test]
+    fn pwrtc_rw1c() {
+        let mut sys = sys129();
+        assert_eq!(read_word(&mut sys, PWRTC_OFF), 0);
+        // Writing 1 to a clear bit has no effect (cannot set in simulation).
+        write_word(&mut sys, PWRTC_OFF, 0x0000_0011);
+        assert_eq!(read_word(&mut sys, PWRTC_OFF), 0);
+    }
+
     /// `RCGC` words latch; `PP` reads stay.
     #[test]
     fn rcgc_latch() {
@@ -553,18 +946,27 @@ mod tests {
         assert_eq!(read_word(&mut sys, 0x518), 0xFFFF_FFFF);
     }
 
-    /// `MISC` W1C sinks; `IMC` gates the line.
+    /// `MISC` RW1C reads `RIS & IMC`; W1C clears `RIS` and `pending()`.
     #[test]
     fn misc_imc_flow() {
         let mut sys = sys129();
         write_word(&mut sys, IMC_OFF, 1 << 6); // PLLLMIM
+                                               // Stage PLL then NEWFREQ (powered-down start) with MOSC ready.
+        write_word(&mut sys, MOSCCTL_OFF, 0);
+        sys.tick(u64::from(MOSC_STABLE_TICKS));
         write_word(&mut sys, PLLFREQ1_OFF, 4);
         write_word(&mut sys, PLLFREQ0_OFF, FREQ0_PLLPWR | 96);
         let cfg = RS_USEPLL | (OSCSRC_MOSC << RS_PLLSRC_SHIFT) | 3;
         write_word(&mut sys, RSCLKCFG_OFF, cfg | RS_NEWFREQ);
         sys.tick(128);
         assert_eq!(sys.pending(), 1);
+        assert_eq!(read_word(&mut sys, MISC_OFF), 1 << 6);
+        // Write 0: no effect.
+        write_word(&mut sys, MISC_OFF, 0);
+        assert_eq!(sys.pending(), 1);
         write_word(&mut sys, MISC_OFF, 1 << 6);
         assert_eq!(read_word(&mut sys, MISC_OFF), 0);
+        assert_eq!(sys.pending(), 0);
+        assert_eq!(read_word(&mut sys, RIS_OFF) & RIS_PLLLRIS, 0);
     }
 }

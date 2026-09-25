@@ -1,14 +1,18 @@
 //! TI Tiva C CAN controllers (`CAN0`-`CAN1`, Bosch C_CAN core).
 //!
 //! Message-object operation follows the TM4C123GH6PM datasheet (SPMS376E
-//! §17): `INIT`-gated transfers with `CCE`-gated bit timing, 32 message
+//! §17): `INIT`-gated transfers with `CCE`-gated bit timing (`CANBIT`
+//! needs `CCE&&INIT`, `BRPE` needs `CCE`, p1076/p1080), 32 message
 //! objects behind the `IF1`/`IF2` command/mask/arb/control/data windows
-//! (`MNUM` 0→32, `0x21`-`0x3F`→`0x01`-`0x1F`), TX completing into the host
-//! mailbox with `TXOK` + `INTPND` (when `TXIE`), RX filtering by ID/mask
-//! (`UMASK`, `MDIR`/`MXTD`) into `NEWDAT` objects with `MSGLST` on
-//! overwrite, remote-frame auto-response (`RMTEN`), `TXRQ`/`NWDA`/
+//! (`MNUM` 0→32, `0x21`-`0x3F`→`0x01`-`0x1F`; `CRQ=0x01`,
+//! `MSK1/MSK2=0xFFFF` reset per Table 17-5 p1067), TX completing into the
+//! host mailbox with `TXOK` + `INTPND` (when `TXIE`), RX filtering by
+//! ID/mask (`UMASK`, `MDIR`/`MXTD`) into `NEWDAT` objects with `MSGLST`
+//! on overwrite, remote-frame auto-response (`RMTEN`), `TXRQ`/`NWDA`/
 //! `MSGINT`/`MSGVAL` synthesis, and `CANINT` object/status priority with
-//! status-clear on `STS` read. `TXOK`/`RXOK`/`LEC` are CPU-cleared.
+//! status-clear on `STS` read. `TXOK`/`RXOK` clear by writing 0 (writes
+//! of 1 leave them), `LEC=0x7` is the manual-invalid No-Event code, and
+//! writes to `TXOK`/`RXOK`/`LEC` generate no interrupt (p1072-1074).
 //!
 //! Like the repo's other serials, transfers complete synchronously on the
 //! `CRQ` write — no bit timing is modeled (`BUSY` reads 0, error counters
@@ -106,7 +110,7 @@ struct MsgObject {
 }
 
 /// One interface register set (`IF1`/`IF2`).
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 struct IfRegs {
     crq: u16,
     cmsk: u16,
@@ -119,6 +123,25 @@ struct IfRegs {
     da2: u16,
     db1: u16,
     db2: u16,
+}
+
+impl Default for IfRegs {
+    /// Table 17-5 p1067: `CRQ=0x01`, `MSK1/MSK2=0xFFFF` (`MXTD/MDIR=1`).
+    fn default() -> Self {
+        Self {
+            crq: 0x01,
+            cmsk: 0,
+            msk1: 0xFFFF,
+            msk2: 0xFFFF,
+            arb1: 0,
+            arb2: 0,
+            mctl: 0,
+            da1: 0,
+            da2: 0,
+            db1: 0,
+            db2: 0,
+        }
+    }
 }
 
 /// A transmitted frame, for the host to drain.
@@ -244,6 +267,8 @@ impl CanBehavior {
         });
         obj.mctl &= !MCTL_TXRQST as u16;
         core.sts |= STS_TXOK;
+        // A successful transfer clears the last-error latch (p1072-1074).
+        core.sts &= !0x07;
         core.status_int = true;
         if obj.mctl & MCTL_TXIE as u16 != 0 {
             obj.mctl |= MCTL_INTPND as u16;
@@ -269,6 +294,8 @@ impl CanBehavior {
                 obj.mctl |= MCTL_INTPND as u16;
             }
             core.sts |= STS_RXOK;
+            // A successful transfer clears the last-error latch (p1072-1074).
+            core.sts &= !0x07;
             core.status_int = true;
             if obj.mctl & MCTL_EOB as u16 != 0 {
                 break;
@@ -647,9 +674,21 @@ impl Peripheral for Can {
                 CanBehavior::refresh_locked(&mut core);
             }
             STS_OFF => {
-                // `TXOK`/`RXOK`/`LEC` take written values; the rest is RO.
-                let w = (u32::from(val) << shift) & (STS_TXOK | STS_RXOK | 0x07);
-                core.sts = (core.sts & !(0xFF << shift)) | w;
+                // p1073-1074: `TXOK`/`RXOK` clear by writing 0 (writes of 1
+                // leave them set); `LEC` takes the written value (`0x7` No
+                // Event is the manual-invalid code); the rest is `RO`. A
+                // write to `TXOK`/`RXOK`/`LEC` generates no interrupt.
+                if lane != 0 {
+                    // Reserved upper lanes are `RO`.
+                } else {
+                    if val & STS_TXOK as u8 == 0 {
+                        core.sts &= !STS_TXOK;
+                    }
+                    if val & STS_RXOK as u8 == 0 {
+                        core.sts &= !STS_RXOK;
+                    }
+                    core.sts = core.sts & !0x07 | u32::from(val & 0x07);
+                }
                 CanBehavior::refresh_locked(&mut core);
             }
             BIT_OFF => {
@@ -662,7 +701,11 @@ impl Peripheral for Can {
                 core.tst = (core.tst & !(0xFF << shift)) | (u32::from(val) << shift);
             }
             BRPE_OFF => {
-                core.brpe = (core.brpe & !(0xFF << shift)) | (u32::from(val) << shift);
+                // p1080: write-enabled by `CCE` (unlike `CANBIT`, no `INIT`
+                // needed). Only the low nibble is writable.
+                if core.ctl & CTL_CCE != 0 && lane == 0 {
+                    core.brpe = (core.brpe & !0x0F) | u32::from(val & 0x0F);
+                }
             }
             _ => return Err(BusError::Reserved),
         }
@@ -764,6 +807,13 @@ mod tests {
         assert_eq!(read_word(&mut can, CTL_OFF) & CTL_INIT, CTL_INIT);
         assert_eq!(read_word(&mut can, INT_OFF), 0);
         assert_eq!(can.pending(), 0);
+        // Table 17-5 p1067: `CRQ=0x01`, `MSK1/MSK2=0xFFFF`.
+        assert_eq!(read_word(&mut can, IF1_BASE + IF_CRQ) & 0x3F, 0x01);
+        assert_eq!(read_word(&mut can, IF1_BASE + IF_MSK1) & 0xFFFF, 0xFFFF);
+        assert_eq!(read_word(&mut can, IF1_BASE + IF_MSK2) & 0xFFFF, 0xFFFF);
+        assert_eq!(read_word(&mut can, IF2_BASE + IF_CRQ) & 0x3F, 0x01);
+        assert_eq!(read_word(&mut can, IF2_BASE + IF_MSK1) & 0xFFFF, 0xFFFF);
+        assert_eq!(read_word(&mut can, IF2_BASE + IF_MSK2) & 0xFFFF, 0xFFFF);
     }
 
     /// TX object transmits on `TXRQST`: mailbox frame, `TXOK`, `INTPND`,
@@ -852,5 +902,50 @@ mod tests {
         setup_tx(&mut can, 0, 0x300, 0, &[]);
         assert_eq!(can.drain_output().len(), 1);
         assert_eq!(read_word(&mut can, MSG2VAL_OFF) & (1 << 15), 1 << 15);
+    }
+
+    /// `BRPE` is write-enabled by `CCE` only (p1080); `BIT` still needs
+    /// `CCE&&INIT`.
+    #[test]
+    fn brpe_gated_by_cce() {
+        let mut can = can0();
+        // Reset: `INIT` set, `CCE` clear → `BRPE` sinks.
+        write_word(&mut can, BRPE_OFF, 0x0F);
+        assert_eq!(read_word(&mut can, BRPE_OFF) & 0x0F, 0);
+        // `CCE` alone opens `BRPE` (no `INIT` needed).
+        write_word(&mut can, CTL_OFF, CTL_INIT | CTL_CCE);
+        write_word(&mut can, BRPE_OFF, 0x0A);
+        assert_eq!(read_word(&mut can, BRPE_OFF) & 0x0F, 0x0A);
+        // Upper nibble/lanes are `RO`.
+        write_word(&mut can, BRPE_OFF, 0xFFFF_FFFF);
+        assert_eq!(read_word(&mut can, BRPE_OFF) & 0x0F, 0x0F);
+        assert_eq!(read_word(&mut can, BRPE_OFF) & 0xFFFF_FFF0, 0);
+    }
+
+    /// `TXOK`/`RXOK` clear by writing 0 (writes of 1 leave them set),
+    /// `LEC=0x7` is the manual-invalid No-Event code, and `STS` writes
+    /// generate no interrupt (p1072-1074).
+    #[test]
+    fn sts_clear_by_zero_and_lec_manual() {
+        let mut can = can0();
+        start(&mut can);
+        setup_tx(&mut can, 1, 0x123, 0, &[]);
+        assert_eq!(read_word(&mut can, STS_OFF) & STS_TXOK, STS_TXOK);
+        let int_before = read_word(&mut can, INT_OFF);
+        assert_ne!(int_before, 0);
+        // Writing 1 leaves `TXOK` set and raises no new interrupt.
+        write_word(&mut can, STS_OFF, STS_TXOK | 0x07);
+        assert_eq!(read_word(&mut can, STS_OFF) & STS_TXOK, STS_TXOK);
+        assert_eq!(read_word(&mut can, STS_OFF) & 0x07, 0x07);
+        assert_eq!(read_word(&mut can, INT_OFF), int_before);
+        // Writing 0 clears `TXOK` (and `LEC` follows the written value).
+        write_word(&mut can, STS_OFF, 0x00);
+        assert_eq!(read_word(&mut can, STS_OFF) & STS_TXOK, 0);
+        assert_eq!(read_word(&mut can, STS_OFF) & 0x07, 0x00);
+        // A successful transfer clears a manually-set `LEC=0x7`.
+        write_word(&mut can, STS_OFF, 0x07);
+        assert_eq!(read_word(&mut can, STS_OFF) & 0x07, 0x07);
+        setup_tx(&mut can, 2, 0x200, 0, &[]);
+        assert_eq!(read_word(&mut can, STS_OFF) & 0x07, 0x00);
     }
 }

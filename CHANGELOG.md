@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **TI datasheet fetching (`scripts/fetch_ti_datasheets.py`, `datasheets/`, gitignored)**: official TI PDFs `SPMS376E` (TM4C123GH6PM, Rev. E) + `SPMS433B` (TM4C1294NCPDT, Rev. B) fetched from ti.com at runtime like the CMSIS packs — same CLI shape (`--list`, single-name, `--force`), skip-if-present with pinned SHA256. Never committed. These are the only two TI datasheets cited anywhere in the code.
+
+### Fixed
+- **TI deep-datasheet audit (`audits/ti-{clocks,serial,analog-timer-memory,129-native}.md`, ~80 findings, all resolved)**: four subagent passes checked every TI peripheral model against the official PDFs; every finding fixed with an in-file regression test except two auditor errors overturned against the primary source — `GPIOCR`-write relock (p684 LOCK field: original code correct, change reverted) and `GPIOR/S/T` removal (§10.5 A–Q covers the 1294 die; `R/S/T` are real xnczad peripherals, kept). Highlights: TREADY `0x200`/`0xC0` lock counts + XTAL-change relock, MINSYSDIV substitution, `RIS`/`MISC` RW1C, `RESC`/`PWRTC` W0C/RW1C, `NEWFREQ`/`MEMTIMU` defer + auto-clear, RSR/ECR vs RIS/ICR separation, UART `BUSY`/DR-lanes, SSI `CPSR` RO, I2C illegal combos, CAN resets + `CCE` gating, USB STALL bit 5 + `STALLED`/`DATAEND`/`AUTOCLR`, `WDTLOCK` unlocked reset, flash `FLPEKEY`, EEPROM always-increment, ADC RW1C + real `HPTR`/`TPTR` + `SSPRI` order, HIB subsecond match, timer-B resets, `PUR`/`PDR` mutual clear, EMAC `IC`/`DIC`/`ATDS`/`DE`/`IPE`/`SAIC` + phantom-row removal, CRC `INIT` self-clear, flash129 `FWBVAL`/alignment, uDMA `0x504` fiction removed (reserved gap) + `ENASET` auto-clear + `ARBSIZE` chunking + `STOP` disables. Lib suite 1327 green, full workspace green.
+
 ## [3.0.0] — 2026-08-31 enterprise-ready M1-M6 v3.0 cycle/peripheral-accurate determinism-first forbid(unsafe_code) 500 alias→real 100% + M5 docs/release v2.0
 
 

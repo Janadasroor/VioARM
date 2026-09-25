@@ -2,8 +2,9 @@
 //!
 //! Controller protocol follows the TM4C123GH6PM datasheet (SPMS376E
 //! §8.2.3): `FMC` commands (`WRITE`/`ERASE`/`MERASE`/`COMT`) fire only
-//! with the `WRKEY` (`0xA442`, the default-`KEY` value) in the same word
-//! write — anything else is ignored — and complete synchronously (reads
+//! with the `WRKEY` (`0xA442` when `BOOTCFG.KEY` sets, the reset;
+//! `0x71D5` when clear, FMC p544) in the same word write — anything
+//! else is ignored — and complete synchronously (reads
 //! show done; millisecond program/erase timing is unobservable to poll
 //! loops, like the repo's other instant completions). Completion raises
 //! `PRIS` (program/commit) or `ERIS` (erase/mass-erase) behind `FCIM`,
@@ -39,7 +40,12 @@ const FMC_ERASE: u32 = 1 << 1;
 const FMC_WRITE: u32 = 1 << 0;
 /// `FMC.WRKEY` (default-`KEY` value; `BOOTCFG.KEY` selects the alternate).
 const FMC_WRKEY: u32 = 0xA442;
+/// `FMC.WRKEY` alternate value (`BOOTCFG.KEY == 0`, FMC p544).
+const FMC_WRKEY_ALT: u32 = 0x71D5;
 const FMC_WRKEY_SHIFT: u32 = 16;
+/// `BOOTCFG` (resident latch): `KEY` bit 4 selects the `FMC.WRKEY` value.
+const BOOTCFG_OFF: u32 = 0x11D0;
+const BOOTCFG_KEY: u32 = 1 << 4;
 /// `FCRIS`/`FCIM`/`FCMISC` bits: program 13, error 11, invalid-data 10,
 /// voltage 9, EEPROM 2, program-done... (`ARIS` 0 access, `PRIS` 1 prog).
 const RIS_PROGRIS: u32 = 1 << 13;
@@ -51,10 +57,12 @@ const RIS_PRIS: u32 = 1 << 1;
 const RIS_ARIS: u32 = 1 << 0;
 
 /// Nonzero datasheet resets stamped over the SVD zeros (`FMPREn`/
-/// `FMPPEn` reset open, `0xFFFF_FFFF`).
+/// `FMPPEn` reset open, `0xFFFF_FFFF`; `BOOTCFG` resets `0xFFFF_FFFE`,
+/// so `KEY` reads 1 and the default `WRKEY` is `0xA442`).
 const RESETS: &[(u32, u32)] = &[
     (FSIZE_OFF, 0x0000_007F),
     (SSIZE_OFF, 0x0000_007F),
+    (BOOTCFG_OFF, 0xFFFF_FFFE),
     (0x1200, 0xFFFF_FFFF), // FMPRE0
     (0x1204, 0xFFFF_FFFF), // FMPRE1
     (0x1208, 0xFFFF_FFFF), // FMPRE2
@@ -151,7 +159,15 @@ impl Behavior for FlashBehavior {
             // the GPIO lock key), so word stores fire once whole. The
             // staged word is returned so `RegisterFile` keeps it.
             let staged = view.merged(offset, val, shift);
-            let key_ok = (staged >> FMC_WRKEY_SHIFT) == FMC_WRKEY;
+            // `BOOTCFG.KEY` selects the accepted key (FMC p544): `0xA442`
+            // when set (the reset), `0x71D5` when clear; anything else is
+            // ignored. Absent `BOOTCFG` (other tables), keep the default.
+            let expect = if view.try_get(BOOTCFG_OFF).unwrap_or(0xFFFF_FFFE) & BOOTCFG_KEY != 0 {
+                FMC_WRKEY
+            } else {
+                FMC_WRKEY_ALT
+            };
+            let key_ok = (staged >> FMC_WRKEY_SHIFT) == expect;
             let cmds = staged & 0x0F;
             if key_ok && cmds.count_ones() == 1 {
                 if cmds & FMC_WRITE != 0 {
@@ -319,6 +335,30 @@ mod tests {
         assert_eq!(read_word(&mut flash, FCRIS_OFF), 0);
         write_word(&mut flash, FMC_OFF, (0x1234 << FMC_WRKEY_SHIFT) | FMC_ERASE);
         assert_eq!(read_word(&mut flash, FCRIS_OFF), 0);
+    }
+
+    /// Clearing `BOOTCFG.KEY` selects the `0x71D5` key (FMC p544): it
+    /// fires, while the default `0xA442` is then ignored.
+    #[test]
+    fn alt_key_per_bootcfg() {
+        let (mut flash, _) = flash();
+        assert_eq!(read_word(&mut flash, BOOTCFG_OFF), 0xFFFF_FFFE);
+        write_word(&mut flash, FMA_OFF, 0x1000);
+        write_word(&mut flash, FCIM_OFF, RIS_PRIS);
+        write_word(&mut flash, BOOTCFG_OFF, 0xFFFF_FFEE); // `KEY` clear
+        write_word(
+            &mut flash,
+            FMC_OFF,
+            (FMC_WRKEY << FMC_WRKEY_SHIFT) | FMC_WRITE,
+        );
+        assert_eq!(read_word(&mut flash, FCRIS_OFF), 0);
+        write_word(
+            &mut flash,
+            FMC_OFF,
+            (FMC_WRKEY_ALT << FMC_WRKEY_SHIFT) | FMC_WRITE,
+        );
+        assert_eq!(read_word(&mut flash, FCRIS_OFF) & RIS_PRIS, RIS_PRIS);
+        assert_eq!(flash.pending(), 1);
     }
 
     /// Keyed `ERASE` raises `ERIS`; the EEPROM link folds in too.

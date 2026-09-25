@@ -10,8 +10,11 @@
 //! protocol-exact with the array untouched: commands complete instantly,
 //! raising `PRIS`/`ERIS`/`ARIS`.
 //!
-//! Modeled: keyed `FMC` commands (self-clearing), keyed `FMC2.WRBUF`
-//! buffered program (valid words per `FWBVAL`, cleared on completion),
+//! Modeled: keyed `FMC` commands (self-clearing; `0xA442` when
+//! `BOOTCFG.KEY=1`, else `FLPEKEY`), keyed `FMC2.WRBUF`
+//! buffered program (valid words per `FWBVAL`, cleared on completion;
+//! protection or `FMA[6:0]!=0` misalignment violations raise `ARIS` and
+//! also clear `FWBVAL` per Register 8 / §8.2.3.11),
 //! protection enforcement (open `0xFFFF_FFFF` stamped; committed-zero bits
 //! deny, 2 KiB granules over the 1 MB array), `PP`/`SSIZE` RO ID,
 //! `BOOTCFG` POR reset, `FCIM` gating + `FCMISC` W1C, the shared EEPROM
@@ -36,6 +39,7 @@ const FCIM_OFF: u32 = 0x010;
 const FCMISC_OFF: u32 = 0x014;
 const FMC2_OFF: u32 = 0x020;
 const FWBVAL_OFF: u32 = 0x030;
+const FLPEKEY_OFF: u32 = 0x03C;
 const FWBN_OFF: u32 = 0x100;
 const FWBN_WORDS: u32 = 32;
 const PP_OFF: u32 = 0xFC0;
@@ -54,6 +58,9 @@ const FMC_WRITE: u32 = 1 << 0;
 /// `FMC`/`FMC2` write key (default-`KEY` value).
 const FMC_WRKEY: u32 = 0xA442;
 const FMC_WRKEY_SHIFT: u32 = 16;
+/// `BOOTCFG.KEY` (bit 4): `1` selects `0xA442`, `0` selects `FLPEKEY`
+/// (SPMS433B Register 68 + FMC/FMC2 pages).
+const BOOTCFG_KEY: u32 = 1 << 4;
 /// `FMC2.WRBUF` bit 0.
 const FMC2_WRBUF: u32 = 1 << 0;
 /// `FCRIS`/`FCIM`/`FCMISC` bits (same low block as the 123 family).
@@ -139,9 +146,14 @@ impl Flash129Behavior {
     }
 
     /// Fire a keyed `FMC2.WRBUF`: program every `FWBVAL`-valid buffer word
-    /// at `FMA`, then clear the valid bits.
+    /// at `FMA`, then clear the valid bits. A protection violation also
+    /// clears `FWBVAL` (Register 8), as does a misaligned `FMA`
+    /// (§8.2.3.11 requires 32-word alignment, `FMA[6:0]==0`).
     fn fire_fmc2(&mut self, view: &mut Registers<&mut [u32]>) -> u32 {
-        if self.protected(view, true) {
+        // Misaligned and protected targets both deny with `ARIS` and clear
+        // `FWBVAL`; only an aligned, open target programs (`PRIS`).
+        if view.get(FMA_OFF) & 0x7F != 0 || self.protected(view, true) {
+            view.set(FWBVAL_OFF, 0);
             self.ris |= RIS_ARIS;
         } else {
             // The array is untouched (protocol model); validity clears.
@@ -151,6 +163,17 @@ impl Flash129Behavior {
         view.set(FMC2_OFF, 0);
         self.refresh(view);
         0
+    }
+
+    /// Write-key check: `0xA442` when `BOOTCFG.KEY=1`, else the `FLPEKEY`
+    /// value (SPMS433B FMC/FMC2 + Register 68).
+    fn key_ok(&self, view: &Registers<&mut [u32]>, staged: u32) -> bool {
+        let key = staged >> FMC_WRKEY_SHIFT;
+        if view.get(BOOTCFG_OFF) & BOOTCFG_KEY != 0 {
+            key == FMC_WRKEY
+        } else {
+            key == (view.get(FLPEKEY_OFF) & 0xFFFF)
+        }
     }
 }
 
@@ -210,8 +233,7 @@ impl Behavior for Flash129Behavior {
             // the GPIO lock key), so word stores fire once whole. The
             // staged word is returned so `RegisterFile` keeps it.
             let staged = view.merged(offset, val, shift);
-            let key_ok = (staged >> FMC_WRKEY_SHIFT) == FMC_WRKEY;
-            if key_ok {
+            if self.key_ok(view, staged) {
                 if offset == FMC_OFF {
                     let cmds = staged & 0x0F;
                     if cmds.count_ones() == 1 {
@@ -485,5 +507,89 @@ mod tests {
         assert_eq!(read_word(&mut flash, FCRIS_OFF) & RIS_ERIS, RIS_ERIS);
         write_word(&mut flash, FCMISC_OFF, RIS_ERIS);
         assert!(!*link.lock().unwrap());
+    }
+
+    /// Register 8: a protected `WRBUF` violation raises `ARIS` and also
+    /// clears `FWBVAL` (SPMS433B Register 8).
+    #[test]
+    fn protected_wrbuf_clears_fwbval() {
+        let mut flash = flash129();
+        // Close the granule holding `FMA=0x2000` (bit 4).
+        write_word(&mut flash, 0x1400, 0xFFFF_FFEF);
+        write_word(&mut flash, FMA_OFF, 0x2000);
+        write_word(&mut flash, FWBN_OFF, 0xDEAD_BEEF);
+        write_word(&mut flash, FWBVAL_OFF, 0x01);
+        write_word(
+            &mut flash,
+            FMC2_OFF,
+            (FMC_WRKEY << FMC_WRKEY_SHIFT) | FMC2_WRBUF,
+        );
+        assert_eq!(read_word(&mut flash, FCRIS_OFF) & RIS_ARIS, RIS_ARIS);
+        assert_eq!(
+            read_word(&mut flash, FCRIS_OFF) & RIS_PRIS,
+            0,
+            "no program on violation"
+        );
+        assert_eq!(
+            read_word(&mut flash, FWBVAL_OFF),
+            0,
+            "violation clears FWBVAL"
+        );
+    }
+
+    /// `FMC`/`FMC2` accept `FLPEKEY` when `BOOTCFG.KEY=0` (Register 68).
+    #[test]
+    fn wrkey_accepts_flpekey_when_key_zero() {
+        let mut flash = flash129();
+        // Select the alternate key and program it.
+        let boot = read_word(&mut flash, BOOTCFG_OFF) & !BOOTCFG_KEY;
+        write_word(&mut flash, BOOTCFG_OFF, boot);
+        write_word(&mut flash, FLPEKEY_OFF, 0x1234);
+        // `0xA442` is now ignored.
+        write_word(&mut flash, FMA_OFF, 0x1000);
+        write_word(&mut flash, FMD_OFF, 0x1);
+        write_word(
+            &mut flash,
+            FMC_OFF,
+            (FMC_WRKEY << FMC_WRKEY_SHIFT) | FMC_WRITE,
+        );
+        assert_eq!(read_word(&mut flash, FCRIS_OFF) & RIS_PRIS, 0);
+        // The `FLPEKEY` value fires.
+        write_word(&mut flash, FMC_OFF, (0x1234 << FMC_WRKEY_SHIFT) | FMC_WRITE);
+        assert_eq!(read_word(&mut flash, FCRIS_OFF) & RIS_PRIS, RIS_PRIS);
+        // Buffered path honors the alternate key too.
+        let mut flash = flash129();
+        let boot = read_word(&mut flash, BOOTCFG_OFF) & !BOOTCFG_KEY;
+        write_word(&mut flash, BOOTCFG_OFF, boot);
+        write_word(&mut flash, FLPEKEY_OFF, 0x1234);
+        write_word(&mut flash, FMA_OFF, 0x2000);
+        write_word(&mut flash, FWBN_OFF, 0xDEAD_BEEF);
+        write_word(&mut flash, FWBVAL_OFF, 0x01);
+        write_word(
+            &mut flash,
+            FMC2_OFF,
+            (0x1234 << FMC_WRKEY_SHIFT) | FMC2_WRBUF,
+        );
+        assert_eq!(read_word(&mut flash, FCRIS_OFF) & RIS_PRIS, RIS_PRIS);
+        assert_eq!(read_word(&mut flash, FWBVAL_OFF), 0);
+    }
+
+    /// §8.2.3.11: `FMC2.WRBUF` requires 32-word-aligned `FMA`
+    /// (`FMA[6:0]==0`); a misaligned target raises `ARIS` and clears
+    /// `FWBVAL` without programming.
+    #[test]
+    fn wrbuf_rejects_misaligned_fma() {
+        let mut flash = flash129();
+        write_word(&mut flash, FMA_OFF, 0x2004);
+        write_word(&mut flash, FWBN_OFF, 0xDEAD_BEEF);
+        write_word(&mut flash, FWBVAL_OFF, 0x01);
+        write_word(
+            &mut flash,
+            FMC2_OFF,
+            (FMC_WRKEY << FMC_WRKEY_SHIFT) | FMC2_WRBUF,
+        );
+        assert_eq!(read_word(&mut flash, FCRIS_OFF) & RIS_ARIS, RIS_ARIS);
+        assert_eq!(read_word(&mut flash, FCRIS_OFF) & RIS_PRIS, 0);
+        assert_eq!(read_word(&mut flash, FWBVAL_OFF), 0);
     }
 }

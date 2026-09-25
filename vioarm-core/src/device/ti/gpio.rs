@@ -59,10 +59,11 @@ const DMACTL_OFF: u32 = 0x534;
 /// Per-port reset words: `(port, AFSEL, PUR, DEN, PCTL, CR)`.
 /// Table 10-7 (TM4C123GH6PM): `PC[3:0]` reset to JTAG/SWD (committed AF +
 /// pull-up, `CR=0`), `PD7`/`PF0` reset to locked GPIO (`CR` bit clear),
-/// all other pins to plain tri-stated GPIO.
+/// all other pins to plain tri-stated GPIO. `PA[1:0]`/`PA[5:2]`/`PB[3:2]`
+/// carry their Table 10-8 `PCTL` encodings (don't-care while `AFSEL=0`).
 const PORT_DEFAULTS_123: &[(&str, u32, u32, u32, u32, u32)] = &[
-    ("GPIOA", 0x00, 0x00, 0x00, 0x0000_0000, 0xFF),
-    ("GPIOB", 0x00, 0x00, 0x00, 0x0000_0000, 0xFF),
+    ("GPIOA", 0x00, 0x00, 0x00, 0x0022_2211, 0xFF),
+    ("GPIOB", 0x00, 0x00, 0x00, 0x0000_3300, 0xFF),
     ("GPIOC", 0x0F, 0x0F, 0x0F, 0x0000_1111, 0xF0),
     ("GPIOD", 0x00, 0x00, 0x00, 0x0000_0000, 0x7F),
     ("GPIOE", 0x00, 0x00, 0x00, 0x0000_0000, 0xFF),
@@ -82,10 +83,11 @@ const PORT_DEFAULTS_123: &[(&str, u32, u32, u32, u32, u32)] = &[
     ("GPIOQ", 0x00, 0x00, 0x00, 0x0000_0000, 0xFF),
 ];
 
-/// Per-port reset words from Table 10-7 (TM4C1294NCPDT, SPMS433B):
+/// Per-port reset words from Table 10-6 p756 (TM4C1294NCPDT, SPMS433B):
 /// `PC[3:0]` JTAG/SWD, `PD7` (NMI) and `PE7` locked GPIO, everything else
 /// plain. Ports `A`–`J` are AHB-only, `K`–`Q` single-aperture (no
-/// `GPIOHBCTL` on this family).
+/// `GPIOHBCTL` on this family); `R`/`S`/`T` exist only on
+/// xnczad-class dice (own SVD tables, mounted by that donor).
 pub(crate) const PORT_DEFAULTS_129: &[(&str, u32, u32, u32, u32, u32)] = &[
     ("GPIOA", 0x00, 0x00, 0x00, 0x0000_0000, 0xFF),
     ("GPIOB", 0x00, 0x00, 0x00, 0x0000_0000, 0xFF),
@@ -396,8 +398,10 @@ impl Peripheral for Gpio {
                 core.unlocked = word == LOCK_KEY;
             }
             CR_OFF => {
-                // `CR` commits only while unlocked; any `GPIOCR` write
-                // relocks (datasheet GPIOLOCK page).
+                // `CR` writes commit only while unlocked, and any `CR`
+                // write reapplies the lock (p684 LOCK field: "a write of
+                // any other value or a write to the GPIOCR register
+                // reapplies the lock").
                 if core.unlocked {
                     let cur = b.get(&core, CR_OFF);
                     b.set(
@@ -408,9 +412,26 @@ impl Peripheral for Gpio {
                 }
                 core.unlocked = false;
             }
-            AFSEL_OFF | PUR_OFF | PDR_OFF | DEN_OFF => {
+            AFSEL_OFF | DEN_OFF => {
                 let word = b.commit_write(&core, word_off, val, shift);
                 b.set(&mut core, word_off, word);
+            }
+            PUR_OFF | PDR_OFF => {
+                // Setting a pull-up clears the pull-down and converse
+                // (p677/p679); only newly set, committed bits propagate.
+                let cur = b.get(&core, word_off);
+                let word = b.commit_write(&core, word_off, val, shift);
+                b.set(&mut core, word_off, word);
+                let set_bits = (word & !cur) & 0xFF;
+                if set_bits != 0 {
+                    let other = if word_off == PUR_OFF {
+                        PDR_OFF
+                    } else {
+                        PUR_OFF
+                    };
+                    let other_cur = b.get(&core, other);
+                    b.set(&mut core, other, other_cur & !set_bits);
+                }
             }
             RIS_OFF | MIS_OFF => {}
             _ => {
@@ -466,6 +487,7 @@ mod tests {
 
     const GPIOA_APB: u32 = 0x4000_4000;
     const GPIOA_AHB: u32 = 0x4005_8000;
+    const GPIOB_APB: u32 = 0x4000_5000;
     const GPIOC_APB: u32 = 0x4000_6000;
 
     fn port_a() -> (Gpio, Gpio) {
@@ -478,6 +500,10 @@ mod tests {
 
     fn port_c() -> Gpio {
         Gpio::for_aperture::<Tm4c123gh6pm>("GPIOC", "GPIOC", Gpio::new_shared())
+    }
+
+    fn port_b() -> Gpio {
+        Gpio::for_aperture::<Tm4c123gh6pm>("GPIOB", "GPIOB", Gpio::new_shared())
     }
 
     fn read_word(gpio: &mut Gpio, base: u32, offset: u32) -> u32 {
@@ -496,7 +522,7 @@ mod tests {
     }
 
     /// Table 10-7: plain ports reset to tri-stated GPIO, `PC[3:0]` to
-    /// committed JTAG/SWD.
+    /// committed JTAG/SWD; `PA`/`PB` carry their Table 10-8 `PCTL` resets.
     #[test]
     fn table_10_7_resets() {
         let (mut a, _) = port_a();
@@ -504,6 +530,9 @@ mod tests {
         assert_eq!(read_word(&mut a, GPIOA_APB, DEN_OFF), 0);
         assert_eq!(read_word(&mut a, GPIOA_APB, CR_OFF), 0xFF);
         assert_eq!(read_word(&mut a, GPIOA_APB, LOCK_OFF), LOCK_LOCKED);
+        assert_eq!(read_word(&mut a, GPIOA_APB, PCTL_OFF), 0x0022_2211);
+        let mut b = port_b();
+        assert_eq!(read_word(&mut b, GPIOB_APB, PCTL_OFF), 0x0000_3300);
         let mut c = port_c();
         assert_eq!(read_word(&mut c, GPIOC_APB, AFSEL_OFF), 0x0F);
         assert_eq!(read_word(&mut c, GPIOC_APB, DEN_OFF), 0x0F);
@@ -586,14 +615,33 @@ mod tests {
         let mut c = port_c();
         write_word(&mut c, GPIOC_APB, AFSEL_OFF, 0x00);
         assert_eq!(read_word(&mut c, GPIOC_APB, AFSEL_OFF), 0x0F);
-        // Unlock, commit PC0, then the write lands.
+        // Unlock, commit PC0; the `CR` write reapplies the lock (p684),
+        // but the committed bit stays committed, so the `AFSEL` write
+        // lands even while locked.
         write_word(&mut c, GPIOC_APB, LOCK_OFF, LOCK_KEY);
         assert_eq!(read_word(&mut c, GPIOC_APB, LOCK_OFF), 0);
         write_word(&mut c, GPIOC_APB, CR_OFF, 0xF1);
+        assert_eq!(read_word(&mut c, GPIOC_APB, LOCK_OFF), LOCK_LOCKED);
         write_word(&mut c, GPIOC_APB, AFSEL_OFF, 0x00);
         assert_eq!(read_word(&mut c, GPIOC_APB, AFSEL_OFF) & 0x01, 0);
-        // The `CR` write relocked.
+        // A non-key `GPIOLOCK` write relocks.
+        write_word(&mut c, GPIOC_APB, LOCK_OFF, 0x0000_0000);
         assert_eq!(read_word(&mut c, GPIOC_APB, LOCK_OFF), LOCK_LOCKED);
+    }
+
+    /// `PUR`/`PDR` setting clears the converse register (p677/p679).
+    #[test]
+    fn pur_pdr_mutual_clear() {
+        let (mut a, _) = port_a();
+        write_word(&mut a, GPIOA_APB, PUR_OFF, 0x0F);
+        assert_eq!(read_word(&mut a, GPIOA_APB, PUR_OFF), 0x0F);
+        assert_eq!(read_word(&mut a, GPIOA_APB, PDR_OFF), 0x00);
+        write_word(&mut a, GPIOA_APB, PDR_OFF, 0x03);
+        assert_eq!(read_word(&mut a, GPIOA_APB, PDR_OFF), 0x03);
+        assert_eq!(read_word(&mut a, GPIOA_APB, PUR_OFF), 0x0C);
+        // Clearing bits (writing 0) clears nothing on the other side.
+        write_word(&mut a, GPIOA_APB, PUR_OFF, 0x00);
+        assert_eq!(read_word(&mut a, GPIOA_APB, PDR_OFF), 0x03);
     }
 
     /// Both apertures share one port: APB writes show on AHB, including

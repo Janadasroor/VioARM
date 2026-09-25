@@ -1,6 +1,9 @@
 //! Board-level μDMA proof on `tm4c129xnczad`: a real SRAM control table
 //! drives a bus-coupled memory-to-memory copy — table read, data units,
-//! write-back, `CHIS` — with no test doubles.
+//! write-back, `DMAENASET` auto-clear — with no test doubles.
+//! Table 9-13 `0x504` is a reserved gap (no done register); completion is
+//! `dma_done` + the Table 9-6 vectors, with status via `DMAENASET`
+//! (auto-cleared) and `XFERMODE=STOP` write-back.
 
 use vioarm_core::board;
 use vioarm_core::machine::Machine;
@@ -11,7 +14,6 @@ const CFG: u32 = 0x04;
 const CTLBASE: u32 = 0x08;
 const ENASET: u32 = 0x28;
 const SWREQ: u32 = 0x14;
-const CHIS: u32 = 0x504;
 
 const TABLE: u32 = 0x2000_0400;
 const SRC: u32 = 0x2000_0800;
@@ -33,10 +35,12 @@ fn udma_mem_to_mem_copies() {
     for i in 0..16u32 {
         ww(mem, SRC + 4 * i, 0xA500_0000 + i);
     }
-    // Control table ch0: end pointers + `CHCTL` (32-bit, N=16, BASIC).
+    // Control table ch0: end pointers + `CHCTL` (32-bit, N=16, AUTO:
+    // software-triggered full transfer per §9.2.6.3; `BASIC` on SWREQ
+    // would move only `ARBSIZE` items per §9.2.6.2).
     ww(mem, TABLE, SRC + 64 - 1);
     ww(mem, TABLE + 4, DST + 64 - 1);
-    ww(mem, TABLE + 8, 0xAA00_C0F1);
+    ww(mem, TABLE + 8, 0xAA00_C0F2);
     // Arm + request.
     ww(mem, UDMA0 + CFG, 1);
     ww(mem, UDMA0 + CTLBASE, TABLE);
@@ -49,5 +53,9 @@ fn udma_mem_to_mem_copies() {
         assert_eq!(rw(mem, DST + 4 * i), 0xA500_0000 + i, "word {i} copied");
     }
     assert_eq!(rw(mem, TABLE + 8) & 7, 0, "mode STOP written back");
-    assert_eq!(rw(mem, UDMA0 + CHIS) & 1, 1, "channel flagged");
+    assert_eq!(
+        rw(mem, UDMA0 + ENASET) & 1,
+        0,
+        "DMAENASET auto-cleared on completion"
+    );
 }

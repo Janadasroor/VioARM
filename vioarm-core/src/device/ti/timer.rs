@@ -63,6 +63,10 @@ const RESETS: &[(u32, u32)] = &[
     (TAV_OFF, 0xFFFF_FFFF),
 ];
 
+/// Timer B offsets sharing the `0x0000_FFFF` (16/32-bit) / `0xFFFF_FFFF`
+/// (wide) reset pattern (§11 p757).
+const RESETS_TB: &[u32] = &[TBILR_OFF, TBMATCHR_OFF, TBR_OFF, TBV_OFF];
+
 /// Behavior behind one GPTM window (Timer A concatenated only).
 #[derive(Debug)]
 pub struct TimerBehavior {
@@ -348,10 +352,16 @@ impl Gptm {
         timer
     }
 
-    /// Stamp the nonzero datasheet resets over the SVD zeros.
+    /// Stamp the nonzero datasheet resets over the SVD zeros (Timer B
+    /// wide-aware: `0xFFFF_FFFF` on wide timers, `0x0000_FFFF` otherwise).
     fn stamp_resets(&mut self) {
+        let tb_reset = if self.inner.behavior().wide {
+            0xFFFF_FFFF
+        } else {
+            0x0000_FFFF
+        };
         let def = self.inner.def();
-        let stamped: Vec<(usize, u32)> = RESETS
+        let mut stamped: Vec<(usize, u32)> = RESETS
             .iter()
             .filter_map(|&(offset, value)| {
                 def.registers
@@ -360,6 +370,12 @@ impl Gptm {
                     .map(|idx| (idx, value))
             })
             .collect();
+        stamped.extend(RESETS_TB.iter().filter_map(|&offset| {
+            def.registers
+                .iter()
+                .position(|r| r.offset == offset)
+                .map(|idx| (idx, tb_reset))
+        }));
         let words = self.inner.regs_mut();
         for (idx, value) in stamped {
             words[idx] = value;
@@ -531,6 +547,22 @@ mod tests {
         t.tick(4);
         assert_eq!(t.count(), 0);
         assert_eq!(read_word(&mut t, TIMER0_BASE, RIS_OFF) & RIS_TATO, RIS_TATO);
+    }
+
+    /// Timer B resets follow the wide-aware pattern (p757): `0x0000_FFFF`
+    /// on 16/32-bit timers, `0xFFFF_FFFF` on wide timers.
+    #[test]
+    fn timer_b_resets_wide_aware() {
+        let mut t = timer0();
+        assert_eq!(read_word(&mut t, TIMER0_BASE, TBILR_OFF), 0x0000_FFFF);
+        assert_eq!(read_word(&mut t, TIMER0_BASE, TBMATCHR_OFF), 0x0000_FFFF);
+        assert_eq!(t.inner.word(TBR_OFF), 0x0000_FFFF);
+        assert_eq!(t.inner.word(TBV_OFF), 0x0000_FFFF);
+        let mut w = Gptm::for_device::<Tm4c123gh6pm>("WTIMER0");
+        assert_eq!(read_word(&mut w, WTIMER0_BASE, TBILR_OFF), 0xFFFF_FFFF);
+        assert_eq!(read_word(&mut w, WTIMER0_BASE, TBMATCHR_OFF), 0xFFFF_FFFF);
+        assert_eq!(w.inner.word(TBR_OFF), 0xFFFF_FFFF);
+        assert_eq!(w.inner.word(TBV_OFF), 0xFFFF_FFFF);
     }
 
     /// Wide timers assemble 64-bit intervals across `TAILR`/`TBILR`.

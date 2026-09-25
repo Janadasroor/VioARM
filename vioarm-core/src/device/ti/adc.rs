@@ -6,7 +6,8 @@
 //! nibbles (`TS`/`IE`/`END`; `D` differential ignored, single-ended read)
 //! into `SSFIFO` (depths 8/4/4/1), raising `INRn` when an `IE` sample
 //! completes, gated by `IM` with `ISC` W1C clear. `SSFSTAT` tracks
-//! `FULL`/`EMPTY`/fill, overflow sets `OSTAT`, empty reads set `USTAT`.
+//! `FULL`/`EMPTY` with head/tail pointers (p862), overflow sets `OSTAT`,
+//! empty reads set `USTAT` (both RW1C).
 //! `SAC` averaging folds `2^AVG` identical driven samples (exact for
 //! constant inputs, the only kind simulation drives; documented).
 //!
@@ -15,8 +16,9 @@
 //! temp code (default 0) — no silicon calibration constants are modeled.
 //! Conversions complete synchronously on the `PSSI` write (no sample
 //! timing; documented). Only processor triggers (`EMUX=0x0`, the reset)
-//! initiate; timer/PWM/GPIO triggers, comparator paths (`SSOP`/`SSDC`/`
-//! DCCTL`), `GSYNC`/`SYNCWAIT`, and `ADCCTL`/`SPC`/`SSPRI` effects stay
+//! initiate; simultaneous triggers run in `ADCSSPRI` priority order
+//! (p845). Timer/PWM/GPIO triggers, comparator paths (`SSOP`/`SSDC`/`
+//! DCCTL`), `GSYNC`/`SYNCWAIT`, and `ADCCTL`/`SPC` effects stay
 //! latched (documented). Each sequencer raises its own SVD line
 //! (`ADCnSS0`-`ADCnSS3`).
 
@@ -68,6 +70,11 @@ const RESETS: &[(u32, u32)] = &[
 #[derive(Debug)]
 pub struct AdcBehavior {
     fifo: [Vec<u16>; 4],
+    /// FIFO head (next-write) and tail (next-read) indices per sequencer
+    /// (`SSFSTAT.HPTR/TPTR`, p862): advance modulo depth on push/pop, so
+    /// they coincide when empty and diverge on wrap/pop.
+    head: [u8; 4],
+    tail: [u8; 4],
     popped: u16,
     /// Sticky raw interrupt flags per sequencer.
     inr: [bool; 4],
@@ -84,6 +91,8 @@ impl Default for AdcBehavior {
     fn default() -> Self {
         Self {
             fifo: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
+            head: [0; 4],
+            tail: [0; 4],
             inr: [false; 4],
             channels: [0; N_CHANNELS],
             temp_code: 0,
@@ -131,6 +140,7 @@ impl AdcBehavior {
             let code = self.sample(view, channel, temp);
             if self.fifo[seq].len() < depth {
                 self.fifo[seq].push(code);
+                self.head[seq] = (self.head[seq] + 1) % depth as u8;
             } else {
                 let ostat = view.get(OSTAT_OFF);
                 view.set(OSTAT_OFF, ostat | (1 << seq));
@@ -161,7 +171,7 @@ impl AdcBehavior {
     fn fstat(&self, seq: usize) -> u32 {
         let len = self.fifo[seq].len() as u32;
         let depth = SEQ_DEPTH[seq] as u32;
-        let mut w = (len & 0x0F) | ((len & 0x0F) << 4);
+        let mut w = u32::from(self.tail[seq] & 0x0F) | (u32::from(self.head[seq] & 0x0F) << 4);
         if len == 0 {
             w |= FSTAT_EMPTY;
         }
@@ -169,6 +179,17 @@ impl AdcBehavior {
             w |= FSTAT_FULL;
         }
         w
+    }
+
+    /// Sequencer execution order for simultaneous `PSSI` triggers:
+    /// `ADCSSPRI` priority encodings ascending (`0x0` highest, p845),
+    /// ties broken toward the lower sequencer (the encodings must be
+    /// unique for the ADC to operate properly).
+    fn sspri_order(view: &Registers<&mut [u32]>) -> [usize; 4] {
+        let pri = view.get(SSPRI_OFF);
+        let mut order = [0usize, 1, 2, 3];
+        order.sort_by_key(|&seq| ((pri >> (4 * seq)) & 0x03, seq as u32));
+        order
     }
 
     /// `SSFIFO`/`SSFSTAT` window test for any sequencer.
@@ -241,9 +262,10 @@ impl Behavior for AdcBehavior {
         }
         if offset == PSSI_OFF {
             // Processor trigger: run each requested *enabled* sequencer
-            // with a processor-selected trigger (`EMUX=0x0`).
+            // with a processor-selected trigger (`EMUX=0x0`), in
+            // `ADCSSPRI` priority order for simultaneous triggers (p845).
             let word = view.merged(offset, val, shift);
-            for seq in 0..4 {
+            for seq in Self::sspri_order(view) {
                 let emux = (view.get(EMUX_OFF) >> (4 * seq)) & 0x0F;
                 if word & (1 << seq) != 0 && view.get(ACTSS_OFF) & (1 << seq) != 0 && emux == 0 {
                     self.run_sequence(view, seq);
@@ -256,6 +278,12 @@ impl Behavior for AdcBehavior {
             || Self::fifo_seq(offset, SSFSTAT_OFF).is_some()
         {
             return view.get(offset);
+        }
+        if offset == OSTAT_OFF || offset == USTAT_OFF {
+            // RW1C: writing 1 clears the bit; writing 0 leaves it.
+            let word = view.get(offset) & !(u32::from(val) << shift);
+            self.refresh(view);
+            return word;
         }
         let word = view.merged(offset, val, shift);
         view.set(offset, word);
@@ -333,7 +361,7 @@ impl Peripheral for Adc {
             .checked_sub(base)
             .filter(|o| *o < len)
             .ok_or(BusError::Reserved)?;
-        for seq in 0..4 {
+        for (seq, _) in SEQ_DEPTH.iter().enumerate() {
             let fifo = SSFIFO_OFF + seq as u32 * SEQ_STRIDE;
             if (fifo..fifo + 4).contains(&off) {
                 let lane = off - fifo;
@@ -345,6 +373,7 @@ impl Peripheral for Adc {
                             b.popped = 0;
                         } else {
                             b.popped = b.fifo[seq].remove(0);
+                            b.tail[seq] = (b.tail[seq] + 1) % SEQ_DEPTH[seq] as u8;
                         }
                         b.refresh(view);
                     });
@@ -511,6 +540,87 @@ mod tests {
         read_word(&mut adc, SSFIFO_OFF + 3 * SEQ_STRIDE);
         read_word(&mut adc, SSFIFO_OFF + 3 * SEQ_STRIDE);
         assert_eq!(read_word(&mut adc, USTAT_OFF) & 0x08, 0x08);
+    }
+
+    /// `OSTAT`/`USTAT` are RW1C: writing 1 clears, writing 0 leaves the bit.
+    #[test]
+    fn ostat_ustat_rw1c() {
+        let mut adc = adc0();
+        setup_ss3(&mut adc);
+        write_word(&mut adc, PSSI_OFF, 0x08);
+        write_word(&mut adc, PSSI_OFF, 0x08); // SS3 is 1-deep: overflow
+        assert_eq!(read_word(&mut adc, OSTAT_OFF) & 0x08, 0x08);
+        write_word(&mut adc, OSTAT_OFF, 0x00); // writing 0 clears nothing
+        assert_eq!(read_word(&mut adc, OSTAT_OFF) & 0x08, 0x08);
+        write_word(&mut adc, OSTAT_OFF, 0x08); // writing 1 clears
+        assert_eq!(read_word(&mut adc, OSTAT_OFF) & 0x08, 0);
+        // Drain the one entry, then read empty: underflow, then clear.
+        read_word(&mut adc, SSFIFO_OFF + 3 * SEQ_STRIDE);
+        read_word(&mut adc, SSFIFO_OFF + 3 * SEQ_STRIDE);
+        assert_eq!(read_word(&mut adc, USTAT_OFF) & 0x08, 0x08);
+        write_word(&mut adc, USTAT_OFF, 0x08);
+        assert_eq!(read_word(&mut adc, USTAT_OFF) & 0x08, 0);
+    }
+
+    /// `SSFSTAT.HPTR/TPTR` are real head/tail pointers (p862): reset 0/0
+    /// with `EMPTY`, advancing on push/pop and diverging on wrap.
+    #[test]
+    fn ssfstat_head_tail_pointers() {
+        let mut adc = adc0();
+        let s1mux = SSMUX_OFF + SEQ_STRIDE;
+        let s1ctl = SSCTL_OFF + SEQ_STRIDE;
+        let s1fifo = SSFIFO_OFF + SEQ_STRIDE;
+        let s1stat = SSFSTAT_OFF + SEQ_STRIDE;
+        assert_eq!(read_word(&mut adc, s1stat), FSTAT_EMPTY);
+        adc.drive_channel(0, 0x111);
+        write_word(&mut adc, ACTSS_OFF, 0x02);
+        write_word(&mut adc, s1mux, 0x00);
+        write_word(&mut adc, s1ctl, SN_IE_END);
+        write_word(&mut adc, PSSI_OFF, 0x02);
+        write_word(&mut adc, PSSI_OFF, 0x02);
+        write_word(&mut adc, PSSI_OFF, 0x02);
+        let stat = read_word(&mut adc, s1stat);
+        assert_eq!((stat >> 4) & 0x0F, 3); // HPTR: three pushes
+        assert_eq!(stat & 0x0F, 0); // TPTR: no pops yet
+        assert_eq!(stat & FSTAT_EMPTY, 0);
+        read_word(&mut adc, s1fifo); // pop: only TPTR advances
+        let stat = read_word(&mut adc, s1stat);
+        assert_eq!((stat >> 4) & 0x0F, 3);
+        assert_eq!(stat & 0x0F, 1); // diverged
+        write_word(&mut adc, PSSI_OFF, 0x02); // head wraps 3 -> 0
+        let stat = read_word(&mut adc, s1stat);
+        assert_eq!((stat >> 4) & 0x0F, 0);
+        assert_eq!(stat & 0x0F, 1);
+    }
+
+    /// Simultaneous `PSSI` triggers run in `ADCSSPRI` order (p845).
+    #[test]
+    fn pssi_follows_sspri() {
+        let mut adc = adc0();
+        let order = adc
+            .inner
+            .with_view(|view, _| AdcBehavior::sspri_order(view));
+        assert_eq!(order, [0, 1, 2, 3]); // reset `0x3210`: SS0 highest
+                                         // SS3 highest, SS0 lowest: SS3=0, SS2=1, SS1=2, SS0=3.
+        write_word(&mut adc, SSPRI_OFF, 0x0000_0123);
+        let order = adc
+            .inner
+            .with_view(|view, _| AdcBehavior::sspri_order(view));
+        assert_eq!(order, [3, 2, 1, 0]);
+        // Simultaneous triggers still convert every requested sequencer.
+        adc.drive_channel(0, 0x100);
+        adc.drive_channel(2, 0x300);
+        write_word(&mut adc, ACTSS_OFF, 0x09);
+        write_word(&mut adc, SSMUX_OFF, 0x00);
+        write_word(&mut adc, SSCTL_OFF, SN_IE_END);
+        write_word(&mut adc, SSMUX_OFF + 3 * SEQ_STRIDE, 0x02);
+        write_word(&mut adc, SSCTL_OFF + 3 * SEQ_STRIDE, SN_IE_END);
+        write_word(&mut adc, PSSI_OFF, 0x09);
+        assert_eq!(read_word(&mut adc, SSFIFO_OFF) & 0xFFF, 0x100);
+        assert_eq!(
+            read_word(&mut adc, SSFIFO_OFF + 3 * SEQ_STRIDE) & 0xFFF,
+            0x300
+        );
     }
 
     /// Temperature-sensor samples read the driven temp code.

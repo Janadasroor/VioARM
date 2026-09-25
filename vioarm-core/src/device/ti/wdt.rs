@@ -9,8 +9,11 @@
 //! `INTEN` is sticky-once-set (further writes to the bit ignored until
 //! reset), `WRC` reads 1 on `WATCHDOG1` (instant write completion,
 //! documented — real WDT1 needs inter-access gaps) and 0 on `WATCHDOG0`
-//! (reserved), and `LOCK` (`0x1ACC_E551` unlocks; reads return lock
-//! status) gates every register but `ICR`. Both modules share vector 34
+//! (reserved), and `LOCK` (`0x1ACC_E551` unlocks; reads return lock status)
+//! gates every register but `ICR` and `TEST` (datasheet `WDTLOCK` page:
+//! a non-key lock value reapplies the lock "except for the Watchdog Test
+//! (`WDTTEST`) register", and locking "does not affect the `WDTICR`
+//! register"). Both modules share vector 34
 //! (datasheet Table 2-9), matching the SVD's inherited IRQ 18.
 
 use crate::device::svd::{Behavior, Device, RegisterFile, Registers};
@@ -37,12 +40,9 @@ const LOCK_KEY: u32 = 0x1ACC_E551;
 /// `WDTLOCK` read: locked.
 const LOCK_LOCKED: u32 = 0x0000_0001;
 
-/// Nonzero datasheet resets stamped over the SVD zeros.
-const RESETS: &[(u32, u32)] = &[
-    (LOAD_OFF, 0xFFFF_FFFF),
-    (VALUE_OFF, 0xFFFF_FFFF),
-    (LOCK_OFF, LOCK_LOCKED),
-];
+/// Nonzero datasheet resets stamped over the SVD zeros (`WDTLOCK` resets
+/// `0x0000_0000`, unlocked, so it needs no stamp).
+const RESETS: &[(u32, u32)] = &[(LOAD_OFF, 0xFFFF_FFFF), (VALUE_OFF, 0xFFFF_FFFF)];
 
 /// Behavior behind one watchdog window.
 #[derive(Debug)]
@@ -117,7 +117,8 @@ impl Behavior for WdtBehavior {
             wdt1,
             count: 0xFFFF_FFFF,
             latched: false,
-            unlocked: false,
+            // `WDTLOCK` resets `0x0000_0000`: unlocked (p786).
+            unlocked: true,
             reset_out,
             pending: false,
         };
@@ -170,7 +171,7 @@ impl Behavior for WdtBehavior {
             self.unlocked = word == LOCK_KEY;
             return word;
         }
-        if !self.unlocked {
+        if !self.unlocked && offset != TEST_OFF {
             return view.get(offset);
         }
         if offset == CTL_OFF {
@@ -225,7 +226,8 @@ impl Wdt {
                     wdt1,
                     count: 0xFFFF_FFFF,
                     latched: false,
-                    unlocked: false,
+                    // `WDTLOCK` resets `0x0000_0000`: unlocked (p786).
+                    unlocked: true,
                     reset_out,
                     pending: false,
                 },
@@ -332,16 +334,44 @@ mod tests {
         assert_eq!(read_word(wdt, LOCK_OFF), 0);
     }
 
-    /// Datasheet resets land on the bus (locked out of reset).
+    /// Datasheet resets land on the bus (`WDTLOCK` resets unlocked, p786).
     #[test]
     fn datasheet_resets_and_lock() {
         let (mut wdt, _) = wdt0();
         assert_eq!(read_word(&mut wdt, LOAD_OFF), 0xFFFF_FFFF);
         assert_eq!(read_word(&mut wdt, VALUE_OFF), 0xFFFF_FFFF);
-        assert_eq!(read_word(&mut wdt, LOCK_OFF), LOCK_LOCKED);
-        // Locked: `LOAD` writes sink.
+        assert_eq!(read_word(&mut wdt, LOCK_OFF), 0);
+        // Unlocked out of reset: `LOAD` writes land.
         write_word(&mut wdt, LOAD_OFF, 100);
-        assert_eq!(read_word(&mut wdt, LOAD_OFF), 0xFFFF_FFFF);
+        assert_eq!(read_word(&mut wdt, LOAD_OFF), 100);
+        // A non-key `LOCK` write relocks: `LOAD` writes sink again.
+        write_word(&mut wdt, LOCK_OFF, 0x0000_0000);
+        assert_eq!(read_word(&mut wdt, LOCK_OFF), LOCK_LOCKED);
+        write_word(&mut wdt, LOAD_OFF, 200);
+        assert_eq!(read_word(&mut wdt, LOAD_OFF), 100);
+    }
+
+    /// Locked state excepts `WDTTEST`, and `WDTICR` always services (p786).
+    #[test]
+    fn lock_excepts_test_and_icr_services() {
+        let (mut wdt, _) = wdt0();
+        write_word(&mut wdt, LOCK_OFF, 0x0000_0000);
+        assert_eq!(read_word(&mut wdt, LOCK_OFF), LOCK_LOCKED);
+        // `TEST` writes land while locked; other registers sink.
+        write_word(&mut wdt, TEST_OFF, 0x0000_0100);
+        assert_eq!(read_word(&mut wdt, TEST_OFF), 0x0000_0100);
+        write_word(&mut wdt, CTL_OFF, CTL_INTEN);
+        assert_eq!(read_word(&mut wdt, CTL_OFF) & CTL_INTEN, 0);
+        // Latch an interrupt, relock, then service it via `ICR` while locked.
+        unlock(&mut wdt);
+        write_word(&mut wdt, LOAD_OFF, 4);
+        write_word(&mut wdt, CTL_OFF, CTL_INTEN);
+        wdt.tick(4);
+        assert_eq!(wdt.pending(), 1);
+        write_word(&mut wdt, LOCK_OFF, 0x0);
+        write_word(&mut wdt, ICR_OFF, 0x01);
+        assert_eq!(wdt.pending(), 0);
+        assert_eq!(wdt.count(), 4);
     }
 
     /// First time-out latches the interrupt; `ICR` clears and reloads.

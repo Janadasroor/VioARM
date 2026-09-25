@@ -1,4 +1,5 @@
 /packs/
+/datasheets/
 /target/
 cosim/build/
 /.opencode/

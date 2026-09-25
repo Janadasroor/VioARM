@@ -54,6 +54,9 @@ pub struct EepromBehavior {
     done: u32,
     /// Hidden-block mask (`EEHIDE` state).
     hidden: u32,
+    /// Last `EERDWRINC` lane-0 word (upper lanes serve the latch; `OFFSET`
+    /// already advanced — firmware word-reads ascending, like the ADC FIFO).
+    inc_latch: u32,
     /// Shared Flash-vector completion link (set when `EEINT` enables it).
     flash_link: Arc<Mutex<bool>>,
 }
@@ -73,22 +76,24 @@ impl EepromBehavior {
 
     /// Program the selected word (instant completion, like silicon after
     /// its timing elapses — firmware only observes the poll loop).
+    /// `EERDWRINC` reads-or-writes then increments `OFFSET` regardless of
+    /// error: protection failures still advance it (EERDWRINC p564).
     fn program(&mut self, view: &mut Registers<&mut [u32]>, value: u32, inc: bool) {
         let (block, mut offset) = (self.block(view), self.offset(view));
         if !self.accessible(block) {
             self.done |= DONE_NOPERM;
-            return;
+        } else {
+            self.blocks[block][offset] = value;
+            self.done = 0;
+            if view.get(EEINT_OFF) & 0x01 != 0 {
+                if let Ok(mut link) = self.flash_link.lock() {
+                    *link = true;
+                }
+            }
         }
-        self.blocks[block][offset] = value;
         if inc {
             offset = (offset + 1) % WORDS_PER_BLOCK;
             view.set(EEOFFSET_OFF, offset as u32);
-        }
-        self.done = 0;
-        if view.get(EEINT_OFF) & 0x01 != 0 {
-            if let Ok(mut link) = self.flash_link.lock() {
-                *link = true;
-            }
         }
     }
 
@@ -109,6 +114,7 @@ impl Behavior for EepromBehavior {
     fn reset(&mut self) {
         self.done = 0;
         self.hidden = 0;
+        self.inc_latch = ERASED;
     }
 
     fn on_read(&mut self, view: &mut Registers<&mut [u32]>, offset: u32, value: u32) -> u32 {
@@ -197,6 +203,7 @@ impl Eeprom {
                     blocks: [[ERASED; WORDS_PER_BLOCK]; N_BLOCKS],
                     done: 0,
                     hidden: 0,
+                    inc_latch: ERASED,
                     flash_link,
                 },
             ),
@@ -242,6 +249,33 @@ impl Peripheral for Eeprom {
     }
 
     fn read(&mut self, addr: u32) -> Result<u8, BusError> {
+        // `EERDWRINC` reads the selected word then increments `OFFSET`
+        // (EERDWRINC p564): the lane-0 read latches the word and advances,
+        // upper lanes serve the latch (firmware word-reads ascending).
+        let (base, len) = {
+            let r = self.inner.ranges()[0];
+            (r.base, r.len)
+        };
+        let off = addr
+            .checked_sub(base)
+            .filter(|o| *o < len)
+            .ok_or(BusError::Reserved)?;
+        if (EERDWRINC_OFF..EERDWRINC_OFF + 4).contains(&off) {
+            let lane = off - EERDWRINC_OFF;
+            if lane == 0 {
+                self.inner.with_view(|view, b| {
+                    let (block, offset) = (b.block(view), b.offset(view));
+                    b.inc_latch = if b.accessible(block) {
+                        b.blocks[block][offset]
+                    } else {
+                        ERASED
+                    };
+                    view.set(EEOFFSET_OFF, ((offset + 1) % WORDS_PER_BLOCK) as u32);
+                });
+            }
+            let word = self.inner.behavior().inc_latch;
+            return Ok(((word >> (8 * lane)) & 0xFF) as u8);
+        }
         self.inner.read(addr)
     }
 
@@ -342,6 +376,44 @@ mod tests {
         write_word(&mut eeprom, EESUPP_OFF, SUPP_START);
         assert_eq!(eeprom.raw_word(1, 0), ERASED);
         assert!(*link.lock().unwrap());
+    }
+
+    /// `EERDWRINC` reads return the selected word then increment `OFFSET`.
+    #[test]
+    fn eerdwrinc_read_increments() {
+        let (mut eeprom, _) = eeprom();
+        write_word(&mut eeprom, EEBLOCK_OFF, 0);
+        write_word(&mut eeprom, EEOFFSET_OFF, 0);
+        write_word(&mut eeprom, EERDWR_OFF, 0xAAAA_AAAA);
+        write_word(&mut eeprom, EEOFFSET_OFF, 1);
+        write_word(&mut eeprom, EERDWR_OFF, 0xBBBB_BBBB);
+        write_word(&mut eeprom, EEOFFSET_OFF, 0);
+        assert_eq!(read_word(&mut eeprom, EERDWRINC_OFF), 0xAAAA_AAAA);
+        assert_eq!(read_word(&mut eeprom, EEOFFSET_OFF), 1);
+        assert_eq!(read_word(&mut eeprom, EERDWRINC_OFF), 0xBBBB_BBBB);
+        assert_eq!(read_word(&mut eeprom, EEOFFSET_OFF), 2);
+        // Wraps within the block.
+        write_word(&mut eeprom, EEOFFSET_OFF, 15);
+        read_word(&mut eeprom, EERDWRINC_OFF);
+        assert_eq!(read_word(&mut eeprom, EEOFFSET_OFF), 0);
+    }
+
+    /// Denied `EERDWRINC` accesses still increment `OFFSET` (p564): reads
+    /// return all-ones, writes report `NOPERM`.
+    #[test]
+    fn eerdwrinc_noperm_still_increments() {
+        let (mut eeprom, _) = eeprom();
+        write_word(&mut eeprom, EEHIDE_OFF, 0x02); // hide block 1
+        write_word(&mut eeprom, EEBLOCK_OFF, 1);
+        write_word(&mut eeprom, EEOFFSET_OFF, 7);
+        assert_eq!(read_word(&mut eeprom, EERDWRINC_OFF), ERASED);
+        assert_eq!(read_word(&mut eeprom, EEOFFSET_OFF), 8);
+        write_word(&mut eeprom, EERDWRINC_OFF, 0x1234_5678);
+        assert_eq!(
+            read_word(&mut eeprom, EEDONE_OFF) & DONE_NOPERM,
+            DONE_NOPERM
+        );
+        assert_eq!(read_word(&mut eeprom, EEOFFSET_OFF), 9);
     }
 
     /// Hidden blocks read erased and reject writes with `NOPERM`.

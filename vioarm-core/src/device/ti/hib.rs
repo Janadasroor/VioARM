@@ -2,7 +2,8 @@
 //!
 //! RTC operation follows the TM4C123GH6PM datasheet (SPMS376E §7):
 //! `RTCC` counts seconds once `RTCEN` sets, loaded from `RTCLD`, matching
-//! `RTCM0` into the `RTCALT0` latch behind `IM` with `IC` W1C clear;
+//! `RTCM0` into the `RTCALT0` latch only when `RTCSSC` also matches
+//! `RTCSSM` in `HIBRTCSS` (p516), behind `IM` with `IC` W1C clear;
 //! `RTCT` trim and `HIBDATA` latch; `HIBCTL` reset `0x8000_2000` (`WRC`
 //! reads 1 — instant write completion, documented — plus the `CLK32EN`
 //! default); `HIBREQ`/power-domain bits sink (no power domains in
@@ -83,11 +84,15 @@ impl Behavior for HibBehavior {
         while total >= TICKS_PER_SECOND {
             total -= TICKS_PER_SECOND;
             self.rtc = self.rtc.wrapping_add(1);
-            if self.rtc == view.get(RTCM0_OFF) {
-                self.rtcmatch = true;
-            }
         }
         self.remainder = total;
+        // `RTCALT0` latches only when the seconds match `RTCM0` and the
+        // sub-seconds match `RTCSSM` (HIBRTCSS p516).
+        let rtcssc = ((self.remainder * SUBSECOND_DIV / TICKS_PER_SECOND) & 0x7FFF) as u32;
+        let rtcssm = (view.get(RTCSS_OFF) >> 16) & 0x7FFF;
+        if self.rtc == view.get(RTCM0_OFF) && rtcssc == rtcssm {
+            self.rtcmatch = true;
+        }
         self.refresh(view);
     }
 
@@ -98,7 +103,12 @@ impl Behavior for HibBehavior {
     fn on_read(&mut self, view: &mut Registers<&mut [u32]>, offset: u32, value: u32) -> u32 {
         let out = match offset {
             RTCC_OFF => self.rtc,
-            RTCSS_OFF => ((self.remainder * SUBSECOND_DIV / TICKS_PER_SECOND) & 0x7FFF) as u32,
+            RTCSS_OFF => {
+                // `RTCSSC` (14:0) is the live sub-second count; `RTCSSM`
+                // (30:16) is the latched match value.
+                let rtcssc = ((self.remainder * SUBSECOND_DIV / TICKS_PER_SECOND) & 0x7FFF) as u32;
+                (view.get(RTCSS_OFF) & 0x7FFF_0000) | rtcssc
+            }
             CTL_OFF => value | CTL_WRC,
             RIS_OFF => self.ris(),
             MIS_OFF => self.ris() & view.get(IM_OFF) & RIS_RTCALT0,
@@ -115,8 +125,17 @@ impl Behavior for HibBehavior {
         val: u8,
         shift: u32,
     ) -> u32 {
-        if offset == RTCC_OFF || offset == RTCSS_OFF || offset == RIS_OFF || offset == MIS_OFF {
+        if offset == RTCC_OFF || offset == RIS_OFF || offset == MIS_OFF {
             return view.get(offset);
+        }
+        if offset == RTCSS_OFF {
+            // `RTCSSM` (30:16) is RW; `RTCSSC` (14:0) and reserved bits sink.
+            let cur = view.get(offset);
+            let word = (cur & !(0xFF << shift)) | (u32::from(val) << shift);
+            let new = (cur & !0x7FFF_0000) | (word & 0x7FFF_0000);
+            view.set(offset, new);
+            self.refresh(view);
+            return new;
         }
         if offset == IC_OFF {
             let word = view.merged(offset, val, shift);
@@ -270,6 +289,39 @@ mod tests {
         assert_eq!(hib.pending(), 0);
         hib.tick(2 * TICKS_PER_SECOND);
         assert_eq!(hib.rtc(), 1002);
+        assert_eq!(read_word(&mut hib, RIS_OFF) & RIS_RTCALT0, RIS_RTCALT0);
+        assert_eq!(hib.pending(), RIS_RTCALT0);
+        write_word(&mut hib, IC_OFF, RIS_RTCALT0);
+        assert_eq!(hib.pending(), 0);
+    }
+
+    /// `RTCALT0` stays quiet when the sub-seconds mismatch (p516), even
+    /// with `RTCC==RTCM0`.
+    #[test]
+    fn rtcalt0_needs_subsecond_match() {
+        let mut hib = hib();
+        write_word(&mut hib, RTCLD_OFF, 1000);
+        write_word(&mut hib, RTCM0_OFF, 1002);
+        write_word(&mut hib, RTCSS_OFF, 0x0100_0000); // `RTCSSM` = 0x100
+        assert_eq!(read_word(&mut hib, RTCSS_OFF) & 0x7FFF_0000, 0x0100_0000);
+        write_word(&mut hib, IM_OFF, RIS_RTCALT0);
+        write_word(&mut hib, CTL_OFF, CTL_RTCEN);
+        hib.tick(2 * TICKS_PER_SECOND); // `RTCC` reaches `RTCM0`, sub-seconds 0
+        assert_eq!(hib.rtc(), 1002);
+        assert_eq!(read_word(&mut hib, RIS_OFF) & RIS_RTCALT0, 0);
+        assert_eq!(hib.pending(), 0);
+    }
+
+    /// Mid-second match: seconds already equal, sub-seconds reach `RTCSSM`.
+    #[test]
+    fn rtcalt0_midsecond_match() {
+        let mut hib = hib();
+        write_word(&mut hib, RTCLD_OFF, 1000);
+        write_word(&mut hib, RTCM0_OFF, 1000);
+        write_word(&mut hib, RTCSS_OFF, 0x4000_0000); // `RTCSSM` = 0x4000
+        write_word(&mut hib, IM_OFF, RIS_RTCALT0);
+        write_word(&mut hib, CTL_OFF, CTL_RTCEN);
+        hib.tick(TICKS_PER_SECOND / 2); // remainder 244 -> `RTCSSC` 0x4000
         assert_eq!(read_word(&mut hib, RIS_OFF) & RIS_RTCALT0, RIS_RTCALT0);
         assert_eq!(hib.pending(), RIS_RTCALT0);
         write_word(&mut hib, IC_OFF, RIS_RTCALT0);

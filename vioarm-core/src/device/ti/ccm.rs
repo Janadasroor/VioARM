@@ -147,6 +147,17 @@ impl Behavior for CcmBehavior {
             }
             CRCSEED_OFF => self.crc = word,
             CRCDIN_OFF => {
+                // Register 1 `INIT` is self-clearing: the first `CRCDIN`
+                // write clears it to zero and it stays zero unless
+                // rewritten (SPMS433B §12, Register 1). Clear on any lane
+                // so partial-word writes still count as the first write.
+                let ctrl_init = view.get(CRCCTRL_OFF);
+                if (ctrl_init >> CTRL_INIT_SHIFT) & CTRL_INIT_MASK != 0 {
+                    view.set(
+                        CRCCTRL_OFF,
+                        ctrl_init & !(CTRL_INIT_MASK << CTRL_INIT_SHIFT),
+                    );
+                }
                 let ctrl = view.get(CRCCTRL_OFF);
                 if ctrl & CTRL_TYPE_MASK == TYPE_P4C11DB7 {
                     if ctrl & CTRL_SIZE != 0 {
@@ -320,5 +331,41 @@ mod tests {
         write_word(&mut ccm, CRCCTRL_OFF, 0x01); // P1021
         write_word(&mut ccm, CRCDIN_OFF, 0xFFFF_FFFF);
         assert_eq!(read_word(&mut ccm, CRCSEED_OFF), 0);
+    }
+
+    /// Register 1 `INIT` self-clears with the first `CRCDIN` write
+    /// (SPMS433B §12) and stays clear for the rest of the operation.
+    #[test]
+    fn init_self_clears_on_first_din() {
+        let mut ccm = ccm0();
+        write_word(
+            &mut ccm,
+            CRCCTRL_OFF,
+            TYPE_P4C11DB7 | (INIT_ONES << CTRL_INIT_SHIFT),
+        );
+        assert_eq!(
+            (read_word(&mut ccm, CRCCTRL_OFF) >> CTRL_INIT_SHIFT) & CTRL_INIT_MASK,
+            INIT_ONES,
+            "INIT latched"
+        );
+        write_word(&mut ccm, CRCDIN_OFF, 0x1234_5678);
+        assert_eq!(
+            (read_word(&mut ccm, CRCCTRL_OFF) >> CTRL_INIT_SHIFT) & CTRL_INIT_MASK,
+            0,
+            "INIT self-cleared by first CRCDIN"
+        );
+        // A second block does not re-init: the context keeps running.
+        let after_first = read_word(&mut ccm, CRCSEED_OFF);
+        write_word(&mut ccm, CRCDIN_OFF, 0x1234_5678);
+        assert_ne!(
+            read_word(&mut ccm, CRCSEED_OFF),
+            after_first,
+            "context advances without re-init"
+        );
+        assert_eq!(
+            (read_word(&mut ccm, CRCCTRL_OFF) >> CTRL_INIT_SHIFT) & CTRL_INIT_MASK,
+            0,
+            "INIT stays clear"
+        );
     }
 }

@@ -193,11 +193,13 @@ impl Behavior for CompBehavior {
         }
         let word = view.merged(offset, val, shift);
         view.set(offset, word);
-        // `CINV`/`ISEN` changes re-evaluate levels immediately.
+        // `CINV`/`ISEN` changes re-evaluate levels without latching: edge
+        // sense fires only on output transitions (§19 `ISEN`), never on a
+        // bare config write — just resync the edge detector.
         if offset == ACCTL0_OFF || offset == ACCTL1_OFF || offset == 0x64 {
             let n = ((offset - ACCTL0_OFF) / 0x20) as usize;
             if n < self.ncomp {
-                self.poll(view, n);
+                self.prev[n] = self.output(view, n);
             }
         }
         self.refresh(view);
@@ -377,6 +379,34 @@ mod tests {
         write_word(&mut comp, ACMIS_OFF, 0x01);
         assert_eq!(read_word(&mut comp, ACRIS_OFF) & 0x01, 0);
         assert_eq!(comp.pending() & 0x01, 0);
+    }
+
+    /// A bare `ACCTL` write latches no edge (§19): edge sense fires only
+    /// on output transitions, so configuring sense (or `CINV`) while the
+    /// output sits high stays quiet; the next real transition still fires.
+    #[test]
+    fn config_write_latches_no_edge() {
+        let mut comp = comp();
+        comp.drive(0, true);
+        // Output already high: selecting rising-edge sense must not latch.
+        write_word(&mut comp, ACCTL0_OFF, SENSE_RISING << CTL_ISEN_SHIFT);
+        write_word(&mut comp, ACINTEN_OFF, 0x01);
+        assert_eq!(read_word(&mut comp, ACRIS_OFF) & 0x01, 0);
+        assert_eq!(comp.pending() & 0x01, 0);
+        // Flipping `CINV` (output now low) must not latch a falling edge
+        // either — no driven transition happened.
+        write_word(
+            &mut comp,
+            ACCTL0_OFF,
+            (SENSE_FALLING << CTL_ISEN_SHIFT) | CTL_CINV,
+        );
+        assert_eq!(read_word(&mut comp, ACRIS_OFF) & 0x01, 0);
+        // A real driven transition still fires.
+        write_word(&mut comp, ACCTL0_OFF, SENSE_RISING << CTL_ISEN_SHIFT);
+        comp.drive(0, false);
+        comp.drive(0, true);
+        assert_eq!(read_word(&mut comp, ACRIS_OFF) & 0x01, 0x01);
+        assert_eq!(comp.pending() & 0x01, 0x01);
     }
 
     /// Level sense tracks live with no latch.
