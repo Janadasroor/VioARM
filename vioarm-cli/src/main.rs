@@ -1602,7 +1602,7 @@ struct Cli {
     hex: Option<PathBuf>,
     #[arg(long, value_enum, default_value_t = Board::Virtual, help = BOARD_HELP)]
     board: Board,
-    #[arg(long, default_value_t = 0, value_parser = parse_u32)]
+    #[arg(long, default_value_t = 0, value_parser = parse_u32, help = "Vector-table base for all formats (load base for raw binaries)")]
     base: u32,
     #[arg(long, default_value_t = 1_000_000)]
     budget: u64,
@@ -1907,7 +1907,7 @@ fn machine_for(
         eprintln!("{} reset failed: {cause}", "error:".red().bold());
         if vector_base.is_some() {
             eprintln!(
-                "  {} raw binaries boot from their load base; on STM32 load at the 0x0 flash alias — stores to the gated 0x0800_0000 window are dropped while the FLASH controller is locked",
+                "  {} the reset vector table could not be read: for ELF/HEX check the image targets this board; for raw binaries pass the load base with --base",
                 "hint:".bright_cyan().bold()
             );
         }
@@ -2919,7 +2919,7 @@ fn debug_repl(image: PathBuf, board: Board, base: u32) {
     if !symbols.is_empty() {
         println!("{} {} symbols", "symbols:".dimmed(), symbols.len());
     }
-    let mut m = machine_for(board, &img, (kind == "bin").then_some(base));
+    let mut m = machine_for(board, &img, Some(base));
     println!(
         "{} {} — type {} for help",
         "VioARM debug".bright_cyan().bold(),
@@ -3315,7 +3315,7 @@ fn main() {
                     std::process::exit(2);
                 }
                 let (img, kind) = load_image_auto(&image, base);
-                let mut m = machine_for(board, &img, (kind == "bin").then_some(base));
+                let mut m = machine_for(board, &img, Some(base));
                 m.semihost_enable(semihost);
                 m.set_fast_quantum(fast);
                 let mut pins = Vec::with_capacity(pin_log.len());
@@ -3354,7 +3354,7 @@ fn main() {
                 use vioarm_core::replay::{parse_snap, record, RecordMeta};
                 let (img, _) = load_image_auto(&image, base);
                 let image_bytes = flat_image_bytes(&img);
-                let mut m = machine_for(board, &img, None);
+                let mut m = machine_for(board, &img, Some(base));
                 m.semihost_enable(semihost);
                 m.set_fast_quantum(fast);
                 let spans: Vec<(u32, u32)> = if snap.is_empty() {
@@ -3442,7 +3442,7 @@ fn main() {
                     .collect();
                 let spans: Vec<(u32, u32)> =
                     golden.snaps.iter().map(|(b, l, _)| (*b, *l)).collect();
-                let mut m = machine_for(board, &img, None);
+                let mut m = machine_for(board, &img, Some(base));
                 m.semihost_enable(golden.semihost);
                 let mut diffs = Vec::new();
                 let want_board = format!("{board:?}").to_ascii_lowercase();
@@ -3474,7 +3474,7 @@ fn main() {
                 pin_sample,
             } => {
                 let (img, _) = load_image_auto(&image, base);
-                let mut m = machine_for(board, &img, None);
+                let mut m = machine_for(board, &img, Some(base));
                 m.semihost_enable(semihost);
                 banner();
                 match format {
@@ -3600,7 +3600,7 @@ fn main() {
                 jit,
             } => {
                 let (img, _) = load_image_auto(&image, base);
-                let mut m = machine_for(board, &img, None);
+                let mut m = machine_for(board, &img, Some(base));
                 m.semihost_enable(semihost);
                 let listener =
                     std::net::TcpListener::bind(("127.0.0.1", port)).unwrap_or_else(|e| {

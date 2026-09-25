@@ -1352,6 +1352,18 @@ impl<M: Bus> Bus for SystemMemory<M> {
         self.write(addr.wrapping_add(1), hi)
     }
 
+    /// Debugger-style flash access for image loading (see [`Bus`]):
+    /// force the gate open (or shut) around host-side provisioning.
+    fn set_loader_unlock(&mut self, on: bool) {
+        if let Some(gate) = &self.flash {
+            let mut guard = gate.lock().unwrap_or_else(|e| e.into_inner());
+            guard.unlocked = on;
+            guard.program = on;
+            guard.unlocked2 = on;
+            guard.program2 = on;
+        }
+    }
+
     /// Translate a data access for the JIT fast path, mirroring the
     /// read/write dispatch exactly: anything that is not plain backing
     /// bytes (devices, SCB/NVIC/ITM, disabled QSPI windows, the gated
@@ -2169,6 +2181,27 @@ mod tests {
         assert!(
             gate.lock().unwrap_or_else(|e| e.into_inner()).wrprterr,
             "WRPRTERR latches"
+        );
+    }
+
+    /// Host-side loader provisioning programs gated flash (debugger-style
+    /// unlock window) and relocks after.
+    #[test]
+    fn loader_unlock_provisions_locked_flash() {
+        let (mut sys, gate) = gated_system();
+        sys.set_loader_unlock(true);
+        sys.write_word(MAIN_FLASH, 0xDEAD_BEEF).unwrap();
+        sys.set_loader_unlock(false);
+        assert_eq!(sys.read_word(MAIN_FLASH).unwrap(), 0xDEAD_BEEF);
+        assert!(
+            !gate.lock().unwrap_or_else(|e| e.into_inner()).unlocked,
+            "relocked after provisioning"
+        );
+        sys.write_word(MAIN_FLASH + 4, 0x1234_5678).unwrap();
+        assert_eq!(
+            sys.read_word(MAIN_FLASH + 4).unwrap(),
+            0,
+            "firmware writes still gated"
         );
     }
 

@@ -129,9 +129,13 @@ famous firmware), and the kings harness ports in days.
   same interleave as KEY1) — the oracle caught the alpha-step byte
   order (block 1 matched, block 2 decided little-endian). Frozen oracle
   vectors (`aes_resid_vecs.json`: ICM/CFB/XTS enc/dec, carry wrap,
-  variant agreement, XTS-192 inert). F8/F9 stay latched by decision
-  (engine-specific `KEY3` construction, no oracle in the fetched
-  sources); XTS-192/steal-tails/continuation reloads documented. Only
+  variant agreement, XTS-192 inert). F8/F9 permanently latched (verdict
+  2026-09-24: no TI-published construction — no AES-engine chapter in the
+  datasheet, TivaWare names modes + key slots only; no oracle obtainable
+  — no TivaWare examples/vectors, UMTS f8/f9 are KASUMI-based per TS
+  35.201 and do not apply, LTE single-key shapes do not match
+  KEY1/KEY2/KEY3; zero firmware demand; wrong crypto worse than
+  latched); XTS-192/steal-tails/continuation reloads documented. Only
   F8/F9/DMA/`SAVE_CONTEXT` still latch.
 - **129 LCD (done 2026-09-23): raster timing + done IRQs** (3 lib
   tests, XNCZAD audit 67/72): PL110-compatible frames, no pixels.

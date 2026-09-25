@@ -65,6 +65,14 @@ const PLL3DIVR_OFFSET: u32 = 0x40;
 /// Modeled `HSE` startup delay in device ticks (deterministic stand-in for
 /// millisecond-scale crystal startup; firmware observes poll loops only).
 const HSE_STARTUP_TICKS: u32 = 512;
+/// LSI RC startup delay (same order as HSE; deterministic, not exact).
+const LSI_STARTUP_TICKS: u32 = 512;
+/// F1 `RCC_CSR` offset (LSION/LSIRDY live here on all modeled families
+/// with this layout; other families ignore the CSR arm).
+const CSR_F1_OFFSET: u32 = 0x24;
+/// `CSR` LSION / LSIRDY bits.
+const LSION: u32 = 1 << 0;
+const LSIRDY: u32 = 1 << 1;
 /// Modeled PLL lock delay in device ticks (all three PLLs).
 const PLL_STARTUP_TICKS: u32 = 128;
 
@@ -381,6 +389,7 @@ struct RccBehavior {
     hse_hz: u32,
     /// Remaining `HSE` startup ticks (`0` = ready).
     hse_startup: u32,
+    lsi_startup: u32,
     /// Remaining PLL1 lock ticks (`0` = ready).
     pll_startup: u32,
     /// Remaining PLL2 lock ticks (`0` = ready).
@@ -404,6 +413,7 @@ impl Default for RccBehavior {
             pll3_h7: (32, 128, 1, 1, 1),
             hse_hz: HSE_HZ,
             hse_startup: 0,
+            lsi_startup: 0,
             pll_startup: 0,
             pll2_startup: 0,
             pll3_startup: 0,
@@ -689,11 +699,18 @@ impl Behavior for RccBehavior {
     /// PLL2/3 outputs recompute as their locks land (nothing else would
     /// refresh them: no register write happens at expiry).
     fn tick(&mut self, view: &mut Registers<&mut [u32]>, delta: u64) {
-        if self.hse_startup | self.pll_startup | self.pll2_startup | self.pll3_startup == 0 {
+        if self.hse_startup
+            | self.lsi_startup
+            | self.pll_startup
+            | self.pll2_startup
+            | self.pll3_startup
+            == 0
+        {
             return;
         }
         let dt = u32::try_from(delta).unwrap_or(u32::MAX);
         self.hse_startup = self.hse_startup.saturating_sub(dt);
+        self.lsi_startup = self.lsi_startup.saturating_sub(dt);
         self.pll_startup = self.pll_startup.saturating_sub(dt);
         let was2 = self.pll2_startup;
         let was3 = self.pll3_startup;
@@ -710,6 +727,7 @@ impl Behavior for RccBehavior {
     /// `on_read` gates ready bits on the ON bits anyway).
     fn reset(&mut self) {
         self.hse_startup = 0;
+        self.lsi_startup = 0;
         self.pll_startup = 0;
         self.pll2_startup = 0;
         self.pll3_startup = 0;
@@ -740,6 +758,13 @@ impl Behavior for RccBehavior {
             };
             let csi = if value & CSION != 0 { CSIRDY } else { 0 };
             value | HSION | self.hsi_rdy | hse | pll | pll2 | pll3 | csi
+        } else if offset == CSR_F1_OFFSET && self.family == RccFamily::F1 {
+            // LSI ready follows LSION after the modeled startup delay.
+            if value & LSION != 0 && self.lsi_startup == 0 {
+                value | LSIRDY
+            } else {
+                value
+            }
         } else if offset == self.cfgr_offset() {
             // SW selects SYSCLK; SWS reports it on the next read.
             match self.family {
@@ -769,6 +794,12 @@ impl Behavior for RccBehavior {
         // CFGR is fully writable; SW/SWS handling is in on_read.
         let word = view.merged(offset, val, shift);
         match (self.family, offset) {
+            (_, CSR_F1_OFFSET) if self.family == RccFamily::F1 => {
+                let old = view.get(CSR_F1_OFFSET);
+                if old & LSION == 0 && word & LSION != 0 {
+                    self.lsi_startup = LSI_STARTUP_TICKS;
+                }
+            }
             (_, CR_OFFSET) => {
                 // Rising ON edges arm the modeled startup delays.
                 let old = view.get(CR_OFFSET);
@@ -1030,6 +1061,25 @@ mod tests {
         write_word(&mut r, BASE + CR, 0);
         assert_eq!(read_word(&mut r, BASE + CR) & HSERDY, 0);
         assert_ne!(read_word(&mut r, BASE + CR) & HSION, 0);
+    }
+
+    /// LSI ready follows LSION after the modeled delay (Zephyr's fixed
+    /// clock init spins on `LSIRDY`).
+    #[test]
+    fn lsi_reports_ready_after_startup_ticks() {
+        const CSR: u32 = 0x24;
+        const LSION: u32 = 1 << 0;
+        const LSIRDY: u32 = 1 << 1;
+        let mut r = Rcc::new();
+        assert_eq!(read_word(&mut r, BASE + CSR) & LSIRDY, 0);
+        write_word(&mut r, BASE + CSR, LSION);
+        assert_eq!(read_word(&mut r, BASE + CSR) & LSIRDY, 0);
+        r.tick(511);
+        assert_eq!(read_word(&mut r, BASE + CSR) & LSIRDY, 0);
+        r.tick(1);
+        assert_eq!(read_word(&mut r, BASE + CSR) & LSIRDY, LSIRDY);
+        write_word(&mut r, BASE + CSR, 0);
+        assert_eq!(read_word(&mut r, BASE + CSR) & LSIRDY, 0);
     }
 
     #[test]

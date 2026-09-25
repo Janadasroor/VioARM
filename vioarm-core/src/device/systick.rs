@@ -121,12 +121,18 @@ impl Peripheral for SysTick {
         if !self.ranges[0].contains(addr) {
             return Err(BusError::Reserved);
         }
-        // On v6-M, reading CVR clears the COUNTFLAG.
+        // COUNTFLAG clears on a CSR (STK_CTRL) read, on every architecture
+        // (ARMv6-M and v7-M alike); CVR reads never clear it. Zephyr's
+        // tickless `elapsed()` reads CVR/CSR/CVR and trusts the flag to
+        // survive the CVR reads — clearing it early froze the kernel clock
+        // with the LED dark. The clear completes on the word's last lane
+        // so a single word read still observes the flag.
         let offset = addr - BASE;
-        if (8..=11).contains(&offset) {
+        let v = self.read_reg(offset);
+        if offset == 3 {
             self.countflag = false;
         }
-        Ok(self.read_reg(offset))
+        Ok(v)
     }
 
     fn write(&mut self, addr: u32, val: u8) -> Result<(), BusError> {
@@ -254,14 +260,19 @@ mod tests {
     }
 
     #[test]
-    fn reading_cvr_clears_countflag() {
+    fn countflag_clears_on_csr_read_not_cvr() {
         let mut t = SysTick::new();
         write_word(&mut t, RVR, 1);
         write_word(&mut t, CSR, 0b111);
         t.tick(1);
         t.tick(1); // wrap
         assert_eq!(read_word(&mut t, CSR) >> 16 & 1, 1);
+        // A CVR read leaves a fresh COUNTFLAG alone ...
+        t.tick(1);
+        t.tick(1); // wrap again
         let _ = read_word(&mut t, CVR);
+        assert_eq!(read_word(&mut t, CSR) >> 16 & 1, 1);
+        // ... while a CSR read clears it.
         assert_eq!(read_word(&mut t, CSR) >> 16 & 1, 0);
     }
 

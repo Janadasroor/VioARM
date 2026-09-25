@@ -175,15 +175,20 @@ impl<M: PeripheralBus> Machine<M> {
         });
     }
 
-    /// Load an image's segments into the machine's memory.
+    /// Load an image's segments into the machine's memory, programming
+    /// gated flash like a debugger (unlock around the load, relock after)
+    /// so ELF firmware boots on locked parts; every other window goes
+    /// through the normal bus path.
     #[allow(clippy::cast_possible_truncation)]
     pub fn load_image(&mut self, img: &LoadedImage) {
         let mem = self.core.mem();
+        mem.set_loader_unlock(true);
         for (addr, bytes) in &img.segments {
             for (i, &b) in bytes.iter().enumerate() {
                 let _ = mem.write(addr.wrapping_add(i as u32), b);
             }
         }
+        mem.set_loader_unlock(false);
     }
 
     /// Boot from the reset vector table (SP at the vector base, PC four bytes
@@ -286,6 +291,22 @@ impl<M: PeripheralBus> Machine<M> {
         // once.
         if self.core.mem().reset_requested() {
             self.reset()?;
+        }
+        // `WFI` wakeup ignores the interrupt masks (PRIMASK/FAULTMASK/
+        // BASEPRI): the lock-check-sleep idiom (`cpsid i`, test a flag,
+        // `WFI`, `cpsie i`) deadlocks otherwise — silicon wakes on any
+        // pending enabled exception while taking stays gated as usual.
+        // Priority preemption still applies through the running IPSR.
+        if self.core.sleeping {
+            let ipsr = self.core.ipsr;
+            if self
+                .core
+                .mem()
+                .next_exception(false, false, 0, ipsr)
+                .is_some()
+            {
+                self.core.sleeping = false;
+            }
         }
         let boundary = self.fast_boundary();
         // An exception return (`bx lr` with an EXC_RETURN value) sets the

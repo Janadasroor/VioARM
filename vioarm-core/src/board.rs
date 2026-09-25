@@ -274,6 +274,19 @@ pub fn stm32f103() -> BoardMemory {
     mem.set_watchdog_reset(watchdog.clone());
     mem.attach(Box::new(Iwdg::new(watchdog.clone())));
     mem.attach(Box::new(Wwdg::new(watchdog)));
+    // DBGMCU (`DBG` in F1 tables, skipped with the PPB above): latch the
+    // debug-support window so firmware DBG sleep/stop/standby + freeze
+    // pokes land (Zephyr's clock init clears DBGSLEEP on boot); no
+    // debugger is attached in simulation.
+    if let Some(def) = <Stm32f103 as crate::device::svd::Device>::peripheral("DBG") {
+        if !mem.window_claimed(def.base) {
+            mem.attach(Box::new(crate::device::svd::RegisterFile::<
+                crate::device::svd::NoBehavior,
+            >::new(
+                def, crate::device::svd::NoBehavior
+            )));
+        }
+    }
     for p in crate::device::svd::stm32f103::PERIPHERALS {
         if p.base >= 0xE000_0000 {
             continue;

@@ -33,9 +33,14 @@
 //! and Python-`cryptography`-oracle vectors. Unlike GCM, the CCM MAC
 //! covers PLAINTEXT in both directions (RFC 3610 §2.2/2.5).
 //! Deliberate scope: F8/F9/DMA/`SAVE_CONTEXT` latch without acting
-//! (F8/F9 use an engine-specific `KEY3` construction with no oracle in
-//! the fetched TivaWare sources — wrong crypto is worse than latched
-//! crypto); XTS-192 (IEEE 1619 has no 192-bit variant); XTS
+//! (F8/F9 are permanently latched: no TI-published construction exists —
+//! the datasheet has no AES-engine chapter and TivaWare documents only
+//! mode names + key slots — and no oracle is obtainable: no TivaWare
+//! examples or vectors, the UMTS f8/f9 specs (3GPP TS 35.201, verified)
+//! are KASUMI-based and do not apply, the LTE single-key shapes do not
+//! match the engine's KEY1/KEY2/KEY3 slots, and no supported firmware
+//! uses these cellular-protocol modes; wrong crypto is worse than
+//! latched crypto); XTS-192 (IEEE 1619 has no 192-bit variant); XTS
 //! ciphertext-stealing tails (unreachable: completions are always whole
 //! 16-byte words off the `DATA_IN` lane path) and continuation-call
 //! tweak reloads (each config starts a fresh chain); non-12-byte GCM

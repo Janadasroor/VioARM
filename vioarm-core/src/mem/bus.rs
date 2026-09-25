@@ -64,6 +64,13 @@ pub trait Bus {
         Ok(u16::from_le_bytes([lo, hi]))
     }
 
+    /// Debugger-style flash access for image loading: force the gate open
+    /// (or shut) around host-side provisioning, like an SWD programmer's
+    /// unlock-program-lock sequence. Only the loader calls this; firmware
+    /// still goes through its controller's state machine. Default: no
+    /// gate exists, so nothing happens.
+    fn set_loader_unlock(&mut self, _on: bool) {}
+
     /// Raw pointer to the write-generation counter, for JIT fast-path
     /// stores (one `inc` per emitted store keeps the generation exact).
     /// Creating the pointer is safe; dereferencing happens in machine

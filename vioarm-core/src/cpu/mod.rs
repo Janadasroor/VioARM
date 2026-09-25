@@ -2263,9 +2263,10 @@ impl<B: PeripheralBus> Core<B> {
                 }
             }
             I::Hint { kind } => {
-                // `WFI` sleeps until an exception pends (the `Machine` peeks
-                // every cycle and wakes the core through `take_exception`).
-                // `WFE` sleeps only when no event is pending: `SEV` and any
+                // `WFI` sleeps until an exception pends; the `Machine` wakes
+                // the core on any pending enabled exception even under
+                // PRIMASK/FAULTMASK/BASEPRI (taking stays gated), and `WFE`
+                // sleeps only when no event is pending: `SEV` and any
                 // exception entry set the event latch, and `WFE` consumes it.
                 match kind {
                     Hint::Wfi => self.sleeping = true,

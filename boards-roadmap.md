@@ -140,7 +140,8 @@ record result in `docs/src/boards.md`. All pending.
 
 - [ ] Silicon comparison rig: same binaries on real Blue Pill (F103)
       + F107 board; diff UART logs and `DWT_CYCCNT` vs VioARM. Converts
-      cycle estimates into calibrated numbers.
+      cycle estimates into calibrated numbers. BLOCKED: no serial
+      hardware attached (checked 2026-09-24).
 - [x] Famous firmware Q3: MicroPython v1.29.0 (PYBV11/STM32F405RG) boots
       to a live REPL in sim (`micropython_repl.rs`, `MP_ELF`-gated):
       banner + `>>>`, `print(1+1)` → `2`, `pyb.LED(2)` drives PA14,
@@ -151,9 +152,21 @@ record result in `docs/src/boards.md`. All pending.
       `cargo test --release -p vioarm-core --test micropython_repl`.
       Enablers found by this port: Cortex-M3/M4 bit-band aliases
       (`system.rs`), terminal-paced RX (single-deep RDR overruns).
-- [ ] New famous firmware per quarter (Zephyr sample, MicroPython port,
-      or similar): each either passes (evidence) or files the next work
-      item with a reproducer.
+- [x] Famous firmware Q4 (early): Zephyr v4.2.2 blinky
+      (`nucleo_f103rb`, `zephyr_blinky.rs`, `ZEPHYR_ELF`-gated): boot
+      banner on USART2, LED (PA5) on then off across kernel 1 s tickless
+      sleeps. Recipe: `west init -m zephyr --mr v4.2.2` (+ `hal_stm32`,
+      `cmsis`, `cmsis_6` updates), `west build -b nucleo_f103rb
+      samples/basic/blinky` with `gnuarmemb`, `ZEPHYR_ELF=...`
+      `cargo test --release -p vioarm-core --test zephyr_blinky`.
+      Enablers found by this port, each with a regression test: gated
+      flash loading (`set_loader_unlock`, ELF `--base` now applies to all
+      formats), LSI ready (`rcc.rs`), F1 DBG latch (`board.rs`), `WFI`
+      wake under masks (`machine.rs`, `wfi_primask_wake.rs`), SysTick
+      `COUNTFLAG` clearing (`systick.rs`).
+- [ ] New famous firmware per quarter (Zephyr sample or similar next):
+      each either passes (evidence) or files the next work item with a
+      reproducer.
 - [x] Trust-scope page (`docs/src/trust-scope.md`): claimed vs
       non-claimed, versioned with this roadmap.
 
