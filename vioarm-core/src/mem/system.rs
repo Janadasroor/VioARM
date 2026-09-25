@@ -307,6 +307,25 @@ impl<M: Bus> SystemMemory<M> {
             .min()
     }
 
+    /// Whether `addr` is directly serviced (device/SCB/NVIC/ITM window):
+    /// direct mappings win over bit-band translation (on real boards
+    /// nothing lives in the alias windows, so this only fires for
+    /// synthetic test topologies).
+    fn directly_mapped(&mut self, addr: u32) -> bool {
+        self.route_device(addr).is_some()
+            || self.scb.ranges().iter().any(|r| r.contains(addr))
+            || self.nvic.ranges().iter().any(|r| r.contains(addr))
+            || self.itm.ranges().iter().any(|r| r.contains(addr))
+    }
+
+    /// Whether `addr` is serviced without side effects (device/SCB/NVIC/
+    /// ITM window): board constructors use this to detect absent devices
+    /// instead of probing reads (reads can fault-translate or have device
+    /// side effects; a `Reserved` read is not a reliable absence signal).
+    pub fn window_claimed(&mut self, addr: u32) -> bool {
+        self.directly_mapped(addr)
+    }
+
     /// Install the shared flash-controller gate. Writes to `gate.region` are
     /// thereafter gated by the controller's unlock/program state; the `FLASH`
     /// device must be attached with a clone of the same `Arc`. `None` (the
@@ -362,8 +381,8 @@ impl<M: Bus> SystemMemory<M> {
 
     /// Install the shared TI μDMA mailbox. The attached μDMA controller must
     /// push through the same `Arc`; this bus performs its control-table reads
-    /// and write-backs after each device tick. `None` (the default) leaves
-    /// channel transfers unable to move (requests still latch).
+    /// and write-backs after each device tick. `None` (the default)
+    /// leaves channel transfers unable to move (requests still latch).
     pub fn set_udma_mailbox(&mut self, mailbox: Arc<Mutex<UdmaMailbox>>) {
         self.udma_mailbox = Some(mailbox);
     }
@@ -1119,8 +1138,38 @@ impl<M: Bus> SystemMemory<M> {
     }
 }
 
+/// Cortex-M3/M4 bit-band alias translation: SRAM `0x2200_0000` aliases
+/// `0x2000_0000`, peripheral `0x4200_0000` aliases `0x4000_0000` (each a
+/// 32 MB window over 1 MB). Returns the target byte address + bit number.
+/// Hooks and the MPU observe the translated (target) access only; separate
+/// alias permissions are out of scope.
+fn bitband_target(addr: u32) -> Option<(u32, u32)> {
+    let (alias_base, target_base) = if (0x2200_0000..0x2400_0000).contains(&addr) {
+        (0x2200_0000, 0x2000_0000)
+    } else if (0x4200_0000..0x4400_0000).contains(&addr) {
+        (0x4200_0000, 0x4000_0000)
+    } else {
+        return None;
+    };
+    let offset = addr - alias_base;
+    Some((target_base + offset / 32, (offset % 32) / 4))
+}
+
+/// One aliased bit as a 0/1 byte (silicon returns 0/1 for any width).
+fn bitband_bit(byte: u8, bit: u32) -> u8 {
+    (byte >> bit) & 1
+}
+
 impl<M: Bus> Bus for SystemMemory<M> {
     fn read(&mut self, addr: u32) -> Result<u8, BusError> {
+        // Bit-band alias: extract the bit through the full target path
+        // (devices, gates, backing all work — an unmapped target faults).
+        if let Some((target, bit)) = bitband_target(addr) {
+            if !self.directly_mapped(addr) {
+                let byte = self.read(target)?;
+                return Ok(bitband_bit(byte, bit));
+            }
+        }
         // Resolve first so hooks fire after (and only after) a successful
         // access, with the device name for peripheral events.
         enum Target {
@@ -1167,6 +1216,19 @@ impl<M: Bus> Bus for SystemMemory<M> {
     }
 
     fn write(&mut self, addr: u32, val: u8) -> Result<(), BusError> {
+        // Bit-band alias: read-modify-write the target bit (only bit 0
+        // of the written value matters, per the architecture).
+        if let Some((target, bit)) = bitband_target(addr) {
+            if !self.directly_mapped(addr) {
+                let mut byte = self.read(target)?;
+                if val & 1 != 0 {
+                    byte |= 1 << bit;
+                } else {
+                    byte &= !(1 << bit);
+                }
+                return self.write(target, byte);
+            }
+        }
         enum Target {
             Device(usize),
             Scb,
@@ -1220,12 +1282,87 @@ impl<M: Bus> Bus for SystemMemory<M> {
         Some(&mut self.write_epoch as *mut u64)
     }
 
+    /// Word read with bit-band semantics (a bare byte loop would return
+    /// the neighboring alias bits in the upper lanes; silicon returns
+    /// 0/1). Non-alias addresses compose bytes exactly like the default.
+    /// Directly-mapped addresses never translate (see `directly_mapped`).
+    fn read_word(&mut self, addr: u32) -> Result<u32, BusError> {
+        if let Some((target, bit)) = bitband_target(addr) {
+            if !self.directly_mapped(addr) {
+                return Ok(u32::from(bitband_bit(self.read(target)?, bit)));
+            }
+        }
+        Ok(u32::from_le_bytes([
+            self.read(addr)?,
+            self.read(addr.wrapping_add(1))?,
+            self.read(addr.wrapping_add(2))?,
+            self.read(addr.wrapping_add(3))?,
+        ]))
+    }
+
+    /// Word write with bit-band semantics (only bit 0 of the value
+    /// matters; upper bytes are ignored, not neighboring-bit clears).
+    fn write_word(&mut self, addr: u32, val: u32) -> Result<(), BusError> {
+        if let Some((target, bit)) = bitband_target(addr) {
+            if !self.directly_mapped(addr) {
+                let mut byte = self.read(target)?;
+                if val & 1 != 0 {
+                    byte |= 1 << bit;
+                } else {
+                    byte &= !(1 << bit);
+                }
+                return self.write(target, byte);
+            }
+        }
+        let [b0, b1, b2, b3] = val.to_le_bytes();
+        self.write(addr, b0)?;
+        self.write(addr.wrapping_add(1), b1)?;
+        self.write(addr.wrapping_add(2), b2)?;
+        self.write(addr.wrapping_add(3), b3)
+    }
+
+    /// Halfword read with bit-band semantics (same 0/1 rule).
+    fn read_half(&mut self, addr: u32) -> Result<u16, BusError> {
+        if let Some((target, bit)) = bitband_target(addr) {
+            if !self.directly_mapped(addr) {
+                return Ok(u16::from(bitband_bit(self.read(target)?, bit)));
+            }
+        }
+        Ok(u16::from_le_bytes([
+            self.read(addr)?,
+            self.read(addr.wrapping_add(1))?,
+        ]))
+    }
+
+    /// Halfword write with bit-band semantics (only bit 0 matters).
+    fn write_half(&mut self, addr: u32, val: u16) -> Result<(), BusError> {
+        if let Some((target, bit)) = bitband_target(addr) {
+            if !self.directly_mapped(addr) {
+                let mut byte = self.read(target)?;
+                if val & 1 != 0 {
+                    byte |= 1 << bit;
+                } else {
+                    byte &= !(1 << bit);
+                }
+                return self.write(target, byte);
+            }
+        }
+        let [lo, hi] = val.to_le_bytes();
+        self.write(addr, lo)?;
+        self.write(addr.wrapping_add(1), hi)
+    }
+
     /// Translate a data access for the JIT fast path, mirroring the
     /// read/write dispatch exactly: anything that is not plain backing
     /// bytes (devices, SCB/NVIC/ITM, disabled QSPI windows, the gated
     /// flash region with its erase-on-read and program semantics) is
     /// `Indirect`, forcing a side exit to the interpreter.
     fn translate(&mut self, addr: u32, _access: MpuAccess) -> DataTranslate {
+        // Bit-band aliases need read-modify-write semantics: never mapped
+        // (unless directly serviced, which wins — see `directly_mapped`).
+        if bitband_target(addr).is_some() && !self.directly_mapped(addr) {
+            return DataTranslate::Indirect;
+        }
         if self.route_device(addr).is_some() {
             return DataTranslate::Indirect;
         }
@@ -2280,5 +2417,33 @@ mod tests {
         sys.attach(Box::new(tim));
         sys.tick_devices(7);
         assert_eq!(seen_total(&seen), 7);
+    }
+
+    /// Bit-band aliases round-trip: SRAM through backing, peripheral
+    /// through a device; word accesses read 0/1 and ignore upper bytes.
+    #[test]
+    fn bitband_alias_roundtrips() {
+        let mut sys = SystemMemory::new(ram());
+        sys.attach(Box::new(Beacon::at(0x4000_0000)));
+        // SRAM byte `0x2000_0010` bit 3 <-> `0x2200_020C`.
+        sys.write(RAM + 0x10, 0xF0).unwrap();
+        sys.write(0x2200_020C, 1).unwrap();
+        assert_eq!(sys.read(RAM + 0x10).unwrap(), 0xF8);
+        assert_eq!(sys.read(0x2200_020C).unwrap(), 1);
+        assert_eq!(sys.read(0x2200_0200).unwrap(), 0, "neighbor alias clear");
+        sys.write(0x2200_020C, 0).unwrap();
+        assert_eq!(sys.read(RAM + 0x10).unwrap(), 0xF0);
+        // Word access: reads 0/1, writes honor only bit 0.
+        sys.write(0x2200_020C, 1).unwrap();
+        assert_eq!(sys.read_word(0x2200_020C).unwrap(), 1);
+        sys.write_word(0x2200_020C, 0xFFFF_FFFE).unwrap();
+        assert_eq!(sys.read(RAM + 0x10).unwrap(), 0xF0, "upper bytes ignored");
+        // Peripheral alias through the device: bit 0 of `0x4000_0000`.
+        assert_eq!(sys.read(0x4200_0000).unwrap(), 0);
+        sys.write(0x4200_0000, 1).unwrap();
+        assert_eq!(sys.read_word(0x4200_0000).unwrap(), 1);
+        assert_eq!(sys.read(0x4000_0000).unwrap(), 1);
+        // Unmapped target faults instead of aliasing into the void.
+        assert!(sys.read(0x42FF_FFFC).is_err());
     }
 }

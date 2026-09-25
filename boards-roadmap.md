@@ -141,6 +141,16 @@ record result in `docs/src/boards.md`. All pending.
 - [ ] Silicon comparison rig: same binaries on real Blue Pill (F103)
       + F107 board; diff UART logs and `DWT_CYCCNT` vs VioARM. Converts
       cycle estimates into calibrated numbers.
+- [x] Famous firmware Q3: MicroPython v1.29.0 (PYBV11/STM32F405RG) boots
+      to a live REPL in sim (`micropython_repl.rs`, `MP_ELF`-gated):
+      banner + `>>>`, `print(1+1)` → `2`, `pyb.LED(2)` drives PA14,
+      `pyb.millis()` advances. Recipe: `VIOARM` board in a MicroPython
+      tree (UART REPL on USART1, no USB/SD/flash storage, linked at the
+      `0x0` flash alias with `VTOR` zero — the loader cannot write the
+      gated `0x0800_0000` window), `make BOARD=VIOARM`, `MP_ELF=...`
+      `cargo test --release -p vioarm-core --test micropython_repl`.
+      Enablers found by this port: Cortex-M3/M4 bit-band aliases
+      (`system.rs`), terminal-paced RX (single-deep RDR overruns).
 - [ ] New famous firmware per quarter (Zephyr sample, MicroPython port,
       or similar): each either passes (evidence) or files the next work
       item with a reproducer.

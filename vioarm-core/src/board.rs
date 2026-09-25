@@ -65,7 +65,7 @@ use crate::device::stm32::watchdog::{Iwdg, Wwdg};
 use crate::device::systick::SysTick;
 use crate::device::uart::UartTx;
 use crate::device::Peripheral;
-use crate::mem::bus::{Bus, Region};
+use crate::mem::bus::Region;
 use crate::mem::flat::FlatMemory;
 use crate::mem::system::SystemMemory;
 use std::sync::{Arc, Mutex};
@@ -278,7 +278,7 @@ pub fn stm32f103() -> BoardMemory {
         if p.base >= 0xE000_0000 {
             continue;
         }
-        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
+        if !mem.window_claimed(p.base) {
             mem.attach(Box::new(crate::device::svd::RegisterFile::<
                 crate::device::svd::NoBehavior,
             >::new(
@@ -417,7 +417,7 @@ pub fn stm32f107() -> BoardMemory {
         if p.base >= 0xE000_0000 {
             continue;
         }
-        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
+        if !mem.window_claimed(p.base) {
             mem.attach(Box::new(crate::device::svd::RegisterFile::<
                 crate::device::svd::NoBehavior,
             >::new(
@@ -642,7 +642,7 @@ pub fn stm32f407() -> BoardMemory {
         if p.base >= 0xE000_0000 {
             continue;
         }
-        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
+        if !mem.window_claimed(p.base) {
             mem.attach(Box::new(crate::device::svd::RegisterFile::<
                 crate::device::svd::NoBehavior,
             >::new(
@@ -709,7 +709,7 @@ fn f4_full_board(flash_len: u32, ram_len: u32, ccm_len: u32) -> BoardMemory {
             .is_some()
         {
             // Only attach if not already attached (avoid duplicate base)
-            if matches!(mem.read(base), Err(crate::error::BusError::Reserved)) {
+            if !mem.window_claimed(base) {
                 mem.attach(Box::new(GpioF4::at_in::<Stm32f407>(base, name)));
             }
         }
@@ -777,7 +777,7 @@ fn f4_full_board(flash_len: u32, ram_len: u32, ccm_len: u32) -> BoardMemory {
         .is_some()
         {
             if let Some(def) = crate::device::svd::stm32f407::peripheral(name) {
-                if matches!(mem.read(def.base), Err(crate::error::BusError::Reserved)) {
+                if !mem.window_claimed(def.base) {
                     mem.attach(Box::new(
                         crate::device::stm32::timer::Timer::new_for_name::<
                             crate::device::svd::stm32f407::Stm32f407,
@@ -846,7 +846,7 @@ fn f4_full_board(flash_len: u32, ram_len: u32, ccm_len: u32) -> BoardMemory {
         if p.base >= 0xE000_0000 {
             continue;
         }
-        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
+        if !mem.window_claimed(p.base) {
             mem.attach(Box::new(crate::device::svd::RegisterFile::<
                 crate::device::svd::NoBehavior,
             >::new(
@@ -923,10 +923,7 @@ fn f4gen_full_board<D: crate::device::svd::Device>(
         let skipped_base = skip
             .iter()
             .any(|s| D::peripheral(s).is_some_and(|def| def.base == base));
-        if !skipped_base
-            && D::by_base(base).is_some()
-            && matches!(mem.read(base), Err(crate::error::BusError::Reserved))
-        {
+        if !skipped_base && D::by_base(base).is_some() && !mem.window_claimed(base) {
             mem.attach(Box::new(GpioF4::at_in::<D>(base, name)));
         }
     }
@@ -976,7 +973,7 @@ fn f4gen_full_board<D: crate::device::svd::Device>(
     for name in ["TIM8", "TIM9", "TIM10", "TIM11", "TIM12", "TIM13", "TIM14"] {
         if live(name) {
             if let Some(def) = D::peripheral(name) {
-                if matches!(mem.read(def.base), Err(crate::error::BusError::Reserved)) {
+                if !mem.window_claimed(def.base) {
                     mem.attach(Box::new(
                         crate::device::stm32::timer::Timer::new_for_name::<D>(name),
                     ));
@@ -1071,7 +1068,7 @@ fn f4gen_full_board<D: crate::device::svd::Device>(
         if p.base >= 0xE000_0000 || skip.contains(&p.name) {
             continue;
         }
-        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
+        if !mem.window_claimed(p.base) {
             mem.attach(Box::new(crate::device::svd::RegisterFile::<
                 crate::device::svd::NoBehavior,
             >::new(
@@ -1141,9 +1138,7 @@ fn g0_full_board<L: crate::device::svd::Device>(
         (0x5000_1000, "gpioe"),
         (0x5000_1400, "gpiof"),
     ] {
-        if B::by_base(base).is_some()
-            && matches!(mem.read(base), Err(crate::error::BusError::Reserved))
-        {
+        if B::by_base(base).is_some() && !mem.window_claimed(base) {
             mem.attach(Box::new(GpioF4::at_in::<B>(base, name)));
         }
     }
@@ -1171,7 +1166,7 @@ fn g0_full_board<L: crate::device::svd::Device>(
     for name in ["TIM14", "TIM15", "TIM16", "TIM17"] {
         if live_b(name) {
             if let Some(def) = B::peripheral(name) {
-                if matches!(mem.read(def.base), Err(crate::error::BusError::Reserved)) {
+                if !mem.window_claimed(def.base) {
                     mem.attach(Box::new(
                         crate::device::stm32::timer::Timer::new_for_name::<B>(name),
                     ));
@@ -1246,7 +1241,7 @@ fn g0_full_board<L: crate::device::svd::Device>(
         if p.base >= 0xE000_0000 || skip.contains(&p.name) {
             continue;
         }
-        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
+        if !mem.window_claimed(p.base) {
             mem.attach(Box::new(crate::device::svd::RegisterFile::<
                 crate::device::svd::NoBehavior,
             >::new(
@@ -1307,9 +1302,7 @@ fn m33_full_board<D: crate::device::svd::Device>(
         (0x4202_1c00, "gpioh"),
         (0x4202_2000, "gpioi"),
     ] {
-        if D::by_base(base).is_some()
-            && matches!(mem.read(base), Err(crate::error::BusError::Reserved))
-        {
+        if D::by_base(base).is_some() && !mem.window_claimed(base) {
             mem.attach(Box::new(GpioF4::at_in::<D>(base, name)));
         }
     }
@@ -1332,7 +1325,7 @@ fn m33_full_board<D: crate::device::svd::Device>(
     ] {
         if live(name) {
             if let Some(def) = D::peripheral(name) {
-                if matches!(mem.read(def.base), Err(crate::error::BusError::Reserved)) {
+                if !mem.window_claimed(def.base) {
                     mem.attach(Box::new(
                         crate::device::stm32::timer::Timer::new_for_name::<D>(name),
                     ));
@@ -1429,7 +1422,7 @@ fn m33_full_board<D: crate::device::svd::Device>(
         if p.base >= 0xE000_0000 || skip.contains(&p.name) {
             continue;
         }
-        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
+        if !mem.window_claimed(p.base) {
             mem.attach(Box::new(crate::device::svd::RegisterFile::<
                 crate::device::svd::NoBehavior,
             >::new(
@@ -1570,7 +1563,7 @@ fn f0_full_board(flash_len: u32, ram_len: u32) -> BoardMemory {
         if p.base >= 0xE000_0000 {
             continue;
         }
-        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
+        if !mem.window_claimed(p.base) {
             mem.attach(Box::new(crate::device::svd::RegisterFile::<
                 crate::device::svd::NoBehavior,
             >::new(
@@ -1660,7 +1653,7 @@ fn g4_full_board(flash_len: u32, ram_len: u32) -> BoardMemory {
         if p.base >= 0xE000_0000 {
             continue;
         }
-        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
+        if !mem.window_claimed(p.base) {
             mem.attach(Box::new(crate::device::svd::RegisterFile::<
                 crate::device::svd::NoBehavior,
             >::new(
@@ -1763,7 +1756,7 @@ fn l4_full_board(flash_len: u32, ram_len: u32) -> BoardMemory {
         if p.base >= 0xE000_0000 {
             continue;
         }
-        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
+        if !mem.window_claimed(p.base) {
             mem.attach(Box::new(crate::device::svd::RegisterFile::<
                 crate::device::svd::NoBehavior,
             >::new(
@@ -1954,7 +1947,7 @@ pub fn stm32f072() -> BoardMemory {
         if p.base >= 0xE000_0000 {
             continue;
         }
-        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
+        if !mem.window_claimed(p.base) {
             mem.attach(Box::new(crate::device::svd::RegisterFile::<
                 crate::device::svd::NoBehavior,
             >::new(
@@ -2115,7 +2108,7 @@ pub fn stm32f030() -> BoardMemory {
         if p.base >= 0xE000_0000 {
             continue;
         }
-        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
+        if !mem.window_claimed(p.base) {
             mem.attach(Box::new(crate::device::svd::RegisterFile::<
                 crate::device::svd::NoBehavior,
             >::new(
@@ -2263,7 +2256,7 @@ pub fn stm32f031() -> BoardMemory {
         if p.base >= 0xE000_0000 {
             continue;
         }
-        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
+        if !mem.window_claimed(p.base) {
             mem.attach(Box::new(crate::device::svd::RegisterFile::<
                 crate::device::svd::NoBehavior,
             >::new(
@@ -2432,7 +2425,7 @@ pub fn stm32f042() -> BoardMemory {
         if p.base >= 0xE000_0000 {
             continue;
         }
-        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
+        if !mem.window_claimed(p.base) {
             mem.attach(Box::new(crate::device::svd::RegisterFile::<
                 crate::device::svd::NoBehavior,
             >::new(
@@ -2586,7 +2579,7 @@ pub fn stm32f0x0() -> BoardMemory {
         if p.base >= 0xE000_0000 {
             continue;
         }
-        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
+        if !mem.window_claimed(p.base) {
             mem.attach(Box::new(crate::device::svd::RegisterFile::<
                 crate::device::svd::NoBehavior,
             >::new(
@@ -2786,7 +2779,7 @@ pub fn stm32f091() -> BoardMemory {
         if p.base >= 0xE000_0000 {
             continue;
         }
-        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
+        if !mem.window_claimed(p.base) {
             mem.attach(Box::new(crate::device::svd::RegisterFile::<
                 crate::device::svd::NoBehavior,
             >::new(
@@ -2973,7 +2966,7 @@ pub fn stm32f0x1() -> BoardMemory {
         if p.base >= 0xE000_0000 {
             continue;
         }
-        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
+        if !mem.window_claimed(p.base) {
             mem.attach(Box::new(crate::device::svd::RegisterFile::<
                 crate::device::svd::NoBehavior,
             >::new(
@@ -3157,7 +3150,7 @@ pub fn stm32f0x2() -> BoardMemory {
         if p.base >= 0xE000_0000 {
             continue;
         }
-        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
+        if !mem.window_claimed(p.base) {
             mem.attach(Box::new(crate::device::svd::RegisterFile::<
                 crate::device::svd::NoBehavior,
             >::new(
@@ -3352,7 +3345,7 @@ pub fn stm32f0x8() -> BoardMemory {
         if p.base >= 0xE000_0000 {
             continue;
         }
-        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
+        if !mem.window_claimed(p.base) {
             mem.attach(Box::new(crate::device::svd::RegisterFile::<
                 crate::device::svd::NoBehavior,
             >::new(
@@ -3517,7 +3510,7 @@ pub fn stm32f0xx() -> BoardMemory {
         if p.base >= 0xE000_0000 {
             continue;
         }
-        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
+        if !mem.window_claimed(p.base) {
             mem.attach(Box::new(crate::device::svd::RegisterFile::<
                 crate::device::svd::NoBehavior,
             >::new(
@@ -3700,7 +3693,7 @@ pub fn stm32f100() -> BoardMemory {
         if p.base >= 0xE000_0000 {
             continue;
         }
-        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
+        if !mem.window_claimed(p.base) {
             mem.attach(Box::new(crate::device::svd::RegisterFile::<
                 crate::device::svd::NoBehavior,
             >::new(
@@ -3867,7 +3860,7 @@ pub fn stm32f101() -> BoardMemory {
         if p.base >= 0xE000_0000 {
             continue;
         }
-        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
+        if !mem.window_claimed(p.base) {
             mem.attach(Box::new(crate::device::svd::RegisterFile::<
                 crate::device::svd::NoBehavior,
             >::new(
@@ -3995,7 +3988,7 @@ pub fn stm32f102() -> BoardMemory {
         if p.base >= 0xE000_0000 {
             continue;
         }
-        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
+        if !mem.window_claimed(p.base) {
             mem.attach(Box::new(crate::device::svd::RegisterFile::<
                 crate::device::svd::NoBehavior,
             >::new(
@@ -4162,7 +4155,7 @@ pub fn stm32f105() -> BoardMemory {
         if p.base >= 0xE000_0000 {
             continue;
         }
-        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
+        if !mem.window_claimed(p.base) {
             mem.attach(Box::new(crate::device::svd::RegisterFile::<
                 crate::device::svd::NoBehavior,
             >::new(
@@ -4674,10 +4667,10 @@ pub fn stm32g041() -> BoardMemory {
         &[],
         crate::device::svd::stm32g031::PERIPHERALS,
     );
-    if matches!(mem.read(0x4002_6000), Err(crate::error::BusError::Reserved)) {
+    if !mem.window_claimed(0x4002_6000) {
         mem.attach(Box::new(Aes::new_g0()));
     }
-    if matches!(mem.read(0x4002_5000), Err(crate::error::BusError::Reserved)) {
+    if !mem.window_claimed(0x4002_5000) {
         mem.attach(Box::new(Rng::new_g0()));
     }
     mem
@@ -4855,11 +4848,11 @@ pub const STM32_WLE5_RAM_LEN: u32 = 0x0001_0000;
 /// Construct the `stm32wle5` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32wle5() -> BoardMemory {
     let mut mem = stm32l476();
-    if matches!(mem.read(0x5800_1400), Err(crate::error::BusError::Reserved)) {
+    if !mem.window_claimed(0x5800_1400) {
         mem.attach(Box::new(crate::device::stm32::subghz::Subghz::new_wl()));
     }
     // WL OCTOSPI at 0x58004000 also wired via Octospi WL stub
-    if matches!(mem.read(0x5800_4000), Err(crate::error::BusError::Reserved)) {
+    if !mem.window_claimed(0x5800_4000) {
         mem.attach(Box::new(crate::device::stm32::octospi::Octospi::new_wl()));
     }
     mem
@@ -5001,10 +4994,10 @@ pub fn stm32u585() -> BoardMemory {
         &[],
         crate::device::svd::stm32u575::PERIPHERALS,
     );
-    if matches!(mem.read(0x420C_0000), Err(crate::error::BusError::Reserved)) {
+    if !mem.window_claimed(0x420C_0000) {
         mem.attach(Box::new(Aes::new_u5_aes()));
     }
-    if matches!(mem.read(0x420C_0C00), Err(crate::error::BusError::Reserved)) {
+    if !mem.window_claimed(0x420C_0C00) {
         mem.attach(Box::new(Aes::new_u5_saes()));
     }
     mem
@@ -5139,10 +5132,10 @@ pub const STM32_WL55_RAM_LEN: u32 = 0x0001_0000;
 /// Construct the `stm32wl55` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32wl55() -> BoardMemory {
     let mut mem = stm32l476();
-    if matches!(mem.read(0x5800_1400), Err(crate::error::BusError::Reserved)) {
+    if !mem.window_claimed(0x5800_1400) {
         mem.attach(Box::new(crate::device::stm32::subghz::Subghz::new_wl()));
     }
-    if matches!(mem.read(0x5800_4000), Err(crate::error::BusError::Reserved)) {
+    if !mem.window_claimed(0x5800_4000) {
         mem.attach(Box::new(crate::device::stm32::octospi::Octospi::new_wl()));
     }
     mem
@@ -5386,10 +5379,10 @@ pub const STM32_WLE4_RAM_LEN: u32 = 0x0001_0000;
 /// Construct the `stm32wle4` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32wle4() -> BoardMemory {
     let mut mem = stm32l476();
-    if matches!(mem.read(0x5800_1400), Err(crate::error::BusError::Reserved)) {
+    if !mem.window_claimed(0x5800_1400) {
         mem.attach(Box::new(crate::device::stm32::subghz::Subghz::new_wl()));
     }
-    if matches!(mem.read(0x5800_4000), Err(crate::error::BusError::Reserved)) {
+    if !mem.window_claimed(0x5800_4000) {
         mem.attach(Box::new(crate::device::stm32::octospi::Octospi::new_wl()));
     }
     mem
@@ -5457,7 +5450,7 @@ pub fn stm32wba55() -> BoardMemory {
         &[],
         crate::device::svd::stm32wba55::PERIPHERALS,
     );
-    if matches!(mem.read(0x5800_0000), Err(crate::error::BusError::Reserved)) {
+    if !mem.window_claimed(0x5800_0000) {
         mem.attach(Box::new(crate::device::stm32::ble::Ble::new_wba()));
     }
     mem
@@ -5470,10 +5463,10 @@ pub const STM32_WL33_RAM_LEN: u32 = 0x0001_0000;
 /// Construct the `stm32wl33` (M3/M4) board memory: flash/RAM regions plus its peripheral set.
 pub fn stm32wl33() -> BoardMemory {
     let mut mem = stm32l476();
-    if matches!(mem.read(0x5800_1400), Err(crate::error::BusError::Reserved)) {
+    if !mem.window_claimed(0x5800_1400) {
         mem.attach(Box::new(crate::device::stm32::subghz::Subghz::new_wl()));
     }
-    if matches!(mem.read(0x5800_4000), Err(crate::error::BusError::Reserved)) {
+    if !mem.window_claimed(0x5800_4000) {
         mem.attach(Box::new(crate::device::stm32::octospi::Octospi::new_wl()));
     }
     mem
@@ -9716,7 +9709,7 @@ pub fn stm32h750() -> BoardMemory {
         if p.base >= 0xE000_0000 {
             continue;
         }
-        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
+        if !mem.window_claimed(p.base) {
             mem.attach(Box::new(crate::device::svd::RegisterFile::<
                 crate::device::svd::NoBehavior,
             >::new(
@@ -9842,7 +9835,7 @@ pub fn stm32f303xe() -> BoardMemory {
     for name in ["TIM4", "TIM8", "TIM15", "TIM16", "TIM17", "TIM20"] {
         if <Stm32f303xe as crate::device::svd::Device>::peripheral(name).is_some() {
             if let Some(def) = crate::device::svd::stm32f303xe::peripheral(name) {
-                if matches!(mem.read(def.base), Err(crate::error::BusError::Reserved)) {
+                if !mem.window_claimed(def.base) {
                     mem.attach(Box::new(
                         crate::device::stm32::timer::Timer::new_for_name::<Stm32f303xe>(name)
                             .with_analog_bus(mem.analog_handle()),
@@ -9994,7 +9987,7 @@ pub fn stm32f303xe() -> BoardMemory {
         if p.base >= 0xE000_0000 {
             continue;
         }
-        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
+        if !mem.window_claimed(p.base) {
             mem.attach(Box::new(crate::device::svd::RegisterFile::<
                 crate::device::svd::NoBehavior,
             >::new(
@@ -10078,7 +10071,7 @@ pub fn stm32l476() -> BoardMemory {
     ] {
         if <Stm32l476 as crate::device::svd::Device>::peripheral(name).is_some() {
             if let Some(def) = crate::device::svd::stm32l476::peripheral(name) {
-                if matches!(mem.read(def.base), Err(crate::error::BusError::Reserved)) {
+                if !mem.window_claimed(def.base) {
                     mem.attach(Box::new(
                         crate::device::stm32::timer::Timer::new_for_name::<Stm32l476>(name),
                     ));
@@ -10271,7 +10264,7 @@ pub fn stm32l476() -> BoardMemory {
         if p.base >= 0xE000_0000 {
             continue;
         }
-        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
+        if !mem.window_claimed(p.base) {
             mem.attach(Box::new(crate::device::svd::RegisterFile::<
                 crate::device::svd::NoBehavior,
             >::new(
@@ -10501,7 +10494,7 @@ pub fn stm32g474xx() -> BoardMemory {
     ] {
         if <Stm32g474 as crate::device::svd::Device>::peripheral(name).is_some() {
             if let Some(def) = crate::device::svd::stm32g474xx::peripheral(name) {
-                if matches!(mem.read(def.base), Err(crate::error::BusError::Reserved)) {
+                if !mem.window_claimed(def.base) {
                     mem.attach(Box::new(
                         crate::device::stm32::timer::Timer::new_for_name::<Stm32g474>(name),
                     ));
@@ -10572,7 +10565,7 @@ pub fn stm32g474xx() -> BoardMemory {
         if p.base >= 0xE000_0000 {
             continue;
         }
-        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
+        if !mem.window_claimed(p.base) {
             mem.attach(Box::new(crate::device::svd::RegisterFile::<
                 crate::device::svd::NoBehavior,
             >::new(
@@ -10771,7 +10764,7 @@ pub fn stm32h743() -> BoardMemory {
     for name in ["TIM8", "TIM12", "TIM13", "TIM14"] {
         if <Stm32h743 as crate::device::svd::Device>::peripheral(name).is_some() {
             if let Some(def) = crate::device::svd::stm32h743::peripheral(name) {
-                if matches!(mem.read(def.base), Err(crate::error::BusError::Reserved)) {
+                if !mem.window_claimed(def.base) {
                     mem.attach(Box::new(
                         crate::device::stm32::timer::Timer::new_for_name::<Stm32h743>(name),
                     ));
@@ -10980,7 +10973,7 @@ pub fn stm32h743() -> BoardMemory {
     if <Stm32h743 as crate::device::svd::Device>::peripheral("OCTOSPI1").is_some() {
         // H7 OCTOSPI1 variant uses same QSPI gate handling via Octospi behavior
         // Ensure OCTOSPI1 is also available via Octospi struct when present
-        if matches!(mem.read(0x5200_5000), Err(crate::error::BusError::Reserved)) {
+        if !mem.window_claimed(0x5200_5000) {
             mem.attach(Box::new(
                 crate::device::stm32::octospi::Octospi::octospi1_for_with_gate::<Stm32h743>(Some(
                     qspi_gate.clone(),
@@ -10998,7 +10991,7 @@ pub fn stm32h743() -> BoardMemory {
         // H743 SVD lacks OCTOSPI2, but H723/H730 variants that alias to H743 do have it at 0x5200A000.
         // Mount a latch/behavior stub so the board never faults as Reserved for those chips.
         // Use manual OCTOSPI2 at 0x5200A000 with second QSPI window gate.
-        if matches!(mem.read(0x5200_A000), Err(crate::error::BusError::Reserved)) {
+        if !mem.window_claimed(0x5200_A000) {
             mem.attach(Box::new(
                 crate::device::stm32::octospi::Octospi::octospi2_for_with_gate::<Stm32h743>(Some(
                     octospi2_gate.clone(),
@@ -11010,7 +11003,7 @@ pub fn stm32h743() -> BoardMemory {
             let _ = octospi2_gate.clone();
         }
         // Always ensure second window is gated: if OCTOSPI2 not in SVD, still expose latch at 0x5200A000 via NoBehavior so Reserved never fires
-        if matches!(mem.read(0x5200_A000), Err(crate::error::BusError::Reserved)) {
+        if !mem.window_claimed(0x5200_A000) {
             use crate::device::svd::{Access, FieldDef, IrqDef, PeripheralDef, RegisterDef};
             const OCTOSPI2_MANUAL: PeripheralDef = PeripheralDef {
                 name: "OCTOSPI2",
@@ -11164,7 +11157,7 @@ pub fn stm32h743() -> BoardMemory {
     }
     if <Stm32h743 as crate::device::svd::Device>::peripheral("CAN_CCU").is_some() {
         let def = <Stm32h743 as crate::device::svd::Device>::peripheral("CAN_CCU").unwrap();
-        if matches!(mem.read(def.base), Err(crate::error::BusError::Reserved)) {
+        if !mem.window_claimed(def.base) {
             mem.attach(Box::new(crate::device::svd::RegisterFile::<
                 crate::device::svd::NoBehavior,
             >::new(
@@ -11175,7 +11168,7 @@ pub fn stm32h743() -> BoardMemory {
     for name in ["TIM15", "TIM16", "TIM17"] {
         if <Stm32h743 as crate::device::svd::Device>::peripheral(name).is_some() {
             if let Some(def) = crate::device::svd::stm32h743::peripheral(name) {
-                if matches!(mem.read(def.base), Err(crate::error::BusError::Reserved)) {
+                if !mem.window_claimed(def.base) {
                     mem.attach(Box::new(
                         crate::device::stm32::timer::Timer::new_for_name::<Stm32h743>(name),
                     ));
@@ -11186,7 +11179,7 @@ pub fn stm32h743() -> BoardMemory {
     }
     for name in ["AXI", "DELAY_Block_SDMMC1"] {
         if let Some(def) = <Stm32h743 as crate::device::svd::Device>::peripheral(name) {
-            if matches!(mem.read(def.base), Err(crate::error::BusError::Reserved)) {
+            if !mem.window_claimed(def.base) {
                 mem.attach(Box::new(crate::device::svd::RegisterFile::<
                     crate::device::svd::NoBehavior,
                 >::new(
@@ -11250,7 +11243,7 @@ pub fn stm32h743() -> BoardMemory {
                 Some(d) => d,
                 None => continue,
             };
-            if matches!(mem.read(def.base), Err(crate::error::BusError::Reserved)) {
+            if !mem.window_claimed(def.base) {
                 // Use generic Usart for these UARTs
                 mem.attach(Box::new(ctor()));
             }
@@ -11264,7 +11257,7 @@ pub fn stm32h743() -> BoardMemory {
         if p.base >= 0xE000_0000 {
             continue;
         }
-        if matches!(mem.read(p.base), Err(crate::error::BusError::Reserved)) {
+        if !mem.window_claimed(p.base) {
             mem.attach(Box::new(crate::device::svd::RegisterFile::<
                 crate::device::svd::NoBehavior,
             >::new(
@@ -11341,7 +11334,7 @@ pub fn stm32h743() -> BoardMemory {
             if per.base >= 0xE000_0000 {
                 continue;
             }
-            if matches!(mem.read(per.base), Err(crate::error::BusError::Reserved)) {
+            if !mem.window_claimed(per.base) {
                 mem.attach(Box::new(crate::device::svd::RegisterFile::<
                     crate::device::svd::NoBehavior,
                 >::new(
@@ -11419,7 +11412,7 @@ pub fn stm32h743() -> BoardMemory {
             if per.base >= 0xE000_0000 {
                 continue;
             }
-            if matches!(mem.read(per.base), Err(crate::error::BusError::Reserved)) {
+            if !mem.window_claimed(per.base) {
                 mem.attach(Box::new(crate::device::svd::RegisterFile::<
                     crate::device::svd::NoBehavior,
                 >::new(
@@ -11497,7 +11490,7 @@ pub fn stm32h743() -> BoardMemory {
             if per.base >= 0xE000_0000 {
                 continue;
             }
-            if matches!(mem.read(per.base), Err(crate::error::BusError::Reserved)) {
+            if !mem.window_claimed(per.base) {
                 mem.attach(Box::new(crate::device::svd::RegisterFile::<
                     crate::device::svd::NoBehavior,
                 >::new(
@@ -11581,7 +11574,7 @@ pub fn stm32h743() -> BoardMemory {
             if per.base >= 0xE000_0000 {
                 continue;
             }
-            if matches!(mem.read(per.base), Err(crate::error::BusError::Reserved)) {
+            if !mem.window_claimed(per.base) {
                 mem.attach(Box::new(crate::device::svd::RegisterFile::<
                     crate::device::svd::NoBehavior,
                 >::new(
@@ -11631,7 +11624,7 @@ pub fn stm32h743() -> BoardMemory {
                 if per.base >= 0xE000_0000 {
                     continue;
                 }
-                if matches!(mem.read(per.base), Err(crate::error::BusError::Reserved)) {
+                if !mem.window_claimed(per.base) {
                     mem.attach(Box::new(crate::device::svd::RegisterFile::<
                         crate::device::svd::NoBehavior,
                     >::new(
@@ -11705,7 +11698,7 @@ pub fn stm32h743() -> BoardMemory {
             if per.base >= 0xE000_0000 {
                 continue;
             }
-            if matches!(mem.read(per.base), Err(crate::error::BusError::Reserved)) {
+            if !mem.window_claimed(per.base) {
                 // Try behavioral for key peripherals
                 match per.name {
                     "QUADSPI" => mem.attach(Box::new(Qspi::new_for_with_gate::<Stm32h743>(Some(
