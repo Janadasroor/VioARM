@@ -1427,7 +1427,7 @@ fn m33_full_board<D: crate::device::svd::Device>(
         mem.attach(Box::new(Wwdg::for_device::<D>(watchdog)));
     }
     // HASH behavior where the tables describe the supported generation
-    // (U5/L5 via the layout probe; H5/WBA stay latches).
+    // (U5/WBA/L5 via the layout probe; H5 stays a latch).
     if let Some(hash) = Hash::new_for_opt::<D>() {
         mem.attach(Box::new(hash));
     }

@@ -1051,7 +1051,24 @@ mod tests {
     }
 
     #[test]
-    fn probe_accepts_u5_and_rejects_h5() {
+    fn wba55_tables_share_the_layout() {
+        // The WBA HASH window probes compatible (contiguous `ALGO`
+        // encoding at the U5 shift, same CR map) and runs the NIST vector
+        // on its tables, proving the wiring.
+        use crate::device::svd::stm32wba55::Stm32wba55;
+        let mut h = Hash::new_for_opt::<Stm32wba55>().expect("WBA55 probes");
+        let base = h.inner.def().base;
+        h.reset();
+        // Contiguous encoding: SHA256 = ALGO (U5 values).
+        assert_eq!(
+            digest(&mut h, base, SHA256, b"abc")[0],
+            0xba7816bf,
+            "SHA-256(abc) on WBA55 tables"
+        );
+    }
+
+    #[test]
+    fn probe_accepts_u5_wba_and_rejects_h5() {
         use crate::device::svd::stm32h563::Stm32h563;
         use crate::device::svd::stm32u5g9::Stm32u5g9;
         use crate::device::svd::stm32wba55::Stm32wba55;
@@ -1059,13 +1076,10 @@ mod tests {
         assert!(Hash::new_for_opt::<Stm32u575>().is_some(), "U575");
         assert!(Hash::new_for_opt::<Stm32u5g9>().is_some(), "U5G9");
         assert!(Hash::new_for_opt::<Stm32l562>().is_some(), "L562");
+        assert!(Hash::new_for_opt::<Stm32wba55>().is_some(), "WBA55");
         assert!(
             Stm32h563::peripheral("HASH").is_some_and(|p| !Hash::layout_matches(p)),
             "H5 stays a latch"
-        );
-        assert!(
-            Stm32wba55::peripheral("HASH").is_some_and(|p| !Hash::layout_matches(p)),
-            "WBA stays a latch"
         );
     }
 
