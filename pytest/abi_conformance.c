@@ -154,7 +154,7 @@ int main(void) {
     CHECK(vioarm_cosim_snapshot_size(0) == 0, "null size reads 0");
     CHECK(vioarm_cosim_device_count(h) > 0, "devices attached");
     CHECK(vioarm_cosim_device_count(0) == 0, "null device count reads 0");
-    CHECK(vioarm_cosim_board_count() == 506, "frozen board list");
+    CHECK(vioarm_cosim_board_count() == 511, "frozen board list");
     CHECK(vioarm_cosim_step_duration(0, 0.001) == VIOARM_ERR_NULL_HANDLE,
           "null step fails");
     CHECK(vioarm_cosim_step_duration(h, -1.0) == VIOARM_ERR_BAD_ARG,
@@ -228,7 +228,7 @@ int main(void) {
     free(snap);
 
     /* Catalog. */
-    CHECK(vioarm_cosim_board_count() == 506, "frozen board list");
+    CHECK(vioarm_cosim_board_count() == 511, "frozen board list");
     CHECK(vioarm_cosim_device_count(h) > 0, "devices attached");
     CHECK(vioarm_cosim_device_count(0) == 0, "null device count reads 0");
     char name[64];
