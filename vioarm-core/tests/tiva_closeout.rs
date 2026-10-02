@@ -54,6 +54,9 @@ fn sysctl_gates_uart0() {
     let mem = m.core.mem();
     assert_eq!(rw(mem, SYSCTL + PRUART) & 0x01, 0, "UART0 not ready");
     ww(mem, SYSCTL + RCGCUART, 0x01);
+    // SPMS376E §5.2.6: 3 system clocks pass after the RCGC enable before
+    // the module (and its PR bit) is ready; real firmware polls PR.
+    pump(mem, 3);
     assert_eq!(rw(mem, SYSCTL + PRUART) & 0x01, 0x01, "UART0 ready");
     ww(mem, SYSCTL + RCC2, 0x0080_0080);
     assert_eq!(rw(mem, SYSCTL + RCC2), 0x0080_0080, "RCC2 latches");
@@ -130,6 +133,7 @@ const RIS: u32 = 0x01C;
 const TATORIS: u32 = 1 << 0;
 const ICR: u32 = 0x024;
 const TAILR: u32 = 0x028;
+const TBILR: u32 = 0x02C;
 const TAR: u32 = 0x048;
 
 fn timer_count_to_timeout(mem: &mut board::BoardMemory, base: u32) {
@@ -155,6 +159,10 @@ fn wtimer0_latches_wide() {
     let mem = m.core.mem();
     ww(mem, WTIMER0 + TAILR, 0x1234_5678);
     assert_eq!(rw(mem, WTIMER0 + TAILR), 0x1234_5678, "wide load latches");
+    // Wide `TBILR` resets `0xFFFF_FFFF` (SPMS376E p757), so the 64-bit
+    // interval is huge until firmware clears the upper half — same as
+    // silicon; zero it for a 32-bit-range timeout.
+    ww(mem, WTIMER0 + TBILR, 0x0000_0000);
     timer_count_to_timeout(mem, WTIMER0);
     assert!(rw(mem, WTIMER0 + TAR) < 100, "reloaded after timeout");
 }
@@ -226,6 +234,10 @@ const LOCK_KEY: u32 = 0x1ACC_E551;
 fn wdt0_fires_interrupt() {
     let mut m = tiva();
     let mem = m.core.mem();
+    // `WDTLOCK` resets `0x0000_0000` (unlocked, SPMS376E Watchdog Lock
+    // register p786): relock explicitly, then prove locked writes sink.
+    ww(mem, WDT0 + WDTLOCK, 0x0000_0000);
+    assert_eq!(rw(mem, WDT0 + WDTLOCK) & 0x01, 0x01, "non-key relocks");
     ww(mem, WDT0 + LOAD, 100);
     assert_eq!(rw(mem, WDT0 + LOAD), 0xFFFF_FFFF, "locked writes sink");
     ww(mem, WDT0 + WDTLOCK, LOCK_KEY); // CTL/LOAD ignore locked writes
