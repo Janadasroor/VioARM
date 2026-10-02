@@ -138,7 +138,7 @@ mod tests {
                 "vioarm-core/src/device/svd/stm32f303xe.rs",
             ),
             (
-                "packs/STM32F407.svd",
+                "packs/Keil.STM32F4xx_DFP/SVD/STM32F407.svd",
                 "vioarm-core/src/device/svd/stm32f407.rs",
             ),
             (
