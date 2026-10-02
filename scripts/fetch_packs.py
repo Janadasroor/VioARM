@@ -62,19 +62,21 @@ PACKS: dict[str, dict[str, str]] = {
         "sha256": "c7e0f3595aa5ee4c2da2c0de79598b8a91fc5f4f77e16c3b39c674429fb0f4eb",
     },
     "STM32F7": {
-        # PROVENANCE records the .pdsc hash (pack not retained locally);
-        # no pack hash to verify against, so verification is skipped.
+        # Pack retained locally; sha256 pinned from the fetched file
+        # (PROVENANCE also records the extracted .pdsc hash).
         "vendor": "Keil",
         "name": "STM32F7xx_DFP",
         "version": "2.15.1",
         "url": "https://www.keil.com/pack/",
+        "sha256": "74d3664bafa0c909775418fdddf41594b905df0037e2771e6fe3f704ce931326",
     },
     "STM32G0": {
-        # Same as F7: only the extracted tree + .pdsc hash exist locally.
+        # Same as F7: pack retained locally, sha256 pinned from the file.
         "vendor": "Keil",
         "name": "STM32G0xx_DFP",
         "version": "1.4.0",
         "url": "https://www.keil.com/pack/",
+        "sha256": "6545f547e8d0711d2a6188f9b044300a8291b06525bb481aa9bd7f62c1421142",
     },
     "STM32G4": {
         "vendor": "Keil",
@@ -190,15 +192,20 @@ def fetch(name: str, force: bool = False) -> Path:
     with zipfile.ZipFile(dest) as zf:
         zf.extractall(extract_dir)
     print(f"done: {extract_dir}")
-    # Normalize SVD location: F0/F3 packs use CMSIS/SVD, F1 uses SVD
+    # Normalize SVD location: F0/F3 packs use CMSIS/SVD, F1 uses SVD.
+    # The link is relative so packs/ stays relocatable across machines;
+    # a stale link (e.g. an absolute one from an older fetch) is repaired.
     cmsis_svd = extract_dir / "CMSIS" / "SVD"
     top_svd = extract_dir / "SVD"
-    if not top_svd.exists() and cmsis_svd.exists():
-        try:
-            top_svd.symlink_to(cmsis_svd, target_is_directory=True)
-        except Exception:
-            shutil.copytree(cmsis_svd, top_svd)
-        print(f"linked {cmsis_svd} -> {top_svd}")
+    if cmsis_svd.exists():
+        if top_svd.is_symlink() and top_svd.resolve() != cmsis_svd.resolve():
+            top_svd.unlink()
+        if not top_svd.exists():
+            try:
+                top_svd.symlink_to(Path("CMSIS/SVD"), target_is_directory=True)
+            except Exception:
+                shutil.copytree(cmsis_svd, top_svd)
+            print(f"linked {cmsis_svd} -> {top_svd}")
     return dest
 
 
