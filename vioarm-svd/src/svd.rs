@@ -117,6 +117,9 @@ struct FieldB {
     offset: u32,
     width: u32,
     access: Option<Access>,
+    /// Element depth this builder was pushed at; only direct-child
+    /// scalars may assign to it (see `parse`).
+    depth: u32,
 }
 
 #[derive(Clone, Default)]
@@ -127,12 +130,18 @@ struct RegisterB {
     access: Option<Access>,
     reset: u32,
     fields: Vec<FieldB>,
+    /// Element depth this builder was pushed at; only direct-child
+    /// scalars may assign to it (see `parse`).
+    depth: u32,
 }
 
 #[derive(Clone, Default)]
 struct IrqB {
     name: String,
     number: u8,
+    /// Element depth this builder was pushed at; only direct-child
+    /// scalars may assign to it (see `parse`).
+    depth: u32,
 }
 
 #[derive(Clone, Default)]
@@ -147,6 +156,9 @@ struct PeripheralB {
     irqs: Vec<IrqB>,
     registers: Vec<RegisterB>,
     derived_from: Option<String>,
+    /// Element depth this builder was pushed at; only direct-child
+    /// scalars may assign to it (see `parse`).
+    depth: u32,
 }
 
 /// An open builder: only element groups push one of these.
@@ -155,6 +167,31 @@ enum Node {
     Register(RegisterB),
     Field(FieldB),
     Irq(IrqB),
+}
+
+/// Push an open builder, recording the element depth it was opened at.
+///
+/// Scalar text is only assigned to direct children (see `parse`): nested
+/// scalars such as `<enumeratedValue><name>` must not clobber the
+/// enclosing builder, so every builder remembers its own depth.
+fn push(nodes: &mut Vec<Node>, mut node: Node, depth: u32) {
+    match &mut node {
+        Node::Peripheral(p) => p.depth = depth,
+        Node::Register(r) => r.depth = depth,
+        Node::Field(f) => f.depth = depth,
+        Node::Irq(i) => i.depth = depth,
+    }
+    nodes.push(node);
+}
+
+/// Element depth the innermost open builder was pushed at, if any.
+fn node_depth(nodes: &[Node]) -> Option<u32> {
+    match nodes.last()? {
+        Node::Peripheral(p) => Some(p.depth),
+        Node::Register(r) => Some(r.depth),
+        Node::Field(f) => Some(f.depth),
+        Node::Irq(i) => Some(i.depth),
+    }
 }
 
 /// Parse `xml` into a [`Model`], resolving `derivedFrom` peripherals.
@@ -188,17 +225,24 @@ pub fn parse(xml: &str) -> Result<Model, ParseError> {
             Ok(Event::Empty(e)) => {
                 text.clear();
                 capturing = SCALARS.contains(&e.name().as_ref());
+                // Self-closing elements have no `End` event, so no depth
+                // is consumed here: record the would-be child depth.
+                let child = depth + 1;
                 match e.name().as_ref() {
                     b"peripheral" => {
                         let derived_from = attr(&e, b"derivedFrom");
-                        nodes.push(Node::Peripheral(PeripheralB {
-                            derived_from,
-                            ..PeripheralB::default()
-                        }));
+                        push(
+                            &mut nodes,
+                            Node::Peripheral(PeripheralB {
+                                derived_from,
+                                ..PeripheralB::default()
+                            }),
+                            child,
+                        );
                     }
-                    b"register" => nodes.push(Node::Register(RegisterB::default())),
-                    b"field" => nodes.push(Node::Field(FieldB::default())),
-                    b"interrupt" => nodes.push(Node::Irq(IrqB::default())),
+                    b"register" => push(&mut nodes, Node::Register(RegisterB::default()), child),
+                    b"field" => push(&mut nodes, Node::Field(FieldB::default()), child),
+                    b"interrupt" => push(&mut nodes, Node::Irq(IrqB::default()), child),
                     _ => {}
                 }
             }
@@ -209,15 +253,19 @@ pub fn parse(xml: &str) -> Result<Model, ParseError> {
                 match e.name().as_ref() {
                     b"peripheral" => {
                         let derived_from = attr(&e, b"derivedFrom");
-                        nodes.push(Node::Peripheral(PeripheralB {
-                            derived_from,
-                            ..PeripheralB::default()
-                        }));
+                        push(
+                            &mut nodes,
+                            Node::Peripheral(PeripheralB {
+                                derived_from,
+                                ..PeripheralB::default()
+                            }),
+                            depth,
+                        );
                     }
                     b"addressBlock" => in_address_block = true,
-                    b"register" => nodes.push(Node::Register(RegisterB::default())),
-                    b"field" => nodes.push(Node::Field(FieldB::default())),
-                    b"interrupt" => nodes.push(Node::Irq(IrqB::default())),
+                    b"register" => push(&mut nodes, Node::Register(RegisterB::default()), depth),
+                    b"field" => push(&mut nodes, Node::Field(FieldB::default()), depth),
+                    b"interrupt" => push(&mut nodes, Node::Irq(IrqB::default()), depth),
                     _ => {}
                 }
             }
@@ -237,8 +285,20 @@ pub fn parse(xml: &str) -> Result<Model, ParseError> {
                 } else if SCALARS.contains(&name) && capturing {
                     if name == b"size" && nodes.is_empty() && depth == 2 {
                         device_size = parse_u32(text.trim());
-                    } else if let Some(node) = nodes.last_mut() {
-                        assign(node, name, text.trim(), in_address_block);
+                    } else if name == b"size" && in_address_block {
+                        // `<addressBlock><size>` is nested one level below
+                        // the peripheral by construction; it sets the window
+                        // (never the register-size default).
+                        if let Some(node) = nodes.last_mut() {
+                            assign(node, name, text.trim(), in_address_block);
+                        }
+                    } else if node_depth(&nodes).is_some_and(|d| d + 1 == depth) {
+                        // Direct child only: nested scalars (enumerated value
+                        // names, cluster names, alternate-register names, …)
+                        // must not clobber the enclosing builder.
+                        if let Some(node) = nodes.last_mut() {
+                            assign(node, name, text.trim(), in_address_block);
+                        }
                     }
                 }
                 text.clear();
@@ -546,6 +606,32 @@ mod tests {
         let model = parse(SAMPLE).unwrap();
         assert_eq!(model.peripherals[1].irqs[0].number, 6);
         assert_eq!(model.peripherals[1].irqs[0].name, "EXTI0");
+    }
+
+    #[test]
+    fn enumerated_value_names_do_not_override_field_names() {
+        let with_enums = r#"<device><name>D</name>
+          <peripheral><name>LCD</name><baseAddress>0x40002400</baseAddress>
+            <registers><register><name>LCD_CR</name><addressOffset>0x0</addressOffset>
+              <size>0x20</size><access>read-write</access><resetValue>0x0</resetValue>
+              <fields><field><name>VSEL</name>
+                <bitOffset>1</bitOffset><bitWidth>1</bitWidth><access>read-write</access>
+                <enumeratedValues><enumeratedValue><name>B_0x0</name>
+                  <description>Internal</description><value>0x0</value>
+                </enumeratedValue><enumeratedValue><name>B_0x1</name>
+                  <description>External</description><value>0x1</value>
+                </enumeratedValue></enumeratedValues>
+              </field></fields>
+            </register></registers>
+          </peripheral>
+        </device>"#;
+        let model = parse(with_enums).unwrap();
+        let reg = &model.peripherals[0].registers[0];
+        assert_eq!(reg.name, "LCD_CR");
+        assert_eq!(reg.fields.len(), 1);
+        assert_eq!(reg.fields[0].name, "VSEL");
+        assert_eq!(reg.fields[0].offset, 1);
+        assert_eq!(reg.fields[0].width, 1);
     }
 
     #[test]
