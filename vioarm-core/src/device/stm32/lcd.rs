@@ -244,7 +244,7 @@ mod tests {
     fn table_matches_silicon_layout() {
         let def = Stm32l476::peripheral("LCD").unwrap();
         assert_eq!(def.base, BASE, "LCD base");
-        for (name, offset) in [("CR", 0x00), ("FCR", 0x04), ("SR", 0x08), ("CLR", 0x0C)] {
+        for (name, offset) in [("LCD_CR", 0x00), ("LCD_FCR", 0x04), ("LCD_SR", 0x08), ("LCD_CLR", 0x0C)] {
             let r = def
                 .registers
                 .iter()

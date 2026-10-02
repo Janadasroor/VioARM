@@ -158,7 +158,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "WDT_LOCK_UNLOCK",
+                    name: "WDT_LOCK",
                     offset: 0,
                     width: 32,
                     access: Access::ReadWrite,
@@ -293,7 +293,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "WDT_LOCK_UNLOCK",
+                    name: "WDT_LOCK",
                     offset: 0,
                     width: 32,
                     access: Access::ReadWrite,
@@ -318,13 +318,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "SSI_CR0_DSS_16",
+                        name: "SSI_CR0_DSS",
                         offset: 0,
                         width: 4,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "SSI_CR0_FRF_TI",
+                        name: "SSI_CR0_FRF",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
@@ -381,7 +381,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "SSI_CR1_MODE_ADVANCED",
+                        name: "SSI_CR1_MODE",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
@@ -704,7 +704,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "SSI_PP_MODE_ADVBIQUAD",
+                        name: "SSI_PP_MODE",
                         offset: 1,
                         width: 2,
                         access: Access::ReadWrite,
@@ -724,7 +724,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "SSI_CC_CS_PIOSC",
+                    name: "SSI_CC_CS",
                     offset: 0,
                     width: 4,
                     access: Access::ReadWrite,
@@ -749,13 +749,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "SSI_CR0_DSS_16",
+                        name: "SSI_CR0_DSS",
                         offset: 0,
                         width: 4,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "SSI_CR0_FRF_TI",
+                        name: "SSI_CR0_FRF",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
@@ -812,7 +812,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "SSI_CR1_MODE_ADVANCED",
+                        name: "SSI_CR1_MODE",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
@@ -1135,7 +1135,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "SSI_PP_MODE_ADVBIQUAD",
+                        name: "SSI_PP_MODE",
                         offset: 1,
                         width: 2,
                         access: Access::ReadWrite,
@@ -1155,7 +1155,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "SSI_CC_CS_PIOSC",
+                    name: "SSI_CC_CS",
                     offset: 0,
                     width: 4,
                     access: Access::ReadWrite,
@@ -1180,13 +1180,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "SSI_CR0_DSS_16",
+                        name: "SSI_CR0_DSS",
                         offset: 0,
                         width: 4,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "SSI_CR0_FRF_TI",
+                        name: "SSI_CR0_FRF",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
@@ -1243,7 +1243,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "SSI_CR1_MODE_ADVANCED",
+                        name: "SSI_CR1_MODE",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
@@ -1566,7 +1566,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "SSI_PP_MODE_ADVBIQUAD",
+                        name: "SSI_PP_MODE",
                         offset: 1,
                         width: 2,
                         access: Access::ReadWrite,
@@ -1586,7 +1586,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "SSI_CC_CS_PIOSC",
+                    name: "SSI_CC_CS",
                     offset: 0,
                     width: 4,
                     access: Access::ReadWrite,
@@ -1611,13 +1611,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "SSI_CR0_DSS_16",
+                        name: "SSI_CR0_DSS",
                         offset: 0,
                         width: 4,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "SSI_CR0_FRF_TI",
+                        name: "SSI_CR0_FRF",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
@@ -1674,7 +1674,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "SSI_CR1_MODE_ADVANCED",
+                        name: "SSI_CR1_MODE",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
@@ -1997,7 +1997,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "SSI_PP_MODE_ADVBIQUAD",
+                        name: "SSI_PP_MODE",
                         offset: 1,
                         width: 2,
                         access: Access::ReadWrite,
@@ -2017,7 +2017,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "SSI_CC_CS_PIOSC",
+                    name: "SSI_CC_CS",
                     offset: 0,
                     width: 4,
                     access: Access::ReadWrite,
@@ -2259,7 +2259,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "UART_LCRH_WLEN_8",
+                        name: "UART_LCRH_WLEN",
                         offset: 5,
                         width: 2,
                         access: Access::ReadWrite,
@@ -2367,13 +2367,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "UART_IFLS_TX7_8",
+                        name: "UART_IFLS_TX",
                         offset: 0,
                         width: 3,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "UART_IFLS_RX7_8",
+                        name: "UART_IFLS_RX",
                         offset: 3,
                         width: 3,
                         access: Access::ReadWrite,
@@ -2877,7 +2877,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "UART_CC_CS_PIOSC",
+                    name: "UART_CC_CS",
                     offset: 0,
                     width: 4,
                     access: Access::ReadWrite,
@@ -3119,7 +3119,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "UART_LCRH_WLEN_8",
+                        name: "UART_LCRH_WLEN",
                         offset: 5,
                         width: 2,
                         access: Access::ReadWrite,
@@ -3227,13 +3227,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "UART_IFLS_TX7_8",
+                        name: "UART_IFLS_TX",
                         offset: 0,
                         width: 3,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "UART_IFLS_RX7_8",
+                        name: "UART_IFLS_RX",
                         offset: 3,
                         width: 3,
                         access: Access::ReadWrite,
@@ -3737,7 +3737,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "UART_CC_CS_PIOSC",
+                    name: "UART_CC_CS",
                     offset: 0,
                     width: 4,
                     access: Access::ReadWrite,
@@ -3979,7 +3979,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "UART_LCRH_WLEN_8",
+                        name: "UART_LCRH_WLEN",
                         offset: 5,
                         width: 2,
                         access: Access::ReadWrite,
@@ -4087,13 +4087,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "UART_IFLS_TX7_8",
+                        name: "UART_IFLS_TX",
                         offset: 0,
                         width: 3,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "UART_IFLS_RX7_8",
+                        name: "UART_IFLS_RX",
                         offset: 3,
                         width: 3,
                         access: Access::ReadWrite,
@@ -4597,7 +4597,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "UART_CC_CS_PIOSC",
+                    name: "UART_CC_CS",
                     offset: 0,
                     width: 4,
                     access: Access::ReadWrite,
@@ -4839,7 +4839,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "UART_LCRH_WLEN_8",
+                        name: "UART_LCRH_WLEN",
                         offset: 5,
                         width: 2,
                         access: Access::ReadWrite,
@@ -4947,13 +4947,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "UART_IFLS_TX7_8",
+                        name: "UART_IFLS_TX",
                         offset: 0,
                         width: 3,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "UART_IFLS_RX7_8",
+                        name: "UART_IFLS_RX",
                         offset: 3,
                         width: 3,
                         access: Access::ReadWrite,
@@ -5457,7 +5457,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "UART_CC_CS_PIOSC",
+                    name: "UART_CC_CS",
                     offset: 0,
                     width: 4,
                     access: Access::ReadWrite,
@@ -5699,7 +5699,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "UART_LCRH_WLEN_8",
+                        name: "UART_LCRH_WLEN",
                         offset: 5,
                         width: 2,
                         access: Access::ReadWrite,
@@ -5807,13 +5807,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "UART_IFLS_TX7_8",
+                        name: "UART_IFLS_TX",
                         offset: 0,
                         width: 3,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "UART_IFLS_RX7_8",
+                        name: "UART_IFLS_RX",
                         offset: 3,
                         width: 3,
                         access: Access::ReadWrite,
@@ -6317,7 +6317,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "UART_CC_CS_PIOSC",
+                    name: "UART_CC_CS",
                     offset: 0,
                     width: 4,
                     access: Access::ReadWrite,
@@ -6559,7 +6559,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "UART_LCRH_WLEN_8",
+                        name: "UART_LCRH_WLEN",
                         offset: 5,
                         width: 2,
                         access: Access::ReadWrite,
@@ -6667,13 +6667,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "UART_IFLS_TX7_8",
+                        name: "UART_IFLS_TX",
                         offset: 0,
                         width: 3,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "UART_IFLS_RX7_8",
+                        name: "UART_IFLS_RX",
                         offset: 3,
                         width: 3,
                         access: Access::ReadWrite,
@@ -7177,7 +7177,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "UART_CC_CS_PIOSC",
+                    name: "UART_CC_CS",
                     offset: 0,
                     width: 4,
                     access: Access::ReadWrite,
@@ -7419,7 +7419,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "UART_LCRH_WLEN_8",
+                        name: "UART_LCRH_WLEN",
                         offset: 5,
                         width: 2,
                         access: Access::ReadWrite,
@@ -7527,13 +7527,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "UART_IFLS_TX7_8",
+                        name: "UART_IFLS_TX",
                         offset: 0,
                         width: 3,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "UART_IFLS_RX7_8",
+                        name: "UART_IFLS_RX",
                         offset: 3,
                         width: 3,
                         access: Access::ReadWrite,
@@ -8037,7 +8037,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "UART_CC_CS_PIOSC",
+                    name: "UART_CC_CS",
                     offset: 0,
                     width: 4,
                     access: Access::ReadWrite,
@@ -8279,7 +8279,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "UART_LCRH_WLEN_8",
+                        name: "UART_LCRH_WLEN",
                         offset: 5,
                         width: 2,
                         access: Access::ReadWrite,
@@ -8387,13 +8387,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "UART_IFLS_TX7_8",
+                        name: "UART_IFLS_TX",
                         offset: 0,
                         width: 3,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "UART_IFLS_RX7_8",
+                        name: "UART_IFLS_RX",
                         offset: 3,
                         width: 3,
                         access: Access::ReadWrite,
@@ -8897,7 +8897,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "UART_CC_CS_PIOSC",
+                    name: "UART_CC_CS",
                     offset: 0,
                     width: 4,
                     access: Access::ReadWrite,
@@ -9088,7 +9088,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "I2C_MTPR_PULSEL_31",
+                        name: "I2C_MTPR_PULSEL",
                         offset: 16,
                         width: 3,
                         access: Access::ReadWrite,
@@ -10236,7 +10236,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "I2C_MTPR_PULSEL_31",
+                        name: "I2C_MTPR_PULSEL",
                         offset: 16,
                         width: 3,
                         access: Access::ReadWrite,
@@ -11384,7 +11384,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "I2C_MTPR_PULSEL_31",
+                        name: "I2C_MTPR_PULSEL",
                         offset: 16,
                         width: 3,
                         access: Access::ReadWrite,
@@ -12532,7 +12532,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "I2C_MTPR_PULSEL_31",
+                        name: "I2C_MTPR_PULSEL",
                         offset: 16,
                         width: 3,
                         access: Access::ReadWrite,
@@ -14030,49 +14030,49 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "PWM_ENUPD_ENUPD0_GSYNC",
+                        name: "PWM_ENUPD_ENUPD0",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_ENUPD_ENUPD1_GSYNC",
+                        name: "PWM_ENUPD_ENUPD1",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_ENUPD_ENUPD2_GSYNC",
+                        name: "PWM_ENUPD_ENUPD2",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_ENUPD_ENUPD3_GSYNC",
+                        name: "PWM_ENUPD_ENUPD3",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_ENUPD_ENUPD4_GSYNC",
+                        name: "PWM_ENUPD_ENUPD4",
                         offset: 8,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_ENUPD_ENUPD5_GSYNC",
+                        name: "PWM_ENUPD_ENUPD5",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_ENUPD_ENUPD6_GSYNC",
+                        name: "PWM_ENUPD_ENUPD6",
                         offset: 12,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_ENUPD_ENUPD7_GSYNC",
+                        name: "PWM_ENUPD_ENUPD7",
                         offset: 14,
                         width: 2,
                         access: Access::ReadWrite,
@@ -14123,31 +14123,31 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_0_CTL_GENAUPD_GS",
+                        name: "PWM_0_CTL_GENAUPD",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_0_CTL_GENBUPD_GS",
+                        name: "PWM_0_CTL_GENBUPD",
                         offset: 8,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_0_CTL_DBCTLUPD_GS",
+                        name: "PWM_0_CTL_DBCTLUPD",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_0_CTL_DBRISEUPD_GS",
+                        name: "PWM_0_CTL_DBRISEUPD",
                         offset: 12,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_0_CTL_DBFALLUPD_GS",
+                        name: "PWM_0_CTL_DBFALLUPD",
                         offset: 14,
                         width: 2,
                         access: Access::ReadWrite,
@@ -14403,37 +14403,37 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "PWM_0_GENA_ACTZERO_ONE",
+                        name: "PWM_0_GENA_ACTZERO",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_0_GENA_ACTLOAD_ONE",
+                        name: "PWM_0_GENA_ACTLOAD",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_0_GENA_ACTCMPAU_ONE",
+                        name: "PWM_0_GENA_ACTCMPAU",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_0_GENA_ACTCMPAD_ONE",
+                        name: "PWM_0_GENA_ACTCMPAD",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_0_GENA_ACTCMPBU_ONE",
+                        name: "PWM_0_GENA_ACTCMPBU",
                         offset: 8,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_0_GENA_ACTCMPBD_ONE",
+                        name: "PWM_0_GENA_ACTCMPBD",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
@@ -14448,37 +14448,37 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "PWM_0_GENB_ACTZERO_ONE",
+                        name: "PWM_0_GENB_ACTZERO",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_0_GENB_ACTLOAD_ONE",
+                        name: "PWM_0_GENB_ACTLOAD",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_0_GENB_ACTCMPAU_ONE",
+                        name: "PWM_0_GENB_ACTCMPAU",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_0_GENB_ACTCMPAD_ONE",
+                        name: "PWM_0_GENB_ACTCMPAD",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_0_GENB_ACTCMPBU_ONE",
+                        name: "PWM_0_GENB_ACTCMPBU",
                         offset: 8,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_0_GENB_ACTCMPBD_ONE",
+                        name: "PWM_0_GENB_ACTCMPBD",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
@@ -14671,31 +14671,31 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_1_CTL_GENAUPD_GS",
+                        name: "PWM_1_CTL_GENAUPD",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_1_CTL_GENBUPD_GS",
+                        name: "PWM_1_CTL_GENBUPD",
                         offset: 8,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_1_CTL_DBCTLUPD_GS",
+                        name: "PWM_1_CTL_DBCTLUPD",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_1_CTL_DBRISEUPD_GS",
+                        name: "PWM_1_CTL_DBRISEUPD",
                         offset: 12,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_1_CTL_DBFALLUPD_GS",
+                        name: "PWM_1_CTL_DBFALLUPD",
                         offset: 14,
                         width: 2,
                         access: Access::ReadWrite,
@@ -14951,37 +14951,37 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "PWM_1_GENA_ACTZERO_ONE",
+                        name: "PWM_1_GENA_ACTZERO",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_1_GENA_ACTLOAD_ONE",
+                        name: "PWM_1_GENA_ACTLOAD",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_1_GENA_ACTCMPAU_ONE",
+                        name: "PWM_1_GENA_ACTCMPAU",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_1_GENA_ACTCMPAD_ONE",
+                        name: "PWM_1_GENA_ACTCMPAD",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_1_GENA_ACTCMPBU_ONE",
+                        name: "PWM_1_GENA_ACTCMPBU",
                         offset: 8,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_1_GENA_ACTCMPBD_ONE",
+                        name: "PWM_1_GENA_ACTCMPBD",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
@@ -14996,37 +14996,37 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "PWM_1_GENB_ACTZERO_ONE",
+                        name: "PWM_1_GENB_ACTZERO",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_1_GENB_ACTLOAD_ONE",
+                        name: "PWM_1_GENB_ACTLOAD",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_1_GENB_ACTCMPAU_ONE",
+                        name: "PWM_1_GENB_ACTCMPAU",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_1_GENB_ACTCMPAD_ONE",
+                        name: "PWM_1_GENB_ACTCMPAD",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_1_GENB_ACTCMPBU_ONE",
+                        name: "PWM_1_GENB_ACTCMPBU",
                         offset: 8,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_1_GENB_ACTCMPBD_ONE",
+                        name: "PWM_1_GENB_ACTCMPBD",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
@@ -15219,31 +15219,31 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_2_CTL_GENAUPD_GS",
+                        name: "PWM_2_CTL_GENAUPD",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_2_CTL_GENBUPD_GS",
+                        name: "PWM_2_CTL_GENBUPD",
                         offset: 8,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_2_CTL_DBCTLUPD_GS",
+                        name: "PWM_2_CTL_DBCTLUPD",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_2_CTL_DBRISEUPD_GS",
+                        name: "PWM_2_CTL_DBRISEUPD",
                         offset: 12,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_2_CTL_DBFALLUPD_GS",
+                        name: "PWM_2_CTL_DBFALLUPD",
                         offset: 14,
                         width: 2,
                         access: Access::ReadWrite,
@@ -15499,37 +15499,37 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "PWM_2_GENA_ACTZERO_ONE",
+                        name: "PWM_2_GENA_ACTZERO",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_2_GENA_ACTLOAD_ONE",
+                        name: "PWM_2_GENA_ACTLOAD",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_2_GENA_ACTCMPAU_ONE",
+                        name: "PWM_2_GENA_ACTCMPAU",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_2_GENA_ACTCMPAD_ONE",
+                        name: "PWM_2_GENA_ACTCMPAD",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_2_GENA_ACTCMPBU_ONE",
+                        name: "PWM_2_GENA_ACTCMPBU",
                         offset: 8,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_2_GENA_ACTCMPBD_ONE",
+                        name: "PWM_2_GENA_ACTCMPBD",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
@@ -15544,37 +15544,37 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "PWM_2_GENB_ACTZERO_ONE",
+                        name: "PWM_2_GENB_ACTZERO",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_2_GENB_ACTLOAD_ONE",
+                        name: "PWM_2_GENB_ACTLOAD",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_2_GENB_ACTCMPAU_ONE",
+                        name: "PWM_2_GENB_ACTCMPAU",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_2_GENB_ACTCMPAD_ONE",
+                        name: "PWM_2_GENB_ACTCMPAD",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_2_GENB_ACTCMPBU_ONE",
+                        name: "PWM_2_GENB_ACTCMPBU",
                         offset: 8,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_2_GENB_ACTCMPBD_ONE",
+                        name: "PWM_2_GENB_ACTCMPBD",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
@@ -15767,31 +15767,31 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_3_CTL_GENAUPD_GS",
+                        name: "PWM_3_CTL_GENAUPD",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_3_CTL_GENBUPD_GS",
+                        name: "PWM_3_CTL_GENBUPD",
                         offset: 8,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_3_CTL_DBCTLUPD_GS",
+                        name: "PWM_3_CTL_DBCTLUPD",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_3_CTL_DBRISEUPD_GS",
+                        name: "PWM_3_CTL_DBRISEUPD",
                         offset: 12,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_3_CTL_DBFALLUPD_GS",
+                        name: "PWM_3_CTL_DBFALLUPD",
                         offset: 14,
                         width: 2,
                         access: Access::ReadWrite,
@@ -16047,37 +16047,37 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "PWM_3_GENA_ACTZERO_ONE",
+                        name: "PWM_3_GENA_ACTZERO",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_3_GENA_ACTLOAD_ONE",
+                        name: "PWM_3_GENA_ACTLOAD",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_3_GENA_ACTCMPAU_ONE",
+                        name: "PWM_3_GENA_ACTCMPAU",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_3_GENA_ACTCMPAD_ONE",
+                        name: "PWM_3_GENA_ACTCMPAD",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_3_GENA_ACTCMPBU_ONE",
+                        name: "PWM_3_GENA_ACTCMPBU",
                         offset: 8,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_3_GENA_ACTCMPBD_ONE",
+                        name: "PWM_3_GENA_ACTCMPBD",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
@@ -16092,37 +16092,37 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "PWM_3_GENB_ACTZERO_ONE",
+                        name: "PWM_3_GENB_ACTZERO",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_3_GENB_ACTLOAD_ONE",
+                        name: "PWM_3_GENB_ACTLOAD",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_3_GENB_ACTCMPAU_ONE",
+                        name: "PWM_3_GENB_ACTCMPAU",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_3_GENB_ACTCMPAD_ONE",
+                        name: "PWM_3_GENB_ACTCMPAD",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_3_GENB_ACTCMPBU_ONE",
+                        name: "PWM_3_GENB_ACTCMPBU",
                         offset: 8,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "PWM_3_GENB_ACTCMPBD_ONE",
+                        name: "PWM_3_GENB_ACTCMPBD",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
@@ -16810,7 +16810,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "PWM_CC_PWMDIV_64",
+                        name: "PWM_CC_PWMDIV",
                         offset: 0,
                         width: 3,
                         access: Access::ReadWrite,
@@ -16878,7 +16878,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "QEI_CTL_VELDIV_128",
+                        name: "QEI_CTL_VELDIV",
                         offset: 6,
                         width: 3,
                         access: Access::ReadWrite,
@@ -17143,7 +17143,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "TIMER_CFG_16_BIT",
+                    name: "TIMER_CFG",
                     offset: 0,
                     width: 3,
                     access: Access::ReadWrite,
@@ -17157,7 +17157,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "TIMER_TAMR_TAMR_CAP",
+                        name: "TIMER_TAMR_TAMR",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
@@ -17229,7 +17229,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_TAMR_TCACT_CLRSETTO",
+                        name: "TIMER_TAMR_TCACT",
                         offset: 13,
                         width: 3,
                         access: Access::ReadWrite,
@@ -17244,7 +17244,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "TIMER_TBMR_TBMR_CAP",
+                        name: "TIMER_TBMR_TBMR",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
@@ -17316,7 +17316,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_TBMR_TCACT_CLRSETTO",
+                        name: "TIMER_TBMR_TCACT",
                         offset: 13,
                         width: 3,
                         access: Access::ReadWrite,
@@ -17343,7 +17343,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_CTL_TAEVENT_BOTH",
+                        name: "TIMER_CTL_TAEVENT",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
@@ -17379,7 +17379,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_CTL_TBEVENT_BOTH",
+                        name: "TIMER_CTL_TBEVENT",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
@@ -17406,49 +17406,49 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT0_TATB",
+                        name: "TIMER_SYNC_SYNCT0",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT1_TATB",
+                        name: "TIMER_SYNC_SYNCT1",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT2_TATB",
+                        name: "TIMER_SYNC_SYNCT2",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT3_TATB",
+                        name: "TIMER_SYNC_SYNCT3",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT4_TATB",
+                        name: "TIMER_SYNC_SYNCT4",
                         offset: 8,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT5_TATB",
+                        name: "TIMER_SYNC_SYNCT5",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT6_TATB",
+                        name: "TIMER_SYNC_SYNCT6",
                         offset: 12,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT7_TATB",
+                        name: "TIMER_SYNC_SYNCT7",
                         offset: 14,
                         width: 2,
                         access: Access::ReadWrite,
@@ -18044,7 +18044,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "TIMER_PP_SIZE_32",
+                        name: "TIMER_PP_SIZE",
                         offset: 0,
                         width: 4,
                         access: Access::ReadWrite,
@@ -18106,7 +18106,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "TIMER_CFG_16_BIT",
+                    name: "TIMER_CFG",
                     offset: 0,
                     width: 3,
                     access: Access::ReadWrite,
@@ -18120,7 +18120,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "TIMER_TAMR_TAMR_CAP",
+                        name: "TIMER_TAMR_TAMR",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
@@ -18192,7 +18192,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_TAMR_TCACT_CLRSETTO",
+                        name: "TIMER_TAMR_TCACT",
                         offset: 13,
                         width: 3,
                         access: Access::ReadWrite,
@@ -18207,7 +18207,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "TIMER_TBMR_TBMR_CAP",
+                        name: "TIMER_TBMR_TBMR",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
@@ -18279,7 +18279,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_TBMR_TCACT_CLRSETTO",
+                        name: "TIMER_TBMR_TCACT",
                         offset: 13,
                         width: 3,
                         access: Access::ReadWrite,
@@ -18306,7 +18306,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_CTL_TAEVENT_BOTH",
+                        name: "TIMER_CTL_TAEVENT",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
@@ -18342,7 +18342,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_CTL_TBEVENT_BOTH",
+                        name: "TIMER_CTL_TBEVENT",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
@@ -18369,49 +18369,49 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT0_TATB",
+                        name: "TIMER_SYNC_SYNCT0",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT1_TATB",
+                        name: "TIMER_SYNC_SYNCT1",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT2_TATB",
+                        name: "TIMER_SYNC_SYNCT2",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT3_TATB",
+                        name: "TIMER_SYNC_SYNCT3",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT4_TATB",
+                        name: "TIMER_SYNC_SYNCT4",
                         offset: 8,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT5_TATB",
+                        name: "TIMER_SYNC_SYNCT5",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT6_TATB",
+                        name: "TIMER_SYNC_SYNCT6",
                         offset: 12,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT7_TATB",
+                        name: "TIMER_SYNC_SYNCT7",
                         offset: 14,
                         width: 2,
                         access: Access::ReadWrite,
@@ -19007,7 +19007,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "TIMER_PP_SIZE_32",
+                        name: "TIMER_PP_SIZE",
                         offset: 0,
                         width: 4,
                         access: Access::ReadWrite,
@@ -19069,7 +19069,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "TIMER_CFG_16_BIT",
+                    name: "TIMER_CFG",
                     offset: 0,
                     width: 3,
                     access: Access::ReadWrite,
@@ -19083,7 +19083,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "TIMER_TAMR_TAMR_CAP",
+                        name: "TIMER_TAMR_TAMR",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
@@ -19155,7 +19155,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_TAMR_TCACT_CLRSETTO",
+                        name: "TIMER_TAMR_TCACT",
                         offset: 13,
                         width: 3,
                         access: Access::ReadWrite,
@@ -19170,7 +19170,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "TIMER_TBMR_TBMR_CAP",
+                        name: "TIMER_TBMR_TBMR",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
@@ -19242,7 +19242,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_TBMR_TCACT_CLRSETTO",
+                        name: "TIMER_TBMR_TCACT",
                         offset: 13,
                         width: 3,
                         access: Access::ReadWrite,
@@ -19269,7 +19269,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_CTL_TAEVENT_BOTH",
+                        name: "TIMER_CTL_TAEVENT",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
@@ -19305,7 +19305,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_CTL_TBEVENT_BOTH",
+                        name: "TIMER_CTL_TBEVENT",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
@@ -19332,49 +19332,49 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT0_TATB",
+                        name: "TIMER_SYNC_SYNCT0",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT1_TATB",
+                        name: "TIMER_SYNC_SYNCT1",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT2_TATB",
+                        name: "TIMER_SYNC_SYNCT2",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT3_TATB",
+                        name: "TIMER_SYNC_SYNCT3",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT4_TATB",
+                        name: "TIMER_SYNC_SYNCT4",
                         offset: 8,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT5_TATB",
+                        name: "TIMER_SYNC_SYNCT5",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT6_TATB",
+                        name: "TIMER_SYNC_SYNCT6",
                         offset: 12,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT7_TATB",
+                        name: "TIMER_SYNC_SYNCT7",
                         offset: 14,
                         width: 2,
                         access: Access::ReadWrite,
@@ -19970,7 +19970,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "TIMER_PP_SIZE_32",
+                        name: "TIMER_PP_SIZE",
                         offset: 0,
                         width: 4,
                         access: Access::ReadWrite,
@@ -20032,7 +20032,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "TIMER_CFG_16_BIT",
+                    name: "TIMER_CFG",
                     offset: 0,
                     width: 3,
                     access: Access::ReadWrite,
@@ -20046,7 +20046,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "TIMER_TAMR_TAMR_CAP",
+                        name: "TIMER_TAMR_TAMR",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
@@ -20118,7 +20118,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_TAMR_TCACT_CLRSETTO",
+                        name: "TIMER_TAMR_TCACT",
                         offset: 13,
                         width: 3,
                         access: Access::ReadWrite,
@@ -20133,7 +20133,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "TIMER_TBMR_TBMR_CAP",
+                        name: "TIMER_TBMR_TBMR",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
@@ -20205,7 +20205,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_TBMR_TCACT_CLRSETTO",
+                        name: "TIMER_TBMR_TCACT",
                         offset: 13,
                         width: 3,
                         access: Access::ReadWrite,
@@ -20232,7 +20232,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_CTL_TAEVENT_BOTH",
+                        name: "TIMER_CTL_TAEVENT",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
@@ -20268,7 +20268,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_CTL_TBEVENT_BOTH",
+                        name: "TIMER_CTL_TBEVENT",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
@@ -20295,49 +20295,49 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT0_TATB",
+                        name: "TIMER_SYNC_SYNCT0",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT1_TATB",
+                        name: "TIMER_SYNC_SYNCT1",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT2_TATB",
+                        name: "TIMER_SYNC_SYNCT2",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT3_TATB",
+                        name: "TIMER_SYNC_SYNCT3",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT4_TATB",
+                        name: "TIMER_SYNC_SYNCT4",
                         offset: 8,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT5_TATB",
+                        name: "TIMER_SYNC_SYNCT5",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT6_TATB",
+                        name: "TIMER_SYNC_SYNCT6",
                         offset: 12,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT7_TATB",
+                        name: "TIMER_SYNC_SYNCT7",
                         offset: 14,
                         width: 2,
                         access: Access::ReadWrite,
@@ -20933,7 +20933,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "TIMER_PP_SIZE_32",
+                        name: "TIMER_PP_SIZE",
                         offset: 0,
                         width: 4,
                         access: Access::ReadWrite,
@@ -20995,7 +20995,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "TIMER_CFG_16_BIT",
+                    name: "TIMER_CFG",
                     offset: 0,
                     width: 3,
                     access: Access::ReadWrite,
@@ -21009,7 +21009,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "TIMER_TAMR_TAMR_CAP",
+                        name: "TIMER_TAMR_TAMR",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
@@ -21081,7 +21081,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_TAMR_TCACT_CLRSETTO",
+                        name: "TIMER_TAMR_TCACT",
                         offset: 13,
                         width: 3,
                         access: Access::ReadWrite,
@@ -21096,7 +21096,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "TIMER_TBMR_TBMR_CAP",
+                        name: "TIMER_TBMR_TBMR",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
@@ -21168,7 +21168,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_TBMR_TCACT_CLRSETTO",
+                        name: "TIMER_TBMR_TCACT",
                         offset: 13,
                         width: 3,
                         access: Access::ReadWrite,
@@ -21195,7 +21195,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_CTL_TAEVENT_BOTH",
+                        name: "TIMER_CTL_TAEVENT",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
@@ -21231,7 +21231,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_CTL_TBEVENT_BOTH",
+                        name: "TIMER_CTL_TBEVENT",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
@@ -21258,49 +21258,49 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT0_TATB",
+                        name: "TIMER_SYNC_SYNCT0",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT1_TATB",
+                        name: "TIMER_SYNC_SYNCT1",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT2_TATB",
+                        name: "TIMER_SYNC_SYNCT2",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT3_TATB",
+                        name: "TIMER_SYNC_SYNCT3",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT4_TATB",
+                        name: "TIMER_SYNC_SYNCT4",
                         offset: 8,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT5_TATB",
+                        name: "TIMER_SYNC_SYNCT5",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT6_TATB",
+                        name: "TIMER_SYNC_SYNCT6",
                         offset: 12,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT7_TATB",
+                        name: "TIMER_SYNC_SYNCT7",
                         offset: 14,
                         width: 2,
                         access: Access::ReadWrite,
@@ -21896,7 +21896,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "TIMER_PP_SIZE_32",
+                        name: "TIMER_PP_SIZE",
                         offset: 0,
                         width: 4,
                         access: Access::ReadWrite,
@@ -21958,7 +21958,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "TIMER_CFG_16_BIT",
+                    name: "TIMER_CFG",
                     offset: 0,
                     width: 3,
                     access: Access::ReadWrite,
@@ -21972,7 +21972,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "TIMER_TAMR_TAMR_CAP",
+                        name: "TIMER_TAMR_TAMR",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
@@ -22044,7 +22044,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_TAMR_TCACT_CLRSETTO",
+                        name: "TIMER_TAMR_TCACT",
                         offset: 13,
                         width: 3,
                         access: Access::ReadWrite,
@@ -22059,7 +22059,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "TIMER_TBMR_TBMR_CAP",
+                        name: "TIMER_TBMR_TBMR",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
@@ -22131,7 +22131,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_TBMR_TCACT_CLRSETTO",
+                        name: "TIMER_TBMR_TCACT",
                         offset: 13,
                         width: 3,
                         access: Access::ReadWrite,
@@ -22158,7 +22158,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_CTL_TAEVENT_BOTH",
+                        name: "TIMER_CTL_TAEVENT",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
@@ -22194,7 +22194,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_CTL_TBEVENT_BOTH",
+                        name: "TIMER_CTL_TBEVENT",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
@@ -22221,49 +22221,49 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT0_TATB",
+                        name: "TIMER_SYNC_SYNCT0",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT1_TATB",
+                        name: "TIMER_SYNC_SYNCT1",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT2_TATB",
+                        name: "TIMER_SYNC_SYNCT2",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT3_TATB",
+                        name: "TIMER_SYNC_SYNCT3",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT4_TATB",
+                        name: "TIMER_SYNC_SYNCT4",
                         offset: 8,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT5_TATB",
+                        name: "TIMER_SYNC_SYNCT5",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT6_TATB",
+                        name: "TIMER_SYNC_SYNCT6",
                         offset: 12,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT7_TATB",
+                        name: "TIMER_SYNC_SYNCT7",
                         offset: 14,
                         width: 2,
                         access: Access::ReadWrite,
@@ -22859,7 +22859,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "TIMER_PP_SIZE_32",
+                        name: "TIMER_PP_SIZE",
                         offset: 0,
                         width: 4,
                         access: Access::ReadWrite,
@@ -23251,25 +23251,25 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "ADC_EMUX_EM0_ALWAYS",
+                        name: "ADC_EMUX_EM0",
                         offset: 0,
                         width: 4,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_EMUX_EM1_ALWAYS",
+                        name: "ADC_EMUX_EM1",
                         offset: 4,
                         width: 4,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_EMUX_EM2_ALWAYS",
+                        name: "ADC_EMUX_EM2",
                         offset: 8,
                         width: 4,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_EMUX_EM3_ALWAYS",
+                        name: "ADC_EMUX_EM3",
                         offset: 12,
                         width: 4,
                         access: Access::ReadWrite,
@@ -23317,25 +23317,25 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "ADC_TSSEL_PS0_0",
+                        name: "ADC_TSSEL_PS0",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_TSSEL_PS1_0",
+                        name: "ADC_TSSEL_PS1",
                         offset: 12,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_TSSEL_PS2_0",
+                        name: "ADC_TSSEL_PS2",
                         offset: 20,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_TSSEL_PS3_0",
+                        name: "ADC_TSSEL_PS3",
                         offset: 28,
                         width: 2,
                         access: Access::ReadWrite,
@@ -23382,7 +23382,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "ADC_SPC_PHASE_337_5",
+                    name: "ADC_SPC_PHASE",
                     offset: 0,
                     width: 4,
                     access: Access::ReadWrite,
@@ -23440,7 +23440,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "ADC_SAC_AVG_64X",
+                    name: "ADC_SAC_AVG",
                     offset: 0,
                     width: 3,
                     access: Access::ReadWrite,
@@ -23511,7 +23511,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "ADC_CTL_VREF_EXT_3V",
+                        name: "ADC_CTL_VREF",
                         offset: 0,
                         width: 1,
                         access: Access::ReadWrite,
@@ -24945,13 +24945,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "ADC_DCCTL0_CIM_HONCE",
+                        name: "ADC_DCCTL0_CIM",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL0_CIC_HIGH",
+                        name: "ADC_DCCTL0_CIC",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
@@ -24963,13 +24963,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL0_CTM_HONCE",
+                        name: "ADC_DCCTL0_CTM",
                         offset: 8,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL0_CTC_HIGH",
+                        name: "ADC_DCCTL0_CTC",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
@@ -24990,13 +24990,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "ADC_DCCTL1_CIM_HONCE",
+                        name: "ADC_DCCTL1_CIM",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL1_CIC_HIGH",
+                        name: "ADC_DCCTL1_CIC",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
@@ -25008,13 +25008,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL1_CTM_HONCE",
+                        name: "ADC_DCCTL1_CTM",
                         offset: 8,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL1_CTC_HIGH",
+                        name: "ADC_DCCTL1_CTC",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
@@ -25035,13 +25035,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "ADC_DCCTL2_CIM_HONCE",
+                        name: "ADC_DCCTL2_CIM",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL2_CIC_HIGH",
+                        name: "ADC_DCCTL2_CIC",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
@@ -25053,13 +25053,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL2_CTM_HONCE",
+                        name: "ADC_DCCTL2_CTM",
                         offset: 8,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL2_CTC_HIGH",
+                        name: "ADC_DCCTL2_CTC",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
@@ -25080,13 +25080,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "ADC_DCCTL3_CIM_HONCE",
+                        name: "ADC_DCCTL3_CIM",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL3_CIC_HIGH",
+                        name: "ADC_DCCTL3_CIC",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
@@ -25098,13 +25098,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL3_CTM_HONCE",
+                        name: "ADC_DCCTL3_CTM",
                         offset: 8,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL3_CTC_HIGH",
+                        name: "ADC_DCCTL3_CTC",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
@@ -25125,13 +25125,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "ADC_DCCTL4_CIM_HONCE",
+                        name: "ADC_DCCTL4_CIM",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL4_CIC_HIGH",
+                        name: "ADC_DCCTL4_CIC",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
@@ -25143,13 +25143,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL4_CTM_HONCE",
+                        name: "ADC_DCCTL4_CTM",
                         offset: 8,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL4_CTC_HIGH",
+                        name: "ADC_DCCTL4_CTC",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
@@ -25170,13 +25170,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "ADC_DCCTL5_CIM_HONCE",
+                        name: "ADC_DCCTL5_CIM",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL5_CIC_HIGH",
+                        name: "ADC_DCCTL5_CIC",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
@@ -25188,13 +25188,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL5_CTM_HONCE",
+                        name: "ADC_DCCTL5_CTM",
                         offset: 8,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL5_CTC_HIGH",
+                        name: "ADC_DCCTL5_CTC",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
@@ -25215,13 +25215,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "ADC_DCCTL6_CIM_HONCE",
+                        name: "ADC_DCCTL6_CIM",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL6_CIC_HIGH",
+                        name: "ADC_DCCTL6_CIC",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
@@ -25233,13 +25233,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL6_CTM_HONCE",
+                        name: "ADC_DCCTL6_CTM",
                         offset: 8,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL6_CTC_HIGH",
+                        name: "ADC_DCCTL6_CTC",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
@@ -25260,13 +25260,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "ADC_DCCTL7_CIM_HONCE",
+                        name: "ADC_DCCTL7_CIM",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL7_CIC_HIGH",
+                        name: "ADC_DCCTL7_CIC",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
@@ -25278,13 +25278,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL7_CTM_HONCE",
+                        name: "ADC_DCCTL7_CTM",
                         offset: 8,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL7_CTC_HIGH",
+                        name: "ADC_DCCTL7_CTC",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
@@ -25473,7 +25473,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "ADC_PP_MCR_FULL",
+                        name: "ADC_PP_MCR",
                         offset: 0,
                         width: 4,
                         access: Access::ReadWrite,
@@ -25491,7 +25491,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_PP_TYPE_SAR",
+                        name: "ADC_PP_TYPE",
                         offset: 16,
                         width: 2,
                         access: Access::ReadWrite,
@@ -25523,7 +25523,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "ADC_PC_MCR_FULL",
+                    name: "ADC_PC_MCR",
                     offset: 0,
                     width: 4,
                     access: Access::ReadWrite,
@@ -25537,7 +25537,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "ADC_CC_CS_MOSC",
+                        name: "ADC_CC_CS",
                         offset: 0,
                         width: 4,
                         access: Access::ReadWrite,
@@ -25904,25 +25904,25 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "ADC_EMUX_EM0_ALWAYS",
+                        name: "ADC_EMUX_EM0",
                         offset: 0,
                         width: 4,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_EMUX_EM1_ALWAYS",
+                        name: "ADC_EMUX_EM1",
                         offset: 4,
                         width: 4,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_EMUX_EM2_ALWAYS",
+                        name: "ADC_EMUX_EM2",
                         offset: 8,
                         width: 4,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_EMUX_EM3_ALWAYS",
+                        name: "ADC_EMUX_EM3",
                         offset: 12,
                         width: 4,
                         access: Access::ReadWrite,
@@ -25970,25 +25970,25 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "ADC_TSSEL_PS0_0",
+                        name: "ADC_TSSEL_PS0",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_TSSEL_PS1_0",
+                        name: "ADC_TSSEL_PS1",
                         offset: 12,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_TSSEL_PS2_0",
+                        name: "ADC_TSSEL_PS2",
                         offset: 20,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_TSSEL_PS3_0",
+                        name: "ADC_TSSEL_PS3",
                         offset: 28,
                         width: 2,
                         access: Access::ReadWrite,
@@ -26035,7 +26035,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "ADC_SPC_PHASE_337_5",
+                    name: "ADC_SPC_PHASE",
                     offset: 0,
                     width: 4,
                     access: Access::ReadWrite,
@@ -26093,7 +26093,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "ADC_SAC_AVG_64X",
+                    name: "ADC_SAC_AVG",
                     offset: 0,
                     width: 3,
                     access: Access::ReadWrite,
@@ -26164,7 +26164,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "ADC_CTL_VREF_EXT_3V",
+                        name: "ADC_CTL_VREF",
                         offset: 0,
                         width: 1,
                         access: Access::ReadWrite,
@@ -27598,13 +27598,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "ADC_DCCTL0_CIM_HONCE",
+                        name: "ADC_DCCTL0_CIM",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL0_CIC_HIGH",
+                        name: "ADC_DCCTL0_CIC",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
@@ -27616,13 +27616,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL0_CTM_HONCE",
+                        name: "ADC_DCCTL0_CTM",
                         offset: 8,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL0_CTC_HIGH",
+                        name: "ADC_DCCTL0_CTC",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
@@ -27643,13 +27643,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "ADC_DCCTL1_CIM_HONCE",
+                        name: "ADC_DCCTL1_CIM",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL1_CIC_HIGH",
+                        name: "ADC_DCCTL1_CIC",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
@@ -27661,13 +27661,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL1_CTM_HONCE",
+                        name: "ADC_DCCTL1_CTM",
                         offset: 8,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL1_CTC_HIGH",
+                        name: "ADC_DCCTL1_CTC",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
@@ -27688,13 +27688,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "ADC_DCCTL2_CIM_HONCE",
+                        name: "ADC_DCCTL2_CIM",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL2_CIC_HIGH",
+                        name: "ADC_DCCTL2_CIC",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
@@ -27706,13 +27706,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL2_CTM_HONCE",
+                        name: "ADC_DCCTL2_CTM",
                         offset: 8,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL2_CTC_HIGH",
+                        name: "ADC_DCCTL2_CTC",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
@@ -27733,13 +27733,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "ADC_DCCTL3_CIM_HONCE",
+                        name: "ADC_DCCTL3_CIM",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL3_CIC_HIGH",
+                        name: "ADC_DCCTL3_CIC",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
@@ -27751,13 +27751,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL3_CTM_HONCE",
+                        name: "ADC_DCCTL3_CTM",
                         offset: 8,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL3_CTC_HIGH",
+                        name: "ADC_DCCTL3_CTC",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
@@ -27778,13 +27778,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "ADC_DCCTL4_CIM_HONCE",
+                        name: "ADC_DCCTL4_CIM",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL4_CIC_HIGH",
+                        name: "ADC_DCCTL4_CIC",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
@@ -27796,13 +27796,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL4_CTM_HONCE",
+                        name: "ADC_DCCTL4_CTM",
                         offset: 8,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL4_CTC_HIGH",
+                        name: "ADC_DCCTL4_CTC",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
@@ -27823,13 +27823,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "ADC_DCCTL5_CIM_HONCE",
+                        name: "ADC_DCCTL5_CIM",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL5_CIC_HIGH",
+                        name: "ADC_DCCTL5_CIC",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
@@ -27841,13 +27841,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL5_CTM_HONCE",
+                        name: "ADC_DCCTL5_CTM",
                         offset: 8,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL5_CTC_HIGH",
+                        name: "ADC_DCCTL5_CTC",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
@@ -27868,13 +27868,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "ADC_DCCTL6_CIM_HONCE",
+                        name: "ADC_DCCTL6_CIM",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL6_CIC_HIGH",
+                        name: "ADC_DCCTL6_CIC",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
@@ -27886,13 +27886,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL6_CTM_HONCE",
+                        name: "ADC_DCCTL6_CTM",
                         offset: 8,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL6_CTC_HIGH",
+                        name: "ADC_DCCTL6_CTC",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
@@ -27913,13 +27913,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "ADC_DCCTL7_CIM_HONCE",
+                        name: "ADC_DCCTL7_CIM",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL7_CIC_HIGH",
+                        name: "ADC_DCCTL7_CIC",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
@@ -27931,13 +27931,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL7_CTM_HONCE",
+                        name: "ADC_DCCTL7_CTM",
                         offset: 8,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_DCCTL7_CTC_HIGH",
+                        name: "ADC_DCCTL7_CTC",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
@@ -28126,7 +28126,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "ADC_PP_MCR_FULL",
+                        name: "ADC_PP_MCR",
                         offset: 0,
                         width: 4,
                         access: Access::ReadWrite,
@@ -28144,7 +28144,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "ADC_PP_TYPE_SAR",
+                        name: "ADC_PP_TYPE",
                         offset: 16,
                         width: 2,
                         access: Access::ReadWrite,
@@ -28176,7 +28176,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "ADC_PC_MCR_FULL",
+                    name: "ADC_PC_MCR",
                     offset: 0,
                     width: 4,
                     access: Access::ReadWrite,
@@ -28190,7 +28190,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "ADC_CC_CS_MOSC",
+                        name: "ADC_CC_CS",
                         offset: 0,
                         width: 4,
                         access: Access::ReadWrite,
@@ -28359,7 +28359,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "COMP_ACCTL0_ISEN_BOTH",
+                        name: "COMP_ACCTL0_ISEN",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
@@ -28371,7 +28371,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "COMP_ACCTL0_TSEN_BOTH",
+                        name: "COMP_ACCTL0_TSEN",
                         offset: 5,
                         width: 2,
                         access: Access::ReadWrite,
@@ -28383,7 +28383,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "COMP_ACCTL0_ASRCP_REF",
+                        name: "COMP_ACCTL0_ASRCP",
                         offset: 9,
                         width: 2,
                         access: Access::ReadWrite,
@@ -28423,7 +28423,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "COMP_ACCTL1_ISEN_BOTH",
+                        name: "COMP_ACCTL1_ISEN",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
@@ -28435,7 +28435,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "COMP_ACCTL1_TSEN_BOTH",
+                        name: "COMP_ACCTL1_TSEN",
                         offset: 5,
                         width: 2,
                         access: Access::ReadWrite,
@@ -28447,7 +28447,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "COMP_ACCTL1_ASRCP_REF",
+                        name: "COMP_ACCTL1_ASRCP",
                         offset: 9,
                         width: 2,
                         access: Access::ReadWrite,
@@ -28487,7 +28487,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "COMP_ACCTL2_ISEN_BOTH",
+                        name: "COMP_ACCTL2_ISEN",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
@@ -28499,7 +28499,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "COMP_ACCTL2_TSEN_BOTH",
+                        name: "COMP_ACCTL2_TSEN",
                         offset: 5,
                         width: 2,
                         access: Access::ReadWrite,
@@ -28511,7 +28511,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "COMP_ACCTL2_ASRCP_REF",
+                        name: "COMP_ACCTL2_ASRCP",
                         offset: 9,
                         width: 2,
                         access: Access::ReadWrite,
@@ -28639,7 +28639,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "CAN_STS_LEC_NOEVENT",
+                        name: "CAN_STS_LEC",
                         offset: 0,
                         width: 3,
                         access: Access::ReadWrite,
@@ -28743,7 +28743,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "CAN_INT_INTID_STATUS",
+                    name: "CAN_INT_INTID",
                     offset: 0,
                     width: 16,
                     access: Access::ReadWrite,
@@ -28775,7 +28775,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "CAN_TST_TX_RECESSIVE",
+                        name: "CAN_TST_TX",
                         offset: 5,
                         width: 2,
                         access: Access::ReadWrite,
@@ -29571,7 +29571,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "CAN_STS_LEC_NOEVENT",
+                        name: "CAN_STS_LEC",
                         offset: 0,
                         width: 3,
                         access: Access::ReadWrite,
@@ -29675,7 +29675,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "CAN_INT_INTID_STATUS",
+                    name: "CAN_INT_INTID",
                     offset: 0,
                     width: 16,
                     access: Access::ReadWrite,
@@ -29707,7 +29707,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "CAN_TST_TX_RECESSIVE",
+                        name: "CAN_TST_TX",
                         offset: 5,
                         width: 2,
                         access: Access::ReadWrite,
@@ -31083,7 +31083,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "USB_DEVCTL_VBUS_VALID",
+                        name: "USB_DEVCTL_VBUS",
                         offset: 3,
                         width: 2,
                         access: Access::ReadWrite,
@@ -31137,7 +31137,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "USB_TXFIFOSZ_SIZE_2048",
+                        name: "USB_TXFIFOSZ_SIZE",
                         offset: 0,
                         width: 4,
                         access: Access::ReadWrite,
@@ -31158,7 +31158,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "USB_RXFIFOSZ_SIZE_2048",
+                        name: "USB_RXFIFOSZ_SIZE",
                         offset: 0,
                         width: 4,
                         access: Access::ReadWrite,
@@ -32120,7 +32120,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "USB_TYPE0_SPEED_LOW",
+                    name: "USB_TYPE0_SPEED",
                     offset: 6,
                     width: 2,
                     access: Access::ReadWrite,
@@ -32489,13 +32489,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "USB_TXTYPE1_PROTO_INT",
+                        name: "USB_TXTYPE1_PROTO",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "USB_TXTYPE1_SPEED_LOW",
+                        name: "USB_TXTYPE1_SPEED",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
@@ -32542,13 +32542,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "USB_RXTYPE1_PROTO_INT",
+                        name: "USB_RXTYPE1_PROTO",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "USB_RXTYPE1_SPEED_LOW",
+                        name: "USB_RXTYPE1_SPEED",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
@@ -32931,13 +32931,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "USB_TXTYPE2_PROTO_INT",
+                        name: "USB_TXTYPE2_PROTO",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "USB_TXTYPE2_SPEED_LOW",
+                        name: "USB_TXTYPE2_SPEED",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
@@ -32984,13 +32984,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "USB_RXTYPE2_PROTO_INT",
+                        name: "USB_RXTYPE2_PROTO",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "USB_RXTYPE2_SPEED_LOW",
+                        name: "USB_RXTYPE2_SPEED",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
@@ -33373,13 +33373,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "USB_TXTYPE3_PROTO_INT",
+                        name: "USB_TXTYPE3_PROTO",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "USB_TXTYPE3_SPEED_LOW",
+                        name: "USB_TXTYPE3_SPEED",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
@@ -33426,13 +33426,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "USB_RXTYPE3_PROTO_INT",
+                        name: "USB_RXTYPE3_PROTO",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "USB_RXTYPE3_SPEED_LOW",
+                        name: "USB_RXTYPE3_SPEED",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
@@ -33815,13 +33815,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "USB_TXTYPE4_PROTO_INT",
+                        name: "USB_TXTYPE4_PROTO",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "USB_TXTYPE4_SPEED_LOW",
+                        name: "USB_TXTYPE4_SPEED",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
@@ -33868,13 +33868,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "USB_RXTYPE4_PROTO_INT",
+                        name: "USB_RXTYPE4_PROTO",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "USB_RXTYPE4_SPEED_LOW",
+                        name: "USB_RXTYPE4_SPEED",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
@@ -34257,13 +34257,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "USB_TXTYPE5_PROTO_INT",
+                        name: "USB_TXTYPE5_PROTO",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "USB_TXTYPE5_SPEED_LOW",
+                        name: "USB_TXTYPE5_SPEED",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
@@ -34310,13 +34310,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "USB_RXTYPE5_PROTO_INT",
+                        name: "USB_RXTYPE5_PROTO",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "USB_RXTYPE5_SPEED_LOW",
+                        name: "USB_RXTYPE5_SPEED",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
@@ -34699,13 +34699,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "USB_TXTYPE6_PROTO_INT",
+                        name: "USB_TXTYPE6_PROTO",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "USB_TXTYPE6_SPEED_LOW",
+                        name: "USB_TXTYPE6_SPEED",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
@@ -34752,13 +34752,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "USB_RXTYPE6_PROTO_INT",
+                        name: "USB_RXTYPE6_PROTO",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "USB_RXTYPE6_SPEED_LOW",
+                        name: "USB_RXTYPE6_SPEED",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
@@ -35141,13 +35141,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "USB_TXTYPE7_PROTO_INT",
+                        name: "USB_TXTYPE7_PROTO",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "USB_TXTYPE7_SPEED_LOW",
+                        name: "USB_TXTYPE7_SPEED",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
@@ -35194,13 +35194,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "USB_RXTYPE7_PROTO_INT",
+                        name: "USB_RXTYPE7_PROTO",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "USB_RXTYPE7_SPEED_LOW",
+                        name: "USB_RXTYPE7_SPEED",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
@@ -35334,7 +35334,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "USB_DMACTL0_BRSTM_INC16",
+                        name: "USB_DMACTL0_BRSTM",
                         offset: 9,
                         width: 2,
                         access: Access::ReadWrite,
@@ -35411,7 +35411,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "USB_DMACTL1_BRSTM_INC16",
+                        name: "USB_DMACTL1_BRSTM",
                         offset: 9,
                         width: 2,
                         access: Access::ReadWrite,
@@ -35488,7 +35488,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "USB_DMACTL2_BRSTM_INC16",
+                        name: "USB_DMACTL2_BRSTM",
                         offset: 9,
                         width: 2,
                         access: Access::ReadWrite,
@@ -35565,7 +35565,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "USB_DMACTL3_BRSTM_INC16",
+                        name: "USB_DMACTL3_BRSTM",
                         offset: 9,
                         width: 2,
                         access: Access::ReadWrite,
@@ -35642,7 +35642,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "USB_DMACTL4_BRSTM_INC16",
+                        name: "USB_DMACTL4_BRSTM",
                         offset: 9,
                         width: 2,
                         access: Access::ReadWrite,
@@ -35719,7 +35719,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "USB_DMACTL5_BRSTM_INC16",
+                        name: "USB_DMACTL5_BRSTM",
                         offset: 9,
                         width: 2,
                         access: Access::ReadWrite,
@@ -35796,7 +35796,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "USB_DMACTL6_BRSTM_INC16",
+                        name: "USB_DMACTL6_BRSTM",
                         offset: 9,
                         width: 2,
                         access: Access::ReadWrite,
@@ -35873,7 +35873,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "USB_DMACTL7_BRSTM_INC16",
+                        name: "USB_DMACTL7_BRSTM",
                         offset: 9,
                         width: 2,
                         access: Access::ReadWrite,
@@ -36146,7 +36146,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "USB_LPMATTR_LS_L1",
+                        name: "USB_LPMATTR_LS",
                         offset: 0,
                         width: 4,
                         access: Access::ReadWrite,
@@ -36191,7 +36191,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "USB_LPMCNTRL_EN_LPMEXT",
+                        name: "USB_LPMCNTRL_EN",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
@@ -36315,7 +36315,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "USB_EPC_EPEN_VBHIGH",
+                        name: "USB_EPC_EPEN",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
@@ -36345,7 +36345,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "USB_EPC_PFLTACT_HIGH",
+                        name: "USB_EPC_PFLTACT",
                         offset: 8,
                         width: 2,
                         access: Access::ReadWrite,
@@ -36437,7 +36437,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "USB_GPCS_DEVMOD_DEVVBUS",
+                    name: "USB_GPCS_DEVMOD",
                     offset: 0,
                     width: 3,
                     access: Access::ReadWrite,
@@ -36503,7 +36503,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "USB_PP_TYPE_1",
+                        name: "USB_PP_TYPE",
                         offset: 0,
                         width: 4,
                         access: Access::ReadWrite,
@@ -36521,7 +36521,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "USB_PP_USB_OTG",
+                        name: "USB_PP_USB",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
@@ -36788,7 +36788,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "GPIO_LOCK_KEY",
+                    name: "GPIO_LOCK",
                     offset: 0,
                     width: 32,
                     access: Access::ReadWrite,
@@ -36854,7 +36854,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "GPIO_DR12R_DRV12_12MA",
+                    name: "GPIO_DR12R_DRV12",
                     offset: 0,
                     width: 8,
                     access: Access::ReadWrite,
@@ -36920,7 +36920,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "GPIO_PC_EDM0_PLUS2MA",
+                        name: "GPIO_PC_EDM0",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
@@ -37183,7 +37183,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "GPIO_LOCK_KEY",
+                    name: "GPIO_LOCK",
                     offset: 0,
                     width: 32,
                     access: Access::ReadWrite,
@@ -37249,7 +37249,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "GPIO_DR12R_DRV12_12MA",
+                    name: "GPIO_DR12R_DRV12",
                     offset: 0,
                     width: 8,
                     access: Access::ReadWrite,
@@ -37315,7 +37315,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "GPIO_PC_EDM0_PLUS2MA",
+                        name: "GPIO_PC_EDM0",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
@@ -37578,7 +37578,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "GPIO_LOCK_KEY",
+                    name: "GPIO_LOCK",
                     offset: 0,
                     width: 32,
                     access: Access::ReadWrite,
@@ -37644,7 +37644,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "GPIO_DR12R_DRV12_12MA",
+                    name: "GPIO_DR12R_DRV12",
                     offset: 0,
                     width: 8,
                     access: Access::ReadWrite,
@@ -37710,7 +37710,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "GPIO_PC_EDM0_PLUS2MA",
+                        name: "GPIO_PC_EDM0",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
@@ -37973,7 +37973,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "GPIO_LOCK_KEY",
+                    name: "GPIO_LOCK",
                     offset: 0,
                     width: 32,
                     access: Access::ReadWrite,
@@ -38039,7 +38039,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "GPIO_DR12R_DRV12_12MA",
+                    name: "GPIO_DR12R_DRV12",
                     offset: 0,
                     width: 8,
                     access: Access::ReadWrite,
@@ -38105,7 +38105,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "GPIO_PC_EDM0_PLUS2MA",
+                        name: "GPIO_PC_EDM0",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
@@ -38368,7 +38368,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "GPIO_LOCK_KEY",
+                    name: "GPIO_LOCK",
                     offset: 0,
                     width: 32,
                     access: Access::ReadWrite,
@@ -38434,7 +38434,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "GPIO_DR12R_DRV12_12MA",
+                    name: "GPIO_DR12R_DRV12",
                     offset: 0,
                     width: 8,
                     access: Access::ReadWrite,
@@ -38500,7 +38500,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "GPIO_PC_EDM0_PLUS2MA",
+                        name: "GPIO_PC_EDM0",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
@@ -38763,7 +38763,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "GPIO_LOCK_KEY",
+                    name: "GPIO_LOCK",
                     offset: 0,
                     width: 32,
                     access: Access::ReadWrite,
@@ -38829,7 +38829,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "GPIO_DR12R_DRV12_12MA",
+                    name: "GPIO_DR12R_DRV12",
                     offset: 0,
                     width: 8,
                     access: Access::ReadWrite,
@@ -38895,7 +38895,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "GPIO_PC_EDM0_PLUS2MA",
+                        name: "GPIO_PC_EDM0",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
@@ -39158,7 +39158,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "GPIO_LOCK_KEY",
+                    name: "GPIO_LOCK",
                     offset: 0,
                     width: 32,
                     access: Access::ReadWrite,
@@ -39224,7 +39224,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "GPIO_DR12R_DRV12_12MA",
+                    name: "GPIO_DR12R_DRV12",
                     offset: 0,
                     width: 8,
                     access: Access::ReadWrite,
@@ -39290,7 +39290,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "GPIO_PC_EDM0_PLUS2MA",
+                        name: "GPIO_PC_EDM0",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
@@ -39553,7 +39553,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "GPIO_LOCK_KEY",
+                    name: "GPIO_LOCK",
                     offset: 0,
                     width: 32,
                     access: Access::ReadWrite,
@@ -39619,7 +39619,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "GPIO_DR12R_DRV12_12MA",
+                    name: "GPIO_DR12R_DRV12",
                     offset: 0,
                     width: 8,
                     access: Access::ReadWrite,
@@ -39685,7 +39685,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "GPIO_PC_EDM0_PLUS2MA",
+                        name: "GPIO_PC_EDM0",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
@@ -39948,7 +39948,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "GPIO_LOCK_KEY",
+                    name: "GPIO_LOCK",
                     offset: 0,
                     width: 32,
                     access: Access::ReadWrite,
@@ -40014,7 +40014,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "GPIO_DR12R_DRV12_12MA",
+                    name: "GPIO_DR12R_DRV12",
                     offset: 0,
                     width: 8,
                     access: Access::ReadWrite,
@@ -40080,7 +40080,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "GPIO_PC_EDM0_PLUS2MA",
+                        name: "GPIO_PC_EDM0",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
@@ -40343,7 +40343,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "GPIO_LOCK_KEY",
+                    name: "GPIO_LOCK",
                     offset: 0,
                     width: 32,
                     access: Access::ReadWrite,
@@ -40409,7 +40409,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "GPIO_DR12R_DRV12_12MA",
+                    name: "GPIO_DR12R_DRV12",
                     offset: 0,
                     width: 8,
                     access: Access::ReadWrite,
@@ -40475,7 +40475,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "GPIO_PC_EDM0_PLUS2MA",
+                        name: "GPIO_PC_EDM0",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
@@ -40738,7 +40738,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "GPIO_LOCK_KEY",
+                    name: "GPIO_LOCK",
                     offset: 0,
                     width: 32,
                     access: Access::ReadWrite,
@@ -40804,7 +40804,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "GPIO_DR12R_DRV12_12MA",
+                    name: "GPIO_DR12R_DRV12",
                     offset: 0,
                     width: 8,
                     access: Access::ReadWrite,
@@ -40870,7 +40870,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "GPIO_PC_EDM0_PLUS2MA",
+                        name: "GPIO_PC_EDM0",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
@@ -41133,7 +41133,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "GPIO_LOCK_KEY",
+                    name: "GPIO_LOCK",
                     offset: 0,
                     width: 32,
                     access: Access::ReadWrite,
@@ -41199,7 +41199,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "GPIO_DR12R_DRV12_12MA",
+                    name: "GPIO_DR12R_DRV12",
                     offset: 0,
                     width: 8,
                     access: Access::ReadWrite,
@@ -41265,7 +41265,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "GPIO_PC_EDM0_PLUS2MA",
+                        name: "GPIO_PC_EDM0",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
@@ -41528,7 +41528,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "GPIO_LOCK_KEY",
+                    name: "GPIO_LOCK",
                     offset: 0,
                     width: 32,
                     access: Access::ReadWrite,
@@ -41594,7 +41594,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "GPIO_DR12R_DRV12_12MA",
+                    name: "GPIO_DR12R_DRV12",
                     offset: 0,
                     width: 8,
                     access: Access::ReadWrite,
@@ -41660,7 +41660,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "GPIO_PC_EDM0_PLUS2MA",
+                        name: "GPIO_PC_EDM0",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
@@ -41953,7 +41953,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "GPIO_LOCK_KEY",
+                    name: "GPIO_LOCK",
                     offset: 0,
                     width: 32,
                     access: Access::ReadWrite,
@@ -42019,7 +42019,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "GPIO_DR12R_DRV12_12MA",
+                    name: "GPIO_DR12R_DRV12",
                     offset: 0,
                     width: 8,
                     access: Access::ReadWrite,
@@ -42085,7 +42085,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "GPIO_PC_EDM0_PLUS2MA",
+                        name: "GPIO_PC_EDM0",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
@@ -42378,7 +42378,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "GPIO_LOCK_KEY",
+                    name: "GPIO_LOCK",
                     offset: 0,
                     width: 32,
                     access: Access::ReadWrite,
@@ -42444,7 +42444,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "GPIO_DR12R_DRV12_12MA",
+                    name: "GPIO_DR12R_DRV12",
                     offset: 0,
                     width: 8,
                     access: Access::ReadWrite,
@@ -42510,7 +42510,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "GPIO_PC_EDM0_PLUS2MA",
+                        name: "GPIO_PC_EDM0",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
@@ -42721,7 +42721,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "EEPROM_EEPROT_PROT_RONPW",
+                        name: "EEPROM_EEPROT_PROT",
                         offset: 0,
                         width: 3,
                         access: Access::ReadWrite,
@@ -42853,7 +42853,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "EEPROM_PP_SIZE_6K",
+                    name: "EEPROM_PP_SIZE",
                     offset: 0,
                     width: 16,
                     access: Access::ReadWrite,
@@ -43044,7 +43044,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "I2C_MTPR_PULSEL_31",
+                        name: "I2C_MTPR_PULSEL",
                         offset: 16,
                         width: 3,
                         access: Access::ReadWrite,
@@ -44192,7 +44192,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "I2C_MTPR_PULSEL_31",
+                        name: "I2C_MTPR_PULSEL",
                         offset: 16,
                         width: 3,
                         access: Access::ReadWrite,
@@ -45340,7 +45340,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "I2C_MTPR_PULSEL_31",
+                        name: "I2C_MTPR_PULSEL",
                         offset: 16,
                         width: 3,
                         access: Access::ReadWrite,
@@ -46488,7 +46488,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "I2C_MTPR_PULSEL_31",
+                        name: "I2C_MTPR_PULSEL",
                         offset: 16,
                         width: 3,
                         access: Access::ReadWrite,
@@ -47636,7 +47636,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "I2C_MTPR_PULSEL_31",
+                        name: "I2C_MTPR_PULSEL",
                         offset: 16,
                         width: 3,
                         access: Access::ReadWrite,
@@ -48784,7 +48784,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "I2C_MTPR_PULSEL_31",
+                        name: "I2C_MTPR_PULSEL",
                         offset: 16,
                         width: 3,
                         access: Access::ReadWrite,
@@ -49766,7 +49766,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "EPI_CFG_MODE_HB16",
+                        name: "EPI_CFG_MODE",
                         offset: 0,
                         width: 4,
                         access: Access::ReadWrite,
@@ -49835,7 +49835,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "EPI_HB16CFG_MODE_XFIFO",
+                        name: "EPI_HB16CFG_MODE",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
@@ -49847,13 +49847,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EPI_HB16CFG_RDWS_8",
+                        name: "EPI_HB16CFG_RDWS",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EPI_HB16CFG_WRWS_8",
+                        name: "EPI_HB16CFG_WRWS",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
@@ -49952,13 +49952,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "EPI_GPCFG_DSIZE_32BIT",
+                        name: "EPI_GPCFG_DSIZE",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EPI_GPCFG_ASIZE_20BIT",
+                        name: "EPI_GPCFG_ASIZE",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
@@ -50003,7 +50003,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "EPI_SDRAMCFG_SIZE_64MB",
+                        name: "EPI_SDRAMCFG_SIZE",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
@@ -50021,7 +50021,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EPI_SDRAMCFG_FREQ_30MHZ",
+                        name: "EPI_SDRAMCFG_FREQ",
                         offset: 30,
                         width: 2,
                         access: Access::ReadWrite,
@@ -50036,19 +50036,19 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "EPI_HB8CFG_MODE_FIFO",
+                        name: "EPI_HB8CFG_MODE",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EPI_HB8CFG_RDWS_8",
+                        name: "EPI_HB8CFG_RDWS",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EPI_HB8CFG_WRWS_8",
+                        name: "EPI_HB8CFG_WRWS",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
@@ -50129,19 +50129,19 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "EPI_HB8CFG2_MODE_AD",
+                        name: "EPI_HB8CFG2_MODE",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EPI_HB8CFG2_RDWS_8",
+                        name: "EPI_HB8CFG2_RDWS",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EPI_HB8CFG2_WRWS_8",
+                        name: "EPI_HB8CFG2_WRWS",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
@@ -50165,7 +50165,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EPI_HB8CFG2_CSCFG_ADCS",
+                        name: "EPI_HB8CFG2_CSCFG",
                         offset: 24,
                         width: 2,
                         access: Access::ReadWrite,
@@ -50192,19 +50192,19 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "EPI_HB16CFG2_MODE_AD",
+                        name: "EPI_HB16CFG2_MODE",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EPI_HB16CFG2_RDWS_8",
+                        name: "EPI_HB16CFG2_RDWS",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EPI_HB16CFG2_WRWS_8",
+                        name: "EPI_HB16CFG2_WRWS",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
@@ -50246,7 +50246,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EPI_HB16CFG2_CSCFG_ADCS",
+                        name: "EPI_HB16CFG2_CSCFG",
                         offset: 24,
                         width: 2,
                         access: Access::ReadWrite,
@@ -50273,37 +50273,37 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "EPI_ADDRMAP_ERADR_HBQS",
+                        name: "EPI_ADDRMAP_ERADR",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EPI_ADDRMAP_ERSZ_256MB",
+                        name: "EPI_ADDRMAP_ERSZ",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EPI_ADDRMAP_EPADR_HBQS",
+                        name: "EPI_ADDRMAP_EPADR",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EPI_ADDRMAP_EPSZ_256MB",
+                        name: "EPI_ADDRMAP_EPSZ",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EPI_ADDRMAP_ECADR_1000",
+                        name: "EPI_ADDRMAP_ECADR",
                         offset: 8,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EPI_ADDRMAP_ECSZ_256MB",
+                        name: "EPI_ADDRMAP_ECSZ",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
@@ -50317,7 +50317,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "EPI_RSIZE0_SIZE_32BIT",
+                    name: "EPI_RSIZE0_SIZE",
                     offset: 0,
                     width: 2,
                     access: Access::ReadWrite,
@@ -50356,7 +50356,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "EPI_RSIZE1_SIZE_32BIT",
+                    name: "EPI_RSIZE1_SIZE",
                     offset: 0,
                     width: 2,
                     access: Access::ReadWrite,
@@ -50558,13 +50558,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "EPI_FIFOLVL_RDFIFO_8",
+                        name: "EPI_FIFOLVL_RDFIFO",
                         offset: 0,
                         width: 3,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EPI_FIFOLVL_WRFIFO_NFULL",
+                        name: "EPI_FIFOLVL_WRFIFO",
                         offset: 4,
                         width: 3,
                         access: Access::ReadWrite,
@@ -50773,19 +50773,19 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "EPI_HB8CFG3_MODE_AD",
+                        name: "EPI_HB8CFG3_MODE",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EPI_HB8CFG3_RDWS_8",
+                        name: "EPI_HB8CFG3_RDWS",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EPI_HB8CFG3_WRWS_8",
+                        name: "EPI_HB8CFG3_WRWS",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
@@ -50818,19 +50818,19 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "EPI_HB16CFG3_MODE_AD",
+                        name: "EPI_HB16CFG3_MODE",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EPI_HB16CFG3_RDWS_8",
+                        name: "EPI_HB16CFG3_RDWS",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EPI_HB16CFG3_WRWS_8",
+                        name: "EPI_HB16CFG3_WRWS",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
@@ -50881,19 +50881,19 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "EPI_HB16CFG4_MODE_AD",
+                        name: "EPI_HB16CFG4_MODE",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EPI_HB16CFG4_RDWS_8",
+                        name: "EPI_HB16CFG4_RDWS",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EPI_HB16CFG4_WRWS_8",
+                        name: "EPI_HB16CFG4_WRWS",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
@@ -50944,19 +50944,19 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "EPI_HB8CFG4_MODE_AD",
+                        name: "EPI_HB8CFG4_MODE",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EPI_HB8CFG4_RDWS_8",
+                        name: "EPI_HB8CFG4_RDWS",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EPI_HB8CFG4_WRWS_8",
+                        name: "EPI_HB8CFG4_WRWS",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
@@ -51040,7 +51040,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EPI_HB16TIME_PSRAMSZ_8KB",
+                        name: "EPI_HB16TIME_PSRAMSZ",
                         offset: 16,
                         width: 3,
                         access: Access::ReadWrite,
@@ -51112,7 +51112,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EPI_HB16TIME2_PSRAMSZ_8KB",
+                        name: "EPI_HB16TIME2_PSRAMSZ",
                         offset: 16,
                         width: 3,
                         access: Access::ReadWrite,
@@ -51151,7 +51151,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EPI_HB16TIME3_PSRAMSZ_8KB",
+                        name: "EPI_HB16TIME3_PSRAMSZ",
                         offset: 16,
                         width: 3,
                         access: Access::ReadWrite,
@@ -51256,7 +51256,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EPI_HB16TIME4_PSRAMSZ_8KB",
+                        name: "EPI_HB16TIME4_PSRAMSZ",
                         offset: 16,
                         width: 3,
                         access: Access::ReadWrite,
@@ -51306,7 +51306,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "TIMER_CFG_16_BIT",
+                    name: "TIMER_CFG",
                     offset: 0,
                     width: 3,
                     access: Access::ReadWrite,
@@ -51320,7 +51320,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "TIMER_TAMR_TAMR_CAP",
+                        name: "TIMER_TAMR_TAMR",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
@@ -51392,7 +51392,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_TAMR_TCACT_CLRSETTO",
+                        name: "TIMER_TAMR_TCACT",
                         offset: 13,
                         width: 3,
                         access: Access::ReadWrite,
@@ -51407,7 +51407,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "TIMER_TBMR_TBMR_CAP",
+                        name: "TIMER_TBMR_TBMR",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
@@ -51479,7 +51479,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_TBMR_TCACT_CLRSETTO",
+                        name: "TIMER_TBMR_TCACT",
                         offset: 13,
                         width: 3,
                         access: Access::ReadWrite,
@@ -51506,7 +51506,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_CTL_TAEVENT_BOTH",
+                        name: "TIMER_CTL_TAEVENT",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
@@ -51542,7 +51542,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_CTL_TBEVENT_BOTH",
+                        name: "TIMER_CTL_TBEVENT",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
@@ -51569,49 +51569,49 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT0_TATB",
+                        name: "TIMER_SYNC_SYNCT0",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT1_TATB",
+                        name: "TIMER_SYNC_SYNCT1",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT2_TATB",
+                        name: "TIMER_SYNC_SYNCT2",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT3_TATB",
+                        name: "TIMER_SYNC_SYNCT3",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT4_TATB",
+                        name: "TIMER_SYNC_SYNCT4",
                         offset: 8,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT5_TATB",
+                        name: "TIMER_SYNC_SYNCT5",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT6_TATB",
+                        name: "TIMER_SYNC_SYNCT6",
                         offset: 12,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT7_TATB",
+                        name: "TIMER_SYNC_SYNCT7",
                         offset: 14,
                         width: 2,
                         access: Access::ReadWrite,
@@ -52207,7 +52207,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "TIMER_PP_SIZE_32",
+                        name: "TIMER_PP_SIZE",
                         offset: 0,
                         width: 4,
                         access: Access::ReadWrite,
@@ -52269,7 +52269,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "TIMER_CFG_16_BIT",
+                    name: "TIMER_CFG",
                     offset: 0,
                     width: 3,
                     access: Access::ReadWrite,
@@ -52283,7 +52283,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "TIMER_TAMR_TAMR_CAP",
+                        name: "TIMER_TAMR_TAMR",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
@@ -52355,7 +52355,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_TAMR_TCACT_CLRSETTO",
+                        name: "TIMER_TAMR_TCACT",
                         offset: 13,
                         width: 3,
                         access: Access::ReadWrite,
@@ -52370,7 +52370,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "TIMER_TBMR_TBMR_CAP",
+                        name: "TIMER_TBMR_TBMR",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
@@ -52442,7 +52442,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_TBMR_TCACT_CLRSETTO",
+                        name: "TIMER_TBMR_TCACT",
                         offset: 13,
                         width: 3,
                         access: Access::ReadWrite,
@@ -52469,7 +52469,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_CTL_TAEVENT_BOTH",
+                        name: "TIMER_CTL_TAEVENT",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
@@ -52505,7 +52505,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_CTL_TBEVENT_BOTH",
+                        name: "TIMER_CTL_TBEVENT",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
@@ -52532,49 +52532,49 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT0_TATB",
+                        name: "TIMER_SYNC_SYNCT0",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT1_TATB",
+                        name: "TIMER_SYNC_SYNCT1",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT2_TATB",
+                        name: "TIMER_SYNC_SYNCT2",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT3_TATB",
+                        name: "TIMER_SYNC_SYNCT3",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT4_TATB",
+                        name: "TIMER_SYNC_SYNCT4",
                         offset: 8,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT5_TATB",
+                        name: "TIMER_SYNC_SYNCT5",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT6_TATB",
+                        name: "TIMER_SYNC_SYNCT6",
                         offset: 12,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "TIMER_SYNC_SYNCT7_TATB",
+                        name: "TIMER_SYNC_SYNCT7",
                         offset: 14,
                         width: 2,
                         access: Access::ReadWrite,
@@ -53170,7 +53170,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "TIMER_PP_SIZE_32",
+                        name: "TIMER_PP_SIZE",
                         offset: 0,
                         width: 4,
                         access: Access::ReadWrite,
@@ -53227,7 +53227,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "EMAC_CFG_PRELEN_3",
+                        name: "EMAC_CFG_PRELEN",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
@@ -53251,7 +53251,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EMAC_CFG_BL_2",
+                        name: "EMAC_CFG_BL",
                         offset: 5,
                         width: 2,
                         access: Access::ReadWrite,
@@ -53311,7 +53311,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EMAC_CFG_IFG_40",
+                        name: "EMAC_CFG_IFG",
                         offset: 17,
                         width: 3,
                         access: Access::ReadWrite,
@@ -53392,7 +53392,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EMAC_FRAMEFLTR_PCF_ADDR",
+                        name: "EMAC_FRAMEFLTR_PCF",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
@@ -53475,7 +53475,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EMAC_MIIADDR_CR_35_60",
+                        name: "EMAC_MIIADDR_CR",
                         offset: 2,
                         width: 4,
                         access: Access::ReadWrite,
@@ -53539,7 +53539,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EMAC_FLOWCTL_PLT_156",
+                        name: "EMAC_FLOWCTL_PLT",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
@@ -53623,13 +53623,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EMAC_STATUS_RRC_FLUSH",
+                        name: "EMAC_STATUS_RRC",
                         offset: 5,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EMAC_STATUS_RXF_FULL",
+                        name: "EMAC_STATUS_RXF",
                         offset: 8,
                         width: 2,
                         access: Access::ReadWrite,
@@ -53641,7 +53641,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EMAC_STATUS_TFC_INPUT",
+                        name: "EMAC_STATUS_TFC",
                         offset: 17,
                         width: 2,
                         access: Access::ReadWrite,
@@ -53653,7 +53653,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EMAC_STATUS_TRC_WRFLUSH",
+                        name: "EMAC_STATUS_TRC",
                         offset: 20,
                         width: 2,
                         access: Access::ReadWrite,
@@ -54302,7 +54302,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EMAC_VLNINCREP_VLC_TAGREP",
+                        name: "EMAC_VLNINCREP_VLC",
                         offset: 16,
                         width: 2,
                         access: Access::ReadWrite,
@@ -54601,7 +54601,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "EMAC_PPSCTRL_PPSCTRL_32768HZ",
+                        name: "EMAC_PPSCTRL_PPSCTRL",
                         offset: 0,
                         width: 4,
                         access: Access::ReadWrite,
@@ -54613,7 +54613,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EMAC_PPSCTRL_TRGMODS0_PPS0ONLY",
+                        name: "EMAC_PPSCTRL_TRGMODS0",
                         offset: 5,
                         width: 2,
                         access: Access::ReadWrite,
@@ -54889,19 +54889,19 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EMAC_DMARIS_RS_RUNTXD",
+                        name: "EMAC_DMARIS_RS",
                         offset: 17,
                         width: 3,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EMAC_DMARIS_TS_RUNCTD",
+                        name: "EMAC_DMARIS_TS",
                         offset: 20,
                         width: 3,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EMAC_DMARIS_AE_TXDMADR",
+                        name: "EMAC_DMARIS_AE",
                         offset: 23,
                         width: 3,
                         access: Access::ReadWrite,
@@ -54946,7 +54946,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EMAC_DMAOPMODE_RTC_128",
+                        name: "EMAC_DMAOPMODE_RTC",
                         offset: 3,
                         width: 2,
                         access: Access::ReadWrite,
@@ -54976,7 +54976,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EMAC_DMAOPMODE_TTC_16",
+                        name: "EMAC_DMAOPMODE_TTC",
                         offset: 14,
                         width: 3,
                         access: Access::ReadWrite,
@@ -55218,7 +55218,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "EMAC_PP_PHYTYPE_1",
+                        name: "EMAC_PP_PHYTYPE",
                         offset: 0,
                         width: 3,
                         access: Access::ReadWrite,
@@ -55245,7 +55245,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EMAC_PC_ANMODE_100FD",
+                        name: "EMAC_PC_ANMODE",
                         offset: 1,
                         width: 2,
                         access: Access::ReadWrite,
@@ -55359,7 +55359,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "EMAC_PC_PINTFS_RMII",
+                        name: "EMAC_PC_PINTFS",
                         offset: 28,
                         width: 3,
                         access: Access::ReadWrite,
@@ -55696,7 +55696,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "HIB_CTL_VBATSEL_2_5V",
+                        name: "HIB_CTL_VBATSEL",
                         offset: 13,
                         width: 2,
                         access: Access::ReadWrite,
@@ -56255,7 +56255,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "HIB_TPCTL_MEMCLR_ALL",
+                        name: "HIB_TPCTL_MEMCLR",
                         offset: 8,
                         width: 2,
                         access: Access::ReadWrite,
@@ -56288,7 +56288,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "HIB_TPSTAT_STATE_ERROR",
+                        name: "HIB_TPSTAT_STATE",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
@@ -56931,19 +56931,19 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "FLASH_PP_SIZE_1MB",
+                        name: "FLASH_PP_SIZE",
                         offset: 0,
                         width: 16,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "FLASH_PP_MAINSS_16KB",
+                        name: "FLASH_PP_MAINSS",
                         offset: 16,
                         width: 3,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "FLASH_PP_EESS_8KB",
+                        name: "FLASH_PP_EESS",
                         offset: 19,
                         width: 4,
                         access: Access::ReadWrite,
@@ -56975,7 +56975,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "FLASH_SSIZE_SIZE_256KB",
+                    name: "FLASH_SSIZE_SIZE",
                     offset: 0,
                     width: 16,
                     access: Access::ReadWrite,
@@ -57028,49 +57028,49 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "FLASH_ROMSWMAP_SW0EN_CORE",
+                        name: "FLASH_ROMSWMAP_SW0EN",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "FLASH_ROMSWMAP_SW1EN_CORE",
+                        name: "FLASH_ROMSWMAP_SW1EN",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "FLASH_ROMSWMAP_SW2EN_CORE",
+                        name: "FLASH_ROMSWMAP_SW2EN",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "FLASH_ROMSWMAP_SW3EN_CORE",
+                        name: "FLASH_ROMSWMAP_SW3EN",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "FLASH_ROMSWMAP_SW4EN_CORE",
+                        name: "FLASH_ROMSWMAP_SW4EN",
                         offset: 8,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "FLASH_ROMSWMAP_SW5EN_CORE",
+                        name: "FLASH_ROMSWMAP_SW5EN",
                         offset: 10,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "FLASH_ROMSWMAP_SW6EN_CORE",
+                        name: "FLASH_ROMSWMAP_SW6EN",
                         offset: 12,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "FLASH_ROMSWMAP_SW7EN_CORE",
+                        name: "FLASH_ROMSWMAP_SW7EN",
                         offset: 14,
                         width: 2,
                         access: Access::ReadWrite,
@@ -57154,13 +57154,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "FLASH_BOOTCFG_PIN_7",
+                        name: "FLASH_BOOTCFG_PIN",
                         offset: 10,
                         width: 3,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "FLASH_BOOTCFG_PORT_H",
+                        name: "FLASH_BOOTCFG_PORT",
                         offset: 13,
                         width: 3,
                         access: Access::ReadWrite,
@@ -57580,25 +57580,25 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "SYSCTL_DID0_MIN_2",
+                        name: "SYSCTL_DID0_MIN",
                         offset: 0,
                         width: 8,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "SYSCTL_DID0_MAJ_REVC",
+                        name: "SYSCTL_DID0_MAJ",
                         offset: 8,
                         width: 8,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "SYSCTL_DID0_CLASS_TM4C129",
+                        name: "SYSCTL_DID0_CLASS",
                         offset: 16,
                         width: 8,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "SYSCTL_DID0_VER_1",
+                        name: "SYSCTL_DID0_VER",
                         offset: 28,
                         width: 3,
                         access: Access::ReadWrite,
@@ -57613,7 +57613,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "SYSCTL_DID1_QUAL_FQ",
+                        name: "SYSCTL_DID1_QUAL",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
@@ -57625,19 +57625,19 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "SYSCTL_DID1_PKG_BGA",
+                        name: "SYSCTL_DID1_PKG",
                         offset: 3,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "SYSCTL_DID1_TEMP_E",
+                        name: "SYSCTL_DID1_TEMP",
                         offset: 5,
                         width: 3,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "SYSCTL_DID1_PINCNT_128",
+                        name: "SYSCTL_DID1_PINCNT",
                         offset: 13,
                         width: 3,
                         access: Access::ReadWrite,
@@ -57670,13 +57670,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "SYSCTL_PTBOCTL_VDD_UBOR_RST",
+                        name: "SYSCTL_PTBOCTL_VDD_UBOR",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "SYSCTL_PTBOCTL_VDDA_UBOR_RST",
+                        name: "SYSCTL_PTBOCTL_VDDA_UBOR",
                         offset: 8,
                         width: 2,
                         access: Access::ReadWrite,
@@ -57970,13 +57970,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "SYSCTL_RSCLKCFG_OSCSRC_RTC",
+                        name: "SYSCTL_RSCLKCFG_OSCSRC",
                         offset: 20,
                         width: 4,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "SYSCTL_RSCLKCFG_PLLSRC_MOSC",
+                        name: "SYSCTL_RSCLKCFG_PLLSRC",
                         offset: 24,
                         width: 4,
                         access: Access::ReadWrite,
@@ -58027,7 +58027,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "SYSCTL_MEMTIM0_FBCHT_4_5",
+                        name: "SYSCTL_MEMTIM0_FBCHT",
                         offset: 6,
                         width: 4,
                         access: Access::ReadWrite,
@@ -58045,7 +58045,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "SYSCTL_MEMTIM0_EBCHT_4_5",
+                        name: "SYSCTL_MEMTIM0_EBCHT",
                         offset: 22,
                         width: 4,
                         access: Access::ReadWrite,
@@ -58059,7 +58059,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "SYSCTL_ALTCLKCFG_ALTCLK_LFIOSC",
+                    name: "SYSCTL_ALTCLKCFG_ALTCLK",
                     offset: 0,
                     width: 4,
                     access: Access::ReadWrite,
@@ -58079,7 +58079,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "SYSCTL_DSCLKCFG_DSOSCSRC_RTC",
+                        name: "SYSCTL_DSCLKCFG_DSOSCSRC",
                         offset: 20,
                         width: 4,
                         access: Access::ReadWrite,
@@ -58112,7 +58112,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "SYSCTL_DIVSCLK_SRC_MOSC",
+                        name: "SYSCTL_DIVSCLK_SRC",
                         offset: 16,
                         width: 2,
                         access: Access::ReadWrite,
@@ -58185,7 +58185,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "SYSCTL_PIOSCSTAT_CRFAIL",
+                        name: "SYSCTL_PIOSCSTAT_CR",
                         offset: 8,
                         width: 2,
                         access: Access::ReadWrite,
@@ -58267,13 +58267,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "SYSCTL_SLPPWRCFG_SRAMPM_LP",
+                        name: "SYSCTL_SLPPWRCFG_SRAMPM",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "SYSCTL_SLPPWRCFG_FLASHPM_SLP",
+                        name: "SYSCTL_SLPPWRCFG_FLASHPM",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
@@ -58288,13 +58288,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "SYSCTL_DSLPPWRCFG_SRAMPM_LP",
+                        name: "SYSCTL_DSLPPWRCFG_SRAMPM",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "SYSCTL_DSLPPWRCFG_FLASHPM_SLP",
+                        name: "SYSCTL_DSLPPWRCFG_FLASHPM",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
@@ -58334,7 +58334,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "SYSCTL_LDOSPCTL_VLDO_1_20V",
+                        name: "SYSCTL_LDOSPCTL_VLDO",
                         offset: 0,
                         width: 8,
                         access: Access::ReadWrite,
@@ -58355,7 +58355,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "SYSCTL_LDODPCTL_VLDO_1_35V",
+                        name: "SYSCTL_LDODPCTL_VLDO",
                         offset: 0,
                         width: 8,
                         access: Access::ReadWrite,
@@ -58376,25 +58376,25 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "SYSCTL_RESBEHAVCTL_EXTRES_POR",
+                        name: "SYSCTL_RESBEHAVCTL_EXTRES",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "SYSCTL_RESBEHAVCTL_BOR_POR",
+                        name: "SYSCTL_RESBEHAVCTL_BOR",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "SYSCTL_RESBEHAVCTL_WDOG0_POR",
+                        name: "SYSCTL_RESBEHAVCTL_WDOG0",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "SYSCTL_RESBEHAVCTL_WDOG1_POR",
+                        name: "SYSCTL_RESBEHAVCTL_WDOG1",
                         offset: 6,
                         width: 2,
                         access: Access::ReadWrite,
@@ -58430,13 +58430,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "SYSCTL_USBPDS_PWRSTAT_ON",
+                        name: "SYSCTL_USBPDS_PWRSTAT",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "SYSCTL_USBPDS_MEMSTAT_ON",
+                        name: "SYSCTL_USBPDS_MEMSTAT",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
@@ -58450,7 +58450,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "SYSCTL_USBMPC_PWRCTL_ON",
+                    name: "SYSCTL_USBMPC_PWRCTL",
                     offset: 0,
                     width: 2,
                     access: Access::ReadWrite,
@@ -58464,13 +58464,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "SYSCTL_EMACPDS_PWRSTAT_ON",
+                        name: "SYSCTL_EMACPDS_PWRSTAT",
                         offset: 0,
                         width: 2,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "SYSCTL_EMACPDS_MEMSTAT_ON",
+                        name: "SYSCTL_EMACPDS_MEMSTAT",
                         offset: 2,
                         width: 2,
                         access: Access::ReadWrite,
@@ -58484,7 +58484,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "SYSCTL_EMACMPC_PWRCTL_ON",
+                    name: "SYSCTL_EMACMPC_PWRCTL",
                     offset: 0,
                     width: 2,
                     access: Access::ReadWrite,
@@ -62272,7 +62272,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "UDMA_STAT_STATE_UNDEF",
+                        name: "UDMA_STAT_STATE",
                         offset: 4,
                         width: 4,
                         access: Access::ReadWrite,
@@ -62500,7 +62500,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 access: Access::ReadWrite,
                 reset: 0x0000_0000,
                 fields: &[FieldDef {
-                    name: "UDMA_CHASGN_SECONDARY",
+                    name: "UDMA_CHASGN",
                     offset: 0,
                     width: 32,
                     access: Access::ReadWrite,
@@ -62750,13 +62750,13 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                 reset: 0x0000_0000,
                 fields: &[
                     FieldDef {
-                        name: "CCM_CRCCTRL_TYPE_TCPCHKSUM",
+                        name: "CCM_CRCCTRL_TYPE",
                         offset: 0,
                         width: 4,
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "CCM_CRCCTRL_ENDIAN_SBSW",
+                        name: "CCM_CRCCTRL_ENDIAN",
                         offset: 4,
                         width: 2,
                         access: Access::ReadWrite,
@@ -62786,7 +62786,7 @@ pub const PERIPHERALS: &[PeripheralDef] = &[
                         access: Access::ReadWrite,
                     },
                     FieldDef {
-                        name: "CCM_CRCCTRL_INIT_1",
+                        name: "CCM_CRCCTRL_INIT",
                         offset: 13,
                         width: 2,
                         access: Access::ReadWrite,

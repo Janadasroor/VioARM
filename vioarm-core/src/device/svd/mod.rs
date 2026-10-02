@@ -1037,7 +1037,7 @@ mod tests {
             (
                 super::stm32f407::peripheral("OTG_HS_GLOBAL").unwrap(),
                 0x4004_0000,
-                0x0131,
+                0x0400,
                 &[74, 75, 76, 77],
             ),
         ];
@@ -1448,8 +1448,11 @@ mod tests {
         // with 14 TM4C123x dice as GH6PM `removed` subsets, +751; 40555
         // with the GH6PZ donor (+67) and 27 more 123 dice as its subsets
         // (+1608); 41180 with the GH6ZRB donor (+72) and the 8 BGA dice
-        // as its subsets (+553).)
-        assert_eq!(total, 41180);
+        // as its subsets (+553); 40204 after the F407+L476 regen against
+        // re-rolled vendor packs dropped the 8 ARM core peripherals
+        // (FPU/FPU_CPACR/MPU/NVIC/NVIC_STIR/SCB/SCB_ACTRL/STK, now in
+        // ARM.CMSIS only) from both donors, -976 over 122 Dnames.)
+        assert_eq!(total, 40204);
         // Spot checks: known deltas from the (deleted) per-variant tables.
         let f405 = PER_DNAMES.iter().find(|e| e.dname == "STM32F405").unwrap();
         assert!(f405.peripheral("GPIOA").is_some());
