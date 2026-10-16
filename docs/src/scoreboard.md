@@ -110,3 +110,10 @@ checks; `.github/workflows/kings.yml` runs it weekly). Functional gates
 hard-fail; cycle pins allow 5% for toolchain codegen drift across build
 roots (buffer alignment shifts newlib's word paths ~0–2%). Re-pin tables
 only with a full manual re-verification, never to silence CI.
+
+Note (2026-10): the workflow's fetch and build steps previously disagreed
+on `KINGSWORK`, so the job aborted at Dhrystone on every run and never
+produced gate results; that and the abort-on-first-build-failure are
+fixed. The TFLM leg is not yet runnable in CI (its port needs TensorFlow
+core sources to provision) and reports `KINGS-FAIL tflm build`, so the
+TFLite Micro row above reflects manual verification, not the weekly job.
