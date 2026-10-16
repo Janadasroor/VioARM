@@ -97,7 +97,7 @@ impl Behavior for SpdifrxBehavior {
                     *b = self.staged.pop_front().unwrap_or(0);
                 }
                 self.dr_word = u32::from_le_bytes(w);
-                if self.perr_armed && !self.staged.is_empty() || self.perr_armed && w != [0u8; 4] {
+                if self.perr_armed && (!self.staged.is_empty() || w != [0u8; 4]) {
                     view.set(0x08, view.get(0x08) | SR_PERR);
                     self.perr_armed = false;
                 } else if self.perr_armed {

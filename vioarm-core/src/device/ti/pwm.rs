@@ -139,23 +139,21 @@ impl PwmBehavior {
                 if g.count == cmpb {
                     ev_cmpb = true;
                 }
+            } else if g.count == 0 {
+                ev_zero = true;
+                g.going_up = true;
+                g.count = 1;
             } else {
+                g.count -= 1;
                 if g.count == 0 {
                     ev_zero = true;
                     g.going_up = true;
-                    g.count = 1;
-                } else {
-                    g.count -= 1;
-                    if g.count == 0 {
-                        ev_zero = true;
-                        g.going_up = true;
-                    }
-                    if g.count == cmpa {
-                        ev_cmpa = true;
-                    }
-                    if g.count == cmpb {
-                        ev_cmpb = true;
-                    }
+                }
+                if g.count == cmpa {
+                    ev_cmpa = true;
+                }
+                if g.count == cmpb {
+                    ev_cmpb = true;
                 }
             }
         } else {
