@@ -1093,6 +1093,16 @@ mod tests {
 
     static RECORDED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
+    // The emitted callout is a System V call (argument in RDI on x86_64),
+    // so the probe uses `sysv64` there (identical to `C` on Linux/macOS,
+    // correct on Windows); AArch64 keeps `C`.
+    #[cfg(target_arch = "x86_64")]
+    extern "sysv64" fn probe(arg: u64) -> u64 {
+        RECORDED.store(arg, core::sync::atomic::Ordering::SeqCst);
+        arg
+    }
+
+    #[cfg(target_arch = "aarch64")]
     extern "C" fn probe(arg: u64) -> u64 {
         RECORDED.store(arg, core::sync::atomic::Ordering::SeqCst);
         arg

@@ -21,9 +21,10 @@
 //!    `vioarm-core` JIT emitter (`jit/emit.rs` and its Phase-2 templates),
 //!    which hands out pointers solely to committed `dynasmrt`
 //!    `ExecutableBuffer`s it owns (executable, alive, same-process).
-//! 2. **ABI match.** `call0`/`call1` use the C ABI with `u64` in/out; every
-//!    template ends its prologue/epilogue honoring it (covered by the
-//!    P2-2 template tests, which execute through these wrappers).
+//! 2. **ABI match.** `call0` uses the C ABI and `call1` uses `sysv64` on
+//!    x86_64 (`C` elsewhere) with `u64` in/out; every template honors it
+//!    (covered by the P2-2 template tests, which execute through these
+//!    wrappers).
 //! 3. **No arbitrary entry.** Nothing else in the tree calls these
 //!    functions (enforced by review: `grep call0/call1` must show only the
 //!    emitter driver and these tests).
@@ -67,16 +68,22 @@ pub fn call0(entry: *const u8) -> u64 {
 }
 
 /// Call JIT-emitted code at `entry` with one `u64` argument, returning its
-/// `u64` result (C ABI).
+/// `u64` result.
 ///
 /// # Caller obligations (see SAFETY CASE above)
 ///
 /// As in [`call0`], plus: the emitted entry must take exactly one `u64`
-/// argument (RDI/X0) and return `u64` (same deliberate lint allow).
+/// argument and return `u64` (same deliberate lint allow). On x86_64 the
+/// entry uses the System V convention (`sysv64`: argument in RDI — the
+/// emitter is SysV-only), which is identical to `C` on Linux/macOS and the
+/// only correct convention on Windows.
 #[must_use]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn call1(entry: *const u8, arg: u64) -> u64 {
     // THREE LINES OF UNSAFE (2/2): transmute the entry pointer and jump.
+    #[cfg(target_arch = "x86_64")]
+    let target: extern "sysv64" fn(u64) -> u64 = unsafe { core::mem::transmute(entry) };
+    #[cfg(not(target_arch = "x86_64"))]
     let target: extern "C" fn(u64) -> u64 = unsafe { core::mem::transmute(entry) };
     target(arg)
 }
