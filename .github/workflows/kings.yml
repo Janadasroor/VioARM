@@ -15,6 +15,8 @@ jobs:
     timeout-minutes: 300
     steps:
       - uses: actions/checkout@v4
+      - name: Configure KINGSWORK
+        run: echo "KINGSWORK=$RUNNER_TEMP/kings" >> "$GITHUB_ENV"
       - name: Install arm-none-eabi-gcc + host g++ + python3
         run: |
           sudo apt-get update -q
@@ -29,5 +31,4 @@ jobs:
       - name: Build + run + check
         run: |
           export VIOARM_BIN="$PWD/target/release/vioarm-cli"
-          export KINGSWORK="$RUNNER_TEMP/kings"
           bash scripts/kings/run_all.sh
