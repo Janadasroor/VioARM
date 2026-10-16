@@ -12,11 +12,11 @@ the same commit.
   lib tests and board-level direct-poke proofs (`*_closeout.rs`).
 - **T3 (proven)**: T2 plus real firmware evidence on that board
   (scoreboard programs, fabric pairs, vectors through the registers).
-- **T1 (latch)**: a pure register file. Only two remain across 1,046 bus
-  windows, both documented below — everything else is T2+.
+- **T1 (latch)**: a pure register file. Only one remains across 1,046 bus
+  windows, documented below — everything else is T2+.
 - **Audit**: `cargo run -p vioarm-core --example board_audit`
   (address-coverage matching). Current matrix: **1,045 behavioral, 1 latch,
-  60 core-owned**, in `boards.md`.
+  44 core-owned**, in `boards.md`.
 
 ## Per-board claims (24/24 closed)
 
@@ -38,9 +38,9 @@ the same commit.
 | stm32f103 | 51 | 51 | 0 | Dhrystone, CoreMark, FreeRTOS, Embench, GPIO/USART1/TIM2, fabric pairs, CAN arbitration |
 | stm32f105 | 43 | 43 | 0 | CAN1 fabric arbitration |
 | stm32f107 | 47 | 47 | 0 | Embench-IoT, TFLM `hello_world`, ETH/USB ISRs, SPI pairs |
-| tm4c123gh6pm | 58 | 56 | 2 | Dhrystone 9.124, CoreMark valid (400 it), UART/GPIO/Timer e2e (`scripts/kings/ports/tm4c`) |
-| tm4c1294ncpdt | 64 | 62 | 2 | Dhrystone 9.124, CoreMark valid (400 it), UART/GPIO/Timer e2e (`scripts/kings/ports/tm4c` 129 builds) |
-| tm4c129xnczad | 72 | 70 | 2 | Dhrystone 9.124, CoreMark valid (400 it), UART/GPIO/Timer e2e (same 129 ELFs, tick-identical) |
+| tm4c123gh6pm | 58 | 57 | 1 | Dhrystone 9.124, CoreMark valid (400 it), UART/GPIO/Timer e2e (`scripts/kings/ports/tm4c`) |
+| tm4c1294ncpdt | 64 | 63 | 1 | Dhrystone 9.124, CoreMark valid (400 it), UART/GPIO/Timer e2e (`scripts/kings/ports/tm4c` 129 builds) |
+| tm4c129xnczad | 72 | 71 | 1 | Dhrystone 9.124, CoreMark valid (400 it), UART/GPIO/Timer e2e (same 129 ELFs, tick-identical) |
 | stm32f303xe | 56 | 56 | 0 | CRC, DAC1/2, GPIO, chip_cmsis legs |
 | stm32f407 | 82 | 82 | 0 | GPIO/USART/TIM2, ADC IRQ, Flash, DMA, USB host |
 | stm32g474xx | 82 | 82 | 0 | — |
