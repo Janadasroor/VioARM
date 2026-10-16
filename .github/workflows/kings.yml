@@ -8,6 +8,11 @@ on:
     - cron: "0 4 * * 1"
   workflow_dispatch:
 
+# Never run two 5h kings jobs at once; a fresh dispatch supersedes a stale run.
+concurrency:
+  group: kings-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   kings:
     name: Rebuild + run famous firmware

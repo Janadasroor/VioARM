@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  # Rapid pushes supersede each other; never stack full-matrix runs.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -83,7 +88,10 @@ jobs:
       - name: Coverage
         if: matrix.toolchain == 'stable' && matrix.os == 'ubuntu-latest'
         run: |
-          cargo install cargo-llvm-cov --locked || true
+          for i in 1 2 3; do
+            cargo install cargo-llvm-cov --locked && break || sleep 30
+          done
+          command -v cargo-llvm-cov >/dev/null || { echo "error: cargo-llvm-cov install failed after 3 attempts (runner network?)"; exit 101; }
           cargo llvm-cov --workspace --lcov --output-path lcov.info --fail-under-lines 85
 
       - name: Coverage report
