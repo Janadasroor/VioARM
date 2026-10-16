@@ -33,22 +33,22 @@ the packs themselves can be re-fetched locally:
 ```
 cargo xtask packs --fetch
 # 16 DFP 4.8G:
-# pack_url="https://www.keil.com/pack/Keil.STM32F0xx_DFP.2.1.0.pack" && curl -L $pack_url | unzip -q -d packs/
-# pack_url="https://www.keil.com/pack/Keil.STM32F1xx_DFP.2.4.1.pack" && curl -L $pack_url | unzip -q -d packs/
-# pack_url="https://www.keil.com/pack/Keil.STM32F3xx_DFP.2.2.2.pack" && curl -L $pack_url | unzip -q -d packs/
-# pack_url="https://www.keil.com/pack/Keil.STM32F4xx_DFP.2.17.1.pack" && curl -L $pack_url | unzip -q -d packs/ # 276M F405/F415 etc alias F407
-# pack_url="https://www.keil.com/pack/Keil.STM32G4xx_DFP.1.5.0.pack" && curl -L $pack_url | unzip -q -d packs/ # 95M G474
-# pack_url="https://www.keil.com/pack/Keil.STM32H7xx_DFP.3.1.1.pack" && curl -L $pack_url | unzip -q -d packs/ # 294M H743 DTCM 0x20000+RAM_D1 0x60000
-# pack_url="https://www.keil.com/pack/Keil.STM32L4xx_DFP.2.6.2.pack" && curl -L $pack_url | unzip -q -d packs/ # 249M L476
-# pack_url="https://www.keil.com/pack/Keil.STM32F7xx_DFP.2.15.1.pack" && curl -L $pack_url | unzip -q -d packs/ # 264M F722
-# pack_url="https://www.keil.com/pack/Keil.STM32G0xx_DFP.1.4.0.pack" && curl -L $pack_url | unzip -q -d packs/ # 47M G0
-# pack_url="https://www.keil.com/pack/Keil.STM32F2xx_DFP.3.1.0.pack" && curl -L $pack_url | unzip -q -d packs/ # 555K F2
-# pack_url="https://www.keil.com/pack/ARM.CMSIS.5.9.0.pack" && curl -L $pack_url | unzip -q -d packs/ # 33M CMSIS
-# pack_url="https://www.keil.com/pack/Keil.STM32H5xx_DFP.2.3.1.pack" && curl -L $pack_url | unzip -q -d packs/ # 6.3M slim H503
-# pack_url="https://www.keil.com/pack/Keil.STM32L5xx_DFP.2.1.0.pack" && curl -L $pack_url | unzip -q -d packs/ # 965K slim L562
-# pack_url="https://www.keil.com/pack/Keil.STM32U5xx_DFP.3.2.0.pack" && curl -L $pack_url | unzip -q -d packs/ # 8.5M slim U535/U575
-# pack_url="https://www.keil.com/pack/Keil.STM32WBAxx_DFP.2.2.0.pack" && curl -L $pack_url | unzip -q -d packs/ # 2.7M slim WBA55
-# pack_url="https://www.keil.com/pack/Keil.TM4C_DFP.1.1.0.pack" && curl -L $pack_url | unzip -q -d packs/ # 7.3M TM4C123+TM4C129
+# pack_url="https://www.keil.com/pack/Keil.STM32F0xx_DFP.2.1.0.pack" && curl -fSL --retry 5 --retry-all-errors -C - -o pack.part $pack_url && unzip -q pack.part -d packs/
+# pack_url="https://www.keil.com/pack/Keil.STM32F1xx_DFP.2.4.1.pack" && curl -fSL --retry 5 --retry-all-errors -C - -o pack.part $pack_url && unzip -q pack.part -d packs/
+# pack_url="https://www.keil.com/pack/Keil.STM32F3xx_DFP.2.2.2.pack" && curl -fSL --retry 5 --retry-all-errors -C - -o pack.part $pack_url && unzip -q pack.part -d packs/
+# pack_url="https://www.keil.com/pack/Keil.STM32F4xx_DFP.2.17.1.pack" && curl -fSL --retry 5 --retry-all-errors -C - -o pack.part $pack_url && unzip -q pack.part -d packs/ # 276M F405/F415 etc alias F407
+# pack_url="https://www.keil.com/pack/Keil.STM32G4xx_DFP.1.5.0.pack" && curl -fSL --retry 5 --retry-all-errors -C - -o pack.part $pack_url && unzip -q pack.part -d packs/ # 95M G474
+# pack_url="https://www.keil.com/pack/Keil.STM32H7xx_DFP.3.1.1.pack" && curl -fSL --retry 5 --retry-all-errors -C - -o pack.part $pack_url && unzip -q pack.part -d packs/ # 294M H743 DTCM 0x20000+RAM_D1 0x60000
+# pack_url="https://www.keil.com/pack/Keil.STM32L4xx_DFP.2.6.2.pack" && curl -fSL --retry 5 --retry-all-errors -C - -o pack.part $pack_url && unzip -q pack.part -d packs/ # 249M L476
+# pack_url="https://www.keil.com/pack/Keil.STM32F7xx_DFP.2.15.1.pack" && curl -fSL --retry 5 --retry-all-errors -C - -o pack.part $pack_url && unzip -q pack.part -d packs/ # 264M F722
+# pack_url="https://www.keil.com/pack/Keil.STM32G0xx_DFP.1.4.0.pack" && curl -fSL --retry 5 --retry-all-errors -C - -o pack.part $pack_url && unzip -q pack.part -d packs/ # 47M G0
+# pack_url="https://www.keil.com/pack/Keil.STM32F2xx_DFP.3.1.0.pack" && curl -fSL --retry 5 --retry-all-errors -C - -o pack.part $pack_url && unzip -q pack.part -d packs/ # 555K F2
+# pack_url="https://www.keil.com/pack/ARM.CMSIS.5.9.0.pack" && curl -fSL --retry 5 --retry-all-errors -C - -o pack.part $pack_url && unzip -q pack.part -d packs/ # 33M CMSIS
+# pack_url="https://www.keil.com/pack/Keil.STM32H5xx_DFP.2.3.1.pack" && curl -fSL --retry 5 --retry-all-errors -C - -o pack.part $pack_url && unzip -q pack.part -d packs/ # 6.3M slim H503
+# pack_url="https://www.keil.com/pack/Keil.STM32L5xx_DFP.2.1.0.pack" && curl -fSL --retry 5 --retry-all-errors -C - -o pack.part $pack_url && unzip -q pack.part -d packs/ # 965K slim L562
+# pack_url="https://www.keil.com/pack/Keil.STM32U5xx_DFP.3.2.0.pack" && curl -fSL --retry 5 --retry-all-errors -C - -o pack.part $pack_url && unzip -q pack.part -d packs/ # 8.5M slim U535/U575
+# pack_url="https://www.keil.com/pack/Keil.STM32WBAxx_DFP.2.2.0.pack" && curl -fSL --retry 5 --retry-all-errors -C - -o pack.part $pack_url && unzip -q pack.part -d packs/ # 2.7M slim WBA55
+# pack_url="https://www.keil.com/pack/Keil.TM4C_DFP.1.1.0.pack" && curl -fSL --retry 5 --retry-all-errors -C - -o pack.part $pack_url && unzip -q pack.part -d packs/ # 7.3M TM4C123+TM4C129
 ```
 
 `cargo xtask packs --verify` checks that committed tables regenerate

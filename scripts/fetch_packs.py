@@ -13,6 +13,7 @@ import argparse
 import hashlib
 import shutil
 import sys
+import time
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -152,6 +153,40 @@ def sha256_of(path: Path) -> str:
     return h.hexdigest()
 
 
+def download(url: str, dest: Path, want_hash: str | None = None) -> None:
+    """Download with retries, resume, and atomic replace.
+
+    keil.com resets connections mid-file (Errno 104 / curl 56). A partial
+    download resumes via Range into a .part file; dest is only replaced
+    after the hash verifies, so a killed fetch never poisons the cache.
+    """
+    part = dest.with_name(dest.name + ".part")
+    for attempt in range(1, 6):
+        try:
+            resume_from = part.stat().st_size if part.exists() else 0
+            req = urllib.request.Request(url)
+            if resume_from:
+                req.add_header("Range", f"bytes={resume_from}-")
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                mode = "ab" if resume_from and resp.status == 206 else "wb"
+                with open(part, mode) as f:
+                    shutil.copyfileobj(resp, f)
+            break
+        except Exception as e:
+            print(f"attempt {attempt}/5 failed: {e}")
+            if attempt == 5:
+                raise SystemExit(f"download failed after 5 attempts: {url}")
+            time.sleep(min(60, 5 * attempt))
+    if want_hash:
+        got = sha256_of(part)
+        if got != want_hash:
+            part.unlink(missing_ok=True)
+            raise SystemExit(f"hash mismatch on {dest.name}: got {got}, want {want_hash}")
+        print(f"sha256 ok: {dest.name}")
+    part.replace(dest)
+    print(f"saved {dest} ({dest.stat().st_size} bytes)")
+
+
 def fetch(name: str, force: bool = False) -> Path:
     if name not in PACKS:
         print(f"error: unknown pack '{name}'; choices: {', '.join(PACKS)}", file=sys.stderr)
@@ -177,16 +212,7 @@ def fetch(name: str, force: bool = False) -> Path:
         return dest
 
     print(f"fetching {url}")
-    with urllib.request.urlopen(url) as resp, open(dest, "wb") as f:
-        shutil.copyfileobj(resp, f)
-    print(f"saved {dest} ({dest.stat().st_size} bytes)")
-
-    if want_hash:
-        got = sha256_of(dest)
-        if got != want_hash:
-            print(f"hash mismatch on {dest.name}: got {got}, want {want_hash}", file=sys.stderr)
-            sys.exit(1)
-        print(f"sha256 ok: {dest.name}")
+    download(url, dest, want_hash)
 
     print(f"extracting to {extract_dir}")
     with zipfile.ZipFile(dest) as zf:
