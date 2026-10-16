@@ -25,7 +25,7 @@ enum TraceFormat {
     Vcd,
 }
 
-/// The concrete boards the CLI can boot (21 SVD tables + 500 Dnames via core_only, 13 full).
+/// The concrete boards the CLI can boot (45 SVD tables + 577 Dnames via core_only, 13 full).
 #[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
 enum Board {
     Virtual,
@@ -1736,7 +1736,7 @@ enum Commands {
     },
     /// Show image layout (segments, entry)
     Info { image: PathBuf },
-    /// List all boards (21 SVD tables + 500 Dnames)
+    /// List all boards (45 SVD tables + 577 Dnames)
     Boards {
         /// Print the pin-label catalog instead (one board, or every table
         /// with `--pins all`): `PA9: USART1_TX` default-AF labels for HIL
@@ -1785,7 +1785,7 @@ fn banner() {
     );
     println!(
         "{}",
-        "  boards: 21 SVD → 500 Dnames | periphs: 197 | 615 lib tests".dimmed()
+        "  boards: 45 SVD → 577 Dnames | periphs: 584 | 1328 lib tests".dimmed()
     );
 }
 
@@ -2871,7 +2871,7 @@ fn docs_topic(topic: Option<String>) {
             );
             println!("{}", format!("topics: {}", DOC_TOPICS.join(" ")).dimmed());
             println!(
-                "  {} — 21 SVD → 500 Dnames, 197 union periphs",
+                "  {} — 45 SVD → 577 Dnames, 584 union periphs",
                 "boards".bright_green()
             );
             println!(
@@ -2884,14 +2884,14 @@ fn docs_topic(topic: Option<String>) {
             );
             println!("  {} — C ABI version/snapshots/introspection/memory/catalog (see docs/src/embedding.md)", "embedding".bright_green());
             println!(
-                "  {} — run `vioarm boards` for 21 tables, `vioarm run <hex> --board stm32h743`",
+                "  {} — run `vioarm boards` for 45 tables, `vioarm run <hex> --board stm32h743`",
                 "quick".bright_yellow()
             );
         }
         "boards" => {
             println!(
                 "{}",
-                "Boards — 21 SVD tables → 500 Dnames (vioarm-core/src/board.rs:2119)"
+                "Boards — 45 SVD tables → 577 Dnames (vioarm-core/src/board.rs:11851)"
                     .bright_cyan()
                     .bold()
             );
@@ -3574,7 +3574,7 @@ fn main() {
                 banner();
                 println!(
                     "{}",
-                    "Boards — 21 SVD tables → 500 Dnames".bright_cyan().bold()
+                    "Boards — 45 SVD tables → 577 Dnames".bright_cyan().bold()
                 );
                 for (name, peris) in board::all_chip_tables() {
                     println!(

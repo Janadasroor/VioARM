@@ -1,6 +1,6 @@
 //! SVD-driven register tables and the table-driven `RegisterFile` runtime.
 //!
-//! [`vioarm-svd`] generates [`stm32f103`], [`stm32f107`], and [`stm32f407`]
+//! [`vioarm-svd`] generates all 45 committed tables (40 STM32 + 5 TM4C)
 //! from CMSIS SVD files; this module holds the descriptor types those tables
 //! plug into, plus a generic [`RegisterFile`] peripheral that derives its whole
 //! address map from a [`PeripheralDef`]. Anything the SVD cannot express —
@@ -1374,9 +1374,33 @@ mod tests {
             super::stm32f107::PERIPHERALS,
             super::stm32f303xe::PERIPHERALS,
             super::stm32f407::PERIPHERALS,
+            super::stm32f207::PERIPHERALS,
+            super::stm32f217::PERIPHERALS,
+            super::stm32f722::PERIPHERALS,
+            super::stm32f730::PERIPHERALS,
+            super::stm32f746::PERIPHERALS,
+            super::stm32f767::PERIPHERALS,
+            super::stm32g031::PERIPHERALS,
+            super::stm32g050::PERIPHERALS,
+            super::stm32g061::PERIPHERALS,
+            super::stm32g081::PERIPHERALS,
+            super::stm32g0c1::PERIPHERALS,
             super::stm32g474xx::PERIPHERALS,
+            super::stm32h503::PERIPHERALS,
+            super::stm32h533::PERIPHERALS,
+            super::stm32h563::PERIPHERALS,
             super::stm32h743::PERIPHERALS,
+            super::stm32l562::PERIPHERALS,
             super::stm32l476::PERIPHERALS,
+            super::stm32u535::PERIPHERALS,
+            super::stm32u575::PERIPHERALS,
+            super::stm32u5g9::PERIPHERALS,
+            super::stm32wba55::PERIPHERALS,
+            super::tm4c123gh6pm::PERIPHERALS,
+            super::tm4c123gh6pz::PERIPHERALS,
+            super::tm4c123gh6zrb::PERIPHERALS,
+            super::tm4c1294ncpdt::PERIPHERALS,
+            super::tm4c129xnczad::PERIPHERALS,
         ];
         for p in tables.into_iter().flatten() {
             let mut spans: Vec<(u32, u32)> = Vec::new();

@@ -238,7 +238,7 @@ const LOCK_KEY: u32 = 0x1ACC_E551;
 fn wdt0_fires_interrupt() {
     let mut m = tiva129();
     let mem = m.core.mem();
-    // `WDTLOCK` resets `0x0000_0000` (unlocked, SPMS433 Watchdog Lock
+    // `WDTLOCK` resets `0x0000_0000` (unlocked, SPMS433B Watchdog Lock
     // register): relock explicitly, then prove locked writes sink.
     ww(mem, WDT0 + WDTLOCK, 0x0000_0000);
     assert_eq!(rw(mem, WDT0 + WDTLOCK) & 0x01, 0x01, "non-key relocks");

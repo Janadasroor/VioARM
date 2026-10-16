@@ -1,6 +1,6 @@
-//! Per-Dname committed tables: 506 Dnames → flash/ram/base exact (PDSC IROM1/IRAM1),
-//! each a donor + removal delta over the 33 SVD donor `PERIPHERALS` tables
-//! (32 STM32 + `tm4c123gh6pm`; Tiva flash lives at `0x0000_0000` via `flash_base`).
+//! Per-Dname committed tables: 577 Dnames → flash/ram/base exact (PDSC IROM1/IRAM1),
+//! each a donor + removal delta over the 45 SVD donor `PERIPHERALS` tables
+//! (40 STM32 + 5 TM4C; Tiva flash lives at `0x0000_0000` via `flash_base`).
 //!
 //! Migration note (`ffe651b` → here): the 486 per-variant `stm32*.rs` copies were
 //! proven byte-identical to their donor minus `removed` (39,131 shared
@@ -25,13 +25,13 @@ pub struct PerDname {
     pub ram_len: u32,
     /// Flash base address (`0x0800_0000` STM32, `0x0000_0000` Tiva).
     pub flash_base: u32,
-    /// One of the 21 SVD donors below (`donor_peripherals`).
+    /// One of the 45 SVD donors below (`donor_peripherals`).
     pub donor: &'static str,
     /// Peripheral names present in the donor but absent on this Dname.
     pub removed: &'static [&'static str],
 }
 
-/// The 32 SVD donor tables; every `PerDname` filters one of these.
+/// The 45 SVD donor tables; every `PerDname` filters one of these.
 #[must_use]
 pub fn donor_peripherals(donor: &str) -> &'static [PeripheralDef] {
     match donor {
@@ -104,7 +104,7 @@ impl PerDname {
     }
 
     /// Peripheral count after filtering (regression anchor: sum over all
-    /// Dnames is 40062).
+    /// Dnames is 40204).
     #[must_use]
     pub fn len(&self) -> usize {
         self.peripherals().count()

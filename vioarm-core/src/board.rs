@@ -11846,7 +11846,7 @@ pub fn all_chips() -> Vec<Chip> {
 /// One enumerated board: its short name plus its constructor.
 pub type BoardEntry = (&'static str, fn() -> BoardMemory);
 
-/// Every board function (557) enumerated for 500-chip CMSIS coverage.
+/// Every board function (511) enumerated for 511-chip CMSIS coverage.
 #[must_use]
 pub fn all_boards() -> Vec<BoardEntry> {
     vec![
@@ -12364,8 +12364,8 @@ pub fn all_boards() -> Vec<BoardEntry> {
     ]
 }
 
-/// Per-Dname committed tables exact: 556 Dnames with flash/ram/base exact via PDSC IROM1/IRAM1.
-/// Uses `per_dname::PER_DNAMES` 21-donor-plus-removal views with per-Dname flash/ram.
+/// Per-Dname committed tables exact: 577 Dnames with flash/ram/base exact via PDSC IROM1/IRAM1.
+/// Uses `per_dname::PER_DNAMES` 45-donor-plus-removal views with per-Dname flash/ram.
 pub fn core_only_board_per_dname(dname: &str) -> Option<BoardMemory> {
     use crate::device::svd::per_dname::{H7_DTCM, PER_DNAMES};
     use crate::device::svd::{NoBehavior, RegisterFile};
@@ -12408,7 +12408,7 @@ pub fn core_only_board_per_dname(dname: &str) -> Option<BoardMemory> {
     Some(mem)
 }
 
-/// All 556 Dnames with per-Dname flash/ram/base exact (donor + removal deltas over 33 SVD donors)
+/// All 577 Dnames with per-Dname flash/ram/base exact (donor + removal deltas over 45 SVD donors)
 pub fn all_per_dnames() -> Vec<(
     &'static str,
     &'static crate::device::svd::per_dname::PerDname,

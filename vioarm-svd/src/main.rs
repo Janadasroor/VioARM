@@ -250,6 +250,10 @@ mod tests {
                 "vioarm-core/src/device/svd/tm4c129xnczad.rs",
             ),
         ];
+        // Strict mode (`VIOARM_REQUIRE_PACKS`, set by `cargo xtask packs
+        // --verify`) turns a missing pack from a skip into a failure, so the
+        // verify gate can never go vacuous-green with `checked 0`.
+        let strict = std::env::var_os("VIOARM_REQUIRE_PACKS").is_some();
         let mut checked = 0;
         for (svd_rel, out_rel) in pairs {
             let svd_path = workspace.join(svd_rel);
@@ -257,6 +261,9 @@ mod tests {
             // Packs are gitignored: on machines without them (CI) skip the
             // pair instead of failing; `xtask packs --fetch` restores it.
             if !svd_path.is_file() {
+                if strict {
+                    panic!("{svd_rel}: packs not vendored here (VIOARM_REQUIRE_PACKS is set)");
+                }
                 eprintln!("skipping {svd_rel}: packs not vendored here");
                 continue;
             }
@@ -277,6 +284,13 @@ mod tests {
             );
         }
         eprintln!("checked {checked} committed tables against packs");
+        if strict {
+            assert_eq!(
+                checked,
+                pairs.len(),
+                "VIOARM_REQUIRE_PACKS: expected every pair checked"
+            );
+        }
     }
 
     /// Strip the `//!` header so the regenerated table can be compared with a

@@ -7,7 +7,7 @@
 
 ## Support
 
-- Board list frozen at 506 (`board::all_boards()`); per-board fidelity in
+- Board list frozen at 511 (`board::all_boards()`); per-board fidelity in
   `docs/src/boards.md`; golden boot snapshots (`golden_traces`) catch
   model drift between releases.
 - Private until complete: no publishes, tags, or mirrors (see RELEASING.md).
