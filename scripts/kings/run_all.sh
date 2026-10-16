@@ -28,10 +28,11 @@ run_uart() { # <board> <elf> <budget> <outfile>
 }
 
 # Build one firmware; a failure is reported and recorded but never aborts
-# the run, so one broken port cannot hide every other result.
+# the run, so one broken port cannot hide every other result. Output is
+# streamed (not captured) so CI logs show the failure.
 build() { # <label> <cmd...>
   local label="$1"; shift
-  if "$@" > "$KINGSWORK/build_$label.log" 2>&1; then
+  if "$@"; then
     return 0
   fi
   echo "KINGS-FAIL $label build"
