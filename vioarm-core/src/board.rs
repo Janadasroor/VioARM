@@ -1089,13 +1089,11 @@ fn f4gen_full_board<D: crate::device::svd::Device>(
             )));
         }
     }
-    #[allow(clippy::single_element_loop)]
-    for name in ["LPTIM1"] {
-        if live(name) {
-            mem.attach(Box::new(crate::device::stm32::lptim::Lptim::new_for::<D>(
-                name,
-            )));
-        }
+    let name = "LPTIM1";
+    if live(name) {
+        mem.attach(Box::new(crate::device::stm32::lptim::Lptim::new_for::<D>(
+            name,
+        )));
     }
     mem.attach(Box::new(Dwt::new()));
     mem.attach(Box::new(SysTick::new().with_clock(clock.clone())));
@@ -1675,13 +1673,11 @@ fn g4_full_board(flash_len: u32, ram_len: u32) -> BoardMemory {
             )));
         }
     }
-    #[allow(clippy::single_element_loop)]
-    for name in ["LPTIMER1"] {
-        if <Stm32g474 as crate::device::svd::Device>::peripheral(name).is_some() {
-            mem.attach(Box::new(crate::device::stm32::lptim::Lptim::new_for::<
-                Stm32g474,
-            >(name)));
-        }
+    let name = "LPTIMER1";
+    if <Stm32g474 as crate::device::svd::Device>::peripheral(name).is_some() {
+        mem.attach(Box::new(crate::device::stm32::lptim::Lptim::new_for::<
+            Stm32g474,
+        >(name)));
     }
     // Cut-down FDCAN1/2/3 on verified CAN RAM (CMSIS SRAMCAN_BASE
     // 0x4000A400). The fourth `FDCAN` window there is a duplicate of the
