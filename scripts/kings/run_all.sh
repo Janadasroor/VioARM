@@ -23,27 +23,43 @@ within() {
 }
 
 run_uart() { # <board> <elf> <budget> <outfile>
-  "$VIO" run --board "$1" --budget "$3" "$2" > "$4" 2>&1
-  kings_uart "$4" > "$4.uart"
+  "$VIO" run --board "$1" --budget "$3" "$2" > "$4" 2>&1 || true
+  kings_uart "$4" > "$4.uart" 2>/dev/null || true
+}
+
+# Build one firmware; a failure is reported and recorded but never aborts
+# the run, so one broken port cannot hide every other result.
+build() { # <label> <cmd...>
+  local label="$1"; shift
+  if "$@" > "$KINGSWORK/build_$label.log" 2>&1; then
+    return 0
+  fi
+  echo "KINGS-FAIL $label build"
+  FAIL=1
+  return 0
 }
 
 echo "== build =="
-"$KINGS/ports/dhry/build.sh"
-"$KINGS/ports/coremark/build.sh" 40
-"$KINGS/ports/coremark/build.sh" 200
-"$KINGS/ports/tm4c/build.sh" e2e
-"$KINGS/ports/tm4c/build.sh" dhry
-"$KINGS/ports/tm4c/build.sh" cm40
-"$KINGS/ports/tm4c/build.sh" cm400
-"$KINGS/ports/tm4c/build.sh" e2e tm4c129
-"$KINGS/ports/tm4c/build.sh" dhry tm4c129
-"$KINGS/ports/tm4c/build.sh" cm40 tm4c129
-"$KINGS/ports/tm4c/build.sh" cm400 tm4c129
-"$KINGS/ports/embench/build_all.sh"
-"$KINGS/ports/freertos/build.sh"
-"$KINGS/ports/mbedtls/build.sh"
-"$KINGS/ports/threadx/build.sh"
-"$KINGS/ports/tflm/build.sh"
+build dhry "$KINGS/ports/dhry/build.sh"
+build coremark_40 "$KINGS/ports/coremark/build.sh" 40
+build coremark_200 "$KINGS/ports/coremark/build.sh" 200
+build tm4c_e2e "$KINGS/ports/tm4c/build.sh" e2e
+build tm4c_dhry "$KINGS/ports/tm4c/build.sh" dhry
+build tm4c_cm40 "$KINGS/ports/tm4c/build.sh" cm40
+build tm4c_cm400 "$KINGS/ports/tm4c/build.sh" cm400
+build tm4c129_e2e "$KINGS/ports/tm4c/build.sh" e2e tm4c129
+build tm4c129_dhry "$KINGS/ports/tm4c/build.sh" dhry tm4c129
+build tm4c129_cm40 "$KINGS/ports/tm4c/build.sh" cm40 tm4c129
+build tm4c129_cm400 "$KINGS/ports/tm4c/build.sh" cm400 tm4c129
+build embench "$KINGS/ports/embench/build_all.sh"
+build freertos "$KINGS/ports/freertos/build.sh"
+build mbedtls "$KINGS/ports/mbedtls/build.sh"
+build threadx "$KINGS/ports/threadx/build.sh"
+build tflm "$KINGS/ports/tflm/build.sh"
+
+# Gate phase: every check reports explicitly via fail(); a miss (e.g. a
+# firmware that did not build) is a recorded FAIL, never a fatal abort.
+set +e
 
 echo "== dhrystone =="
 run_uart stm32f103 "$KINGSWORK/build/dhry/dhry-vioarm.elf" 200000000 "$KINGSWORK/dhry.log"
@@ -106,7 +122,7 @@ run_uart stm32f107 "$KINGSWORK/build/tflm/tflm-vioarm.elf" 20000000 "$KINGSWORK/
 U="$KINGSWORK/tflm.log.uart"
 grep -q "TFLM_ALL_PASS" "$U" || fail tflm "no ALL_PASS"
 # x86 reference cross-check (bit-exact predictions).
-g++ -O0 -std=c++17 -fno-exceptions -fno-rtti -w -DHOST_REF -ffunction-sections -fdata-sections \
+if g++ -O0 -std=c++17 -fno-exceptions -fno-rtti -w -DHOST_REF -ffunction-sections -fdata-sections \
   -I"$KINGSWORK/src/tflite-micro" -I"$KINGSHOME/ports/tflm" -I"$HARNESS" \
   -I"$KINGSWORK/build/tflm/genpath" \
   -I"$KINGSWORK/src/flatbuffers/include" -I"$KINGSWORK/src/gemmlowp" -I"$KINGSWORK/src/ruy" \
@@ -126,12 +142,15 @@ g++ -O0 -std=c++17 -fno-exceptions -fno-rtti -w -DHOST_REF -ffunction-sections -
   "$KINGSWORK"/src/tflite-micro/tensorflow/lite/kernels/kernel_util.cc \
   $(for f in common portable_tensor_utils quantization_util runtime_shape tensor_ctypes tensor_utils; do
     echo "$KINGSWORK/src/tflite-micro/tensorflow/lite/kernels/internal/$f.cc"; done) \
-  -o "$KINGSWORK/tflm-host-ref" -Wl,--gc-sections -lm
-stdbuf -o0 "$KINGSWORK/tflm-host-ref" > "$KINGSWORK/tflm-host.log" 2>&1
-if diff "$KINGSWORK/tflm-host.log" <(grep -v "^$" "$U") >/dev/null; then
-  pass tflm "bit-exact-vs-x86"
+  -o "$KINGSWORK/tflm-host-ref" -Wl,--gc-sections -lm; then
+  stdbuf -o0 "$KINGSWORK/tflm-host-ref" > "$KINGSWORK/tflm-host.log" 2>&1 || true
+  if diff "$KINGSWORK/tflm-host.log" <(grep -v "^$" "$U") >/dev/null; then
+    pass tflm "bit-exact-vs-x86"
+  else
+    fail tflm "host-diff"
+  fi
 else
-  fail tflm "host-diff"
+  fail tflm "host-ref-build"
 fi
 
 echo "== tiva =="
