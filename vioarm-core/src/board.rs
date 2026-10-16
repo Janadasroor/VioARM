@@ -1089,6 +1089,7 @@ fn f4gen_full_board<D: crate::device::svd::Device>(
             )));
         }
     }
+    #[allow(clippy::single_element_loop)]
     for name in ["LPTIM1"] {
         if live(name) {
             mem.attach(Box::new(crate::device::stm32::lptim::Lptim::new_for::<D>(
@@ -1674,6 +1675,7 @@ fn g4_full_board(flash_len: u32, ram_len: u32) -> BoardMemory {
             )));
         }
     }
+    #[allow(clippy::single_element_loop)]
     for name in ["LPTIMER1"] {
         if <Stm32g474 as crate::device::svd::Device>::peripheral(name).is_some() {
             mem.attach(Box::new(crate::device::stm32::lptim::Lptim::new_for::<
