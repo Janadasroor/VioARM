@@ -35,7 +35,14 @@ jobs:
       - name: Install qemu + gcc-arm-embedded (macos)
         if: matrix.os == 'macos-latest'
         run: |
-          brew install qemu gcc-arm-embedded
+          brew install qemu
+          # The gcc-arm-embedded cask is best-effort: Homebrew's cask has
+          # repeatedly pinned a SHA-256 that no longer matches ARM's file
+          # (upstream re-uploads the toolchain at the same URL). qemu is
+          # required for the oracle tests; the ARM compiler only feeds the
+          # CMSIS tests, which skip cleanly when absent and are fully
+          # exercised on the ubuntu leg.
+          brew install gcc-arm-embedded || echo "warn: gcc-arm-embedded unavailable (cask checksum drift), CMSIS tests skip"
           qemu-system-arm --version || echo "warn: qemu-system-arm not on PATH, oracle tests skip"
           arm-none-eabi-gcc --version || echo "warn: arm-none-eabi-gcc not on PATH, CMSIS tests skip"
 
