@@ -252,9 +252,7 @@ fn emit16(
             store(ops, rd);
             dynasm!(ops ; .arch aarch64 ; tst w0, w0);
             if !pred {
-                if !pred {
-                    merge_nz(ops);
-                }
+                merge_nz(ops);
             }
             true
         }
@@ -620,8 +618,8 @@ fn emit_bx(
     let halt = ops.new_dynamic_label();
     let side = ops.new_dynamic_label();
     let (m_lo, m_hi) = (
-        (FNC_RETURN_MIN_MAGIC & 0xFFFF) as u32,
-        ((FNC_RETURN_MIN_MAGIC >> 16) & 0xFFFF) as u32,
+        (FNC_RETURN_MIN_MAGIC & 0xFFFF),
+        ((FNC_RETURN_MIN_MAGIC >> 16) & 0xFFFF),
     );
     dynasm!(ops
         ; .arch aarch64
@@ -765,9 +763,7 @@ fn alu_rr(ops: &mut A, rd: u8, rn: u8, rm: u8, sub: bool, pred: bool, merge: boo
     // G3 flag traffic: skip the merge when a later full producer covers
     // the next observation (see `flag_merge_bits`).
     if !pred && merge {
-        if !pred {
-            merge_nzcv(ops);
-        }
+        merge_nzcv(ops);
     }
     true
 }
@@ -786,9 +782,7 @@ fn alu_ri(ops: &mut A, rd: u8, rn: u8, imm: u32, sub: bool, pred: bool, merge: b
     store(ops, rd);
     // G3 flag traffic (see `alu_rr` above).
     if !pred && merge {
-        if !pred {
-            merge_nzcv(ops);
-        }
+        merge_nzcv(ops);
     }
     true
 }
@@ -1330,8 +1324,8 @@ fn emit_pop_pc(ops: &mut A, regs: u8, pc: u32, tape: &mut super::templates::Slot
     dynasm!(ops ; .arch aarch64 ; add w11, w11, bytes);
     store_sp_w11(ops);
     let (m_lo, m_hi) = (
-        (FNC_RETURN_MIN_MAGIC & 0xFFFF) as u32,
-        ((FNC_RETURN_MIN_MAGIC >> 16) & 0xFFFF) as u32,
+        (FNC_RETURN_MIN_MAGIC & 0xFFFF),
+        ((FNC_RETURN_MIN_MAGIC >> 16) & 0xFFFF),
     );
     dynasm!(ops
         ; .arch aarch64
@@ -1689,8 +1683,8 @@ fn emit_ldmstm32(
     let tape = tape.take().expect("pc slot checked above");
     let pb = ops.new_dynamic_label();
     let (m_lo, m_hi) = (
-        (FNC_RETURN_MIN_MAGIC & 0xFFFF) as u32,
-        ((FNC_RETURN_MIN_MAGIC >> 16) & 0xFFFF) as u32,
+        (FNC_RETURN_MIN_MAGIC & 0xFFFF),
+        ((FNC_RETURN_MIN_MAGIC >> 16) & 0xFFFF),
     );
     dynasm!(ops
         ; .arch aarch64
@@ -1741,7 +1735,7 @@ fn emit_ldrdstrd(
     }
     let side = ops.new_dynamic_label();
     if rn == 15 {
-        let base = ((pc.wrapping_add(4)) & !3) as u32;
+        let base = (pc.wrapping_add(4)) & !3;
         let (b_lo, b_hi) = (base & 0xFFFF, (base >> 16) & 0xFFFF);
         dynasm!(ops
             ; .arch aarch64
@@ -2491,8 +2485,8 @@ fn emit_msr(ops: &mut A, rn: u8, sys: crate::cpu::decode32::SysReg, pc: u32) -> 
         S::Apsr => {
             mask_w9(ops, !(APSR_FLAGS | APSR_Q));
             let (t_lo, t_hi) = (
-                ((APSR_FLAGS | APSR_Q) & 0xFFFF) as u32,
-                (((APSR_FLAGS | APSR_Q) >> 16) & 0xFFFF) as u32,
+                ((APSR_FLAGS | APSR_Q) & 0xFFFF),
+                (((APSR_FLAGS | APSR_Q) >> 16) & 0xFFFF),
             );
             dynasm!(ops
                 ; .arch aarch64
@@ -2518,10 +2512,7 @@ fn emit_msr(ops: &mut A, rn: u8, sys: crate::cpu::decode32::SysReg, pc: u32) -> 
         }
         S::ApsrNzvCqg => {
             mask_w9(ops, !APSR_QFLAGS);
-            let (t_lo, t_hi) = (
-                (APSR_QFLAGS & 0xFFFF) as u32,
-                ((APSR_QFLAGS >> 16) & 0xFFFF) as u32,
-            );
+            let (t_lo, t_hi) = ((APSR_QFLAGS & 0xFFFF), ((APSR_QFLAGS >> 16) & 0xFFFF));
             dynasm!(ops
                 ; .arch aarch64
                 ; movz w10, t_lo
