@@ -44,6 +44,26 @@ fi
 # schema header: 25.9.23; gemmlowp/ruy are header-only users here).
 [ -d "$SRC/tflite-micro" ] || \
   git clone --depth 1 https://github.com/tensorflow/tflite-micro.git "$SRC/tflite-micro"
+# The TFLM port compiles the shared TFLite core from TensorFlow
+# (`tensorflow/lite/{core,kernels,schema}`, `tensorflow/compiler/mlir/lite`)
+# alongside tflite-micro's `tensorflow/lite/micro`. tflite-micro ships only
+# `micro`, so sparse-fetch the TF subtrees (blob-filtered) and overlay them
+# into the tflite-micro checkout the port builds from.
+if [ ! -d "$SRC/tensorflow/tensorflow/lite/core" ]; then
+  git clone --depth 1 --filter=blob:none --sparse \
+    https://github.com/tensorflow/tensorflow.git "$SRC/tensorflow"
+  git -C "$SRC/tensorflow" sparse-checkout set \
+    tensorflow/lite/core tensorflow/lite/kernels tensorflow/lite/schema \
+    tensorflow/compiler/mlir/lite
+fi
+TFLM="$SRC/tflite-micro"
+mkdir -p "$TFLM/tensorflow/lite"
+rm -rf "$TFLM/tensorflow/compiler" "$TFLM/tensorflow/lite/core" \
+  "$TFLM/tensorflow/lite/kernels" "$TFLM/tensorflow/lite/schema"
+ln -s "$SRC/tensorflow/tensorflow/compiler" "$TFLM/tensorflow/compiler"
+for d in core kernels schema; do
+  ln -s "$SRC/tensorflow/tensorflow/lite/$d" "$TFLM/tensorflow/lite/$d"
+done
 if [ ! -d "$SRC/flatbuffers/include/flatbuffers" ]; then
   git clone --depth 1 https://github.com/google/flatbuffers.git "$SRC/flatbuffers"
   git -C "$SRC/flatbuffers" fetch --depth 1 origin tag v25.9.23
