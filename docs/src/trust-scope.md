@@ -18,7 +18,7 @@ the same commit.
   (address-coverage matching). Current matrix: **1,045 behavioral, 1 latch,
   60 core-owned**, in `boards.md`.
 
-## Per-board claims (21/21 closed)
+## Per-board claims (24/24 closed)
 
 | Board | Windows | Behavioral | Latch | Firmware-proven (T3) on this board |
 |---|---|---|---|---|

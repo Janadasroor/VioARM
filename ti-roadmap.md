@@ -84,8 +84,8 @@ famous firmware), and the kings harness ports in days.
 - **129 P2d (done 2026-09-22): native 129 flash** (`device/ti/
   flash129.rs`, 7 lib tests, mounted with the EEPROM link, audit
   59/64): `FMC2` buffered program, 16× protection, `PP`/`SSIZE` ID.
-- **129 P3 (done 2026-09-22): closeout** (`vioarm-core/tests/
-  tm4c129_closeout.rs`, 18/18): 129 natives + fleet on the real board.
+- **129 P3 (done 2026-09-22, backfilled to 22): closeout** (`vioarm-core/tests/
+  tm4c129_closeout.rs`, 22/22): 129 natives + fleet on the real board.
 - **129 T3 (done 2026-09-22): firmware proof** (`scripts/kings/ports/
   tm4c/` 129 builds): e2e 4/4, Dhrystone 9.124, CoreMark-40 golden CRCs
   (tick-identical to the 123 run), CoreMark-400 valid (12 s). Pins +
@@ -219,7 +219,7 @@ closeouts — mask programs, clear takes writes, no faults occur).
 
 - 1–2 boards per family, audit to zero latch, `tiva_closeout.rs`-style
   direct-poke proofs per board. DONE 2026-09-22 for `tm4c123gh6pm`
-  (`vioarm-core/tests/tiva_closeout.rs`, 17 tests, 56/58 behavioral).
+  (`vioarm-core/tests/tiva_closeout.rs`, 18 tests, 56/58 behavioral).
 - T3 firmware: CoreMark + Dhrystone retargets via `scripts/kings/`
   (new port dir, same method), plus a UART/GPIO/Timer e2e. DONE
   2026-09-22 (`scripts/kings/ports/tm4c/`): e2e 4/4 markers, Dhrystone
