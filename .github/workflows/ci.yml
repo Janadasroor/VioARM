@@ -326,7 +326,7 @@ jobs:
           done
 
   publish:
-    name: Publish dry-run (vioarm-core)
+    name: Publish dry-run (vioarm-jit-call)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -337,10 +337,13 @@ jobs:
           toolchain: stable
 
       - name: Dry-run publish
-        # vioarm-core first: gdb/qemu/cli depend on it from crates.io, so
-        # they can only dry-run after core is really published (order and
-        # tokens are in RELEASING.md).
-        run: cargo publish --dry-run -p vioarm-core
+        # Inside-out order (RELEASING.md): vioarm-jit-call is the leaf;
+        # vioarm-core's `jit` feature depends on it by versioned path, then
+        # gdb/qemu/cli depend on core. A core dry-run cannot resolve until
+        # jit-call is really on crates.io — which the private gate blocks
+        # (dry-runs only) — so CI gates on the leaf here and the remaining
+        # layers dry-run at release time, in order.
+        run: cargo publish --dry-run -p vioarm-jit-call
 
   fuzz:
     name: Fuzz harnesses (ubuntu-latest, stable)

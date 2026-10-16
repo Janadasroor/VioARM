@@ -22,9 +22,11 @@ from crates.io:
 2. `cargo publish -p vioarm-gdb` and `cargo publish -p vioarm-qemu` (either order)
 3. `cargo publish -p vioarm-cli` (needs core + gdb on the registry)
 
-Dry-run each layer first (`cargo publish --dry-run -p <crate>`); CI runs the
-core dry-run on every push to `main`. A dry-run of gdb/qemu/cli fails until
-core is really on crates.io — that is expected, not a bug.
+Dry-run each layer first (`cargo publish --dry-run -p <crate>`). CI dry-runs
+the leaf `vioarm-jit-call` on every push to `main`; a dry-run of every other
+layer fails until its dependencies are really on crates.io (core needs
+jit-call; gdb/qemu/cli need core) — that is expected, not a bug, so those
+dry-runs are release-time steps, not CI gates.
 
 ## Credentials
 
