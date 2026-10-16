@@ -10,12 +10,20 @@ fn main() {
     if args.iter().any(|a| a == "--verify") {
         println!("Verify: cargo test -p vioarm-svd committed_tables_regenerate_identically -- 40 SVD 577 Dnames true-generation donors H7 DTCM 0x20000+RAM_D1 0x60000");
         let status = std::process::Command::new("cargo")
-            .args(["test", "-p", "vioarm-svd", "--", "committed_tables_regenerate_identically"])
+            .args([
+                "test",
+                "-p",
+                "vioarm-svd",
+                "--",
+                "committed_tables_regenerate_identically",
+            ])
             .status()
             .expect("cargo test");
         std::process::exit(status.code().unwrap_or(1));
     }
     println!("Usage: cargo xtask packs --fetch | --verify");
     println!("  --fetch  : document fetch URLs per packs/PROVENANCE.md (SLA0044, 16 DFP 4.8G, 577 Dnames)");
-    println!("  --verify : cargo test committed_tables_regenerate_identically 40 SVD 577 Dnames H7 DTCM");
+    println!(
+        "  --verify : cargo test committed_tables_regenerate_identically 40 SVD 577 Dnames H7 DTCM"
+    );
 }
