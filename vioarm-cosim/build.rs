@@ -16,8 +16,12 @@ fn main() {
     println!("cargo:rerun-if-changed=cbindgen.toml");
 
     // Versioned soname for the `cdylib` link (packagers symlink
-    // `libvioarm_cosim.so` -> `.so.1` -> the real file).
-    println!("cargo:rustc-link-arg=-Wl,-soname,libvioarm_cosim.so.1");
+    // `libvioarm_cosim.so` -> `.so.1` -> the real file). ELF-only: macOS
+    // `ld` rejects `-soname` (it uses `-install_name`, and the platform
+    // versioning lives in the bundle id), so emit it only for Linux.
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
+        println!("cargo:rustc-link-arg=-Wl,-soname,libvioarm_cosim.so.1");
+    }
 
     let crate_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let config =
