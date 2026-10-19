@@ -13,25 +13,29 @@ mkdir -p "$SRC"
 PHASES="${KINGS_PHASES:-core,tflm,tiva1,tiva2}"
 has_phase() { case ",$PHASES," in *",$1,"*) return 0;; *) return 1;; esac; }
 
-if has_phase core; then
+if has_phase core || has_phase tiva1 || has_phase tiva2; then
   # Dhrystone 2.1: netlib dhry-c shar archive (unversioned; we hash the
   # extracted files after download — see ports/dhry/patch_dhry.py).
+  # Shared: the STM32 core phase and the Tiva phases both build dhry +
+  # coremark firmware from these same sources.
   if [ ! -f "$SRC/dhry/dhry_1.c" ]; then
     mkdir -p "$SRC/dhry"
     curl -sL https://www.netlib.org/benchmark/dhry-c -o "$SRC/dhry/shar.html"
     python3 "$KINGSHOME/ports/dhry/extract_shar.py" "$SRC/dhry/shar.html" "$SRC/dhry"
   fi
 
+  # CoreMark (rolling HEAD; CRCs are version-stable for the 2K config).
+  [ -d "$SRC/coremark" ] || \
+    git clone --depth 1 https://github.com/eembc/coremark.git "$SRC/coremark"
+fi
+
+if has_phase core; then
   # Embench-IoT @09c2ed8 (2026-02-13; cycle tables are pinned to this snap).
   [ -d "$SRC/embench-iot" ] || \
     git clone --depth 1 https://github.com/embench/embench-iot.git "$SRC/embench-iot"
   git -C "$SRC/embench-iot" fetch --depth 1 origin 09c2ed8c3b7008c95d08b038de4a3f6dc103ed70 2>/dev/null || true
   git -C "$SRC/embench-iot" checkout -q 09c2ed8c3b7008c95d08b038de4a3f6dc103ed70 2>/dev/null || \
     echo "embench pin 09c2ed8 missing upstream; using clone HEAD (tables may drift!)"
-
-  # CoreMark (rolling HEAD; CRCs are version-stable for the 2K config).
-  [ -d "$SRC/coremark" ] || \
-    git clone --depth 1 https://github.com/eembc/coremark.git "$SRC/coremark"
 
   # FreeRTOS-Kernel (rolling HEAD; API-stable for this test).
   [ -d "$SRC/freertos" ] || \

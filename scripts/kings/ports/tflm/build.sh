@@ -46,6 +46,10 @@ for c in $SRCS; do
 done
 echo "compiled $n objects"
 BASE="-mcpu=cortex-m3 -mthumb -O2 --specs=nano.specs -ffunction-sections -fdata-sections -w"
+# The TFLM phase builds no STM32 port, so nothing else has compiled the
+# harness objects yet (kings_link's lazy build is not on this path).
+arm-none-eabi-gcc $BASE -c "$HARNESS/startup.s" -o "$KINGSWORK/harness/startup.o"
+arm-none-eabi-gcc $BASE -I"$HARNESS" -c "$HARNESS/board.c" -o "$KINGSWORK/harness/board.o"
 arm-none-eabi-gcc $BASE -T "$HARNESS/mem_f107.ld" "$KINGSWORK/harness/startup.o" \
   "$KINGSWORK/harness/board.o" "$B"/obj/*.o -o "$B/tflm-vioarm.elf" \
   -Wl,--gc-sections -lstdc++ -lm
