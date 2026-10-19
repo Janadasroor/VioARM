@@ -19,9 +19,11 @@ on:
         default: all
         options: [all, core, tflm, tiva1, tiva2]
 
-# Never run two kings sweeps at once; a fresh dispatch supersedes a stale run.
+# Never run two sweeps of the same scope at once; a fresh dispatch
+# supersedes a stale run. The phase is part of the group so a targeted
+# re-run of one phase does not cancel a sweep of the others.
 concurrency:
-  group: kings-${{ github.ref }}
+  group: kings-${{ github.ref }}-${{ inputs.phase || 'all' }}
   cancel-in-progress: true
 
 jobs:
