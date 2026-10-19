@@ -162,6 +162,7 @@ if g++ -O0 -std=c++17 -fno-exceptions -fno-rtti -w -DHOST_REF -ffunction-section
   -I"$KINGSWORK/src/tflite-micro" -I"$KINGSHOME/ports/tflm" -I"$HARNESS" \
   -I"$KINGSWORK/build/tflm/genpath" \
   -I"$KINGSWORK/src/flatbuffers/include" -I"$KINGSWORK/src/gemmlowp" -I"$KINGSWORK/src/ruy" \
+  -I"$KINGSWORK/src/kissfft" \
   "$KINGSHOME/ports/tflm/tflm_test.cc" "$KINGSHOME/ports/tflm/host_board.cc" \
   "$KINGSWORK/build/tflm/gen"/hello_world_*_model_data.cc \
   "$KINGSWORK"/src/tflite-micro/tensorflow/lite/micro/cortex_m_generic/debug_log.cc \
@@ -171,6 +172,7 @@ if g++ -O0 -std=c++17 -fno-exceptions -fno-rtti -w -DHOST_REF -ffunction-section
   $(for d in kernels memory_planner arena_allocator tflite_bridge; do
     for c in "$KINGSWORK"/src/tflite-micro/tensorflow/lite/micro/$d/*.cc; do
     case $(basename "$c") in *test*) continue;; esac; echo "$c"; done; done) \
+  "$KINGSWORK"/src/kissfft/kiss_fft.c \
   "$KINGSWORK"/src/tflite-micro/tensorflow/lite/core/c/common.cc \
   "$KINGSWORK"/src/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.cc \
   "$KINGSWORK"/src/tflite-micro/tensorflow/lite/core/api/error_reporter.cc \

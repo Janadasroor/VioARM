@@ -17,7 +17,7 @@ python3 "$P/gen_models.py" "$R/tensorflow/lite/micro/examples/hello_world/models
 cp "$B"/gen/hello_world_*_model_data.h \
   "$B/genpath/tensorflow/lite/micro/examples/hello_world/models/"
 CXX="-mcpu=cortex-m3 -mthumb -O2 -std=c++17 -fno-exceptions -fno-rtti --specs=nano.specs -ffunction-sections -fdata-sections -w"
-INC="-I$HARNESS -I$R -I$P -I$B/genpath -I$FB -I$GEMM -I$RUY"
+INC="-I$HARNESS -I$R -I$P -I$B/genpath -I$FB -I$GEMM -I$RUY -I$KINGSWORK/src/kissfft"
 SRCS="$P/tflm_test.cc $B/gen/hello_world_float_model_data.cc $B/gen/hello_world_int8_model_data.cc"
 SRCS="$SRCS $T/micro/cortex_m_generic/debug_log.cc"
 for c in "$T"/micro/*.cc; do
@@ -31,12 +31,19 @@ for d in kernels memory_planner arena_allocator tflite_bridge; do
     SRCS="$SRCS $c"
   done
 done
+# kissfft backs the RFFT/FFT kernels (upstream pins it the same way).
+SRCS="$SRCS $KINGSWORK/src/kissfft/kiss_fft.c"
+# tflite-micro@71fba59 still vendors the TFLite library itself under
+# tensorflow/lite (upstream stopped later, which is why `main` has only
+# micro/). Upstream's TENSORFLOW_ROOT is this same tree, so these are the
+# library sources its micro kernels link against -- TfLiteTypeGetName /
+# ConvertTensorType (core/c/common.cc), ParseFullyConnected
+# (core/api/flatbuffer_conversions.cc), GetBuiltinCode (kernels/kernel_util.cc).
 SRCS="$SRCS $T/core/c/common.cc $T/core/api/flatbuffer_conversions.cc"
 SRCS="$SRCS $T/core/api/error_reporter.cc"
-SRCS="$SRCS $T/schema/schema_utils.cc"
-SRCS="$SRCS $R/tensorflow/lite/kernels/kernel_util.cc"
+SRCS="$SRCS $T/schema/schema_utils.cc $T/kernels/kernel_util.cc"
 for f in common portable_tensor_utils quantization_util runtime_shape tensor_ctypes tensor_utils; do
-  SRCS="$SRCS $R/tensorflow/lite/kernels/internal/$f.cc"
+  SRCS="$SRCS $T/kernels/internal/$f.cc"
 done
 n=0
 for c in $SRCS; do

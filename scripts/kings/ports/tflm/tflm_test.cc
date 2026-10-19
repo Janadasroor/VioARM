@@ -130,7 +130,13 @@ int main() {
 
   uart_puts(failures == 0 ? "TFLM_ALL_PASS\n" : "TFLM_FAILURES\n");
   uart_puts("TFLM_DONE\n");
+#ifdef HOST_REF
+  // The x86 reference build must terminate: it is diffed against the
+  // device's UART capture, so parking here would hang the CI job.
+  return failures == 0 ? 0 : 1;
+#else
   for (;;) {
   }
   return 0;
+#endif
 }
