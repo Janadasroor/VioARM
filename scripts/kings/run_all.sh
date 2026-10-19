@@ -14,6 +14,12 @@ fi
 [ -x "$VIO" ] || { echo "no vioarm binary (set VIOARM_BIN)" >&2; exit 2; }
 FAIL=0
 
+# Phase selection: the full suite takes ~5h, which does not fit one
+# 300-min CI job. CI runs one job per phase (see kings.yml); the default
+# runs every phase in sequence for local/manual use.
+PHASES="${KINGS_PHASES:-core,tflm,tiva1,tiva2}"
+has_phase() { case ",$PHASES," in *",$1,"*) return 0;; *) return 1;; esac; }
+
 pass() { echo "KINGS-PASS $1 $2"; }
 fail() { echo "KINGS-FAIL $1 $2"; FAIL=1; }
 
@@ -41,9 +47,21 @@ build() { # <label> <cmd...>
 }
 
 echo "== build =="
+
+
+if has_phase core; then
 build dhry "$KINGS/ports/dhry/build.sh"
 build coremark_40 "$KINGS/ports/coremark/build.sh" 40
 build coremark_200 "$KINGS/ports/coremark/build.sh" 200
+build embench "$KINGS/ports/embench/build_all.sh"
+build freertos "$KINGS/ports/freertos/build.sh"
+build mbedtls "$KINGS/ports/mbedtls/build.sh"
+build threadx "$KINGS/ports/threadx/build.sh"
+fi
+if has_phase tflm; then
+build tflm "$KINGS/ports/tflm/build.sh"
+fi
+if has_phase tiva1 || has_phase tiva2; then
 build tm4c_e2e "$KINGS/ports/tm4c/build.sh" e2e
 build tm4c_dhry "$KINGS/ports/tm4c/build.sh" dhry
 build tm4c_cm40 "$KINGS/ports/tm4c/build.sh" cm40
@@ -52,25 +70,27 @@ build tm4c129_e2e "$KINGS/ports/tm4c/build.sh" e2e tm4c129
 build tm4c129_dhry "$KINGS/ports/tm4c/build.sh" dhry tm4c129
 build tm4c129_cm40 "$KINGS/ports/tm4c/build.sh" cm40 tm4c129
 build tm4c129_cm400 "$KINGS/ports/tm4c/build.sh" cm400 tm4c129
-build embench "$KINGS/ports/embench/build_all.sh"
-build freertos "$KINGS/ports/freertos/build.sh"
-build mbedtls "$KINGS/ports/mbedtls/build.sh"
-build threadx "$KINGS/ports/threadx/build.sh"
-build tflm "$KINGS/ports/tflm/build.sh"
+fi
 
 # Gate phase: every check reports explicitly via fail(); a miss (e.g. a
 # firmware that did not build) is a recorded FAIL, never a fatal abort.
 set +e
 
+if has_phase core; then
 echo "== dhrystone =="
+
+
 run_uart stm32f103 "$KINGSWORK/build/dhry/dhry-vioarm.elf" 200000000 "$KINGSWORK/dhry.log"
 U="$KINGSWORK/dhry.log.uart"
 grep -q DHRY_DONE "$U" || fail dhry "no DONE"
 [ "$(grep -c "should be:" "$U")" -ge 20 ] || fail dhry "self-checks missing"
 DMIPS=$(grep -oE "DMIPS \(dps/1757, x1000\): +[0-9]+\.[0-9]+" "$U" | grep -oE "[0-9]+\.[0-9]+$")
 if within "$DHRY_DMIPS" "$DMIPS" 5; then pass dhry "dmips=$DMIPS"; else fail dhry "dmips=$DMIPS want $DHRY_DMIPS"; fi
-
+fi
+if has_phase core; then
 echo "== coremark =="
+
+
 run_uart stm32f103 "$KINGSWORK/build/coremark_40/cm-vioarm.elf" 50000000 "$KINGSWORK/cm40.log"
 U="$KINGSWORK/cm40.log.uart"
 for c in "crclist *: 0xe714" "crcmatrix *: 0x1fd7" "crcstate *: 0x8e3a"; do
@@ -82,8 +102,11 @@ MHZ=$(python3 -c "print(40000000.0/$MHZ if $MHZ else 0)")
 if within "$COREMARK_MHZ" "$MHZ" 5; then pass coremark40 "mhz=$MHZ crc-ok"; else fail coremark40 "mhz=$MHZ"; fi
 run_uart stm32f103 "$KINGSWORK/build/coremark_200/cm-vioarm.elf" 150000000 "$KINGSWORK/cm200.log"
 grep -q "Correct operation validated" "$KINGSWORK/cm200.log.uart" && pass coremark200 valid || fail coremark200 "not validated"
-
+fi
+if has_phase core; then
 echo "== embench =="
+
+
 while read -r name cycles; do
   [ -n "$name" ] || continue
   case "$name" in \#*) continue;; esac
@@ -94,19 +117,28 @@ while read -r name cycles; do
   G=$(grep -oE "cycles=[0-9]+" "$U" | grep -oE "[0-9]+$" || echo 0)
   if within "$cycles" "$G" 5; then pass "embench-$name" "cycles=$G"; else fail "embench-$name" "cycles=$G want $cycles"; fi
 done < "$KINGS/expected_embench.tsv"
-
+fi
+if has_phase core; then
 echo "== freertos =="
+
+
 run_uart stm32f103 "$KINGSWORK/build/freertos/fr-vioarm.elf" 60000000 "$KINGSWORK/fr.log"
 U="$KINGSWORK/fr.log.uart"
 grep -q "PERIODS: 2000000 2000000 2000000 2000000 2000000 2000000 2000000 2000000 2000000 PASS" "$U" \
   && pass freertos exact-periods || fail freertos "periods"
-
+fi
+if has_phase core; then
 echo "== mbedtls =="
+
+
 run_uart stm32f103 "$KINGSWORK/build/mbedtls/tls-vioarm.elf" 300000000 "$KINGSWORK/tls.log"
 U="$KINGSWORK/tls.log.uart"
 grep -q "OVERALL: PASSED" "$U" && pass mbedtls overall || fail mbedtls "no PASS"
-
+fi
+if has_phase core; then
 echo "== threadx =="
+
+
 run_uart stm32f107 "$KINGSWORK/build/threadx/tx-vioarm.elf" 300000000 "$KINGSWORK/tx.log"
 U="$KINGSWORK/tx.log.uart"
 grep -q "TX_DONE" "$U" || fail threadx "no DONE"
@@ -117,8 +149,11 @@ if within "$TX_SENT" "$S" 5; then pass threadx "sent=$S"; else fail threadx "sen
 B=$(grep -oE "backlog=[0-9]+" "$U" | grep -oE "[0-9]+$" || echo 999)
 [ "$B" -le "$TX_BACKLOG_MAX" ] && pass threadx "backlog=$B" || fail threadx "backlog=$B"
 grep -q " PASS" "$U" || fail threadx "no PASS"
-
+fi
+if has_phase tflm; then
 echo "== tflm =="
+
+
 run_uart stm32f107 "$KINGSWORK/build/tflm/tflm-vioarm.elf" 20000000 "$KINGSWORK/tflm.log"
 U="$KINGSWORK/tflm.log.uart"
 grep -q "TFLM_ALL_PASS" "$U" || fail tflm "no ALL_PASS"
@@ -138,8 +173,8 @@ if g++ -O0 -std=c++17 -fno-exceptions -fno-rtti -w -DHOST_REF -ffunction-section
     case $(basename "$c") in *test*) continue;; esac; echo "$c"; done; done) \
   "$KINGSWORK"/src/tflite-micro/tensorflow/lite/core/c/common.cc \
   "$KINGSWORK"/src/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.cc \
-  "$KINGSWORK"/src/tflite-micro/tensorflow/compiler/mlir/lite/core/api/error_reporter.cc \
-  "$KINGSWORK"/src/tflite-micro/tensorflow/compiler/mlir/lite/schema/schema_utils.cc \
+  "$KINGSWORK"/src/tflite-micro/tensorflow/lite/core/api/error_reporter.cc \
+  "$KINGSWORK"/src/tflite-micro/tensorflow/lite/schema/schema_utils.cc \
   "$KINGSWORK"/src/tflite-micro/tensorflow/lite/kernels/kernel_util.cc \
   $(for f in common portable_tensor_utils quantization_util runtime_shape tensor_ctypes tensor_utils; do
     echo "$KINGSWORK/src/tflite-micro/tensorflow/lite/kernels/internal/$f.cc"; done) \
@@ -153,8 +188,11 @@ if g++ -O0 -std=c++17 -fno-exceptions -fno-rtti -w -DHOST_REF -ffunction-section
 else
   fail tflm "host-ref-build"
 fi
-
+fi
+if has_phase tiva1; then
 echo "== tiva =="
+
+
 run_uart tm4c123gh6pm "$KINGSWORK/build/tm4c_e2e/e2e-vioarm.elf" 500000 "$KINGSWORK/tm4c_e2e.log"
 U="$KINGSWORK/tm4c_e2e.log.uart"
 for m in E2E_UART_OK E2E_GPIO_OK E2E_TIMER_OK E2E_DONE; do
@@ -177,8 +215,11 @@ MHZ=$(python3 -c "print(40000000.0/$MHZ if $MHZ else 0)")
 if within "$COREMARK_MHZ_TM4C" "$MHZ" 5; then pass tm4c-coremark40 "mhz=$MHZ crc-ok"; else fail tm4c-coremark40 "mhz=$MHZ"; fi
 run_uart tm4c123gh6pm "$KINGSWORK/build/tm4c_cm400/cm-vioarm.elf" 600000000 "$KINGSWORK/tm4c_cm400.log"
 grep -q "Correct operation validated" "$KINGSWORK/tm4c_cm400.log.uart" && pass tm4c-coremark400 valid || fail tm4c-coremark400 "not validated"
-
+fi
+if has_phase tiva1; then
 echo "== tiva129 =="
+
+
 run_uart tm4c1294ncpdt "$KINGSWORK/build/tm4c129_e2e/e2e-vioarm.elf" 500000 "$KINGSWORK/tm4c129_e2e.log"
 U="$KINGSWORK/tm4c129_e2e.log.uart"
 for m in E2E_UART_OK E2E_GPIO_OK E2E_TIMER_OK E2E_DONE; do
@@ -201,8 +242,11 @@ MHZ=$(python3 -c "print(40000000.0/$MHZ if $MHZ else 0)")
 if within "$COREMARK_MHZ_TM4C129" "$MHZ" 5; then pass tm4c129-coremark40 "mhz=$MHZ crc-ok"; else fail tm4c129-coremark40 "mhz=$MHZ"; fi
 run_uart tm4c1294ncpdt "$KINGSWORK/build/tm4c129_cm400/cm-vioarm.elf" 600000000 "$KINGSWORK/tm4c129_cm400.log"
 grep -q "Correct operation validated" "$KINGSWORK/tm4c129_cm400.log.uart" && pass tm4c129-coremark400 valid || fail tm4c129-coremark400 "not validated"
-
+fi
+if has_phase tiva1; then
 echo "== tiva129x =="
+
+
 run_uart tm4c129xnczad "$KINGSWORK/build/tm4c129_e2e/e2e-vioarm.elf" 500000 "$KINGSWORK/tm4c129x_e2e.log"
 U="$KINGSWORK/tm4c129x_e2e.log.uart"
 for m in E2E_UART_OK E2E_GPIO_OK E2E_TIMER_OK E2E_DONE; do
@@ -225,8 +269,11 @@ MHZ=$(python3 -c "print(40000000.0/$MHZ if $MHZ else 0)")
 if within "$COREMARK_MHZ_TM4C129X" "$MHZ" 5; then pass tm4c129x-coremark40 "mhz=$MHZ crc-ok"; else fail tm4c129x-coremark40 "mhz=$MHZ"; fi
 run_uart tm4c129xnczad "$KINGSWORK/build/tm4c129_cm400/cm-vioarm.elf" 600000000 "$KINGSWORK/tm4c129x_cm400.log"
 grep -q "Correct operation validated" "$KINGSWORK/tm4c129x_cm400.log.uart" && pass tm4c129x-coremark400 valid || fail tm4c129x-coremark400 "not validated"
-
+fi
+if has_phase tiva2; then
 echo "== tiva123pz =="
+
+
 run_uart tm4c123gh6pz "$KINGSWORK/build/tm4c_e2e/e2e-vioarm.elf" 500000 "$KINGSWORK/tm4c123pz_e2e.log"
 U="$KINGSWORK/tm4c123pz_e2e.log.uart"
 for m in E2E_UART_OK E2E_GPIO_OK E2E_TIMER_OK E2E_DONE; do
@@ -249,8 +296,11 @@ MHZ=$(python3 -c "print(40000000.0/$MHZ if $MHZ else 0)")
 if within "$COREMARK_MHZ_TM4C123PZ" "$MHZ" 5; then pass tm4c123pz-coremark40 "mhz=$MHZ crc-ok"; else fail tm4c123pz-coremark40 "mhz=$MHZ"; fi
 run_uart tm4c123gh6pz "$KINGSWORK/build/tm4c_cm400/cm-vioarm.elf" 600000000 "$KINGSWORK/tm4c123pz_cm400.log"
 grep -q "Correct operation validated" "$KINGSWORK/tm4c123pz_cm400.log.uart" && pass tm4c123pz-coremark400 valid || fail tm4c123pz-coremark400 "not validated"
-
+fi
+if has_phase tiva2; then
 echo "== tiva123zrb =="
+
+
 run_uart tm4c123gh6zrb "$KINGSWORK/build/tm4c_e2e/e2e-vioarm.elf" 500000 "$KINGSWORK/tm4c123zrb_e2e.log"
 U="$KINGSWORK/tm4c123zrb_e2e.log.uart"
 for m in E2E_UART_OK E2E_GPIO_OK E2E_TIMER_OK E2E_DONE; do
@@ -273,6 +323,7 @@ MHZ=$(python3 -c "print(40000000.0/$MHZ if $MHZ else 0)")
 if within "$COREMARK_MHZ_TM4C123ZRB" "$MHZ" 5; then pass tm4c123zrb-coremark40 "mhz=$MHZ crc-ok"; else fail tm4c123zrb-coremark40 "mhz=$MHZ"; fi
 run_uart tm4c123gh6zrb "$KINGSWORK/build/tm4c_cm400/cm-vioarm.elf" 600000000 "$KINGSWORK/tm4c123zrb_cm400.log"
 grep -q "Correct operation validated" "$KINGSWORK/tm4c123zrb_cm400.log.uart" && pass tm4c123zrb-coremark400 valid || fail tm4c123zrb-coremark400 "not validated"
+fi
 
 echo "== done: FAIL=$FAIL =="
 exit $FAIL

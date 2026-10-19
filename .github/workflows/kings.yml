@@ -3,21 +3,36 @@ name: Kings re-verification
 # Famous-firmware end-to-end: rebuild from upstream, run on release
 # VioARM, check functional gates + pinned cycles. Weekly + manual only
 # (~2h wall); per-commit would burn the runner budget for no signal.
+#
+# The full suite needs ~5h (the TI boards alone are ~57 min each), which
+# does not fit one 300-min job -- a single-job run was killed at exactly
+# the timeout. It is therefore split across parallel phase jobs; each job
+# builds and fetches only what its phase needs (see KINGS_PHASES).
 on:
   schedule:
     - cron: "0 4 * * 1"
   workflow_dispatch:
 
-# Never run two 5h kings jobs at once; a fresh dispatch supersedes a stale run.
+# Never run two kings sweeps at once; a fresh dispatch supersedes a stale run.
 concurrency:
   group: kings-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   kings:
-    name: Rebuild + run famous firmware
+    name: Kings ${{ matrix.phase }}
     runs-on: ubuntu-latest
     timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - phase: core    # dhrystone, coremark, embench, freertos, mbedtls, threadx
+          - phase: tflm    # tflite-micro hello_world + x86 cross-check
+          - phase: tiva1   # tm4c123gh6pm, tm4c1294ncpdt, tm4c129xnczad
+          - phase: tiva2   # tm4c123gh6pz, tm4c123gh6zrb
+    env:
+      KINGS_PHASES: ${{ matrix.phase }}
     steps:
       - uses: actions/checkout@v4
       - name: Configure KINGSWORK
@@ -37,3 +52,13 @@ jobs:
         run: |
           export VIOARM_BIN="$PWD/target/release/vioarm-cli"
           bash scripts/kings/run_all.sh
+      # UART captures + full sim logs: without these a failed gate is
+      # undiagnosable (the pass/fail line alone says nothing about *why*).
+      - name: Upload simulator logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kings-logs-${{ matrix.phase }}
+          path: ${{ runner.temp }}/kings/*.log*
+          if-no-files-found: ignore
+          retention-days: 14

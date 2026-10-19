@@ -32,8 +32,8 @@ for d in kernels memory_planner arena_allocator tflite_bridge; do
   done
 done
 SRCS="$SRCS $T/core/c/common.cc $T/core/api/flatbuffer_conversions.cc"
-SRCS="$SRCS $R/tensorflow/compiler/mlir/lite/core/api/error_reporter.cc"
-SRCS="$SRCS $R/tensorflow/compiler/mlir/lite/schema/schema_utils.cc"
+SRCS="$SRCS $T/core/api/error_reporter.cc"
+SRCS="$SRCS $T/schema/schema_utils.cc"
 SRCS="$SRCS $R/tensorflow/lite/kernels/kernel_util.cc"
 for f in common portable_tensor_utils quantization_util runtime_shape tensor_ctypes tensor_utils; do
   SRCS="$SRCS $R/tensorflow/lite/kernels/internal/$f.cc"
