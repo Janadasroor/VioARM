@@ -40,10 +40,33 @@ jobs:
       - uses: actions/checkout@v4
       - name: Configure KINGSWORK
         run: echo "KINGSWORK=$RUNNER_TEMP/kings" >> "$GITHUB_ENV"
-      - name: Install arm-none-eabi-gcc + host g++ + python3
+      - name: Cache pinned ARM toolchain
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/armtc-14.2.rel1
+          key: armtc-14.2.rel1-linux-x64
+      - name: Install pinned ARM toolchain (14.2.Rel1)
+        run: |
+          # The cycle pins in expected.sh / expected_embench.tsv are
+          # coupled to the compiler that produced the firmware: aha-mont64
+          # is +5.9% and FreeRTOS's periods jitter +-1 cycle under the
+          # distro's arm-none-eabi-gcc 13.2.1. Pin the exact toolchain the
+          # pins were captured with so the suite is reproducible.
+          TC=14.2.rel1
+          DIR="$RUNNER_TEMP/armtc-$TC"
+          if [ ! -x "$DIR/bin/arm-none-eabi-gcc" ]; then
+            FILE="arm-gnu-toolchain-$TC-x86_64-arm-none-eabi.tar.xz"
+            curl -fsSL --retry 3 --retry-all-errors \
+              "https://developer.arm.com/-/media/Files/downloads/gnu/$TC/binrel/$FILE" \
+              -o "$RUNNER_TEMP/$FILE"
+            mkdir -p "$DIR"
+            tar -xJf "$RUNNER_TEMP/$FILE" -C "$DIR" --strip-components=1
+          fi
+          echo "$DIR/bin" >> "$GITHUB_PATH"
+      - name: Install host tools
         run: |
           sudo apt-get update -q
-          sudo apt-get install -qy gcc-arm-none-eabi g++ python3
+          sudo apt-get install -qy g++ python3
           arm-none-eabi-gcc --version | head -n 1
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
