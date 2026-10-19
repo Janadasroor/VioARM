@@ -1,11 +1,15 @@
 # Embench-IoT expected cycles @embench-iot 09c2ed8, GLOBAL_SCALE_FACTOR 1,
 # newlib strings. Pinned from the 2026-09-22 validation run; re-pin only
 # with a full manual re-verification, never to silence CI.
-# Toolchain-coupled: captured with Arm GNU Toolchain 14.2.Rel1
-# (arm-none-eabi-gcc 14.2.1 20241119), which kings.yml now pins. The
-# distro's 13.2.1 shifts aha-mont64 by +5.9% (the most codegen-sensitive
-# benchmark); the other 18 move <5%. Change the compiler and these
-# numbers are no longer comparable.
+# Toolchain-coupled: captured with Arm GNU Toolchain 14.2.Rel1 (arm-none-eabi-gcc
+# 14.2.1 20241119) linked against FULL newlib, which kings.yml and
+# scripts/kings/common.sh now pin. Two things move these numbers:
+#   - the compiler: the distro's 13.2.1 shifts aha-mont64 by +5.9% (the most
+#     codegen-sensitive benchmark) and the rest by <5%;
+#   - the C library: Arm's official toolchain resolves --specs=nano.specs to
+#     newlib-nano, whose string paths move tarfind by +193% and Dhrystone from
+#     9.124 to 7.783 DMIPS. Full newlib reproduces the pins exactly.
+# Change either and these numbers are no longer comparable.
 # name cycles
 aha-mont64 4386397
 crc32 5051936

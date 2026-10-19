@@ -10,7 +10,15 @@ export KINGSHOME
 H="$KINGSHOME/harness"
 export HARNESS="$H"
 
-CC_BASE="-mcpu=cortex-m3 -mthumb -O2 --specs=nano.specs -ffunction-sections -fdata-sections -w"
+# Full newlib, deliberately NOT --specs=nano.specs. The cycle pins in
+# expected.sh / expected_embench.tsv were captured against full newlib:
+# the distro's arm-none-eabi packages resolve nano.specs to the regular
+# library, while Arm's official 14.2.Rel1 toolchain does not — and the
+# difference is large enough to move the pins (Dhrystone 9.124 -> 7.783
+# DMIPS, embench-tarfind +193%). With full newlib, the official
+# toolchain reproduces the pins exactly, and Dhrystone stays at
+# 9.124 DMIPS (1.14/MHz), inside the published 1.0-1.25 range.
+CC_BASE="-mcpu=cortex-m3 -mthumb -O2 -ffunction-sections -fdata-sections -w"
 export CC_BASE
 
 # kings_link <board:f103|f107|tm4c|tm4c129> <out.elf> <objects...>
