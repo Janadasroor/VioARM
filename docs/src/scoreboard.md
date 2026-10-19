@@ -114,6 +114,22 @@ only with a full manual re-verification, never to silence CI.
 Note (2026-10): the workflow's fetch and build steps previously disagreed
 on `KINGSWORK`, so the job aborted at Dhrystone on every run and never
 produced gate results; that and the abort-on-first-build-failure are
-fixed. The TFLM leg is not yet runnable in CI (its port needs TensorFlow
-core sources to provision) and reports `KINGS-FAIL tflm build`, so the
-TFLite Micro row above reflects manual verification, not the weekly job.
+fixed. The TFLM leg is now runnable in CI as well: the port builds
+standalone from a pinned tflite-micro revision (no TensorFlow monorepo
+needed) and its float + int8 hello_world predictions match the x86
+reference bit-for-bit (`KINGS-PASS tflm bit-exact-vs-x86`).
+
+The suite runs as four parallel phase jobs (`core`, `tflm`, `tiva1`,
+`tiva2`) because the full sweep needs ~5h — the five Tiva boards alone are
+~57 min each — which overran a single job's timeout before the Tiva
+family could finish. All five Tiva boards now pass every gate
+(e2e markers, Dhrystone, CoreMark-40 CRCs, CoreMark-400 validity) with
+9.088 DMIPS and 2.0966 MHz identical on every die.
+
+The cycle pins are coupled to the firmware's compiler: the CI now
+installs Arm GNU Toolchain 14.2.Rel1 (cached) rather than the distro's
+13.2.1, under which `aha-mont64` drifted +5.9% and FreeRTOS's tick
+periods jittered ±1 cycle. With the pinned toolchain all 19 Embench
+benchmarks reproduce their pins bit-exactly and the FreeRTOS periods are
+exact. Re-pin tables only with a full manual re-verification, never to
+silence CI.
