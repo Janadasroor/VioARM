@@ -12,6 +12,12 @@ on:
   schedule:
     - cron: "0 4 * * 1"
   workflow_dispatch:
+    inputs:
+      phase:
+        description: "Run one phase only (all = every phase)"
+        type: choice
+        default: all
+        options: [all, core, tflm, tiva1, tiva2]
 
 # Never run two kings sweeps at once; a fresh dispatch supersedes a stale run.
 concurrency:
@@ -26,11 +32,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - phase: core    # dhrystone, coremark, embench, freertos, mbedtls, threadx
-          - phase: tflm    # tflite-micro hello_world + x86 cross-check
-          - phase: tiva1   # tm4c123gh6pm, tm4c1294ncpdt, tm4c129xnczad
-          - phase: tiva2   # tm4c123gh6pz, tm4c123gh6zrb
+        # Scheduled runs do every phase; a manual dispatch may name one.
+        phase: ${{ fromJSON(inputs.phase != '' && inputs.phase != 'all' && format('["{0}"]', inputs.phase) || '["core", "tflm", "tiva1", "tiva2"]') }}
     env:
       KINGS_PHASES: ${{ matrix.phase }}
     steps:
